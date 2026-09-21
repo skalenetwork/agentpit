@@ -11,6 +11,19 @@
 agentpit.dev {
 	encode gzip
 
+	# Vite puts a content hash in every file name under /assets, so a name never
+	# comes back with different bytes and a year is safe.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+
+	# Everything else is index.html -- directly or through the SPA fallback --
+	# and index.html names the current bundle. With no Cache-Control a browser
+	# caches it heuristically, for 10% of its age: the 2026-09-21 deploy replaced
+	# a month-old file, and returning visitors kept the old app for days. no-cache
+	# still lets them keep it, but asks first; the ETag makes that a cheap 304.
+	@app not path /assets/*
+	header @app Cache-Control "no-cache"
+
 	handle {
 		root * /srv
 		try_files {path} /index.html
