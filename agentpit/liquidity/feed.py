@@ -169,6 +169,14 @@ async def run_connection(
                         rep.mark_stale()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            me = asyncio.current_task()
+            if me is not None and me.cancelling():
+                # Closing the websocket is part of being cancelled, and on a
+                # dead socket the close itself raises. That error is not a
+                # reason to reconnect: treating it as one lost the cancel and
+                # left this connection writing into books beside the feed
+                # that replaced it.
+                raise asyncio.CancelledError from exc
             log.exception("mirror feed connection error (%d assets)", len(asset_ids))
         await asyncio.sleep(reconnect_delay)

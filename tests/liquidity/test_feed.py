@@ -164,3 +164,41 @@ async def test_watchdog_trips_on_wall_clock_despite_chatty_garbage_frames():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_connection_whose_close_fails_stays_cancelled():
+    # Cancelling a connection closes its websocket, and on a dead socket that
+    # close raises (websockets' ConnectionClosed) rather than completing. The
+    # retry branch caught that, logged it and reconnected, so the cancel was
+    # lost: the connection went on writing into books beside the feed that
+    # replaced it — every event applied twice.
+    connects = []
+
+    class CloseFails:
+        async def __aenter__(self):
+            connects.append(1)
+            if len(connects) > 1:
+                # A reconnect after cancel is the regression. End the task
+                # here so a regressed build fails the assertion below instead
+                # of leaving a task that hangs the whole suite on shutdown.
+                raise asyncio.CancelledError
+            return self
+
+        async def __aexit__(self, *exc):
+            raise ConnectionError("close handshake on a dead socket")
+
+        async def send(self, _msg):
+            pass
+
+        async def recv(self):
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(run_connection(
+        MirrorState([_ref()]), ["PM-YES"], connect=lambda url: CloseFails(),
+        ping_interval=5.0, watchdog_seconds=30.0, reconnect_delay=0.001))
+    await asyncio.sleep(0.02)
+    task.cancel()
+    await asyncio.wait({task}, timeout=1.0)
+    assert task.done() and task.cancelled()
+    assert connects == [1], "a cancelled connection must not reconnect"

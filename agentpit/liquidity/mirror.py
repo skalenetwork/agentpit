@@ -10,6 +10,7 @@ Blocking work (DB/chain/REST) runs via asyncio.to_thread.
 """
 import asyncio
 import logging
+import time
 
 from agentpit.config import Settings
 from agentpit.datastructures.user import User
@@ -81,6 +82,13 @@ def cold_due(last_cold: float, interval: float, now: float) -> bool:
     return interval > 0 and now - last_cold >= interval
 
 
+# REST /books batch size for the feed's seed (feed.fetch_books_rest's default).
+SEED_BATCH_SIZE = 100
+# A rebuild with no sign of progress for this long is hung. Comfortably above
+# one seed batch's 15s httpx timeout, so a batch that times out is not a hang.
+FEED_PROGRESS_TIMEOUT = 60.0
+
+
 class MirrorEngine:
     def __init__(self, db: DbSession, onchain: OnchainAdmin,
                  settings: Settings, user: User):
@@ -96,17 +104,41 @@ class MirrorEngine:
         self._cold_priority: "dict[str, float]" = {}
         self._resubscribe = asyncio.Event()
         self._pending_cancel: list[MarketRef] = []
+        # What the feed last actually subscribed, and when. The feed stopped
+        # rebuilding on 2026-09-02 and nothing could tell: these make the gap
+        # between the target set and the live subscription observable.
+        self._clock = time.monotonic
+        self._subscribed: frozenset[str] = frozenset()
+        self._subscribed_at: "float | None" = None
+        # asset -> when it was first seen as a target while unsubscribed. Each
+        # missing asset is timed on its own clock, so a steady stream of new
+        # markets that the feed does pick up never adds up to "stale".
+        self._first_seen: "dict[str, float]" = {}
+        # Last sign of life from a rebuild in progress (seed batch done,
+        # connections started); None while the feed is parked on a
+        # subscription, waiting for the next target change.
+        self._rebuild_progress_at: "float | None" = None
 
     # ---- feed side -------------------------------------------------------
 
     async def run_feed(self) -> None:
+        # A fresh feed (first start, or a supervisor restart after a hang)
+        # starts its rebuild with a fresh progress clock. The first-seen clocks
+        # survive a restart, so every still-missing asset may already be
+        # overdue — what keeps the new instance alive is its seed progressing.
+        self._rebuild_progress_at = None
         while True:
             try:
                 assets = list(self.state.replicas)
                 self._resubscribe.clear()
                 if not assets:
+                    self._rebuild_progress_at = None     # parked, nothing to do
                     await self._wait_resubscribe(self._cfg.mirror_target_refresh_seconds)
                     continue
+                if self._rebuild_progress_at is None:
+                    # A retry after a failed cycle keeps the old mark: a
+                    # rebuild that fails over and over is not progressing.
+                    self._mark_progress()
                 await self._seed_books(assets)
                 conns = [
                     asyncio.create_task(feed.run_connection(
@@ -115,31 +147,106 @@ class MirrorEngine:
                     for shard_assets in feed.shard(
                         assets, self._cfg.mirror_assets_per_connection)
                 ]
+                self._record_subscription(assets, connections=len(conns))
+                self._rebuild_progress_at = None         # parked on a live feed
                 try:
                     await self._resubscribe.wait()   # target set changed — rebuild
                 finally:
                     for t in conns:
                         t.cancel()
-                    for t in conns:
-                        try:
-                            await t
-                        except asyncio.CancelledError:
-                            pass
+                    # Every connection's outcome is collected — cancelled or
+                    # a failed close alike — so none escapes as an error, and
+                    # none is left unretrieved or still tearing down beside
+                    # the next rebuild. A cancel aimed at run_feed itself (the
+                    # supervisor replacing a stale feed) is not swallowed:
+                    # gather raises it here once the connections have ended.
+                    await asyncio.gather(*conns, return_exceptions=True)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                me = asyncio.current_task()
+                if me is not None and me.cancelling():
+                    # Whatever failed, a cancel is pending — honour it rather
+                    # than retry, or the supervisor waits on this feed forever.
+                    raise asyncio.CancelledError from exc
                 log.exception("mirror feed cycle failed — retrying")
                 await asyncio.sleep(2.0)
+
+    def _record_subscription(self, assets: list[str], *, connections: int) -> None:
+        self._subscribed = frozenset(assets)
+        self._subscribed_at = self._clock()
+        log.info("mirror feed subscribed %d assets over %d connections",
+                 len(self._subscribed), connections)
+
+    def _mark_progress(self) -> None:
+        self._rebuild_progress_at = self._clock()
+
+    def _note_targets(self, now: float) -> None:
+        """Start the clock for each target not yet subscribed, and forget
+        assets that got subscribed or left the target set, so the map is
+        bounded by the current unsubscribed targets."""
+        missing = self.state.replicas.keys() - self._subscribed
+        for asset in list(self._first_seen):
+            if asset not in missing:
+                del self._first_seen[asset]
+        for asset in missing:
+            self._first_seen.setdefault(asset, now)
+
+    def feed_is_stale(self) -> bool:
+        """True when the feed is dead or hung, not merely busy.
+
+        Two ways to be stale — the 2026-09-02 hang left every market created
+        after 07:05 UTC (543 of them) on an empty book:
+
+        * Parked while a target has sat unsubscribed for longer than the
+          threshold: the resubscribe signal was not honoured. Each asset is
+          timed from when it first became a target, so a feed that picks up
+          new markets within seconds is never stale, however many arrive.
+        * Rebuilding (REST seed, then connections) with no progress for
+          FEED_PROGRESS_TIMEOUT. A slow seed that keeps finishing batches is
+          left alone, however long it takes — killing it would only restart
+          the same seed and the feed would never subscribe again.
+        """
+        now = self._clock()
+        self._note_targets(now)
+        progress_at = self._rebuild_progress_at
+        if progress_at is not None:
+            idle = now - progress_at
+            if idle <= FEED_PROGRESS_TIMEOUT:
+                return False
+            log.error("mirror feed rebuild has made no progress for %.0fs "
+                      "(%d target assets unsubscribed)", idle,
+                      len(self._first_seen))
+            return True
+        threshold = max(3 * self._cfg.mirror_target_refresh_seconds, 60.0)
+        overdue = [a for a, t in self._first_seen.items() if now - t > threshold]
+        if not overdue:
+            return False
+        log.error(
+            "mirror feed is idle with %d target assets unsubscribed for over "
+            "%.0fs (last subscription %s)", len(overdue), threshold,
+            "never" if self._subscribed_at is None
+            else f"{now - self._subscribed_at:.0f}s ago")
+        return True
 
     async def _seed_books(self, assets: list[str]) -> None:
         """REST-seed book snapshots for `assets` into the shared feed state,
         marking each fresh book dirty for the reconciler. Used for the initial
-        seed on every (re)subscribe."""
-        if not assets:
-            return
-        books = await asyncio.to_thread(feed.fetch_books_rest, assets)
-        for b in books:
-            self.state.handle_event({**b, "event_type": "book"})
+        seed on every (re)subscribe.
+
+        One worker thread per batch, awaited from here, so the rebuild reports
+        progress after every batch and a cancelled seed leaves at most the one
+        in-flight batch running (bounded by its 15s HTTP timeout) rather than
+        a whole thousand-asset seed."""
+        for batch in feed.shard(assets, SEED_BATCH_SIZE):
+            try:
+                books = await asyncio.to_thread(feed.fetch_books_rest, batch)
+            except Exception:
+                log.exception("mirror seed failed for a batch of %d", len(batch))
+                books = []
+            for b in books:
+                self.state.handle_event({**b, "event_type": "book"})
+            self._mark_progress()
 
     async def fill_markets(self, market_ids: list[int]) -> int:
         """Immediately seed + reconcile the given markets (off-thread), so a
@@ -236,9 +343,22 @@ class MirrorEngine:
                     if cold:
                         last_cold[asset] = now
                     last_run[asset] = now
-                    stats = await asyncio.to_thread(
-                        reconcile_market, self._db, self._order, self._onchain,
-                        self._user, ref, snap, self._cfg, cold=cold)
+                    try:
+                        stats = await asyncio.to_thread(
+                            reconcile_market, self._db, self._order,
+                            self._onchain, self._user, ref, snap, self._cfg,
+                            cold=cold)
+                    except Exception:
+                        # One market's chain call failing (the SKALE RPC threw
+                        # RemoteDisconnected 1,347 times on 2026-09-17/18)
+                        # used to abort the whole pass: this market left the
+                        # dirty set for good — a quiet one may never change
+                        # upstream again — and every market after it waited
+                        # for the next pass. Retry it, and keep going.
+                        log.exception("mirror reconcile for market %s failed "
+                                      "— will retry", ref.market_id)
+                        self.state.dirty.add(asset)
+                        continue
                     if stats["deferred"] or stats["failed"]:
                         # Incomplete cycle — converge on a later pass even if
                         # no new upstream event arrives.
@@ -266,6 +386,9 @@ class MirrorEngine:
             r.pm_yes_token: 1.0 - i / n for i, r in enumerate(refs)
         }
         added, removed = self.state.set_targets(refs)
+        # Start each new asset's clock the moment it becomes a target, not at
+        # the next probe.
+        self._note_targets(self._clock())
         # An excluded market leaves the target set exactly as a resolved one
         # does, so `removed` carries it into the cancel pass below and the
         # orders it already has are withdrawn — the catalogue and the book stop

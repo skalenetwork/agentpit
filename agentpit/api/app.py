@@ -49,6 +49,7 @@ from agentpit.onchain.web3_client import Web3Client
 from agentpit.datastructures.user import User
 from agentpit.liquidity.house_accounts import HouseAccountProvisioner, email_for
 from agentpit.liquidity.mirror import MirrorEngine
+from agentpit.liquidity.supervise import supervise
 from agentpit.polymarket.pinned import (
     current_window_market_ids,
     ended_unresolved_window_ids,
@@ -546,9 +547,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 (u for u in house_users if u.email == email_for(0)), house_users[0])
             mirror_engine = MirrorEngine(
                 db_session, onchain_admin, settings, mirror_user)
+            # Supervised, not fire-and-forget: on 2026-09-02 the bare feed
+            # task stopped and no new market was mirrored for 16 days (543 on
+            # empty books). The staleness probe is what catches a hang, which
+            # restart-on-exit alone cannot. Cancelling a supervisor cancels
+            # and awaits its child, so the shutdown loop below still works.
             mirror_tasks = [
-                asyncio.create_task(mirror_engine.run_feed()),
-                asyncio.create_task(mirror_engine.run_reconciler()),
+                asyncio.create_task(supervise(
+                    "mirror feed", mirror_engine.run_feed,
+                    is_stale=mirror_engine.feed_is_stale)),
+                asyncio.create_task(supervise(
+                    "mirror reconciler", mirror_engine.run_reconciler)),
                 asyncio.create_task(
                     _house_gas_loop(provisioner, house_users, settings)
                 ),
