@@ -1,0 +1,121 @@
+name: CI
+
+# Every pushed commit on every branch gets checked. Nothing blocks a merge or a
+# push on the result: there are no branch rules, the checks only report.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the older run pointless -- except on
+# main, where every commit keeps its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  ui:
+    name: UI
+    # A PR from a branch in this repo is already checked by its push run; only
+    # a fork's PR, which has no push run here, needs its own.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # yarn 4 comes from package.json's packageManager field via corepack.
+      - run: corepack enable
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.yarn/berry/cache
+          key: yarn-${{ runner.os }}-${{ hashFiles('ui/yarn.lock') }}
+          restore-keys: yarn-${{ runner.os }}-
+
+      - run: yarn install --immutable
+      - run: yarn lint
+      - run: yarn typecheck
+      - run: yarn test
+      - run: yarn build
+
+  api:
+    name: API
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agentpit_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      # libpq fills in whatever a DSN leaves out from these, so the suite's
+      # default `postgresql:///agentpit_test` (a Unix socket on a dev Mac)
+      # reaches the service container over TCP instead.
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      # Only vendor/ctf-exchange itself: deploy_exchange.sh initialises the four
+      # libraries it compiles against, and nothing needs their own submodules.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      # Without a chain and deployments/local.json every onchain test skips, so
+      # the suite gets the same local node and contracts a dev machine uses.
+      - name: Start anvil
+        run: |
+          anvil --host 127.0.0.1 --port 8545 --chain-id 31337 --prune-history 32 \
+            > "$RUNNER_TEMP/anvil.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            cast block-number --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/anvil.log"
+          exit 1
+
+      - name: Deploy contracts
+        run: |
+          # anvil's standard dev account #0: a published key that holds nothing
+          # outside this throwaway chain.
+          cat > .env <<'EOF'
+          PK=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+          ADMIN=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+          RPC_URL=http://127.0.0.1:8545
+          EOF
+          ./scripts/deploy_exchange.sh
+
+      - name: Run tests
+        run: python -m pytest -o log_cli=false -p no:cacheprovider -rfE
