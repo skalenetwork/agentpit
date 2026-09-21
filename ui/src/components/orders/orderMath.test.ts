@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_PROB,
+  MIN_PROB,
+  SLIPPAGE_CAP,
   bestAsk,
   bestBid,
   centsToPrice,
@@ -11,9 +14,6 @@ import {
   levelsFrom,
   pickSellOutcome,
   sharesFromDollars,
-  SLIPPAGE_CAP,
-  MAX_PROB,
-  MIN_PROB,
 } from "./orderMath";
 import type { OrderBookLevel } from "@/types/order";
 

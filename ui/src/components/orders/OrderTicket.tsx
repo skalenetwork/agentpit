@@ -11,7 +11,6 @@ import { useRequireAuth } from "@/auth/useRequireAuth";
 import {
   MAX_PROB,
   MIN_PROB,
-  SLIPPAGE_CAP,
   bestAsk,
   bestBid,
   centsToPrice,
@@ -24,6 +23,7 @@ import {
 import type { Erc1155Token } from "@/types/market";
 import type { OrderBookSummary, OrderSide } from "@/types/order";
 import { ApiError } from "@/api/client";
+import { normaliseQuantity } from "@/components/orders/quantity";
 import {
   STEP_CENTS,
   normaliseLimitCents,
@@ -123,8 +123,6 @@ export function OrderTicket({
     }
     return map;
   }, [positionsList, marketTokenIds]);
-
-  const heldOfCurrent = heldByOutcome.get(outcome) ?? 0;
 
   function selectSide(next: OrderSide) {
     setSide(next);
@@ -301,24 +299,31 @@ export function OrderTicket({
   const ctaLabel = (() => {
     if (isTradingDisabled) return disabledReason ?? "Trading disabled";
     if (limitMutation.isPending || marketMutation.isPending) return "Placing…";
-    // The button is the last thing seen before money moves, so it says what
-    // will happen rather than that something will. The restyle reduced this
-    // to a constant "Trade", which is the one word that carries no
-    // confirmation at all.
-    if (!preview) return `${isBuy ? "Buy" : "Sell"} ${outcome}`;
-    // Tenths, not whole cents: the field lets a trader enter 11.5¢, and a
-    // button that reads "at 12¢" would name a price they did not ask for.
-    const cents = Math.round(preview.price * 1000) / 10;
-    return `${isBuy ? "Buy" : "Sell"} ${preview.shares} ${outcome.toUpperCase()} at ${cents}¢`;
+    // Just the verb. The button used to restate the size, outcome and price,
+    // which reads as a confirmation until you notice every one of those
+    // numbers is already on screen directly above it — the outcome in the
+    // header and the Yes/No pair, the size and price in the fields, the
+    // payout in the row above. Repeating them made the ticket noisy without
+    // telling the trader anything the ticket had not already said.
+    return isBuy ? "Buy" : "Sell";
   })();
 
-  const toWin = (() => {
-    if (!preview) return 0;
-    if (!isBuy) return preview.cost;
-    return Math.max(0, preview.shares - preview.cost);
-  })();
+  // What comes back if the outcome is right. Every share of a winning outcome
+  // redeems for exactly $1, so the payout IS the share count in dollars.
+  //
+  // This row used to show the PROFIT, which made a $55 buy read "To win
+  // $22.46" — a number smaller than the stake, so a winning trade looked like
+  // a losing one. The profit is still worth knowing, so it rides along beside
+  // the payout instead of standing in for it.
+  const toWin = preview ? (isBuy ? preview.shares : preview.cost) : 0;
 
   const total = preview?.cost ?? 0;
+
+  // A market buy's total is the amount just typed into the field above it
+  // (`preview.cost` is that very number), so printing it back is a row that
+  // tells the trader something they wrote themselves. A limit order's total
+  // is derived from shares x price and does carry news.
+  const showTotal = isBuy && mode === "Limit";
 
   const adjustLimitCents = (delta: number) => {
     setLimitCents((prev) => stepLimitCents(prev, delta));
@@ -413,7 +418,9 @@ export function OrderTicket({
                 <SharesInput
                   id="limit-shares"
                   value={limitShares}
-                  onChange={setLimitShares}
+                  onChange={(typed) =>
+                    setLimitShares((prev) => normaliseQuantity(typed, prev))
+                  }
                   disabled={isTradingDisabled}
                 />
               </div>
@@ -422,27 +429,16 @@ export function OrderTicket({
           </>
         ) : isBuy ? (
           <div className="space-y-3 border-t border-border px-4 py-4">
-            {/* apUSD, not USDC: this branch predates the rename, and taking
-                its side of the conflict would put the old ticker back in front
-                of users. The layout classes are this branch's, the currency
-                name is main's. */}
-            <Field label="Amount" hint="apUSD">
+            <Field label="Amount">
               <ValueInput
                 id="market-amount"
                 value={marketAmount}
-                onChange={setMarketAmount}
+                onChange={(typed) =>
+                  setMarketAmount((prev) => normaliseQuantity(typed, prev))
+                }
                 disabled={isTradingDisabled}
-                suffix="to spend"
               />
             </Field>
-            <Hint>
-              Max slippage {SLIPPAGE_CAP.toFixed(2)} over best ask
-              {bestAskPrice !== null ? (
-                <>
-                  {" "}({Math.round(bestAskPrice * 100)}¢)
-                </>
-              ) : null}
-            </Hint>
           </div>
         ) : (
           <div className="space-y-3 border-t border-border px-4 py-4">
@@ -456,15 +452,6 @@ export function OrderTicket({
               />
             </div>
             <QuickShareChips onPick={adjustShares} />
-            <Hint>
-              You hold{" "}
-              <span className="font-medium tabular-nums text-foreground/80">
-                {heldOfCurrent.toFixed(2)}
-              </span>{" "}
-              {outcome} shares · max slippage {SLIPPAGE_CAP.toFixed(2)} under
-              best bid
-              {bestBidPrice !== null ? <> ({Math.round(bestBidPrice * 100)}¢)</> : null}
-            </Hint>
           </div>
         )}
 
@@ -519,7 +506,7 @@ export function OrderTicket({
           ) : null}
             </>
           ) : null}
-          {isBuy ? (
+          {showTotal ? (
             <div className="flex items-center justify-between text-[14px]">
               <span className="text-foreground">Total</span>
               <span className="font-medium tabular-nums text-primary">{formatDollars(total)}</span>
@@ -678,21 +665,14 @@ function SegmentedSide({
 
 function Field({
   label,
-  hint,
   children,
 }: {
   label: string;
-  hint?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div className="rounded-xl border border-border bg-background px-3 py-2.5 transition-colors focus-within:border-foreground/45">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[12px] text-muted-foreground">{label}</span>
-        {hint ? (
-          <span className="text-[11px] text-muted-foreground/80">{hint}</span>
-        ) : null}
-      </div>
+      <span className="text-[12px] text-muted-foreground">{label}</span>
       {children}
     </div>
   );
@@ -828,16 +808,25 @@ function ValueInput({
   value,
   onChange,
   disabled,
-  suffix,
 }: {
   id: string;
   value: string;
   onChange: (next: string) => void;
   disabled?: boolean;
-  suffix?: string;
 }) {
   return (
+    // The dollar sign says what the number is, so the field needs no "apUSD"
+    // over it and no "to spend" beside it — two labels for a fact one glyph
+    // carries. It sits in front of the input rather than inside the value, so
+    // what the field holds stays a plain number to parse.
     <div className="flex items-baseline gap-1">
+      <span
+        className={`text-[28px] font-semibold ${
+          value ? "text-foreground" : "text-muted-foreground/60"
+        }`}
+      >
+        $
+      </span>
       <input
         id={id}
         type="text"
@@ -849,16 +838,8 @@ function ValueInput({
         className="min-w-0 flex-1 bg-transparent text-[28px] font-semibold tabular-nums text-foreground outline-none placeholder:text-muted-foreground/60 disabled:opacity-60"
         placeholder="0"
       />
-      {suffix ? (
-        <span className="text-[12px] text-muted-foreground">{suffix}</span>
-      ) : null}
     </div>
   );
 }
 
-/* ---------- Hint footnote ---------- */
-
-function Hint({ children }: { children: React.ReactNode }) {
-  return <p className="px-1 text-[11px] text-muted-foreground">{children}</p>;
-}
 
