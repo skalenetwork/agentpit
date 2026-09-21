@@ -22,6 +22,15 @@ export interface Position {
   eventSlug: string;
   icon: string;
   redeemable: boolean;
+  /** What the live bids actually return for the whole position, and how many
+   *  shares they can absorb — short of `size` on a thin book, 0 with no bids.
+   *  `currentValue` is `curPrice x size` off the book midpoint, which is above
+   *  what a sell executes at, so these are the numbers to show beside a Sell. */
+  sellableValue: number;
+  sellableSize: number;
+  /** The market resolved. A loser is never redeemed and so never leaves
+   *  /positions; without this it sits under Active at zero forever. */
+  settled: boolean;
   endDate: string;        // market end/resolution time, unix seconds (string)
 }
 

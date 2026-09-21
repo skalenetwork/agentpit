@@ -29,6 +29,13 @@ import {
   type ActivityEntry,
 } from "@/api/activity";
 import { useAuth } from "@/auth/useAuth";
+import { getBook, placeMarketOrder } from "@/api/orders";
+import {
+  DEFAULT_POSITION_SORT,
+  nextPositionSort,
+  sortPositions,
+} from "@/lib/sortPositions";
+import type { PositionColumn, PositionSort } from "@/lib/sortPositions";
 import { Sparkline } from "@/components/Sparkline";
 import { getAvatarStyle } from "@/lib/avatarColor";
 import { claimErrorMessage } from "@/lib/claimError";
@@ -36,10 +43,12 @@ import {
   formatCredits,
   formatCreditsExact,
   formatPnlPct,
+  formatShares,
   formatVolume,
   shortAddress,
 } from "@/lib/format";
 import {
+  closedResult,
   effectivePositionFilter,
   positionBucket,
   unclaimedTotal,
@@ -63,11 +72,6 @@ const USD = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
   minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-
-const SHARES = new Intl.NumberFormat("en-US", {
-  minimumFractionDigits: 0,
   maximumFractionDigits: 2,
 });
 
@@ -122,10 +126,18 @@ export function ProfilePage() {
       .sort((a, b) => b.size - a.size);
   }, [positionsData]);
 
+  // A position on a market that settled against you is not reconstructed by
+  // /closed-positions -- that list is built from REDEEM rows and a loss
+  // produces none -- while /positions keeps returning it, because the losing
+  // tokens are never redeemed away. Left alone it sits under Active forever,
+  // priced at zero, on a market that closed weeks ago. It already carries the
+  // right numbers (value 0, P/L = -cost); all it needed was a home.
   const closedPositions = useMemo(() => {
-    if (!closedData) return [];
-    return [...closedData].sort((a, b) => b.currentValue - a.currentValue);
-  }, [closedData]);
+    const lost = positions.filter((p) => positionBucket(p) === "closed");
+    return [...(closedData ?? []), ...lost].sort(
+      (a, b) => b.currentValue - a.currentValue,
+    );
+  }, [closedData, positions]);
 
   // What the account has won but not yet claimed, across all open positions
   // (not just the ones the current filter/search happens to be showing).
@@ -165,9 +177,16 @@ export function ProfilePage() {
     return ids.size;
   }, [positions, closedPositions]);
 
-  // Current value of open positions (not the apUSD wallet balance).
+  // What the open positions would fetch if sold now -- `sellableValue`, not
+  // the midpoint-derived `currentValue`, so this total agrees with the figure
+  // on each row and with what the Sell button actually returns. Settled rows
+  // are excluded: they are no longer open, and their book is gone.
   const positionsValue = useMemo(
-    () => positions.reduce((sum, p) => sum + p.currentValue, 0),
+    () =>
+      positions.reduce(
+        (sum, p) => (p.settled ? sum : sum + p.sellableValue),
+        0,
+      ),
     [positions],
   );
 
@@ -446,6 +465,27 @@ function PositionList({
 }) {
   const isClosed = positionFilter === "closed";
   const isUnclaimed = positionFilter === "unclaimed";
+  const [sort, setSort] = useState<PositionSort>(DEFAULT_POSITION_SORT);
+  const rows = useMemo(() => sortPositions(positions, sort), [positions, sort]);
+
+  // The header carries the labels that used to be reprinted under every
+  // number, and clicking one sorts by it -- the same gesture the Arena's board
+  // uses, so the two tables behave alike.
+  const sortableHeader = (column: PositionColumn, label: string, width: string) => {
+    const active = sort.column === column;
+    return (
+      <button
+        type="button"
+        onClick={() => setSort(nextPositionSort(sort, column))}
+        aria-sort={active ? (sort.dir === "desc" ? "descending" : "ascending") : "none"}
+        className={`${width} shrink-0 text-right text-[11px] uppercase tracking-wider transition-colors hover:text-foreground ${
+          active ? "text-foreground" : "text-muted-foreground"
+        }`}
+      >
+        {label} {active ? (sort.dir === "desc" ? "\u2193" : "\u2191") : ""}
+      </button>
+    );
+  };
 
   const filterBtn = (key: PositionFilter, label: string) => (
     <button
@@ -489,8 +529,36 @@ function PositionList({
         </p>
       ) : (
         <div className="divide-y">
-          {positions.map((position) => {
-            const won = position.currentValue > 0;
+          <div className="flex items-center gap-3 border-b bg-muted/10 px-4 py-2">
+            {isClosed ? <span className="w-16 shrink-0" /> : null}
+            <span className="size-9 shrink-0" aria-hidden />
+            <button
+              type="button"
+              onClick={() => setSort(nextPositionSort(sort, "market"))}
+              aria-sort={
+                sort.column === "market"
+                  ? sort.dir === "desc"
+                    ? "descending"
+                    : "ascending"
+                  : "none"
+              }
+              className={`min-w-0 flex-1 text-left text-[11px] uppercase tracking-wider transition-colors hover:text-foreground ${
+                sort.column === "market" ? "text-foreground" : "text-muted-foreground"
+              }`}
+            >
+              Market{" "}
+              {sort.column === "market" ? (sort.dir === "desc" ? "\u2193" : "\u2191") : ""}
+            </button>
+            <span className="hidden sm:block">
+              {sortableHeader("cost", "Cost", "w-28")}
+            </span>
+            {sortableHeader("value", "Value", "w-36")}
+            {isClosed ? null : <span className="w-20 shrink-0" />}
+          </div>
+          {rows.map((position) => {
+            // Whether this row reads as a win follows the money beside it,
+            // never "did any money come back" -- see closedResult.
+            const won = closedResult(position) === "won";
             const pnlUp = position.cashPnl >= 0;
             const pnlColor = pnlUp
               ? "text-emerald-600 dark:text-emerald-400"
@@ -533,40 +601,146 @@ function PositionList({
                     {position.title}
                   </Link>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    {SHARES.format(position.size)} {position.outcome} at{" "}
+                    {formatShares(position.size)} {position.outcome} at{" "}
                     {Math.round(position.avgPrice * 100)}¢
                   </p>
                 </div>
+                {/* No caption: the header above says COST once, instead of
+                    every row repeating it under its own number. */}
                 <div className="hidden w-28 shrink-0 text-right sm:block">
                   <p className="font-medium tabular-nums">
                     {USD.format(position.initialValue)}
                   </p>
-                  <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                    cost
-                  </p>
                 </div>
                 <div className="w-36 shrink-0 text-right">
+                  {/* What the bids would pay for the whole position, not the
+                      midpoint mark: this is the number the Sell button beside
+                      it actually returns. A settled row has no book left, so
+                      it keeps its settlement value. */}
                   <p className="font-semibold tabular-nums">
-                    {USD.format(position.currentValue)}
+                    {USD.format(
+                      isClosed || position.settled
+                        ? position.currentValue
+                        : position.sellableValue,
+                    )}
                   </p>
                   <p className={`text-xs tabular-nums ${pnlColor}`}>
                     {pnlUp ? "+" : "−"}
                     {USD.format(Math.abs(position.cashPnl))} (
                     {formatPnlPct(position.percentPnl)}%)
                   </p>
+                  {/* Say so when the bids cannot take the whole position:
+                      the Value above is then the proceeds of a part sale, and
+                      finding that out from the toast afterwards is too late. */}
+                  {!position.settled &&
+                  position.sellableSize > 0 &&
+                  position.sellableSize < position.size ? (
+                    <p className="text-[11px] tabular-nums text-muted-foreground">
+                      {formatShares(position.sellableSize)} of{" "}
+                      {formatShares(position.size)} sellable
+                    </p>
+                  ) : null}
                 </div>
-                {isUnclaimed ? (
-                  <ClaimButton
-                    conditionId={position.conditionId}
-                    userAddress={userAddress}
-                  />
-                ) : null}
+                {isClosed ? null : (
+                  <div className="w-20 shrink-0 text-right">
+                    {isUnclaimed ? (
+                      <ClaimButton
+                        conditionId={position.conditionId}
+                        userAddress={userAddress}
+                      />
+                    ) : (
+                      <SellButton
+                        position={position}
+                        userAddress={userAddress}
+                      />
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
     </div>
+  );
+}
+
+/** Sells the whole position at market, from the row.
+ *
+ *  Closing a position used to mean leaving this page, finding the market and
+ *  retyping a size that was already on screen. This sends exactly what the
+ *  ticket's Market sell sends — a limit for the full size at the best bid
+ *  less the slippage cap, remainder cancelled — so there is one execution
+ *  path, not two that can drift.
+ *
+ *  No confirmation step: the Value beside the button already states the
+ *  proceeds, which is what a confirmation would have shown. With nothing
+ *  bidding there is nothing to sell, and the row says so rather than offering
+ *  a button that can only fail.
+ */
+function SellButton({
+  position,
+  userAddress,
+}: {
+  position: Position;
+  userAddress: string;
+}) {
+  const queryClient = useQueryClient();
+  const sell = useMutation({
+    mutationFn: async () => {
+      const book = await getBook(position.asset);
+      return placeMarketOrder({
+        tokenId: position.asset,
+        side: "SELL",
+        amount: position.size,
+        book,
+      });
+    },
+    onSuccess: (res) => {
+      const tail = res.cancelledRemainder
+        ? ` (${res.remainingShares.toFixed(2)} unfilled, cancelled)`
+        : "";
+      if (res.filledShares <= 0) {
+        toast.error(`No fills${tail}`);
+        return;
+      }
+      const avg =
+        res.avgPrice !== null ? ` at avg ${Math.round(res.avgPrice * 100)}¢` : "";
+      toast.success(`Sold ${res.filledShares.toFixed(2)} ${position.outcome}${avg}${tail}`);
+      // The sale moves the position, the wallet and the book it traded
+      // against; all three are on screen somewhere.
+      void queryClient.invalidateQueries({ queryKey: ["positions", userAddress] });
+      void queryClient.invalidateQueries({
+        queryKey: ["closed-positions", userAddress],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["balance-allowance", "COLLATERAL"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["book", position.asset] });
+    },
+    onError: (err) => {
+      toast.error(err instanceof ApiError ? err.message : "Failed to sell.");
+    },
+  });
+
+  if (position.sellableSize <= 0) {
+    return (
+      <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+        no bids
+      </span>
+    );
+  }
+
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      className="shrink-0"
+      disabled={sell.isPending}
+      onClick={() => sell.mutate()}
+    >
+      {sell.isPending ? "Selling…" : "Sell"}
+    </Button>
   );
 }
 
@@ -666,7 +840,7 @@ function ActivityList({ entries }: { entries: ActivityEntry[] }) {
           </div>
           <div className="shrink-0 text-right">
             <p className="text-sm tabular-nums">
-              {SHARES.format(entry.size)} shares
+              {formatShares(entry.size)} shares
             </p>
             <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">
               {USD.format(entry.usdcSize)}

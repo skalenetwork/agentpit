@@ -309,3 +309,22 @@ export function displayTagLabel(label: string): string {
     )
     .join(" ");
 }
+
+const SHARE_COUNT = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
+/** A share quantity as a person reads it.
+ *
+ *  A market order's size is a division -- dollars over the price cap -- so it
+ *  arrives as 1.4084507042253522, and the trade button was printing every one
+ *  of those digits back at the trader. Two decimals is also the size
+ *  precision the exchange itself works in.
+ *
+ *  Whole numbers keep no decimals: a limit order for twelve shares should
+ *  read "12", not "12.00".
+ */
+export function formatShares(shares: number): string {
+  return SHARE_COUNT.format(shares);
+}

@@ -5,12 +5,13 @@ import {
   formatCredits,
   formatCreditsExact,
   formatPnlPct,
-  formatShortDate,
-  shortAddress,
   formatProbabilityPct,
+  formatShares,
+  formatShortDate,
   formatSignedUsd,
   parseVolume,
   relativeTime,
+  shortAddress,
   volumeStat,
 } from "./format";
 
@@ -350,5 +351,25 @@ describe("closeLabel", () => {
       prefix: "overdue",
       value: `LONG:${JUN_1}`,
     });
+  });
+});
+
+describe("formatShares", () => {
+  it("cuts a market order's division down to something readable", () => {
+    // $1 at a 71c cap is 1.4084507042253522 shares, and the trade button was
+    // printing all sixteen digits.
+    expect(formatShares(1.4084507042253522)).toBe("1.41");
+  });
+
+  it("leaves a whole share count without decimals", () => {
+    expect(formatShares(12)).toBe("12");
+  });
+
+  it("groups thousands", () => {
+    expect(formatShares(1234.5)).toBe("1,234.5");
+  });
+
+  it("keeps zero as zero", () => {
+    expect(formatShares(0)).toBe("0");
   });
 });
