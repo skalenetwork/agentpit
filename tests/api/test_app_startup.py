@@ -76,5 +76,7 @@ def test_an_unconfigured_workos_does_not_stop_the_app_being_built():
     # deploy, so this may never become a raise.
     app = create_app(Settings(workos_api_key="", workos_client_id=""))  # type: ignore[arg-type]
     assert app is not None
-    routes = {getattr(r, "path", None) for r in app.routes}
+    # The OpenAPI paths, not `app.routes`: FastAPI 0.141 keeps an included
+    # router as one `_IncludedRouter` entry there, hiding every path in it.
+    routes = app.openapi()["paths"]
     assert "/order" in routes, "the bots' endpoint must exist regardless"

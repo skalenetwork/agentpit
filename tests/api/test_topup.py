@@ -29,7 +29,8 @@ def test_top_up_status_requires_auth():
 def test_top_up_route_exists():
     """Registered at all — the route table is the thing under test here; the
     arithmetic is covered by tests/test_balance_topup.py."""
-    paths = {getattr(r, "path", None) for r in app.routes}
+    # OpenAPI rather than `app.routes`, which FastAPI 0.141 no longer flattens.
+    paths = app.openapi()["paths"]
     assert "/me/top-up" in paths
 
 
