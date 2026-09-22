@@ -1,0 +1,101 @@
+---
+import type { Book, BookState, Level } from "../content/measurements";
+import { cents, dollars, shares } from "../lib/format";
+import Roll from "./Roll.astro";
+
+interface Props {
+  book: Book;
+}
+
+const { book } = Astro.props;
+const w0 = ["[--w0:5%]", "[--w0:10%]", "[--w0:15%]", "[--w0:20%]", "[--w0:25%]", "[--w0:30%]", "[--w0:35%]", "[--w0:40%]", "[--w0:45%]", "[--w0:50%]", "[--w0:55%]", "[--w0:60%]", "[--w0:65%]", "[--w0:70%]", "[--w0:75%]", "[--w0:80%]", "[--w0:85%]", "[--w0:90%]", "[--w0:95%]", "[--w0:100%]"];
+const w1 = ["[--w1:5%]", "[--w1:10%]", "[--w1:15%]", "[--w1:20%]", "[--w1:25%]", "[--w1:30%]", "[--w1:35%]", "[--w1:40%]", "[--w1:45%]", "[--w1:50%]", "[--w1:55%]", "[--w1:60%]", "[--w1:65%]", "[--w1:70%]", "[--w1:75%]", "[--w1:80%]", "[--w1:85%]", "[--w1:90%]", "[--w1:95%]", "[--w1:100%]"];
+
+const totals = (levels: readonly Level[]) =>
+  levels.map((_, i) => levels.slice(0, i + 1).reduce((sum, level) => sum + level.price * level.size, 0));
+const ladder = ({ asks, bids }: BookState) => ({
+  asks: asks.map((level, i) => ({ ...level, total: totals(asks)[i] })).reverse(),
+  bids: bids.map((level, i) => ({ ...level, total: totals(bids)[i] })),
+  spread: Math.round((asks[0].price - bids[0].price) * 100),
+});
+const [was, now] = book.states.map(ladder);
+const max = Math.max(...[was, now].flatMap((state) => [...state.asks, ...state.bids].map((row) => row.total)));
+const width = (table: readonly string[], total: number) => table[Math.max(1, Math.round((total / max) * 20)) - 1];
+const pair = (side: "ask" | "bid") =>
+  was[`${side}s`].map((row, i) => ({ side, was: row, now: now[`${side}s`][i] }));
+---
+
+<div class="book absolute inset-x-5 top-7 text-small tabular-nums" aria-hidden="true">
+  <div class="grid grid-cols-[3.5rem_1fr_1fr] px-2 pb-2 text-caption">
+    <span>Price</span>
+    <span class="text-right">Shares</span>
+    <span class="text-right">Total</span>
+  </div>
+  {
+    [...pair("ask"), null, ...pair("bid")].map((row) =>
+      row ? (
+        <div class:list={[row.side, "relative grid h-8 grid-cols-[3.5rem_1fr_1fr] items-center px-2"]}>
+          <span
+            class:list={[
+              "bar absolute inset-y-0.5 left-0 rounded-control",
+              width(w0, row.was.total),
+              width(w1, row.now.total),
+            ]}
+          />
+          <Roll class="relative font-medium text-ink" values={[cents(row.was.price), cents(row.now.price)]} />
+          <Roll class="relative text-right text-ink" values={[shares(row.was.size), shares(row.now.size)]} />
+          <Roll class="relative text-right" values={[dollars(row.was.total), dollars(row.now.total)]} />
+        </div>
+      ) : (
+        <div class="my-1.5 flex justify-between rounded-control bg-surface px-2 py-1 text-caption">
+          <span>Last: {cents(book.last)}</span>
+          <Roll values={[`Spread: ${was.spread}¢`, `Spread: ${now.spread}¢`]} />
+        </div>
+      ),
+    )
+  }
+</div>
+
+<style>
+  @property --t {
+    syntax: "<number>";
+    inherits: true;
+    initial-value: 0;
+  }
+
+  .book {
+    --i: clamp(0, (var(--t) - 0.4) / 0.1, 1);
+    --o: clamp(0, (var(--t) - 0.9) / 0.1, 1);
+    --s: calc(var(--i) * var(--i) * (3 - 2 * var(--i)) * (1 - var(--o) * var(--o) * (3 - 2 * var(--o))));
+    animation: tick 8s linear infinite;
+  }
+
+  .ask {
+    --hue: light-dark(#e11d48, #fb7185);
+  }
+
+  .bid {
+    --hue: light-dark(#059669, #34d399);
+  }
+
+  .bar {
+    width: calc(var(--w0) + (var(--w1) - var(--w0)) * var(--s));
+    background: linear-gradient(
+      to right,
+      color-mix(in oklab, var(--hue) 46%, transparent),
+      color-mix(in oklab, var(--hue) 40%, transparent)
+    );
+  }
+
+  @keyframes tick {
+    to {
+      --t: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .book {
+      animation-play-state: paused;
+    }
+  }
+</style>

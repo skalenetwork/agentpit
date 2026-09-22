@@ -1,0 +1,86 @@
+---
+import Coin0 from "../assets/apUSD.svg";
+import Coin1 from "../assets/apUSD-1.svg";
+import Coin2 from "../assets/apUSD-2.svg";
+
+const coins = [
+  { Coin: Coin0, rim: "[--rim:color-mix(in_oklab,#0b53bf_80%,black)]" },
+  { Coin: Coin1, rim: "[--rim:color-mix(in_oklab,#26a17b_80%,black)]" },
+  { Coin: Coin2, rim: "[--rim:color-mix(in_oklab,#ffaf00_80%,black)]" },
+];
+const lanes = ["left-[3%]", "left-[14%]", "left-[25%]", "left-[36%]", "left-[47%]", "left-[58%]", "left-[69%]", "left-[80%]", "left-[91%]"];
+const falls = ["[--fall:1.8s] [--tx:35deg]", "[--fall:2.6s] [--tx:-20deg]", "[--fall:2.1s] [--tx:50deg]", "[--fall:3s] [--tx:-40deg]"];
+const waits = ["[--wait:-1s] [--ty:-30deg]", "[--wait:-3.5s] [--ty:45deg]", "[--wait:-6s] [--ty:15deg]", "[--wait:-8.5s] [--ty:-50deg]", "[--wait:-11s] [--ty:30deg]"];
+---
+
+<div class="rain relative h-full mask-b-from-85% perspective-near" aria-hidden="true">
+  {
+    Array.from({ length: 36 }, (_, i) => {
+      const { Coin, rim } = coins[i % 3];
+      return (
+        <div class:list={["token absolute top-0 size-20", rim, lanes[i % 9], falls[i % 4], waits[i % 5], i % 2 === 1 && "[--spin:-1]"]}>
+          <Coin class="relative block size-full" />
+          <div class="edge absolute inset-0 rounded-control" />
+        </div>
+      );
+    })
+  }
+</div>
+
+<style>
+  .rain {
+    container-type: size;
+  }
+
+  .token {
+    transform-style: preserve-3d;
+    animation: fall var(--fall) linear var(--wait) infinite;
+  }
+
+  .edge,
+  .edge::before,
+  .edge::after {
+    background: var(--rim);
+    transform-style: preserve-3d;
+  }
+
+  .edge {
+    translate: 0 0 -12px;
+  }
+
+  .edge::before,
+  .edge::after {
+    position: absolute;
+    inset: 0;
+    content: "";
+    border-radius: inherit;
+  }
+
+  .edge::before {
+    translate: 0 0 4px;
+  }
+
+  .edge::after {
+    translate: 0 0 8px;
+  }
+
+  @keyframes fall {
+    from {
+      translate: 0 -6rem;
+      rotate: 0turn;
+      transform: rotateX(calc(var(--tx) * -1)) rotateY(calc(var(--ty) * -1));
+    }
+
+    to {
+      translate: 0 calc(100cqh + 1rem);
+      rotate: calc(var(--spin, 1) * 0.75turn);
+      transform: rotateX(var(--tx)) rotateY(var(--ty));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .token {
+      animation-play-state: paused;
+    }
+  }
+</style>

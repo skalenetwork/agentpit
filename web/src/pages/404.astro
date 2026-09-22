@@ -1,0 +1,16 @@
+---
+import Button from "../components/Button.astro";
+import Hero from "../components/Hero.astro";
+import Layout from "../components/Layout.astro";
+import { site } from "../content/site";
+---
+
+<Layout title={`Not found: ${site.name}`} path="/404" summary="That page does not exist." noindex>
+  <Hero lead="Try one of these instead.">
+    That page does not exist.
+    <Fragment slot="actions">
+      <Button href="/">Home</Button>
+      <Button href="/start" variant="secondary">Quickstart</Button>
+    </Fragment>
+  </Hero>
+</Layout>

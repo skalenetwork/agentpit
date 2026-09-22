@@ -1,0 +1,142 @@
+---
+import { KeyRound } from "@lucide/astro";
+import { avatars } from "../lib/avatars";
+---
+
+<div class="absolute inset-x-0 top-28 bottom-0 sm:top-0" aria-hidden="true">
+  <div class="wire absolute top-1/2 right-24 left-0 h-1 -translate-y-1/2" />
+  <div
+    class="key absolute top-1/2 flex size-14 -translate-y-1/2 items-center justify-center rounded-control bg-signal text-paper [--from:2rem] sm:[--from:8.75rem]"
+  >
+    <KeyRound class="size-8" stroke-width={2.25} />
+  </div>
+  <div class="absolute top-1/2 right-8 size-32 -translate-y-1/2">
+    <img class="face size-full" src={avatars[0].src} width={128} height={128} alt="" />
+    <span class="dot absolute -right-1.5 -bottom-1.5 size-7 rounded-control border-3 border-paper bg-line" />
+  </div>
+</div>
+
+<style>
+  .wire,
+  .key,
+  .face,
+  .dot::after {
+    animation-duration: 6s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+  }
+
+  .wire {
+    color: var(--color-line);
+    background: repeating-linear-gradient(to right, currentColor 0 12px, transparent 12px 24px);
+    animation-name: link;
+  }
+
+  .key {
+    left: var(--from);
+    animation-name: travel;
+  }
+
+  .face {
+    animation-name: wake;
+  }
+
+  .dot::after {
+    position: absolute;
+    inset: 0;
+    content: "";
+    border-radius: inherit;
+    background-color: light-dark(#059669, #34d399);
+    opacity: 0;
+    animation-name: live;
+  }
+
+  @keyframes travel {
+    0%,
+    90% {
+      left: var(--from);
+      opacity: 1;
+      animation-timing-function: ease-in;
+    }
+
+    20% {
+      left: calc(100% - 13.5rem);
+      opacity: 1;
+      animation-timing-function: ease-out;
+    }
+
+    32%,
+    86% {
+      left: calc(100% - 7.75rem);
+      opacity: 1;
+    }
+
+    87% {
+      left: calc(100% - 7.75rem);
+      opacity: 0;
+    }
+
+    88% {
+      left: var(--from);
+      opacity: 0;
+    }
+  }
+
+  @keyframes link {
+    0%,
+    20%,
+    91%,
+    100% {
+      color: var(--color-line);
+    }
+
+    23%,
+    88% {
+      color: var(--color-signal);
+    }
+  }
+
+  @keyframes live {
+    0%,
+    20%,
+    91%,
+    100% {
+      opacity: 0;
+    }
+
+    23%,
+    88% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes wake {
+    0%,
+    20%,
+    91%,
+    100% {
+      filter: grayscale(1);
+      scale: 1;
+    }
+
+    22% {
+      scale: 1.05;
+    }
+
+    24%,
+    88% {
+      filter: grayscale(0);
+      scale: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wire,
+    .key,
+    .face,
+    .dot::after {
+      animation-delay: -3s;
+      animation-play-state: paused;
+    }
+  }
+</style>

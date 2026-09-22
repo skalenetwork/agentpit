@@ -1,0 +1,27 @@
+---
+interface Props {
+  align?: "center" | "left";
+  eyebrow?: string;
+  heading: string;
+  lead?: string;
+  tinted?: boolean;
+}
+
+const { align = "center", eyebrow, heading, lead, tinted = false } = Astro.props;
+---
+
+<section class:list={["px-5 py-16 sm:px-12 sm:py-25", tinted && "bg-surface"]}>
+  <div class="mx-auto w-full max-w-page">
+    <div
+      class:list={[
+        "flex flex-col gap-3",
+        align === "center" ? "items-center text-center" : "max-w-prose",
+      ]}
+    >
+      {eyebrow && <p class="font-medium text-signal">{eyebrow}</p>}
+      <h2 class="text-heading text-ink">{heading}</h2>
+      {lead && <p class="text-lead">{lead}</p>}
+    </div>
+    <div class="mt-12 sm:mt-16"><slot /></div>
+  </div>
+</section>

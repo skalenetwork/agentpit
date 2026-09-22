@@ -1,0 +1,30 @@
+---
+import type { Quote } from "../content/measurements";
+import MarketCard from "./MarketCard.astro";
+
+interface Props {
+  quotes: readonly Quote[];
+}
+
+const { quotes } = Astro.props;
+---
+
+<div class="h-full mask-b-from-80%" aria-hidden="true">
+  <div class="track flex flex-col gap-8 px-8 pb-8">
+    {[...quotes, ...quotes].map((quote) => <MarketCard quote={quote} class="h-36 shrink-0" />)}
+  </div>
+</div>
+
+<style>
+  @media (prefers-reduced-motion: no-preference) {
+    .track {
+      animation: rise 20s linear infinite;
+    }
+  }
+
+  @keyframes rise {
+    to {
+      translate: 0 -50%;
+    }
+  }
+</style>

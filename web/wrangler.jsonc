@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agentpit-web",
+  "compatibility_date": "2026-09-21",
+  "workers_dev": false,
+  "assets": {
+    "not_found_handling": "404-page",
+    "html_handling": "drop-trailing-slash"
+  },
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,122 @@
+---
+type Stop = readonly [offset: number, opacity: number];
+
+interface Layer {
+  readonly color: string;
+  readonly stops: readonly Stop[];
+}
+
+interface Props {
+  class?: string;
+}
+
+const { class: className } = Astro.props;
+
+const EDGES = [0, 141.222, 282.444, 423.667, 564.889, 738.592, 879.814, 1021.037, 1162.259, 1303.481];
+const TIPS = [358.757, 427.244, 490.38, 546.105, 587.02, 546.105, 490.38, 427.244, 358.757];
+const WIDTH = 1303.481;
+const HEIGHT = 599;
+const CEILING = -60;
+const BLUR = 15;
+const PAD = BLUR * 4;
+
+const LAYERS: readonly Layer[] = [
+  {
+    color: "#dbeafe",
+    stops: [
+      [0, 0], [80, 0], [80.078, 0.0327], [80.234, 0.0862], [80.469, 0.1454], [80.781, 0.2],
+      [81.25, 0.2523], [81.875, 0.2931], [82.812, 0.3244], [84.375, 0.3413], [86.25, 0.3365],
+      [88.75, 0.3097], [91.25, 0.2676], [93.75, 0.212], [96.25, 0.1416], [98.125, 0.0771], [100, 0],
+    ],
+  },
+  {
+    color: "#60a5fa",
+    stops: [
+      [0, 0], [60, 0], [60.001, 0.9], [80, 0.9], [82.5, 0.6891], [85, 0.5063], [87.5, 0.3516],
+      [90, 0.225], [92.5, 0.1266], [95, 0.0562], [97.5, 0.0141], [100, 0],
+    ],
+  },
+  {
+    color: "#2563eb",
+    stops: [[0, 0], [38, 0], [38.001, 1], [60, 1], [65, 0.7313], [70, 0.475], [75, 0.2313], [80, 0]],
+  },
+  { color: "#1e3a8a", stops: [[0, 0], [18, 0], [18.001, 1], [38, 1], [60, 0]] },
+  { color: "#172554", stops: [[0, 0], [0.001, 1], [18, 1], [38, 0]] },
+  { color: "#020817", stops: [[0, 1], [18, 0]] },
+];
+---
+
+<div class:list={["pointer-events-none overflow-x-clip", className]} aria-hidden="true">
+  <svg
+    class="-mx-3 -mt-3 h-full w-[calc(100%+1.5rem)] max-w-none overflow-visible"
+    viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+    preserveAspectRatio="none"
+    fill="none"
+    filter="url(#sombra-grain)"
+  >
+    <defs>
+      <g id="sombra-columns">
+        {TIPS.map((tip, i) => <path d={`M ${EDGES[i]} ${CEILING} H ${EDGES[i + 1]} V ${tip} H ${EDGES[i]} Z`} />)}
+      </g>
+      {
+        LAYERS.map((layer, i) => (
+          <linearGradient id={`sombra-${i}`} x1="0" y1="0" x2="0" y2="1">
+            {layer.stops.map(([offset, opacity]) => (
+              <stop offset={`${offset}%`} stop-color={layer.color} stop-opacity={opacity} />
+            ))}
+          </linearGradient>
+        ))
+      }
+      <filter
+        id="sombra-blur"
+        filterUnits="userSpaceOnUse"
+        x={-PAD}
+        y={CEILING - PAD}
+        width={WIDTH + PAD * 2}
+        height={Math.max(...TIPS) - CEILING + PAD * 2}
+      >
+        <feGaussianBlur stdDeviation={BLUR}></feGaussianBlur>
+      </filter>
+      <filter id="sombra-grain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="1.4" numOctaves="1" seed="7" result="noise"
+        ></feTurbulence>
+        <feDisplacementMap
+          in="SourceGraphic"
+          in2="noise"
+          scale="56"
+          xChannelSelector="R"
+          yChannelSelector="G"
+          result="dither"></feDisplacementMap>
+        <feColorMatrix in="noise" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 -2 0 0.65" result="specks"
+        ></feColorMatrix>
+        <feComposite in="specks" in2="dither" operator="atop"></feComposite>
+      </filter>
+    </defs>
+    {LAYERS.map((_, i) => <use href="#sombra-columns" fill={`url(#sombra-${i})`} filter="url(#sombra-blur)" />)}
+  </svg>
+</div>
+
+<style>
+  svg {
+    transform-origin: 50% 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    svg {
+      animation: descend 1100ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+  }
+
+  @media (max-width: 40rem) {
+    svg,
+    use {
+      filter: none;
+    }
+  }
+
+  @keyframes descend {
+    from {
+      transform: scaleY(0);
+    }
+  }
+</style>

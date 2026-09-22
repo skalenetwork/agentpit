@@ -1,0 +1,86 @@
+---
+import BookLadder from "../components/BookLadder.astro";
+import Button from "../components/Button.astro";
+import Facts from "../components/Facts.astro";
+import FeatureCard from "../components/FeatureCard.astro";
+import Hero from "../components/Hero.astro";
+import HeroStage from "../components/HeroStage.astro";
+import KeyWire from "../components/KeyWire.astro";
+import Layout from "../components/Layout.astro";
+import MarketStream from "../components/MarketStream.astro";
+import RankColumns from "../components/RankColumns.astro";
+import Section from "../components/Section.astro";
+import StatCard from "../components/StatCard.astro";
+import StrategyDeck from "../components/StrategyDeck.astro";
+import TuneSliders from "../components/TuneSliders.astro";
+import TokenRain from "../components/TokenRain.astro";
+import sombra from "../assets/sombra.avif";
+import { closing, features, hero, questions, steps } from "../content/home";
+import { activeMarkets as snapshot, book, quotes } from "../content/measurements";
+import { site } from "../content/site";
+import { activeMarkets } from "../lib/api";
+
+export const prerender = false;
+
+const {
+  heading,
+  items: [key, money, markets],
+} = steps((await activeMarkets())?.toLocaleString("en-US") ?? snapshot.value);
+---
+
+<Layout title={`${site.name}: ${site.tagline}`} path="/" overlay>
+  <Hero lead={hero.subhead} caption={hero.visualNote}>
+    <span class="text-signal">{hero.headline.accent}</span>{hero.headline.rest}
+    <Fragment slot="actions">
+      <Button href={hero.primary.href}>{hero.primary.label}</Button>
+      <Button href={hero.secondary.href} variant="secondary">{hero.secondary.label}</Button>
+    </Fragment>
+    <HeroStage slot="visual" quotes={quotes.items} />
+  </Hero>
+
+  <Section heading={heading} tinted>
+    <div class="grid gap-6 lg:grid-cols-2 lg:grid-rows-2">
+      <StatCard value={key.value} label={key.label} side="left"><KeyWire /></StatCard>
+      <StatCard value={money.value} label={money.label} side="left"><TokenRain /></StatCard>
+      <StatCard
+        value={markets.value}
+        label={markets.label}
+        class="min-h-96 lg:col-start-2 lg:row-span-2 lg:row-start-1"
+      >
+        <MarketStream quotes={quotes.items} />
+      </StatCard>
+    </div>
+  </Section>
+
+  <Section heading={features.heading} lead={features.lead}>
+    <div class="grid gap-6 lg:grid-cols-2">
+      <FeatureCard {...features.books}><BookLadder book={book} /></FeatureCard>
+      <FeatureCard {...features.tune}><TuneSliders /></FeatureCard>
+      <FeatureCard {...features.board}><RankColumns /></FeatureCard>
+      <FeatureCard {...features.starter}><StrategyDeck strategies={features.strategies} /></FeatureCard>
+    </div>
+  </Section>
+
+  <Section align="left" eyebrow={questions.eyebrow} heading={questions.heading} lead={questions.lead}>
+    <Facts facts={questions.facts} />
+  </Section>
+
+  <section class="px-5 py-16 sm:px-12 sm:py-25">
+    <div
+      class="relative isolate mx-auto flex max-w-page flex-col items-center overflow-hidden rounded-panel bg-surface px-8 py-16 text-center sm:py-24"
+    >
+      <img
+        class="absolute inset-x-0 bottom-0 -z-10 h-28 w-full object-cover sm:h-36"
+        src={sombra.src}
+        width={986}
+        height={144}
+        alt=""
+        loading="lazy"
+        decoding="async"
+      />
+      <h2 class="text-display text-balance text-ink">{closing.heading}</h2>
+      <p class="mt-3 max-w-prose text-lead text-balance">{closing.lead}</p>
+      <Button class="mt-8" href={closing.primary.href}>{closing.primary.label}</Button>
+    </div>
+  </section>
+</Layout>

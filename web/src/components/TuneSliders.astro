@@ -1,0 +1,163 @@
+---
+import Roll from "./Roll.astro";
+
+const knobs = [
+  { label: "Entry price", was: "85¢", now: "80¢", motion: "[--at:0] [--a:85%] [--b:80%]" },
+  { label: "Stake", was: "$50", now: "$25", motion: "[--at:0.333] [--a:50%] [--b:25%]" },
+  { label: "Move", was: "4¢", now: "6¢", motion: "[--at:0.666] [--a:40%] [--b:60%]" },
+] as const;
+---
+
+<div class="tune absolute inset-x-7 top-7 text-caption" aria-hidden="true">
+  <div class="space-y-4">
+    {
+      knobs.map(({ label, was, now, motion }) => (
+        <div class:list={["knob grid grid-cols-[5.5rem_1fr_2.5rem] items-center gap-4", motion]}>
+          <span>{label}</span>
+          <span class="relative h-1 rounded-control bg-line">
+            <span class="fill absolute inset-y-0 left-0 rounded-control" />
+            <span class="thumb absolute top-1/2 size-4 -translate-1/2 rounded-control border-2 bg-paper" />
+          </span>
+          <Roll class="text-right text-small font-medium text-ink tabular-nums" values={[was, now]} />
+        </div>
+      ))
+    }
+  </div>
+  <div class="relative aspect-[5/3] w-full">
+    <div class="area down absolute inset-0" />
+    <div class="area up absolute inset-0" />
+    <svg
+      class="absolute inset-0 size-full overflow-visible"
+      viewBox="0 0 300 180"
+      preserveAspectRatio="none"
+      fill="none"
+      stroke-width="2"
+      stroke-linejoin="round"
+      stroke-linecap="round"
+    >
+      <line class="stroke-line" x1="0" x2="300" y1="50" y2="50" stroke-width="1" stroke-dasharray="3 4" />
+      <path class="line down" d="M0,50 L20,50 L40,50 L60,50 L80,50 L100,50 L120,50 L140,50 L160,50 L180,50 L200,50 L220,50 L240,50 L260,50 L280,50 L300,50" />
+      <path class="line up" d="M0,50 L20,50 L40,50 L60,50 L80,50 L100,50 L120,50 L140,50 L160,50 L180,50 L200,50 L220,50 L240,50 L260,50 L280,50 L300,50" />
+    </svg>
+  </div>
+</div>
+
+<style>
+  @property --t {
+    syntax: "<number>";
+    inherits: true;
+    initial-value: 0;
+  }
+
+  .tune {
+    --r: clamp(0, (0.985 - var(--t)) / 0.03, 1);
+    --gain: calc(clamp(0, (var(--t) - 0.416) / 0.06, 1) * var(--r));
+    animation: tick 12s linear infinite;
+  }
+
+  .knob {
+    --hue: var(--color-signal);
+    --s: var(--e);
+    --q: min(clamp(0, (var(--t) - var(--at)) / 0.083, 1), var(--r));
+    --e: calc(var(--q) * var(--q) * (3 - 2 * var(--q)));
+  }
+
+  .fill {
+    width: calc(var(--a) + (var(--b) - var(--a)) * var(--e));
+    background: var(--hue);
+  }
+
+  .thumb {
+    left: calc(var(--a) + (var(--b) - var(--a)) * var(--e));
+    border-color: var(--hue);
+  }
+
+  .down {
+    --hue: light-dark(#e11d48, #fb7185);
+    opacity: calc(1 - var(--gain));
+  }
+
+  .up {
+    --hue: light-dark(#059669, #34d399);
+    opacity: var(--gain);
+  }
+
+  .area {
+    background:
+      linear-gradient(to bottom, color-mix(in oklab, var(--hue) 28%, transparent), transparent 92%),
+      repeating-linear-gradient(135deg, color-mix(in oklab, var(--hue) 10%, transparent) 0 1px, transparent 1px 7px);
+    animation: fill 12s ease-in-out infinite;
+  }
+
+  .line {
+    stroke: var(--hue);
+    animation: morph 12s ease-in-out infinite;
+  }
+
+  @keyframes tick {
+    to {
+      --t: 1;
+    }
+  }
+
+  @keyframes morph {
+    0%,
+    8.3% {
+      d: path("M0,50 L20,50 L40,50 L60,50 L80,50 L100,50 L120,50 L140,50 L160,50 L180,50 L200,50 L220,50 L240,50 L260,50 L280,50 L300,50");
+    }
+
+    20.8%,
+    41.6% {
+      d: path("M0,50 L20,53 L40,49 L60,57 L80,62 L100,58 L120,68 L140,74 L160,69 L180,80 L200,77 L220,84 L240,78 L260,71 L280,76 L300,66");
+    }
+
+    54%,
+    75% {
+      d: path("M0,50 L20,46 L40,53 L60,47 L80,55 L100,49 L120,44 L140,51 L160,45 L180,52 L200,43 L220,48 L240,41 L260,47 L280,42 L300,44");
+    }
+
+    87.5%,
+    96% {
+      d: path("M0,50 L20,47 L40,51 L60,43 L80,46 L100,38 L120,41 L140,33 L160,37 L180,29 L200,32 L220,24 L240,28 L260,21 L280,23 L300,15");
+    }
+
+    100% {
+      d: path("M0,50 L20,50 L40,50 L60,50 L80,50 L100,50 L120,50 L140,50 L160,50 L180,50 L200,50 L220,50 L240,50 L260,50 L280,50 L300,50");
+    }
+  }
+
+  @keyframes fill {
+    0%,
+    8.3% {
+      clip-path: polygon(0% 27.8%, 6.67% 27.8%, 13.3% 27.8%, 20% 27.8%, 26.7% 27.8%, 33.3% 27.8%, 40% 27.8%, 46.7% 27.8%, 53.3% 27.8%, 60% 27.8%, 66.7% 27.8%, 73.3% 27.8%, 80% 27.8%, 86.7% 27.8%, 93.3% 27.8%, 100% 27.8%, 100% 100%, 0% 100%);
+    }
+
+    20.8%,
+    41.6% {
+      clip-path: polygon(0% 27.8%, 6.67% 29.4%, 13.3% 27.2%, 20% 31.7%, 26.7% 34.4%, 33.3% 32.2%, 40% 37.8%, 46.7% 41.1%, 53.3% 38.3%, 60% 44.4%, 66.7% 42.8%, 73.3% 46.7%, 80% 43.3%, 86.7% 39.4%, 93.3% 42.2%, 100% 36.7%, 100% 100%, 0% 100%);
+    }
+
+    54%,
+    75% {
+      clip-path: polygon(0% 27.8%, 6.67% 25.6%, 13.3% 29.4%, 20% 26.1%, 26.7% 30.6%, 33.3% 27.2%, 40% 24.4%, 46.7% 28.3%, 53.3% 25%, 60% 28.9%, 66.7% 23.9%, 73.3% 26.7%, 80% 22.8%, 86.7% 26.1%, 93.3% 23.3%, 100% 24.4%, 100% 100%, 0% 100%);
+    }
+
+    87.5%,
+    96% {
+      clip-path: polygon(0% 27.8%, 6.67% 26.1%, 13.3% 28.3%, 20% 23.9%, 26.7% 25.6%, 33.3% 21.1%, 40% 22.8%, 46.7% 18.3%, 53.3% 20.6%, 60% 16.1%, 66.7% 17.8%, 73.3% 13.3%, 80% 15.6%, 86.7% 11.7%, 93.3% 12.8%, 100% 8.33%, 100% 100%, 0% 100%);
+    }
+
+    100% {
+      clip-path: polygon(0% 27.8%, 6.67% 27.8%, 13.3% 27.8%, 20% 27.8%, 26.7% 27.8%, 33.3% 27.8%, 40% 27.8%, 46.7% 27.8%, 53.3% 27.8%, 60% 27.8%, 66.7% 27.8%, 73.3% 27.8%, 80% 27.8%, 86.7% 27.8%, 93.3% 27.8%, 100% 27.8%, 100% 100%, 0% 100%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tune,
+    .area,
+    .line {
+      animation-delay: -11s;
+      animation-play-state: paused;
+    }
+  }
+</style>

@@ -1,0 +1,81 @@
+---
+import Button from "../components/Button.astro";
+import Code from "../components/Code.astro";
+import Facts from "../components/Facts.astro";
+import Hero from "../components/Hero.astro";
+import Layout from "../components/Layout.astro";
+import Section from "../components/Section.astro";
+import openclaw from "../assets/openclaw.avif";
+import { differences, intro, starter, steps } from "../content/start";
+import { site } from "../content/site";
+---
+
+<Layout
+  title={`Start: ${site.name}`}
+  path="/start"
+  summary="Read a live order book with no account, get a key, and place your first order against mirrored Polymarket depth."
+>
+  <Hero lead={intro.lead} note={intro.body}>{intro.heading}</Hero>
+
+  <section class="px-5 py-16 sm:px-12 sm:py-25">
+    <div class="mx-auto grid w-full max-w-page gap-12 lg:grid-cols-[14rem_1fr] lg:gap-16">
+      <ol class="hidden flex-col gap-3 self-start text-small font-medium lg:sticky lg:top-32 lg:flex">
+        {
+          steps.map((step, i) => (
+            <li>
+              <a
+                class="flex items-center gap-3 text-muted transition-colors duration-150 hover:text-ink"
+                href={`#step-${i + 1}`}
+              >
+                <span class="flex size-7 shrink-0 items-center justify-center rounded-control bg-surface text-caption text-ink">
+                  {i + 1}
+                </span>
+                {step.heading}
+              </a>
+            </li>
+          ))
+        }
+      </ol>
+      <ol>
+        {
+          steps.map((step, i) => (
+            <li
+              id={`step-${i + 1}`}
+              class="relative grid scroll-mt-32 grid-cols-[2.5rem_1fr] gap-x-5 pb-14 before:absolute before:top-10 before:bottom-0 before:left-5 before:w-px before:bg-line before:content-[''] last:pb-0 last:before:hidden"
+            >
+              <span class="flex size-10 items-center justify-center rounded-control bg-surface font-medium text-ink">
+                {i + 1}
+              </span>
+              <div class="min-w-0 pt-1.5">
+                <h2 class="text-title text-ink">{step.heading}</h2>
+                <p class="mt-2">{step.body}</p>
+                <Code class="mt-5" code={step.code} />
+                {step.note && <p class="mt-4 text-small">{step.note}</p>}
+              </div>
+            </li>
+          ))
+        }
+      </ol>
+    </div>
+  </section>
+
+  <Section
+    align="left"
+    eyebrow="Coming from Polymarket"
+    heading="Six things differ."
+    lead="Everything else is the same shape."
+    tinted
+  >
+    <Facts facts={differences} />
+  </Section>
+
+  <section class="px-5 py-16 sm:px-12 sm:py-25">
+    <div class="mx-auto w-full max-w-page rounded-panel bg-surface p-8 sm:p-16">
+      <img class="size-12" src={openclaw.src} width={48} height={48} alt="OpenClaw" />
+      <h2 class="mt-6 text-heading text-ink">{starter.heading}</h2>
+      <p class="mt-3 max-w-prose text-lead">{starter.lead}</p>
+      <Code class="mt-8" code={starter.code} inset />
+      <Button class="mt-8" href={starter.primary.href}>{starter.primary.label}</Button>
+    </div>
+  </section>
+</Layout>

@@ -1,0 +1,28 @@
+---
+interface Props {
+  values: readonly string[];
+  class?: string;
+}
+
+const { values, class: className } = Astro.props;
+const slots = ["[--k:0]", "[--k:1]", "[--k:2]", "[--k:3]"];
+---
+
+{
+  new Set(values).size === 1 ? (
+    <span class={className}>{values[0]}</span>
+  ) : (
+    <span class:list={["grid overflow-hidden", className]}>
+      {values.map((value, k) => (
+        <span class:list={["digit col-start-1 row-start-1", slots[k]]}>{value}</span>
+      ))}
+    </span>
+  )
+}
+
+<style>
+  .digit {
+    translate: 0 calc((var(--k) - var(--s)) * 100%);
+    opacity: calc(1 - clamp(0, abs(var(--k) - var(--s)), 1));
+  }
+</style>
