@@ -26,32 +26,33 @@ const slots = ["[--k:0]", "[--k:1]", "[--k:2]", "[--k:3]", "[--k:4]", "[--k:5]"]
 const widths = ["w-[10%]", "w-[20%]", "w-[30%]", "w-[40%]", "w-[50%]", "w-[60%]", "w-[70%]", "w-[80%]", "w-[90%]", "w-full"];
 const says = (agent: number, market: number) => ((agent + 1) * (market + 3)) % 5 < 3;
 const px = 9.86;
-const col = { left: 26 * px, right: 74 * px, top: 2.99 * px, card: 16.32 * px, gap: 3 * px };
+const col = { left: 26 * px, right: 74 * px, top: 2.99 * px, card: 16.32 * px, gap: 3 * px, taper: 4.86 * px };
 const neck = 20;
 const [a1, b1] = [col.top, col.top + col.card];
 const [a2, b2] = [b1 + col.gap, b1 + col.gap + col.card];
 const [a3, b3] = [b2 + col.gap, b2 + col.gap + col.card];
+const [[l1, r1], [l2, r2], [l3, r3]] = [0, 1, 2].map((i) => [col.left + i * col.taper, col.right - i * col.taper]);
 const corners: readonly (readonly [number, number, number])[] = [
-  [col.left, a1, 24],
-  [col.right, a1, 24],
-  [col.right, b1, 24],
+  [l1, a1, 24],
+  [r1, a1, 24],
+  [r1, b1, 24],
   [493 + neck, b1, 14],
   [493 + neck, a2, 14],
-  [col.right, a2, 24],
-  [col.right, b2, 24],
+  [r2, a2, 24],
+  [r2, b2, 24],
   [493 + neck, b2, 14],
   [493 + neck, a3, 14],
-  [col.right, a3, 24],
-  [col.right, b3, 24],
-  [col.left, b3, 24],
-  [col.left, a3, 24],
+  [r3, a3, 24],
+  [r3, b3, 24],
+  [l3, b3, 24],
+  [l3, a3, 24],
   [493 - neck, a3, 14],
   [493 - neck, b2, 14],
-  [col.left, b2, 24],
-  [col.left, a2, 24],
+  [l2, b2, 24],
+  [l2, a2, 24],
   [493 - neck, a2, 14],
   [493 - neck, b1, 14],
-  [col.left, b1, 24],
+  [l1, b1, 24],
 ];
 const round = (value: number) => Number(value.toFixed(2));
 const shape =
@@ -140,7 +141,7 @@ const ladder = ({ asks, bids }: Quote) => {
         {quotes.map((quote, k) => <MarketCard class:list={["card absolute inset-0", slots[k]]} quote={quote} large />)}
       </div>
 
-      <div class="absolute inset-x-0 top-[174px] h-[144px] tabular-nums [--lag:0.04] lg:top-[19.32cqw] lg:h-[16.32cqw]">
+      <div class="absolute inset-x-0 top-[174px] h-[144px] tabular-nums [--lag:0.04] lg:inset-x-[4.86cqw] lg:top-[19.32cqw] lg:h-[16.32cqw]">
         {
           quotes.map((quote, k) => {
             const { asks, bids } = ladder(quote);
@@ -162,7 +163,7 @@ const ladder = ({ asks, bids }: Quote) => {
         }
       </div>
 
-      <div class="absolute inset-x-0 top-[38.65cqw] hidden h-[16.32cqw] items-center justify-center text-ink lg:flex">
+      <div class="absolute inset-x-[9.72cqw] top-[38.65cqw] hidden h-[16.32cqw] items-center justify-center text-ink lg:flex">
         <SkaleOnBase class="h-14 w-auto" />
       </div>
     </div>

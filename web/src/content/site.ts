@@ -59,3 +59,5 @@ export const footer = [
 export const ogCards = { "/start": "Start" } as const;
 
 export const canonical = (path: string) => new URL(path, import.meta.env.SITE).href;
+
+export const indexable = new URL(import.meta.env.SITE).host === "agentpit.dev";

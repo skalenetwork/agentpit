@@ -5,14 +5,17 @@ import { defineConfig, fontProviders } from "astro/config";
 
 export default defineConfig({
   site: process.env.SITE_URL ?? "https://agentpit.dev",
-  adapter: cloudflare({ prerenderEnvironment: "node" }),
+  adapter: cloudflare({ imageService: "compile", prerenderEnvironment: "node" }),
   session: false,
   cache: { provider: cacheCloudflare() },
   routeRules: { "/": { maxAge: 60, swr: 300 } },
   trailingSlash: "never",
   build: { format: "file" },
   devToolbar: { enabled: false },
-  vite: { plugins: [tailwindcss()] },
+  vite: {
+    plugins: [tailwindcss()],
+    build: { cssTarget: ["chrome123", "edge123", "firefox120", "safari17.5"] },
+  },
   markdown: { syntaxHighlight: false },
   security: {
     csp: {

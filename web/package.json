@@ -9,7 +9,8 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro build && astro preview",
-    "check": "astro check"
+    "check": "astro check",
+    "deploy": "SITE_URL=https://agentpit-web.stan-kladko.workers.dev PUBLIC_APP_URL=https://agentpit.dev astro build && wrangler deploy"
   },
   "dependencies": {
     "@astrojs/cloudflare": "14.3.2",
