@@ -1,0 +1,118 @@
+---
+import type { Quote } from "../content/measurements";
+import { cents } from "../lib/format";
+import { marketIcon } from "../lib/marketIcon";
+
+interface Props {
+  quote: Quote;
+  class?: string;
+  large?: boolean;
+}
+
+const { quote, class: className, large = false } = Astro.props;
+const chance = Math.round(((quote.bid + quote.ask) / 2) * 100);
+const Icon = marketIcon(quote);
+const category = quote.category.toLowerCase().replace(" ", "-");
+const sides = [
+  { tone: "yes", label: "Yes", price: quote.ask },
+  { tone: "no", label: "No", price: 1 - quote.bid },
+];
+---
+
+<div
+  class:list={[
+    "flex flex-col justify-between gap-4 rounded-panel border border-line bg-paper",
+    large ? "p-5 lg:p-6" : "p-5",
+    className,
+  ]}
+>
+  <div class="flex items-start justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <span class:list={["tile flex shrink-0 items-center justify-center rounded-control", large ? "size-10 lg:size-14" : "size-10", category]}>
+        <Icon class:list={[large ? "size-5 lg:size-7" : "size-5"]} aria-hidden="true" />
+      </span>
+      <p class:list={["line-clamp-2 font-medium text-ink", large && "lg:text-lead"]}>{quote.question}</p>
+    </div>
+    <div class="yes shrink-0 text-right">
+      <p class="text-title">{chance}%</p>
+      <p class="text-caption text-muted">chance</p>
+    </div>
+  </div>
+  <div class:list={["flex gap-2 font-medium", large ? "text-small lg:text-body" : "text-small"]}>
+    {
+      sides.map(({ tone, label, price }) => (
+        <button
+          type="button"
+          tabindex="-1"
+          class:list={[
+            "tint flex flex-1 cursor-pointer items-center justify-center rounded-control transition-[scale,background-color] duration-150 ease-out motion-safe:active:scale-95",
+            large ? "h-8 lg:h-9" : "h-8",
+            tone,
+          ]}
+        >
+          {label} {cents(price)}
+        </button>
+      ))
+    }
+  </div>
+</div>
+
+<style>
+  .tile {
+    --hue: var(--color-muted);
+  }
+
+  .politics {
+    --hue: light-dark(#2563eb, #60a5fa);
+  }
+
+  .world {
+    --hue: light-dark(#0891b2, #22d3ee);
+  }
+
+  .crypto {
+    --hue: light-dark(#ea580c, #fb923c);
+  }
+
+  .business {
+    --hue: light-dark(#d97706, #fbbf24);
+  }
+
+  .technology {
+    --hue: light-dark(#7c3aed, #a78bfa);
+  }
+
+  .science {
+    --hue: light-dark(#65a30d, #a3e635);
+  }
+
+  .pop-culture {
+    --hue: light-dark(#db2777, #f472b6);
+  }
+
+  .yes {
+    --hue: light-dark(#10b981, #34d399);
+  }
+
+  .no {
+    --hue: light-dark(#f43f5e, #fb7185);
+  }
+
+  .tile,
+  .tint {
+    color: var(--hue);
+    background: color-mix(in oklab, var(--hue) 12%, transparent);
+  }
+
+  .tint:hover {
+    background: color-mix(in oklab, var(--hue) 18%, transparent);
+  }
+
+  .tint:active {
+    background: color-mix(in oklab, var(--hue) 24%, transparent);
+  }
+
+  .yes:not(.tint) {
+    color: var(--hue);
+  }
+</style>

@@ -1,0 +1,82 @@
+---
+import Logo from "../assets/logo.svg";
+import { cta, nav, site } from "../content/site";
+import Button from "./Button.astro";
+
+interface Props {
+  overlay?: boolean;
+}
+
+const { overlay = false } = Astro.props;
+---
+
+<header
+  class="fixed inset-x-0 top-0 z-10 h-16 bg-paper/60 px-5 backdrop-blur-xl sm:px-12"
+  data-overlay={overlay || undefined}
+>
+  <div class="mx-auto flex h-full w-full max-w-page items-center justify-between gap-4">
+    <a class="light text-ink" href="/" aria-label={site.name}>
+      <Logo class="h-4.5 w-auto" aria-hidden="true" />
+    </a>
+    <nav class="flex items-center gap-6 text-small font-medium" aria-label="Site">
+      {
+        nav.map((link) => (
+          <a
+            class="light text-ink opacity-65 transition-opacity duration-150 hover:opacity-100 max-sm:hidden"
+            href={link.href}
+          >
+            {link.label}
+          </a>
+        ))
+      }
+      <Button class="cta" href={cta.href} size="sm">{cta.label}</Button>
+    </nav>
+  </div>
+</header>
+
+<style>
+  @media (prefers-reduced-motion: no-preference) {
+    header,
+    [data-overlay] .light,
+    [data-overlay] :global(.cta) {
+      animation: linear both;
+      animation-timeline: scroll();
+      animation-range: 0 64px;
+    }
+
+    header {
+      animation-name: condense;
+    }
+
+    [data-overlay] .light {
+      animation-name: light;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) and (prefers-color-scheme: light) {
+    [data-overlay] :global(.cta) {
+      animation-name: invert;
+    }
+  }
+
+  @keyframes condense {
+    from {
+      height: 82px;
+      background-color: transparent;
+      backdrop-filter: none;
+    }
+  }
+
+  @keyframes light {
+    from {
+      filter: brightness(0) invert(1);
+      opacity: 1;
+    }
+  }
+
+  @keyframes invert {
+    from {
+      filter: invert(1) grayscale(1);
+    }
+  }
+</style>

@@ -1,0 +1,336 @@
+---
+import type { Quote } from "../content/measurements";
+import SkaleOnBase from "../assets/skale-on-base.svg";
+import { avatars } from "../lib/avatars";
+import { cents, shares } from "../lib/format";
+import MarketCard from "./MarketCard.astro";
+
+interface Props {
+  quotes: readonly Quote[];
+}
+
+const { quotes } = Astro.props;
+const motion = [
+  "[--d:0.16] [--idle:bob_3.2s]",
+  "[--d:0.34] [--idle:tilt_4.1s]",
+  "[--d:0.22] [--idle:breathe_2.8s]",
+  "[--d:0.4] [--idle:sway_3.6s]",
+  "[--d:0.28] [--idle:tilt_3.4s]",
+  "[--d:0.19] [--idle:bob_2.6s]",
+  "[--d:0.37] [--idle:sway_4.4s]",
+  "[--d:0.25] [--idle:breathe_3.9s]",
+];
+const placement = ["left-[2.99cqw] top-[2.99cqw]", "right-[2.99cqw] top-[2.99cqw]", "left-[2.99cqw] top-[17.48cqw]", "right-[2.99cqw] top-[17.48cqw]", "left-[2.99cqw] top-[31.97cqw]", "right-[2.99cqw] top-[31.97cqw]", "left-[2.99cqw] top-[46.46cqw]", "right-[2.99cqw] top-[46.46cqw]"];
+const rows = [[0, 1, 2, 3], [4, 5, 6, 7]];
+const slots = ["[--k:0]", "[--k:1]", "[--k:2]", "[--k:3]", "[--k:4]", "[--k:5]"];
+const widths = ["w-[10%]", "w-[20%]", "w-[30%]", "w-[40%]", "w-[50%]", "w-[60%]", "w-[70%]", "w-[80%]", "w-[90%]", "w-full"];
+const says = (agent: number, market: number) => ((agent + 1) * (market + 3)) % 5 < 3;
+const px = 9.86;
+const col = { left: 26 * px, right: 74 * px, top: 2.99 * px, card: 16.32 * px, gap: 3 * px, taper: 4.86 * px };
+const neck = 20;
+const [a1, b1] = [col.top, col.top + col.card];
+const [a2, b2] = [b1 + col.gap, b1 + col.gap + col.card];
+const [a3, b3] = [b2 + col.gap, b2 + col.gap + col.card];
+const [[l1, r1], [l2, r2], [l3, r3]] = [0, 1, 2].map((i) => [col.left + i * col.taper, col.right - i * col.taper]);
+const corners: readonly (readonly [number, number, number])[] = [
+  [l1, a1, 24],
+  [r1, a1, 24],
+  [r1, b1, 24],
+  [493 + neck, b1, 14],
+  [493 + neck, a2, 14],
+  [r2, a2, 24],
+  [r2, b2, 24],
+  [493 + neck, b2, 14],
+  [493 + neck, a3, 14],
+  [r3, a3, 24],
+  [r3, b3, 24],
+  [l3, b3, 24],
+  [l3, a3, 24],
+  [493 - neck, a3, 14],
+  [493 - neck, b2, 14],
+  [l2, b2, 24],
+  [l2, a2, 24],
+  [493 - neck, a2, 14],
+  [493 - neck, b1, 14],
+  [l1, b1, 24],
+];
+const round = (value: number) => Number(value.toFixed(2));
+const shape =
+  corners
+    .map(([x, y, r], i) => {
+      const [px0, py0] = corners[(i + corners.length - 1) % corners.length];
+      const [nx, ny] = corners[(i + 1) % corners.length];
+      const [ux, uy] = [Math.sign(x - px0), Math.sign(y - py0)];
+      const [vx, vy] = [Math.sign(nx - x), Math.sign(ny - y)];
+      const sweep = ux * vy - uy * vx > 0 ? 1 : 0;
+      return `${i ? "L" : "M"} ${round(x - ux * r)} ${round(y - uy * r)} A ${r} ${r} 0 0 ${sweep} ${round(x + vx * r)} ${round(y + vy * r)}`;
+    })
+    .join(" ") + " Z";
+const bridge = "M -34 -1 V 0 A 14 14 0 0 1 -20 14 V 16 A 14 14 0 0 1 -34 30 V 31 H 34 V 30 A 14 14 0 0 1 20 16 V 14 A 14 14 0 0 1 34 0 V -1 Z";
+const ladder = ({ asks, bids }: Quote) => {
+  const max = Math.max(...[...asks, ...bids].map((level) => level.size));
+  const width = (size: number) => widths[Math.max(1, Math.round((size / max) * 10)) - 1];
+  return {
+    asks: [...asks].reverse().map((level, i) => ({ ...level, touch: i === asks.length - 1, width: width(level.size) })),
+    bids: bids.map((level, i) => ({ ...level, touch: i === 0, width: width(level.size) })),
+  };
+};
+---
+
+<div
+  class="stage @container relative px-5 py-6 text-left text-small text-muted lg:absolute lg:inset-0 lg:p-0"
+  aria-hidden="true"
+>
+  <svg class="absolute inset-0 hidden size-full lg:block" viewBox="0 0 986 601">
+    <path class="shape" d={shape} />
+  </svg>
+
+  {
+    avatars.map((avatar, i) => (
+      <div class:list={["agent absolute hidden size-[11.5cqw] lg:block", placement[i], motion[i]]}>
+        <img class="face size-full" src={avatar.src} width={112} height={112} alt="" />
+        <span class:list={["bubble absolute top-1/2 h-9 w-16 -translate-y-1/2 text-center leading-9 font-medium", i % 2 ? "tail-r right-full mr-4" : "tail-l left-full ml-4"]}>
+          {quotes.map((_, k) => (
+            <span class:list={["say absolute inset-0 rounded-control", says(i, k) ? "yes" : "no", slots[k]]}>
+              {says(i, k) ? "Yes" : "No"}
+            </span>
+          ))}
+        </span>
+      </div>
+    ))
+  }
+
+  <div class="mx-auto flex max-w-[480px] flex-col gap-3">
+    {
+      rows.map((ids, r) => (
+        <div class:list={["flex justify-between lg:hidden", r && "order-last"]}>
+          {ids.map((i) => (
+            <div class:list={["agent flex w-16 items-center gap-3", r ? "flex-col-reverse" : "flex-col", motion[i]]}>
+              <img class="face size-14" src={avatars[i].src} width={112} height={112} alt="" />
+              <span class:list={["bubble relative h-9 w-16 text-center leading-9 font-medium", r ? "tail-b" : "tail-t"]}>
+                {quotes.map((_, k) => (
+                  <span class:list={["say absolute inset-0 rounded-control", says(i, k) ? "yes" : "no", slots[k]]}>
+                    {says(i, k) ? "Yes" : "No"}
+                  </span>
+                ))}
+              </span>
+            </div>
+          ))}
+        </div>
+      ))
+    }
+
+    <div class="relative h-[318px] lg:absolute lg:top-[2.99cqw] lg:left-1/2 lg:h-[54.97cqw] lg:w-[48cqw] lg:-translate-x-1/2">
+      <svg class="absolute inset-0 size-full overflow-visible lg:hidden">
+        <defs>
+          <g id="pit-body">
+            <rect width="100%" height="144" rx="24" />
+            <rect y="174" width="100%" height="144" rx="24" />
+            <svg x="50%" y="144" overflow="visible"><path d={bridge} /></svg>
+          </g>
+          <mask id="pit-outside" maskUnits="userSpaceOnUse" x="-10%" y="-10%" width="120%" height="120%">
+            <rect x="-10%" y="-10%" width="120%" height="120%" fill="white" />
+            <use href="#pit-body" fill="black" />
+          </mask>
+        </defs>
+        <use class="pane" href="#pit-body" />
+        <use class="rim" href="#pit-body" mask="url(#pit-outside)" />
+      </svg>
+
+      <div class="absolute inset-x-0 top-0 h-[144px] lg:h-[16.32cqw]">
+        {quotes.map((quote, k) => <MarketCard class:list={["card absolute inset-0", slots[k]]} quote={quote} large />)}
+      </div>
+
+      <div class="absolute inset-x-0 top-[174px] h-[144px] tabular-nums [--lag:0.04] lg:inset-x-[4.86cqw] lg:top-[19.32cqw] lg:h-[16.32cqw]">
+        {
+          quotes.map((quote, k) => {
+            const { asks, bids } = ladder(quote);
+            const row = (side: "ask" | "bid", level: (typeof asks)[number]) => (
+              <div class:list={[side, level.touch && "touch", "relative grid h-6 grid-cols-[3.5rem_1fr] items-center px-3"]}>
+                <span class:list={["bar absolute inset-y-0.5 left-0 rounded-control", level.width]} />
+                <span class="relative font-medium text-ink">{cents(level.price)}</span>
+                <span class="relative text-right text-ink">{shares(level.size)}</span>
+              </div>
+            );
+            return (
+              <div class:list={["card absolute inset-0 flex flex-col justify-center p-4 lg:p-6", slots[k]]}>
+                {asks.map((level) => row("ask", level))}
+                <div class="my-1.5 h-px bg-line" />
+                {bids.map((level) => row("bid", level))}
+              </div>
+            );
+          })
+        }
+      </div>
+
+      <div class="absolute inset-x-[9.72cqw] top-[38.65cqw] hidden h-[16.32cqw] items-center justify-center text-ink lg:flex">
+        <SkaleOnBase class="h-14 w-auto" />
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  @property --t {
+    syntax: "<number>";
+    inherits: true;
+    initial-value: 0;
+  }
+
+  .stage {
+    --u: calc(var(--t) * 6);
+    --n: round(down, var(--u), 1);
+    --frac: calc(var(--u) - var(--n));
+    --lag: 0;
+    --act: calc(clamp(0, (var(--frac) - 0.48) / 0.04, 1) * clamp(0, (0.6 - var(--frac)) / 0.06, 1));
+    animation: tick 24s linear infinite;
+  }
+
+  .shape {
+    fill: color-mix(in oklab, var(--color-paper) 62%, transparent);
+    stroke: var(--color-line);
+  }
+
+  .pane {
+    fill: var(--color-paper);
+    opacity: 0.62;
+  }
+
+  .rim {
+    fill: none;
+    stroke: var(--color-line);
+    stroke-width: 2;
+  }
+
+  .stage :global(.card) {
+    --on: calc(1 - clamp(0, abs(var(--n) - var(--k)), 1));
+    --i: clamp(0, (var(--frac) - var(--lag)) / 0.12, 1);
+    --o: clamp(0, (var(--frac) - 0.86 - var(--lag)) / 0.1, 1);
+    --fi: calc(var(--i) * var(--i) * (3 - 2 * var(--i)));
+    --fo: calc(var(--o) * var(--o) * (3 - 2 * var(--o)));
+    background: transparent;
+    border-color: transparent;
+    opacity: calc(var(--on) * var(--fi) * (1 - var(--fo)));
+    translate: 0 calc((1 - var(--fi)) * 0.375rem - var(--fo) * 0.375rem);
+  }
+
+  .bubble {
+    --pop: calc(clamp(0, (var(--frac) - var(--d)) / 0.05, 1) * clamp(0, (0.9 - var(--frac)) / 0.05, 1));
+    opacity: var(--pop);
+    scale: calc(0.8 + var(--pop) * 0.2);
+  }
+
+  .say {
+    opacity: calc(1 - clamp(0, abs(var(--n) - var(--k)), 1));
+    color: var(--hue);
+    background: color-mix(in oklab, var(--hue) 16%, var(--color-paper));
+  }
+
+  .say::before {
+    position: absolute;
+    width: 0.625rem;
+    height: 0.625rem;
+    content: "";
+    background: inherit;
+    rotate: 45deg;
+  }
+
+  .tail-l .say::before,
+  .tail-r .say::before {
+    top: 50%;
+    translate: 0 -50%;
+  }
+
+  .tail-t .say::before,
+  .tail-b .say::before {
+    left: 50%;
+    translate: -50% 0;
+  }
+
+  .tail-l .say::before {
+    left: -0.1875rem;
+  }
+
+  .tail-r .say::before {
+    right: -0.1875rem;
+  }
+
+  .tail-t .say::before {
+    top: -0.1875rem;
+  }
+
+  .tail-b .say::before {
+    bottom: -0.1875rem;
+  }
+
+  .yes,
+  .bid {
+    --hue: light-dark(#10b981, #34d399);
+  }
+
+  .no,
+  .ask {
+    --hue: light-dark(#f43f5e, #fb7185);
+  }
+
+  .bar {
+    background: color-mix(in oklab, var(--hue) 44%, transparent);
+  }
+
+  .touch .bar::after {
+    position: absolute;
+    inset: 0;
+    content: "";
+    border-radius: inherit;
+    background: var(--hue);
+    opacity: calc(var(--act) * 0.4);
+  }
+
+  .face {
+    animation: var(--idle) infinite ease-in-out;
+  }
+
+  @keyframes tick {
+    to {
+      --t: 1;
+    }
+  }
+
+  @keyframes bob {
+    50% {
+      translate: 0 -0.4cqw;
+    }
+  }
+
+  @keyframes tilt {
+    50% {
+      rotate: -3deg;
+    }
+  }
+
+  @keyframes breathe {
+    50% {
+      scale: 1.04;
+    }
+  }
+
+  @keyframes sway {
+    33% {
+      translate: 0.3cqw 0;
+      rotate: 2deg;
+    }
+
+    66% {
+      translate: -0.3cqw 0;
+      rotate: -1deg;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .stage,
+    .face {
+      animation-delay: -6s;
+      animation-play-state: paused;
+    }
+  }
+</style>

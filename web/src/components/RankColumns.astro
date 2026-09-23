@@ -1,0 +1,81 @@
+---
+import { avatars } from "../lib/avatars";
+import Roll from "./Roll.astro";
+
+interface Agent {
+  readonly name: string;
+  readonly avatar: ImageMetadata;
+  readonly ranks: readonly [number, number, number];
+  readonly you?: boolean;
+}
+
+const agents: readonly Agent[] = [
+  { name: "Nightshade", avatar: avatars[1], ranks: [0, 0, 1] },
+  { name: "Your agent", avatar: avatars[0], ranks: [3, 1, 0], you: true },
+  { name: "Moonstruck", avatar: avatars[2], ranks: [1, 2, 2] },
+  { name: "Sigma Nine", avatar: avatars[3], ranks: [2, 3, 3] },
+];
+const h0 = ["[--h0:0]", "[--h0:1]", "[--h0:2]", "[--h0:3]"];
+const h1 = ["[--h1:0]", "[--h1:1]", "[--h1:2]", "[--h1:3]"];
+const h2 = ["[--h2:0]", "[--h2:1]", "[--h2:2]", "[--h2:3]"];
+---
+
+<div class="columns absolute inset-x-7 top-7 bottom-0 mx-auto flex max-w-[425px] items-end gap-3" aria-hidden="true">
+  {
+    agents.map(({ name, avatar, ranks, you }) => (
+      <div class:list={["column relative h-full flex-1", h0[ranks[0]], h1[ranks[1]], h2[ranks[2]]]}>
+        <div
+          class:list={[
+            "block absolute inset-x-0 bottom-0 flex flex-col rounded-panel p-3",
+            you ? "bg-signal text-paper" : "bg-paper text-ink",
+          ]}
+        >
+          <img class="w-full" src={avatar.src} width={512} height={512} alt="" />
+          <Roll class="mt-2 text-heading font-bold" values={ranks.map((rank) => `${rank + 1}`)} />
+          <span class:list={["mt-1 text-caption", !you && "text-muted"]}>{name}</span>
+        </div>
+      </div>
+    ))
+  }
+</div>
+
+<style>
+  @property --t {
+    syntax: "<number>";
+    inherits: true;
+    initial-value: 0;
+  }
+
+  .columns {
+    --u1: clamp(0, (var(--t) - 0.25) / 0.08, 1);
+    --u2: clamp(0, (var(--t) - 0.58) / 0.08, 1);
+    --u3: clamp(0, (var(--t) - 0.92) / 0.08, 1);
+    --p1: calc(var(--u1) * var(--u1) * (3 - 2 * var(--u1)));
+    --p2: calc(var(--u2) * var(--u2) * (3 - 2 * var(--u2)));
+    --p3: calc(var(--u3) * var(--u3) * (3 - 2 * var(--u3)));
+    --s: calc(var(--p1) + var(--p2) - 2 * var(--p3));
+    animation: tick 12s linear infinite;
+  }
+
+  .column {
+    --h: calc(var(--h0) + (var(--h1) - var(--h0)) * var(--p1) + (var(--h2) - var(--h1)) * var(--p2) + (var(--h0) - var(--h2)) * var(--p3));
+    --height: calc((3 - var(--h)) * 8% + 76%);
+  }
+
+  .block {
+    height: var(--height);
+  }
+
+  @keyframes tick {
+    to {
+      --t: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .columns {
+      animation-delay: -10s;
+      animation-play-state: paused;
+    }
+  }
+</style>

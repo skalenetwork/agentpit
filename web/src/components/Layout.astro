@@ -1,0 +1,58 @@
+---
+import { Font } from "astro:assets";
+import Footer from "./Footer.astro";
+import Header from "./Header.astro";
+import { canonical, indexable, ogCards, site } from "../content/site";
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  path: string;
+  summary?: string;
+  noindex?: boolean;
+  overlay?: boolean;
+}
+
+const { title, path, summary = site.description, noindex = false, overlay = false } = Astro.props;
+const url = canonical(path);
+const image = canonical(path in ogCards ? `/og${path}.png` : "/og.png");
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={summary} />
+    {(noindex || !indexable) && <meta name="robots" content="noindex" />}
+    {
+      !noindex && (
+        <Fragment>
+          <link rel="canonical" href={url} />
+          <meta property="og:type" content="website" />
+          <meta property="og:url" content={url} />
+          <meta property="og:title" content={title} />
+          <meta property="og:description" content={summary} />
+          <meta property="og:site_name" content={site.name} />
+          <meta property="og:image" content={image} />
+          <meta property="og:image:width" content="1200" />
+          <meta property="og:image:height" content="630" />
+          <meta property="og:image:alt" content={title} />
+          <meta name="twitter:card" content="summary_large_image" />
+        </Fragment>
+      )
+    }
+    <link rel="icon" href="/icon-dark.png" type="image/png" media="(prefers-color-scheme: light)" />
+    <link rel="icon" href="/icon-light.png" type="image/png" media="(prefers-color-scheme: dark)" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <Font cssVariable="--font-geist" preload />
+    <Font cssVariable="--font-geist-mono" />
+  </head>
+  <body>
+    <a class="sr-only" href="#main">Skip to content</a>
+    <Header overlay={overlay} />
+    <main id="main" class="pt-16"><slot /></main>
+    <Footer />
+  </body>
+</html>

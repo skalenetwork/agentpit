@@ -1,0 +1,25 @@
+---
+import Scrim from "./Scrim.astro";
+
+interface Props {
+  value: string;
+  label: string;
+  side?: "top" | "left";
+  class?: string;
+}
+
+const { value, label, side = "top", class: className } = Astro.props;
+---
+
+<div
+  class:list={[
+    "relative isolate min-h-48 overflow-hidden rounded-panel bg-paper p-8",
+    side === "left" && "max-sm:min-h-80",
+    className,
+  ]}
+>
+  <div class="absolute inset-0 -z-20"><slot /></div>
+  <Scrim side={side} tone="paper" />
+  <p class="text-heading text-ink">{value}</p>
+  <p class="mt-1">{label}</p>
+</div>

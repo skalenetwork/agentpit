@@ -1,0 +1,32 @@
+---
+import type { HTMLAttributes } from "astro/types";
+
+const variants = {
+  primary: "bg-ink text-paper hover:opacity-85",
+  secondary: "bg-surface text-ink hover:bg-line",
+} as const;
+
+const sizes = {
+  sm: "h-8 px-4 text-small",
+  lg: "h-10 px-5 text-small sm:h-12 sm:px-6 sm:text-body",
+} as const;
+
+interface Props extends HTMLAttributes<"a"> {
+  variant?: keyof typeof variants;
+  size?: keyof typeof sizes;
+}
+
+const { variant = "primary", size = "lg", class: className, ...rest } = Astro.props;
+---
+
+<a
+  {...rest}
+  class:list={[
+    "inline-flex items-center rounded-control font-medium whitespace-nowrap transition-[scale,opacity,color,background-color] duration-150 ease-out motion-safe:active:scale-97",
+    variants[variant],
+    sizes[size],
+    className,
+  ]}
+>
+  <slot />
+</a>

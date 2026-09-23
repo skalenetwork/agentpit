@@ -1,0 +1,184 @@
+---
+import type { AstroComponent } from "@lucide/astro";
+
+interface Strategy {
+  readonly icon: AstroComponent;
+  readonly name: string;
+  readonly tagline: string;
+  readonly risk: 1 | 2 | 3;
+  readonly tint: string;
+}
+
+interface Props {
+  strategies: readonly Strategy[];
+}
+
+const { strategies } = Astro.props;
+const levels = [1, 2, 3] as const;
+---
+
+<div class="deck relative mx-auto mt-8 h-64 w-44 max-sm:origin-top max-sm:scale-75">
+  {
+    strategies.map(({ icon: Icon, name, tagline, risk, tint }, i) => (
+      <div class:list={["card absolute inset-0", `c${i}`]}>
+        <div class:list={["face h-full overflow-hidden rounded-panel", tint]}>
+          <div class="ink relative flex h-full flex-col items-center px-4 pt-4 text-center">
+            <span class="absolute inset-2 rounded-[16px] border border-current opacity-20" />
+            <span class="self-start text-caption leading-none font-bold">0{i + 1}</span>
+            <span class="mt-5 flex size-20 items-center justify-center rounded-control bg-current/15">
+              <Icon class="size-10" stroke-width={1.75} />
+            </span>
+            <span class="mt-4 text-title font-bold">{name}</span>
+            <span class="mt-1 text-caption opacity-70">{tagline}</span>
+            <span class="mt-3 flex items-center gap-1 text-caption font-medium">
+              <span class="mr-1 opacity-70">Risk</span>
+              {levels.map((level) => (
+                <span class:list={["size-1.5 rounded-control bg-current", level > risk && "opacity-30"]} />
+              ))}
+            </span>
+          </div>
+        </div>
+      </div>
+    ))
+  }
+</div>
+
+<style>
+  @property --turn {
+    syntax: "<angle>";
+    inherits: true;
+    initial-value: 0deg;
+  }
+
+  .deck {
+    --spring: linear(
+      0, 0.039, 0.134, 0.259, 0.393, 0.525, 0.645, 0.749, 0.834, 0.902, 0.953, 0.99, 1.014, 1.029, 1.037,
+      1.039, 1.038, 1.035, 1.03, 1.025, 1.02, 1.015, 1.011, 1.008, 1.005, 1.003, 1.002, 1.001, 1
+    );
+    perspective: 900px;
+    perspective-origin: 50% 40%;
+    transform-style: preserve-3d;
+  }
+
+  .card {
+    transform: translateY(calc((1 - cos(var(--turn))) * 16px - sin(var(--turn)) * 6px)) translateZ(-165px)
+      rotateY(var(--turn)) translateZ(165px) rotateY(calc(var(--turn) * -1))
+      rotateZ(calc(sin(var(--turn)) * 9deg));
+  }
+
+  .c1 {
+    --turn: 120deg;
+  }
+
+  .c2 {
+    --turn: 240deg;
+  }
+
+  .face {
+    position: relative;
+    background: linear-gradient(
+      150deg,
+      color-mix(in oklab, currentColor 90%, white),
+      currentColor 46%,
+      color-mix(in oklab, currentColor 82%, black)
+    );
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2);
+  }
+
+  .face::before,
+  .face::after {
+    position: absolute;
+    content: "";
+  }
+
+  .face::before {
+    inset: 0 auto 0 0;
+    width: 640px;
+    background: repeating-linear-gradient(
+      115deg,
+      #ff7ab8 0,
+      #ffd36e 80px,
+      #7ef0c0 160px,
+      #7ab8ff 240px,
+      #c69bff 320px,
+      #ff7ab8 400px
+    );
+    mix-blend-mode: soft-light;
+    opacity: 0.4;
+  }
+
+  .face::after {
+    inset: -30%;
+    translate: -130% 0;
+    background: linear-gradient(105deg, transparent 44%, rgb(255 255 255 / 0.5) 50%, transparent 56%);
+  }
+
+  .ink {
+    color: color-mix(in oklab, currentColor 18%, white);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .card {
+      animation: turn 9s var(--spring) infinite;
+    }
+
+    .face::before {
+      animation: foil 9s linear infinite;
+    }
+
+    .face::after {
+      animation: glint 9s ease-in-out infinite;
+    }
+
+    .c1,
+    .c1 .face::before,
+    .c1 .face::after {
+      animation-delay: -3s;
+    }
+
+    .c2,
+    .c2 .face::before,
+    .c2 .face::after {
+      animation-delay: -6s;
+    }
+  }
+
+  @keyframes turn {
+    0%,
+    21.11% {
+      --turn: 0deg;
+    }
+
+    33.33%,
+    54.44% {
+      --turn: 120deg;
+    }
+
+    66.66%,
+    87.78% {
+      --turn: 240deg;
+    }
+
+    100% {
+      --turn: 360deg;
+    }
+  }
+
+  @keyframes foil {
+    to {
+      translate: -441.35px 0;
+    }
+  }
+
+  @keyframes glint {
+    0%,
+    4% {
+      translate: -130% 0;
+    }
+
+    18%,
+    100% {
+      translate: 130% 0;
+    }
+  }
+</style>

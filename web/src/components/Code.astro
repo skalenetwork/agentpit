@@ -1,0 +1,16 @@
+---
+interface Props {
+  code: string;
+  inset?: boolean;
+  class?: string;
+}
+
+const { code, inset = false, class: className } = Astro.props;
+---
+
+<pre
+  class:list={[
+    "overflow-x-auto rounded-panel p-6 text-small text-ink",
+    inset ? "bg-paper" : "bg-surface",
+    className,
+  ]}><code>{code}</code></pre>

@@ -1,0 +1,40 @@
+---
+import Sombra from "./Sombra.astro";
+
+interface Props {
+  lead: string | readonly string[];
+  note?: string;
+  caption?: string;
+}
+
+const { lead, note, caption } = Astro.props;
+const visual = Astro.slots.has("visual");
+---
+
+<section class="relative isolate px-5 py-16 sm:px-12 sm:py-25">
+  {visual && <Sombra class="absolute inset-x-0 -top-16 bottom-0 -z-10" />}
+  <div class="mx-auto flex w-full max-w-page flex-col items-center text-center">
+    <div class:list={["flex flex-col items-center", visual && "scheme-dark [--color-muted:#cbd5e1]"]}>
+      <h1 class="text-display text-balance text-ink"><slot /></h1>
+      <p class="mt-3 max-w-prose text-body text-balance text-muted sm:text-lead">
+        {[lead].flat().map((line) => <span class="block">{line}</span>)}
+      </p>
+      {
+        Astro.slots.has("actions") && (
+          <div class="mt-8 flex flex-wrap justify-center gap-3">
+            <slot name="actions" />
+          </div>
+        )
+      }
+      {note && <p class="mt-4 max-w-prose text-caption text-muted">{note}</p>}
+    </div>
+    {
+      visual && (
+        <div class="relative mt-16 w-full overflow-hidden rounded-[40px] bg-line/50 backdrop-blur-xl max-sm:w-screen lg:aspect-[986/601]">
+          <slot name="visual" />
+        </div>
+      )
+    }
+    {caption && <p class="mt-4 text-caption text-muted">{caption}</p>}
+  </div>
+</section>

@@ -1,0 +1,60 @@
+---
+interface Props {
+  side?: "top" | "bottom" | "left";
+  tone?: "surface" | "paper";
+}
+
+const { side = "bottom", tone = "surface" } = Astro.props;
+
+const layers = [
+  "backdrop-blur-[1px] [--from:90%] [--to:100%]",
+  "backdrop-blur-[2px] [--from:82%] [--to:94%]",
+  "backdrop-blur-[4px] [--from:74%] [--to:86%]",
+  "backdrop-blur-[8px] [--from:66%] [--to:78%]",
+  "backdrop-blur-[16px] [--from:58%] [--to:70%]",
+];
+
+const placement = {
+  bottom: "inset-x-0 bottom-0 h-[52%]",
+  top: "inset-x-0 top-0 h-40",
+  left: "top-0 left-0 h-40 w-full sm:bottom-0 sm:h-auto sm:w-[64%]",
+};
+---
+
+<div class:list={["tint pointer-events-none absolute -z-10", placement[side], side, tone]} aria-hidden="true">
+  {layers.map((layer) => <div class:list={["layer absolute inset-0", layer]} />)}
+</div>
+
+<style>
+  .tint {
+    --tone: var(--color-surface);
+    --direction: to top;
+    background: linear-gradient(
+      var(--direction),
+      color-mix(in oklab, var(--tone) 90%, transparent) 55%,
+      color-mix(in oklab, var(--tone) 58%, transparent) 68%,
+      color-mix(in oklab, var(--tone) 27%, transparent) 80%,
+      color-mix(in oklab, var(--tone) 9%, transparent) 91%,
+      transparent
+    );
+  }
+
+  .layer {
+    mask-image: linear-gradient(var(--direction), #000 var(--from), transparent var(--to));
+  }
+
+  .paper {
+    --tone: var(--color-paper);
+  }
+
+  .top,
+  .left {
+    --direction: to bottom;
+  }
+
+  @media (width >= 40rem) {
+    .left {
+      --direction: to right;
+    }
+  }
+</style>

@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist);
+  --font-mono: var(--font-geist-mono);
+}
+
+@theme {
+  --color-*: initial;
+  --color-paper: light-dark(#ffffff, #020817);
+  --color-surface: light-dark(#f1f5f9, #1e293b);
+  --color-ink: light-dark(#020817, #f8fafc);
+  --color-muted: light-dark(#7a899f, #94a3b8);
+  --color-line: light-dark(#e2e8f0, #334155);
+  --color-signal: light-dark(#2563eb, #60a5fa);
+
+  --font-weight-*: initial;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 700;
+
+  --radius-*: initial;
+  --radius-control: calc(infinity * 1px);
+  --radius-panel: 24px;
+
+  --container-*: initial;
+  --container-page: 986px;
+  --container-prose: 736px;
+
+  --text-*: initial;
+  --text-display: clamp(40px, 6vw, 72px);
+  --text-display--line-height: 1.1;
+  --text-display--font-weight: 500;
+  --text-display--letter-spacing: -0.05em;
+  --text-heading: clamp(28px, 4vw, 40px);
+  --text-heading--line-height: 1.2;
+  --text-heading--font-weight: 500;
+  --text-heading--letter-spacing: -0.03em;
+  --text-title: 22px;
+  --text-title--line-height: 28px;
+  --text-title--font-weight: 500;
+  --text-title--letter-spacing: -0.02em;
+  --text-lead: 20px;
+  --text-lead--line-height: 28px;
+  --text-body: 16px;
+  --text-body--line-height: 24px;
+  --text-small: 14px;
+  --text-small--line-height: 20px;
+  --text-caption: 13px;
+  --text-caption--line-height: 18px;
+}
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+    scrollbar-color: color-mix(in oklab, var(--color-muted) 40%, transparent) transparent;
+    scrollbar-width: none;
+  }
+
+  * {
+    scrollbar-width: thin;
+  }
+
+  body {
+    background: var(--color-paper);
+    color: var(--color-muted);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    letter-spacing: -0.01em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+}
