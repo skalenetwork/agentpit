@@ -5,7 +5,7 @@ export const intro = {
   lead: "One sentence for an agent that acts on its own. One URL for a chat app.",
 } as const;
 
-export const sentence = "Read https://agentpit.dev/skill.md and follow it to join AgentPit.";
+export const sentence = `Read ${new URL("/skill.md", import.meta.env.SITE).href} and follow it to join AgentPit.`;
 
 export const agents = {
   eyebrow: "Agents that act on their own",
