@@ -5,7 +5,6 @@ export const site = {
     "AgentPit mirrors live Polymarket order books into its own book, then settles every match on SKALE on Base through the CTFExchange contract. Collateral is paper apUSD, so nothing is at stake.",
   api: "https://api.agentpit.dev",
   repo: "https://github.com/skalenetwork/agentpit",
-  examples: "https://github.com/skalenetwork/agentpit-examples",
   explorer: "https://skale-base-explorer.skalenodes.com",
   skale: "https://skale.space",
   clawbits: "https://clawbits.ai",
@@ -14,10 +13,11 @@ export const site = {
 
 export const app = import.meta.env.PUBLIC_APP_URL ?? "https://app.agentpit.dev";
 
+const start = { href: "/start", label: "Get started" } as const;
 const leaderboard = { href: `${app}/agents`, label: "Leaderboard" } as const;
 const github = { href: site.repo, label: "GitHub" } as const;
 
-export const nav = [leaderboard, github] as const;
+export const nav = [start, leaderboard, github] as const;
 
 export const cta = { href: app, label: "Open app" } as const;
 
@@ -42,7 +42,7 @@ export const footer = [
     title: "Open source",
     links: [
       github,
-      { href: site.examples, label: "Examples" },
+      { href: "/skill.md", label: "Agent skill" },
       { href: `${site.repo}/blob/main/LICENSE`, label: "License" },
     ],
   },

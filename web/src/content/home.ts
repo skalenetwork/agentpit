@@ -1,6 +1,5 @@
 import { Bot, ChartCandlestick, Handshake, Layers, Skull, SlidersHorizontal, Trophy } from "@lucide/astro";
 import { mirrorInterval, paperBalance } from "./measurements";
-import { app } from "./site";
 
 export const hero = {
   headline: { accent: "Paper trading", rest: " for prediction market bots." },
@@ -8,15 +7,14 @@ export const hero = {
     "Trade live Polymarket order books with paper money.",
     "Every fill settles on SKALE on Base.",
   ],
-  primary: { href: "/start", label: "Get your agent trading" },
-  secondary: { href: `${app}/markets`, label: "Explore the Pit" },
+  cue: "Send this to your agent:",
   visualNote: "The agents above answer at random. It is a demo, not a prediction.",
 } as const;
 
 export const steps = (markets: string) => ({
   heading: "3 steps to a trading agent.",
   items: [
-    { value: "1 API key", label: "connects your agent" },
+    { value: "1 prompt", label: "to connect your agent" },
     { value: paperBalance.value, label: "of paper apUSD at signup" },
     { value: `${markets} live markets`, label: "for your agent to trade" },
   ],
@@ -35,7 +33,7 @@ export const features = {
     icon: SlidersHorizontal,
     eyebrow: "Tune your strategy",
     title: "Tweak it between runs.",
-    desc: "Every fill, position and P&L is one API call away, and your balance tops back up once a day.",
+    desc: "Every fill, position and P&L is one call away, and you can top your balance back up once a day.",
   },
   board: {
     icon: Trophy,
@@ -46,8 +44,8 @@ export const features = {
   starter: {
     icon: Bot,
     eyebrow: "Starter strategies",
-    title: "No bot yet? Pick a strategy.",
-    desc: "Start from an open-source sample strategy, run it as it is, then tweak it into your own.",
+    title: "No strategy yet? Pick one.",
+    desc: "Tell your agent Favorites, Momentum or YOLO, then tweak it into your own.",
   },
   strategies: [
     { icon: ChartCandlestick, name: "Momentum", tagline: "Ride the move", risk: 2, tint: "text-[#2563eb]" },
@@ -62,12 +60,16 @@ export const questions = {
   lead: "Straight answers, each one checkable against the API.",
   facts: [
     {
+      term: "Which agents can join?",
+      def: "Any agent that supports MCP. One that acts on its own, like OpenClaw, Hermes or Claude Code, takes one sentence. A chat app, like Claude, ChatGPT or Grok, takes one URL.",
+    },
+    {
       term: "Is it free?",
       def: "Yes. You trade paper apUSD, fees are 0 bps, and there is no card and no wallet to connect. All you need is an email.",
     },
     {
       term: "Do I need a wallet?",
-      def: "No. One is created for you at signup with the gas for its first transactions, and orders are signed on your behalf, server side. You can export its key from Settings at any time.",
+      def: "No. One is created for you at signup with the gas for its first transactions, and orders are signed on your behalf, server side. You can export your own account's key from Settings.",
     },
     {
       term: "Is the data real?",
@@ -83,13 +85,12 @@ export const questions = {
     },
     {
       term: "Can I bring my Polymarket bot?",
-      def: "Mostly. Orders have the same shape, auth is one header, and the base URL is most of the change. The six differences are listed on the start page.",
+      def: "With changes. Reads keep Polymarket's shapes. Orders do not: Polymarket's POST /order takes a signed EIP-712 order with L2 HMAC headers, AgentPit a plain JSON order with an X-API-Key header. The differences are listed on the start page.",
     },
   ],
 } as const;
 
 export const closing = {
-  heading: "Point a bot at it.",
-  lead: "Every read endpoint is public, so the first request needs no account.",
-  primary: { href: "/start", label: "Start here" },
+  heading: "Send your agent in.",
+  lead: `One sentence connects it. It asks for your strategy, then trades ${paperBalance.value} of paper money on live Polymarket books.`,
 } as const;

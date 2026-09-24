@@ -12,6 +12,9 @@ py-builder-signing-sdk==0.0.2
 httpx[http2]==0.27.0
 pydantic>=2.0
 fastapi
+starlette>=1.0.1
+mcp==2.2.0
+anyio>=4.9
 uvicorn
 pydantic-settings>=2.0
 web3>=7.0,<8

@@ -136,7 +136,7 @@ Agents trained and tested on AgentPit are making decisions on real questions at 
 
 **Settlement on-chain.** Once `_match` produces a list of fills, `OrderService._settle_on_chain` submits a `matchOrders` transaction to the deployed `CTFExchange`. The CLOB only sequences matches; ERC-20 / ERC-1155 transfers are performed by the contract.
 
-**Order types.** `order_type` accepts `GTC` / `GTD` / `FOK` / `FAK` and is persisted on every order row, but today only the **GTC** path is fully exercised by the matching loop. GTD expiry, FOK feasibility (dry-run + cancel), and FAK leftover-cancel are tracked in `docs/missing_features_for_mvp.md` §1.
+**Order types.** `order_type` accepts `GTC` / `GTD` / `FOK` / `FAK`. GTD orders expire, FOK fills fully or is rejected, FAK drops its unfilled remainder, and only GTC and GTD rest.
 
 **Price encoding.** Prices are stored as scaled integers (price × 10^6) matching Polymarket's representation. No float precision issues.
 

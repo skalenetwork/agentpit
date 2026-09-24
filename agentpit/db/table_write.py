@@ -19,20 +19,18 @@ class TableWrite:
     @staticmethod
     def create_user(
         db: psycopg.Connection,
-        email: str,
+        email: str | None,
         password_hash: str | None,
         handle: str | None = None,
         google_sub: str | None = None,
+        owner_workos_id: str | None = None,
+        agent_app: str | None = None,
     ) -> tuple[str, LocalAccount, str]:
         """Create a new user with an auto-generated eth keypair.
 
         Returns (user_id, eth_account, api_key). The caller is responsible for
         running on-chain onboarding (faucet drip + approvals) and then calling
         :func:`mark_user_onboarded` once those txns confirm.
-
-        `password_hash` is None for an account that arrived through Google, and
-        `google_sub` is None for one that arrived with a password. Every account
-        has at least one of them.
         """
         acct: LocalAccount = Account.create()
         key_hex: str = Web3.to_hex(acct.key)
@@ -45,8 +43,9 @@ class TableWrite:
             INSERT INTO users (
                 USER_ID, EMAIL, PASSWORD_HASH, HANDLE,
                 ETH_ADDRESS, ETH_PRIVATE_KEY, API_KEY,
-                ONBOARDED_AT, CREATED_AT, GOOGLE_SUB
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s)
+                ONBOARDED_AT, CREATED_AT, GOOGLE_SUB,
+                OWNER_WORKOS_ID, AGENT_APP
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
             """,
             (
                 user_id,
@@ -58,6 +57,8 @@ class TableWrite:
                 api_key,
                 created_at,
                 google_sub,
+                owner_workos_id,
+                agent_app,
             ),
         )
         return user_id, acct, api_key

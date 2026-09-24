@@ -49,9 +49,9 @@ def test_a_domain_without_a_scheme_complains_but_does_not_raise(caplog):
 
     This used to raise. `Settings()` is built by `create_app` before anything
     serves, so raising crash-looped the api container -- and it did so over a
-    value nothing reads: the issuer and the JWKS URL both derive from
+    value SPA sign-in does not read: its issuer and JWKS URL both derive from
     `workos_client_id` (`authkit_issuer` / `authkit_jwks_url`). A schemeless
-    domain cost every trading bot `/order` and cost sign-in nothing.
+    domain only leaves /mcp off; it must not cost every trading bot `/order`.
     """
     with caplog.at_level(logging.ERROR, logger="agentpit.config"):
         s = _settings(workos_authkit_domain="example.authkit.app")

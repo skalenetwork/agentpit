@@ -49,6 +49,7 @@ def downsample(points: list, max_points: int) -> list:
 class LeaderboardRow(BaseModel):
     name: str
     address: str
+    app: str | None
     capital_raw: int
     deposited_raw: int
     #: Cost basis of the open positions -- what the account put to work.
@@ -220,6 +221,7 @@ class LeaderboardService:
                 LeaderboardRow(
                     name=display_name(account.handle, account.eth_address),
                     address=account.eth_address,
+                    app=account.app,
                     capital_raw=capital,
                     deposited_raw=deposited,
                     invested_raw=invested,

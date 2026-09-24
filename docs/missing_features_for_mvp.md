@@ -6,9 +6,9 @@ Five features stand between the current codebase and a shippable MVP. All five a
 
 ---
 
-## 1. Order Endpoint Surface — gaps + matching-loop semantics
+## 1. Order Endpoint Surface: gaps
 
-The core order endpoints exist today against `OrderService` (`POST /orders`, `DELETE /orders/{order_id}`, `GET /orderbook/{market_id}/{outcome}` — see `agentpit/api/routes/orders.py`). Three things are still missing for a complete trading surface:
+The core order endpoints exist today against `OrderService` (`POST /orders`, `DELETE /orders/{order_id}`, `GET /orderbook/{market_id}/{outcome}`, see `agentpit/api/routes/orders.py`). Two things are still missing for a complete trading surface:
 
 **Endpoints to add:**
 
@@ -17,14 +17,6 @@ The core order endpoints exist today against `OrderService` (`POST /orders`, `DE
 | `DELETE` | `/orders` | Cancel all live orders for the current user |
 | `GET` | `/orders/{order_id}` | Order status and fill state |
 | `GET` | `/orders` | List the caller's open / recent orders |
-
-**Matching-loop semantics to implement in `OrderService._match`:**
-
-The `order_type` field is stored on every order but only **GTC** is exercised today. The other three need behaviour wired in:
-
-- **GTD (Good-Till-Date)** — sweep `STATUS='live'` orders with `EXPIRATION <= now` to `STATUS='expired'`. Either run lazily before each match (like the deleted `_process_expired_orders`) or as a periodic task.
-- **FOK (Fill-Or-Kill)** — run `_match(..., dry_run=True)` first; if the dry run can't fill the full size, mark the order `cancelled` and skip settlement.
-- **FAK (Fill-And-Kill)** — after matching, cancel any unfilled remainder instead of leaving it resting.
 
 **Order ID format:** the current internal ID is `keccak256` over a sorted JSON of the signed fields. If the long-term goal is interoperability with Polymarket's exchange (so a sandbox order ID is recognised by the live `CTFExchange`), this needs to be replaced with the EIP-712 struct hash.
 
@@ -141,7 +133,7 @@ Dependency order — backend first, UI last:
 
 | # | Feature | Scope |
 |---|---|---|
-| 1 | Order-type semantics (GTD/FOK/FAK) + missing order endpoints | Backend |
+| 1 | Missing order endpoints | Backend |
 | 2 | Market state guard on split / merge | Backend |
 | 3 | Polymarket sync REST trigger | Backend |
 | 4 | Trade fills in transaction history | Backend |

@@ -85,6 +85,10 @@ class InsufficientBalanceError(BusinessRuleError):
     pass
 
 
+class OrderNotFilledError(BusinessRuleError):
+    pass
+
+
 class InvalidPaginationError(BusinessRuleError):
     pass
 

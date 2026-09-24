@@ -28,6 +28,7 @@ from agentpit.domain.exceptions import (
     MarketNotFoundError,
     MarketStateError,
     NotFoundError,
+    OrderNotFilledError,
 )
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.order_signer import OrderData, sign_order
@@ -182,7 +183,7 @@ class OrderService:
                     order_type=payload.order_type,
                 )
                 taker_row = self._get_order_row(conn, order_id)
-                matches = self._match(conn, taker_row, dry_run=False)
+                matches = self._match(conn, taker_row)
         except psycopg.errors.UniqueViolation:
             # A concurrent request claimed this client_order_id first; the row is
             # committed by the time the violation fires, so replay its order. A
@@ -886,9 +887,7 @@ class OrderService:
             raise RuntimeError(f"order {order_id} not found post-insert")
         return row
 
-    def _match(
-        self, conn, taker_row, *, dry_run: bool
-    ) -> list[dict]:
+    def _match(self, conn, taker_row) -> list[dict]:
         """Match the taker order against resting orders.
 
         Considers two cross types:
@@ -899,7 +898,7 @@ class OrderService:
 
         Returns a list of match dicts with keys: maker_order_id, price,
         trade_size, maker_row, match_kind. Updates DB rows for both sides
-        and inserts trade rows when not in dry_run.
+        and inserts trade rows.
         """
         taker_side = taker_row["SIDE"]
         taker_price = int(taker_row["PRICE"])
@@ -988,8 +987,16 @@ class OrderService:
                 }
             )
 
-        if dry_run:
-            return matches
+        order_type = taker_row["ORDER_TYPE"]
+        if order_type == "FOK" and taker_remaining:
+            raise OrderNotFilledError(
+                "order couldn't be fully filled. FOK orders are fully filled or killed."
+            )
+        if order_type == "FAK" and not matches:
+            raise OrderNotFilledError(
+                "no orders found to match with FAK order. FAK orders are partially "
+                "filled or killed if no match is found."
+            )
 
         # Apply DB updates
         for m in matches:
@@ -1001,7 +1008,7 @@ class OrderService:
             )
             m["trade_id"] = self._insert_trade(conn, taker_row, m)
 
-        new_taker_status = "matched" if taker_remaining == 0 else "live"
+        new_taker_status = "live" if taker_remaining and order_type != "FAK" else "matched"
         conn.execute(
             "UPDATE orders SET REMAINING_AMOUNT=%s, STATUS=%s WHERE ORDER_ID=%s",
             (taker_remaining, new_taker_status, taker_row["ORDER_ID"]),

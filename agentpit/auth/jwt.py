@@ -14,7 +14,7 @@ class JwtCoder:
         self._algorithm = settings.jwt_algorithm
         self._ttl_seconds = settings.jwt_expires_seconds
 
-    def encode(self, *, user_id: str, email: str) -> str:
+    def encode(self, *, user_id: str, email: str | None) -> str:
         now = int(time.time())
         payload = {
             "sub": user_id,

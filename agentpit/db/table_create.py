@@ -147,7 +147,7 @@ class TableCreate:
             """
             CREATE TABLE IF NOT EXISTS users (
                 USER_ID         TEXT PRIMARY KEY,
-                EMAIL           TEXT NOT NULL UNIQUE,
+                EMAIL           TEXT UNIQUE,
                 PASSWORD_HASH   TEXT,
                 HANDLE          TEXT UNIQUE,
                 ETH_ADDRESS     TEXT NOT NULL UNIQUE,
@@ -187,6 +187,8 @@ class TableCreate:
             ("KEY_EXPORT_ATTEMPT_AT", "BIGINT"),
             ("AUTO_REDEEM_ENABLED", "BOOLEAN NOT NULL DEFAULT FALSE"),
             ("WORKOS_USER_ID", "TEXT"),
+            ("OWNER_WORKOS_ID", "TEXT"),
+            ("AGENT_APP", "TEXT"),
         ]
         for col, col_type in additions:
             conn.execute(
@@ -210,6 +212,11 @@ class TableCreate:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_workos_user_id "
             "ON users(WORKOS_USER_ID)"
+        )
+        conn.execute("ALTER TABLE users ALTER COLUMN EMAIL DROP NOT NULL")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_owner_app "
+            "ON users(OWNER_WORKOS_ID, AGENT_APP)"
         )
 
     @staticmethod

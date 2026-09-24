@@ -25,7 +25,7 @@
 
   --container-*: initial;
   --container-page: 986px;
-  --container-prose: 736px;
+  --container-text: 736px;
 
   --text-*: initial;
   --text-display: clamp(40px, 6vw, 72px);

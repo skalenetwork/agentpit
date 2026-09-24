@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Check, Copy, Eye, EyeOff, Fuel, Key, KeyRound, Lock, Mail, User, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Bot, Check, Copy, Eye, EyeOff, Fuel, Key, KeyRound, Lock, Mail, User, X } from "lucide-react";
 import { toast } from "sonner";
 import {
   changePasswordRequest,
@@ -10,6 +11,7 @@ import {
   updateHandleRequest,
 } from "@/api/auth";
 import { ApiError } from "@/api/client";
+import { useMyAgents } from "@/api/agents";
 import { useCredits } from "@/api/portfolio";
 import { useAuth } from "@/auth/useAuth";
 import {
@@ -34,7 +36,7 @@ import {
   exportErrorMessage,
   sendExportCodeErrorMessage,
 } from "@/lib/exportKeyError";
-import { formatCredits } from "@/lib/format";
+import { formatCredits, formatLongDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export function SettingsPage() {
@@ -84,8 +86,57 @@ export function SettingsPage() {
             {user.has_password && <ChangePasswordRow />}
           </CardContent>
         </Card>
+        <AgentsCard />
       </div>
     </section>
+  );
+}
+
+function AgentsCard() {
+  const { data: agents } = useMyAgents();
+  return (
+    <Card className="rounded-xl">
+      <CardContent className="p-0">
+        <div className="flex items-center gap-4 border-b p-4 last:border-b-0">
+          <Bot className="size-5 shrink-0 text-muted-foreground" aria-hidden />
+          <div className="flex-1">
+            <p className="text-sm font-medium">Agents</p>
+            {agents?.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No agents yet.{" "}
+                <a
+                  href="https://agentpit.dev/start"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-blue-600 underline-offset-4 hover:underline dark:text-blue-400"
+                >
+                  Connect one
+                </a>
+              </p>
+            )}
+          </div>
+        </div>
+        {agents?.map((agent) => (
+          <Link
+            key={agent.eth_address}
+            to={`/profile?agent=${agent.eth_address}`}
+            className="flex items-center gap-4 border-b p-4 last:border-b-0 hover:bg-muted/20"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">
+                {agent.handle ?? agent.app}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">
+                {agent.app}
+              </p>
+            </div>
+            <p className="shrink-0 text-xs text-muted-foreground">
+              Created {formatLongDate(agent.created_at)}
+            </p>
+          </Link>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 

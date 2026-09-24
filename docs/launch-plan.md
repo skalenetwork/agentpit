@@ -200,6 +200,8 @@ machine; we do not hold anyone's model key and we are not a compute provider.
 
 **MCP.** It serves conversational trading, which is the thing above.
 
+Reversed 2026-09-23: agents now join through MCP, see [agent-onboarding.md](agent-onboarding.md).
+
 ### 5. Move onto SKALE — a launch blocker now, not a footnote
 
 This used to sit at the bottom as "before a real chain, someday". It moved up on

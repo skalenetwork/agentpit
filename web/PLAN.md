@@ -60,6 +60,7 @@ Ownership and indexability for the whole surface. Phase column says when it ship
 |---|---|---|---|---|
 | `/` | on demand | yes | 60 / 300 | 1 |
 | `/start` | prerendered | yes | asset layer | 1 |
+| `/skill.md` | prerendered, `text/markdown` | yes | asset layer | 1 |
 | `/docs` | prerendered | yes | asset layer | 1 |
 | `/docs/[...slug]` | prerendered | yes | asset layer | 1 |
 | `/docs/[...slug].md` | prerendered, `text/markdown` | yes, `Link: rel=canonical` header | asset layer | 1 |
@@ -102,7 +103,7 @@ pages. The home page carries live proof, which is the one reason the adapter is 
 **Ships**
 
 1. `/` with the positioning, a runnable curl, a live market strip and the top of the board as proof.
-2. `/start`: swap the base URL, get a key, read a book, place an order, check holdings.
+2. `/start`: the agent sentence, connector steps per app, then REST steps for developers.
 3. `/docs` index plus `/docs/api` and `/docs/polymarket-compatibility`, each with a `.md` twin.
 4. `robots.txt`, `sitemap.xml` and `sitemap-pages.xml`, `llms.txt`, `llms-full.txt`, real `404`.
 5. Baked OG cards for home, start and docs.
@@ -259,7 +260,8 @@ configured `markdown.processor` needs it declared). **`@cf-wasm/og`** until phas
   `Cloudflare-CDN-Cache-Control` and `Cache-Tag`, adds an automatic `astro-path:` tag, and does not
   touch `Cache-Control`, so the browser-facing header stays ours and per-URL purge is free.
 - `security: { csp: { algorithm: 'SHA-256' } }`, leaving script-src and style-src to Astro so it can
-  inject its own hashes. Cloudflare Web Analytics needs its script host allowed and its collector host
+  inject its own hashes. Astro skips `is:inline` scripts, so `astro.config.ts` hashes the one inline
+  script, `src/scripts/copy.js`, into `scriptDirective.hashes`. Cloudflare Web Analytics needs its script host allowed and its collector host
   in `connect-src`, and those are two different hosts: verify against the live beacon once deployed
   rather than assuming, because a missing collector host is a silent zero, not a visible error.
 - `devToolbar: { enabled: false }`.
@@ -388,7 +390,7 @@ Rules a reviewer can apply without a judgement call.
 13. One motion instance, guarded by `prefers-reduced-motion`. No scroll reveals, no count-ups.
 14. No icons as decoration, no stock illustration, no mascot, no logo wall, no testimonial row.
 15. No inline code comments in shipped source.
-16. Total client JS on the apex is the analytics beacon. State that rather than claiming zero.
+16. Total client JS on the apex is the analytics beacon and the Copy button. State that rather than claiming zero.
 
 ### Banned claims, by name
 
@@ -403,11 +405,11 @@ committed creation bytecode, `scripts/deploy_exchange.sh:120-134`). "Identical P
 We hold the user's private key. Of a 40-market sample, 23 were two-sided; of 60, 9 had any trade tape;
 the worst mirrored midpoint was 4.3 cents stale.
 
-### Launch gate: sample strategies
+### Sample strategies
 
-The "Starter strategies" card on the home page promises a choice of open-source sample strategies. On
-21 September 2026 `skalenetwork/agentpit-examples` holds one reference agent, not several strategies, so
-the card must not ship before the examples repo offers the choice. The copy names no count on purpose.
+Resolved 23 September 2026: `/skill.md` carries Favorites, Momentum and YOLO as text, the agent asks its
+owner to pick one at setup, and the "Starter strategies" card says to tell your agent one of them. No
+sample code ships.
 
 The three strategies the card's visual names, chosen 21 September 2026 because each is a plain rule over
 endpoints that already exist:
@@ -418,9 +420,6 @@ endpoints that already exist:
   price has risen by a set amount over the last day, exit when it reverses.
 - **YOLO** (skull, risk 3): long shots. Spread small stakes over outcomes priced under about 5 cents; most
   expire worthless and a hit pays twenty to one or better.
-
-The existing reference agent, a model that forecasts a probability without seeing the price, is a fourth
-candidate and the natural "bring your own model" option; the deck shows three.
 
 ### Launch gate: SKALE on Base
 
@@ -451,12 +450,10 @@ table, including the two facts that look worst if a reader finds them unaided).
 ### Docs
 
 Phase 1 publishes `/docs` plus `/docs/api` and `/docs/polymarket-compatibility`. Phase 2 adds
-trading-model, orders, settlement and a reference agent, each of which has to be written rather than
-moved.
+trading-model, orders and settlement, each of which has to be written rather than moved.
 
 `docs/API.md` cannot be globbed as-is. Its curls point at `http://localhost:8000`, it documents a
-`400 MarketStateError` that does not exist, it says FOK and FAK work when they rest like a GTC, it
-advertises a `/get-started` page that was deleted, and it covers 36 of the 49 live paths. The reference
+`400 MarketStateError` that does not exist, and it does not cover every live path. The reference
 becomes a committed snapshot of the live OpenAPI schema plus a refresh script, with hand-written prose
 around it. No build depends on production being up.
 

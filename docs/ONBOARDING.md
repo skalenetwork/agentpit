@@ -49,7 +49,7 @@ This table is the fastest way to understand where to contribute. The roadmap ite
 | Polymarket market sync (Gamma API) | ✅ Built | `agentpit/polymarket/polymarket_sync.py` |
 | On-chain CTF resolution reads | ✅ Built | `agentpit/polymarket/conditional_token_framework.py` |
 | REST endpoints for order submission (`POST /orders`, `DELETE /orders/{id}`, `GET /markets/{id}/orderbook`) | ✅ Built | `agentpit/api/routes/orders.py` |
-| GTD / FOK / FAK order-type semantics | ❌ MVP | `missing_features_for_mvp.md` §1 |
+| GTD / FOK / FAK order-type semantics | ✅ Built | `agentpit/services/order_service.py` |
 | Market state guard on `split_position` / `merge_positions` | ❌ MVP | `missing_features_for_mvp.md` §2 |
 | Polymarket sync REST trigger (`/sync`) | ❌ MVP | `missing_features_for_mvp.md` §3 |
 | Trade fills in transaction history | ❌ MVP | `missing_features_for_mvp.md` §4 |
@@ -256,9 +256,8 @@ These are known and documented — don't be surprised when you find them:
 | Bug | File | Description |
 |-----|------|-------------|
 | No state guard on split/merge | `services/position_service.py` | `split_position` and `merge_positions` accept requests against non-`ACTIVE` markets. Fix: `check_state(market.market_state == MarketState.ACTIVE)`. |
-| Only GTC is exercised by the matching loop | `services/order_service.py` | `order_type` is stored on the order row but GTD/FOK/FAK semantics are not implemented; they need to be added to `OrderService._match`. |
 
-Both are captured in `missing_features_for_mvp.md` and are good first fixes.
+It is captured in `missing_features_for_mvp.md` and is a good first fix.
 
 ---
 

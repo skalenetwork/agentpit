@@ -1,6 +1,5 @@
 ---
 import BookLadder from "../components/BookLadder.astro";
-import Button from "../components/Button.astro";
 import Facts from "../components/Facts.astro";
 import FeatureCard from "../components/FeatureCard.astro";
 import Hero from "../components/Hero.astro";
@@ -8,6 +7,7 @@ import HeroStage from "../components/HeroStage.astro";
 import KeyWire from "../components/KeyWire.astro";
 import Layout from "../components/Layout.astro";
 import MarketStream from "../components/MarketStream.astro";
+import Prompt from "../components/Prompt.astro";
 import RankColumns from "../components/RankColumns.astro";
 import Section from "../components/Section.astro";
 import StatCard from "../components/StatCard.astro";
@@ -18,6 +18,7 @@ import sombra from "../assets/sombra.avif";
 import { closing, features, hero, questions, steps } from "../content/home";
 import { activeMarkets as snapshot, book, quotes } from "../content/measurements";
 import { site } from "../content/site";
+import { sentence } from "../content/start";
 import { activeMarkets } from "../lib/api";
 
 export const prerender = false;
@@ -31,10 +32,12 @@ const {
 <Layout title={`${site.name}: ${site.tagline}`} path="/" overlay>
   <Hero lead={hero.subhead} caption={hero.visualNote}>
     <span class="text-signal">{hero.headline.accent}</span>{hero.headline.rest}
-    <Fragment slot="actions">
-      <Button href={hero.primary.href}>{hero.primary.label}</Button>
-      <Button href={hero.secondary.href} variant="secondary">{hero.secondary.label}</Button>
-    </Fragment>
+    <div slot="actions" class="flex flex-col items-center gap-3">
+      <p class="text-body text-balance text-muted [text-box:trim-start_cap_alphabetic] sm:text-lead">{hero.cue}</p>
+      <div class="flex w-full scheme-light-dark rounded-panel bg-surface/70 p-2.5 backdrop-blur-xl lg:rounded-control lg:p-3.75">
+        <Prompt class="grow" text={sentence} />
+      </div>
+    </div>
     <HeroStage slot="visual" quotes={quotes.items} />
   </Hero>
 
@@ -67,7 +70,7 @@ const {
 
   <section class="px-5 py-16 sm:px-12 sm:py-25">
     <div
-      class="relative isolate mx-auto flex max-w-page flex-col items-center overflow-hidden rounded-panel bg-surface px-8 py-16 text-center sm:py-24"
+      class="relative isolate mx-auto flex max-w-page flex-col items-center overflow-hidden rounded-panel bg-surface px-5 py-16 text-center sm:px-8 sm:py-20"
     >
       <img
         class="absolute inset-x-0 bottom-0 -z-10 h-28 w-full object-cover sm:h-36"
@@ -78,9 +81,9 @@ const {
         loading="lazy"
         decoding="async"
       />
-      <h2 class="text-display text-balance text-ink">{closing.heading}</h2>
-      <p class="mt-3 max-w-prose text-lead text-balance">{closing.lead}</p>
-      <Button class="mt-8" href={closing.primary.href}>{closing.primary.label}</Button>
+      <h2 class="text-display text-balance text-ink [text-box:trim-start_cap_alphabetic]">{closing.heading}</h2>
+      <p class="mt-3 max-w-text text-lead text-balance">{closing.lead}</p>
+      <Prompt class="mt-8" text={sentence} />
     </div>
   </section>
 </Layout>

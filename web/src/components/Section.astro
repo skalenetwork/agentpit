@@ -15,7 +15,7 @@ const { align = "center", eyebrow, heading, lead, tinted = false } = Astro.props
     <div
       class:list={[
         "flex flex-col gap-3",
-        align === "center" ? "items-center text-center" : "max-w-prose",
+        align === "center" ? "items-center text-center" : "max-w-text",
       ]}
     >
       {eyebrow && <p class="font-medium text-signal">{eyebrow}</p>}

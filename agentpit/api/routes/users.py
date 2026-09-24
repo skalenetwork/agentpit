@@ -12,6 +12,7 @@ from agentpit.api.deps import (
     OnchainAdminDep,
     SessionDep,
 )
+from agentpit.datastructures.agent_summary import AgentSummary
 from agentpit.datastructures.auth_response import UserPublic
 from agentpit.datastructures.change_password_request import ChangePasswordRequest
 from agentpit.datastructures.private_key_request import (
@@ -47,6 +48,14 @@ class CreditsWire(BaseModel):
 @router.get("/me", response_model=UserPublic)
 def get_me(user: CurrentUserDep) -> UserPublic:
     return UserPublic.model_validate(user.model_dump())
+
+
+@router.get("/me/agents", response_model=list[AgentSummary])
+def get_my_agents(user: CurrentUserDep, db: SessionDep) -> list[AgentSummary]:
+    if user.workos_user_id is None:
+        return []
+    with db.read() as conn:
+        return TableRead.agents_owned_by(conn, user.workos_user_id)
 
 
 @router.patch("/me", response_model=UserPublic)

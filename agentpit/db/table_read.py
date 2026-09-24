@@ -2,13 +2,14 @@ import json
 import time
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass
 import psycopg
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
+from pydantic import BaseModel
 from web3 import Web3
 
 from agentpit.utils.parse import parse_32b_hex_private_key
+from agentpit.datastructures.agent_summary import AgentSummary
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.event_sort import EventSort
 from agentpit.datastructures.market import Market
@@ -18,11 +19,11 @@ from agentpit.liquidity.tape import MIRROR_API_KEY
 from ..datastructures.condition_id import ConditionId
 
 
-@dataclass(frozen=True)
-class TradedAccount:
+class TradedAccount(BaseModel):
     user_id: str
     eth_address: str
     handle: str | None
+    app: str | None
 
 
 def _excluded_lower(excluded: "Iterable[str] | None") -> "list[str]":
@@ -321,7 +322,7 @@ class TableRead:
 
     _USER_COLS = (
         "USER_ID, EMAIL, HANDLE, ETH_ADDRESS, ETH_PRIVATE_KEY, "
-        "API_KEY, ONBOARDED_AT, CREATED_AT, IS_BOT, WORKOS_USER_ID, "
+        "API_KEY, ONBOARDED_AT, CREATED_AT, IS_BOT, WORKOS_USER_ID, AGENT_APP, "
         "(PASSWORD_HASH IS NOT NULL) AS HAS_PASSWORD, "
         "(AUTO_REDEEM_ENABLED) AS AUTO_REDEEM"
     )
@@ -343,6 +344,7 @@ class TableRead:
             has_password=bool(row["HAS_PASSWORD"]),
             auto_redeem=bool(row["AUTO_REDEEM"]),
             workos_user_id=row["WORKOS_USER_ID"],
+            agent_app=row["AGENT_APP"],
         )
 
     @staticmethod
@@ -360,6 +362,24 @@ class TableRead:
             (api_key,),
         ).fetchone()
         return TableRead._row_to_user(row) if row else None
+
+    @staticmethod
+    def get_agent(db: psycopg.Connection, owner_workos_id: str, app: str) -> "User | None":
+        row = db.execute(
+            f"SELECT {TableRead._USER_COLS} FROM users "
+            "WHERE OWNER_WORKOS_ID = %s AND AGENT_APP = %s",
+            (owner_workos_id, app),
+        ).fetchone()
+        return TableRead._row_to_user(row) if row else None
+
+    @staticmethod
+    def agents_owned_by(db: psycopg.Connection, owner_workos_id: str) -> list[AgentSummary]:
+        rows = db.execute(
+            "SELECT HANDLE, AGENT_APP AS APP, ETH_ADDRESS, CREATED_AT FROM users "
+            "WHERE OWNER_WORKOS_ID = %s ORDER BY CREATED_AT, AGENT_APP",
+            (owner_workos_id,),
+        ).fetchall()
+        return [AgentSummary.model_validate(r) for r in rows]
 
     @staticmethod
     def get_idempotency_order_id(
@@ -524,7 +544,7 @@ class TableRead:
     #: trades at all -- so each probe reads all 523,000 rows, thirty times per
     #: request. See the test for the full measurement.
     TRADED_ACCOUNTS_SQL = """
-            SELECT u.USER_ID, u.ETH_ADDRESS, u.HANDLE
+            SELECT u.USER_ID, u.ETH_ADDRESS, u.HANDLE, u.AGENT_APP AS APP
             FROM users u
             WHERE u.IS_BOT = 0
               AND (
@@ -581,14 +601,7 @@ class TableRead:
             TableRead.TRADED_ACCOUNTS_SQL,
             ("FAILED", MIRROR_API_KEY, "FAILED", MIRROR_API_KEY),
         ).fetchall()
-        return [
-            TradedAccount(
-                user_id=r["USER_ID"],
-                eth_address=r["ETH_ADDRESS"],
-                handle=r["HANDLE"],
-            )
-            for r in rows
-        ]
+        return [TradedAccount.model_validate(r) for r in rows]
 
     @staticmethod
     def count_trades_by_user(db: psycopg.Connection) -> "dict[str, int]":
@@ -1251,6 +1264,45 @@ class TableRead:
         return [_row_to_market(row) for row in rows]
 
     @staticmethod
+    def search_live_markets(
+        db: psycopg.Connection,
+        *,
+        query: str | None,
+        limit: int,
+        excluded_categories: "Iterable[str] | None" = None,
+        excluded_tags: "Iterable[str] | None" = None,
+    ) -> "list[Market]":
+        now = int(time.time())
+        clauses = ["MARKET_STATE = 'ACTIVE'"]
+        params: list[object] = []
+        for side in ("BUY", "SELL"):
+            clauses.append(
+                "EXISTS (SELECT 1 FROM orders o WHERE o.TOKEN_ID = markets.ERC1155_TOKENS::jsonb->0->>0 "
+                f"AND o.SIDE = %s AND {TableRead.LIVE_ORDER})"
+            )
+            params += [side, now]
+        if query:
+            clauses.append(
+                "to_tsvector('english', concat_ws(' ', QUESTION, "
+                "(SELECT concat_ws(' ', e.TITLE, e.CATEGORY) FROM events e WHERE e.EVENT_ID = markets.EVENT_ID))) "
+                "@@ websearch_to_tsquery('english', %s)"
+            )
+            params.append(query)
+        excl_sql, excl_params = _market_excluded_clause(
+            _excluded_lower(excluded_categories), _excluded_lower(excluded_tags)
+        )
+        if excl_sql:
+            clauses.append(excl_sql)
+            params += excl_params
+        rows = db.execute(
+            f"SELECT {_MARKET_COLS} FROM markets WHERE {' AND '.join(clauses)} "
+            "ORDER BY (SELECT e.VOLUME_24HR FROM events e WHERE e.EVENT_ID = markets.EVENT_ID) "
+            "DESC NULLS LAST, MARKET_ID DESC LIMIT %s",
+            (*params, limit),
+        ).fetchall()
+        return [_row_to_market(r) for r in rows]
+
+    @staticmethod
     def book_tops_for_tokens(
         db: psycopg.Connection, token_ids: "list[str]"
     ) -> "dict[str, tuple[int | None, int | None]]":
@@ -1433,6 +1485,7 @@ class TableRead:
         market: str | None = None,
         asset_id: str | None = None,
         trade_id: str | None = None,
+        taker_order_id: str | None = None,
         before: int | None = None,
         after: int | None = None,
         limit: int | None = None,
@@ -1461,6 +1514,8 @@ class TableRead:
             params.extend([api_key, asset_id, api_key, asset_id])
         if trade_id is not None:
             clauses.append("TRADE_ID = %s"); params.append(trade_id)
+        if taker_order_id is not None:
+            clauses.append("TAKER_ORDER_ID = %s"); params.append(taker_order_id)
         if before is not None:
             clauses.append("MATCH_TIME < %s"); params.append(before)
         if after is not None:

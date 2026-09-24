@@ -202,11 +202,11 @@ class Settings(BaseSettings):
     # both the token issuer and the JWKS URL are DERIVED from it (see
     # auth/authkit_tokens.py), so it is the one value that must be right.
     #
-    # `workos_authkit_domain` is the hosted sign-in surface. It is NOT the
-    # issuer -- a real token says it was issued by
-    # api.workos.com/user_management/<client_id>, verified against staging on
-    # 2026-08-11. It serves a JWKS carrying the same key, but nothing here
-    # verifies through it.
+    # `workos_authkit_domain` is the hosted sign-in surface and the issuer of
+    # the OAuth tokens MCP clients send to /mcp. It is NOT the issuer of the
+    # SPA's session tokens -- those say api.workos.com/user_management/
+    # <client_id>, verified against staging on 2026-08-11. /mcp is served only
+    # when it is an https URL.
     workos_api_key: str = Field(default="", validation_alias="WORKOS_API_KEY")
     workos_client_id: str = Field(default="", validation_alias="WORKOS_CLIENT_ID")
     workos_authkit_domain: str = Field(
@@ -238,24 +238,22 @@ class Settings(BaseSettings):
         This used to raise on a missing scheme. It must not: `Settings()` is
         constructed by `create_app` before anything serves, so a ValueError
         here crash-loops the whole api container -- taking `/order` down for
-        every trading bot over a value that authentication does not even read.
-        Nothing outside this module reads `workos_authkit_domain`; the issuer
-        and the JWKS URL are both derived from `workos_client_id` instead (see
-        `authkit_issuer` / `authkit_jwks_url` in auth/authkit_tokens.py). The
-        setting is kept because a future hosted-UI flow would want it, and the
-        trap is kept documented because that flow would hit it.
+        every trading bot. SPA sign-in does not read this value; the MCP
+        endpoint does, and `create_app` leaves /mcp off unless it is https.
         """
         value = value.rstrip("/")
         if value and not value.startswith(("http://", "https://")):
             log.error(
                 "WORKOS_AUTHKIT_DOMAIN=%r has no scheme; it should look like "
-                "https://%s. Nothing reads it today, so sign-in is unaffected, "
-                "but any future use of it would build an untyped URL that "
-                "fails before a socket opens.",
+                "https://%s. SPA sign-in is unaffected, but /mcp stays off.",
                 value,
                 value,
             )
         return value
+
+    mcp_url: str = Field(
+        default="https://api.agentpit.dev/mcp", validation_alias="AGENTPIT_MCP_URL"
+    )
 
     leaderboard_interval_seconds: int = Field(
         default=300, validation_alias="AGENTPIT_LEADERBOARD_INTERVAL_SECONDS"

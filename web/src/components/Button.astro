@@ -11,22 +11,31 @@ const sizes = {
   lg: "h-10 px-5 text-small sm:h-12 sm:px-6 sm:text-body",
 } as const;
 
-interface Props extends HTMLAttributes<"a"> {
+type Props = (
+  | (HTMLAttributes<"a"> & { href: string })
+  | (HTMLAttributes<"button"> & { href?: never })
+) & {
   variant?: keyof typeof variants;
   size?: keyof typeof sizes;
-}
+};
 
 const { variant = "primary", size = "lg", class: className, ...rest } = Astro.props;
+const classes = [
+  "inline-flex items-center rounded-control font-medium whitespace-nowrap transition-[scale,opacity,color,background-color] duration-150 ease-out motion-safe:active:scale-97",
+  variants[variant],
+  sizes[size],
+  className,
+];
 ---
 
-<a
-  {...rest}
-  class:list={[
-    "inline-flex items-center rounded-control font-medium whitespace-nowrap transition-[scale,opacity,color,background-color] duration-150 ease-out motion-safe:active:scale-97",
-    variants[variant],
-    sizes[size],
-    className,
-  ]}
->
-  <slot />
-</a>
+{
+  "href" in rest ? (
+    <a {...rest} class:list={classes}>
+      <slot />
+    </a>
+  ) : (
+    <button {...rest} class:list={[classes, "cursor-pointer"]}>
+      <slot />
+    </button>
+  )
+}

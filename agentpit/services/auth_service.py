@@ -220,6 +220,8 @@ class AuthService:
             user = TableRead.get_user_by_userid(conn, user_id)
         if user is None:
             raise UserNotFoundError()
+        if user.email is None:
+            raise BusinessRuleError("an agent's key cannot be exported")
         self._workos.send_magic_auth_code(user.email)
 
     def export_private_key(self, *, user_id: str, code: str) -> str:
@@ -260,6 +262,8 @@ class AuthService:
             user = TableRead.get_user_by_userid(conn, user_id)
             if user is None:
                 raise UserNotFoundError()
+            if user.email is None:
+                raise BusinessRuleError("an agent's key cannot be exported")
             claimed = TableWrite.mark_key_export_attempt(
                 conn, user_id, now, now - self.KEY_EXPORT_COOLDOWN_S
             )

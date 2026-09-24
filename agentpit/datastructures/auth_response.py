@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 class UserPublic(BaseModel):
     user_id: str
-    email: str
+    email: str | None
     handle: str | None
     eth_address: str
     api_key: str

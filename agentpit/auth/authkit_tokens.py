@@ -106,9 +106,9 @@ def cached_key_resolver(fetch: KeyResolver) -> KeyResolver:
     return resolve
 
 
-def remote_jwks_resolver(client_id: str) -> KeyResolver:
-    """Resolve signing keys from the live JWKS, behind the guard above."""
-    client = jwt.PyJWKClient(authkit_jwks_url(client_id))
+def remote_jwks_resolver(url: str) -> KeyResolver:
+    """Resolve signing keys from the live JWKS at `url`, behind the guard above."""
+    client = jwt.PyJWKClient(url)
     return cached_key_resolver(
         lambda token: client.get_signing_key_from_jwt(token).key
     )

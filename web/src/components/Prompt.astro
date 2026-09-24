@@ -1,0 +1,24 @@
+---
+import Button from "./Button.astro";
+import copy from "../scripts/copy.js?raw";
+
+interface Props {
+  text: string;
+  class?: string;
+}
+
+const { text, class: className } = Astro.props;
+---
+
+<div
+  class:list={[
+    "flex flex-col gap-3 scheme-light-dark rounded-panel border border-line bg-paper/62 p-2 text-left sm:flex-row sm:items-center lg:rounded-control",
+    className,
+  ]}
+>
+  <p class="min-w-0 grow px-2 py-1.5 text-body font-medium text-ink wrap-anywhere select-all sm:px-3 sm:text-lead sm:text-pretty lg:text-nowrap">{text}</p>
+  <div class="flex min-w-26 shrink-0 justify-end lg:self-stretch" hidden>
+    <Button class="justify-center max-sm:grow lg:h-auto" type="button" aria-live="polite">Copy</Button>
+  </div>
+  <script is:inline set:html={copy} />
+</div>

@@ -11,6 +11,7 @@ what the migration script needs.
 import re
 from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -73,6 +74,9 @@ class WorkOsClient(Protocol):
         ...
 
     def refresh_session(self, refresh_token: str) -> WorkOsSession:
+        ...
+
+    def application_name(self, client_id: str) -> str:
         ...
 
 
@@ -306,6 +310,11 @@ class RealWorkOsClient:
             {"grant_type": "refresh_token", "refresh_token": refresh_token}
         )
 
+    def application_name(self, client_id: str) -> str:
+        return self._request(
+            "GET", f"/connect/applications/{quote(client_id, safe='')}"
+        )["name"]
+
 
 class FakeWorkOsClient:
     """In-memory double with the same contract, including the idempotency."""
@@ -323,6 +332,7 @@ class FakeWorkOsClient:
         #: which a status code alone cannot show, since the round trip and the
         #: local rejection both end in the same 4xx.
         self.authenticate_calls = 0
+        self.applications: dict[str, str] = {}
 
     def create_user(self, *, email: str, password_hash: str | None) -> WorkOsUser:
         existing = self.find_user_by_email(email)
@@ -407,6 +417,9 @@ class FakeWorkOsClient:
                     refresh_token=refresh_token,
                 )
         raise WorkOsError("WorkOS rejected the refresh token")
+
+    def application_name(self, client_id: str) -> str:
+        return self.applications[client_id]
 
 
 def build_workos_client(

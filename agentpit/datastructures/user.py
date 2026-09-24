@@ -10,7 +10,7 @@ class User(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     user_id: str
-    email: str
+    email: str | None
     eth_key: LocalAccount
     eth_address: str
     api_key: str
@@ -33,6 +33,7 @@ class User(BaseModel):
     # account with no WorkOS id simply cannot be found by WorkOS id, which is
     # exactly what an unmigrated row should do.
     workos_user_id: str | None = None
+    agent_app: str | None = None
 
     def model_post_init(self, __context):
         if self.handle is not None:

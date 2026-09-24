@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, Navigate } from "react-router-dom";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -10,6 +10,7 @@ import {
   Search,
   XCircle,
 } from "lucide-react";
+import { useMyAgents } from "@/api/agents";
 import type { Position } from "@/api/portfolio";
 import {
   usePositions,
@@ -101,18 +102,26 @@ export function ProfilePage() {
   const [search, setSearch] = useState("");
   const [pnlWindow, setPnlWindow] = useState<PnlWindow>("1D");
   const { user, isLoading: authLoading } = useAuth();
+  const [searchParams] = useSearchParams();
+  const agentAddress = searchParams.get("agent");
+  const { data: agents, isLoading: agentsLoading } = useMyAgents(
+    Boolean(user && agentAddress),
+  );
+  const agent = agents?.find((a) => a.eth_address === agentAddress);
+  const address = agentAddress ? agent?.eth_address : user?.eth_address;
+  const own = Boolean(user) && !agentAddress;
   const {
     data: positionsData,
     isLoading: positionsLoading,
     error: positionsError,
-  } = usePositions(user?.eth_address);
-  const { data: closedData } = useClosedPositions(user?.eth_address);
-  const { data: activityData } = useActivity(user?.eth_address);
-  const { data: balance } = useUsdcBalance(Boolean(user));
-  const { data: credits } = useCredits(Boolean(user));
-  const { data: topUpStatus } = useTopUpStatus(Boolean(user));
+  } = usePositions(address);
+  const { data: closedData } = useClosedPositions(address);
+  const { data: activityData } = useActivity(address);
+  const { data: balance } = useUsdcBalance(own);
+  const { data: credits } = useCredits(own);
+  const { data: topUpStatus } = useTopUpStatus(own);
   const topUp = useTopUp();
-  const avatarStyle = getAvatarStyle(user?.eth_address || user?.email);
+  const avatarStyle = getAvatarStyle(address || user?.email);
   const now = Math.floor(Date.now() / 1000);
   const topUpState = topUpButtonState(topUpStatus, topUp.isPending, now);
 
@@ -209,7 +218,7 @@ export function ProfilePage() {
     return { total: cum, points };
   }, [closedPositions, pnlWindow]);
 
-  if (authLoading) {
+  if (authLoading || (agentAddress && agentsLoading)) {
     return (
       <section className="mx-auto max-w-5xl space-y-6">
         <h1 className="text-3xl font-semibold tracking-tight">Profile</h1>
@@ -218,6 +227,11 @@ export function ProfilePage() {
     );
   }
   if (!user) return <Navigate to="/" replace />;
+  if (agentAddress && !agent) return <Navigate to="/profile" replace />;
+
+  const name = agent
+    ? (agent.handle ?? agent.app)
+    : displayName(user.email, user.handle);
 
   return (
     <section className="mx-auto max-w-5xl space-y-6">
@@ -230,7 +244,7 @@ export function ProfilePage() {
                 className="flex size-14 shrink-0 items-center justify-center rounded-full text-lg font-semibold text-white"
                 style={avatarStyle}
               >
-                {displayName(user.email, user.handle).slice(0, 1).toUpperCase()}
+                {name.slice(0, 1).toUpperCase()}
               </div>
               <div className="min-w-0">
                 {/* The handle leads: it is the name this account carries on the
@@ -240,25 +254,36 @@ export function ProfilePage() {
                     different kinds of thing rather than as a heading and a
                     subheading. */}
                 <h2 className="truncate text-xl font-semibold leading-tight tracking-tight">
-                  {displayName(user.email, user.handle)}
+                  {name}
                 </h2>
-                <CopyAddress address={user.eth_address} />
+                <CopyAddress address={(agent ?? user).eth_address} />
                 <p className="mt-1.5 text-xs text-muted-foreground">
-                  Joined {DATE.format(new Date(user.created_at * 1000))}
+                  Joined{" "}
+                  {DATE.format(new Date((agent ?? user).created_at * 1000))}
                 </p>
               </div>
             </div>
-            <div className="mt-6 grid grid-cols-2 divide-x divide-y rounded-lg border bg-muted/20 sm:grid-cols-5 sm:divide-y-0">
-              <TopMetric
-                label="apUSD"
-                value={balance != null ? formatVolume(balance) : "—"}
-                tooltip={balance != null ? USD.format(balance) : undefined}
-              />
-              <TopMetric
-                label="Credits"
-                value={credits != null ? formatCredits(credits) : "—"}
-                tooltip={credits != null ? formatCreditsExact(credits) : undefined}
-              />
+            <div
+              className={`mt-6 grid grid-cols-2 divide-x divide-y rounded-lg border bg-muted/20 sm:divide-y-0 ${
+                agent ? "sm:grid-cols-3" : "sm:grid-cols-5"
+              }`}
+            >
+              {agent ? null : (
+                <>
+                  <TopMetric
+                    label="apUSD"
+                    value={balance != null ? formatVolume(balance) : "—"}
+                    tooltip={balance != null ? USD.format(balance) : undefined}
+                  />
+                  <TopMetric
+                    label="Credits"
+                    value={credits != null ? formatCredits(credits) : "—"}
+                    tooltip={
+                      credits != null ? formatCreditsExact(credits) : undefined
+                    }
+                  />
+                </>
+              )}
               <TopMetric
                 label="Positions"
                 value={formatVolume(positionsValue)}
@@ -277,20 +302,22 @@ export function ProfilePage() {
                 hold "Available in 24h" without the button spilling past the
                 divider, and shrinking the label to fit would hide the one
                 thing it has to say. */}
-            <div className="mt-3 flex items-center justify-between gap-3">
-              <p className="min-w-0 text-xs text-muted-foreground">
-                Paper balance, restored to $100k once a day.
-              </p>
-              <Button
-                size="sm"
-                variant="outline"
-                className="shrink-0"
-                disabled={topUpState.disabled}
-                onClick={() => topUp.mutate()}
-              >
-                {topUpState.label}
-              </Button>
-            </div>
+            {agent ? null : (
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className="min-w-0 text-xs text-muted-foreground">
+                  Paper balance, restored to $100k once a day.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  disabled={topUpState.disabled}
+                  onClick={() => topUp.mutate()}
+                >
+                  {topUpState.label}
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -396,7 +423,7 @@ export function ProfilePage() {
               search={search}
               onSearchChange={setSearch}
               unclaimed={unclaimed}
-              userAddress={user.eth_address}
+              userAddress={agent ? undefined : user.eth_address}
             />
           ) : (
             <ActivityList entries={activityData ?? []} />
@@ -461,7 +488,7 @@ function PositionList({
   search: string;
   onSearchChange: (next: string) => void;
   unclaimed: number;
-  userAddress: string;
+  userAddress: string | undefined;
 }) {
   const isClosed = positionFilter === "closed";
   const isUnclaimed = positionFilter === "unclaimed";
@@ -553,7 +580,7 @@ function PositionList({
               {sortableHeader("cost", "Cost", "w-28")}
             </span>
             {sortableHeader("value", "Value", "w-36")}
-            {isClosed ? null : <span className="w-20 shrink-0" />}
+            {isClosed || !userAddress ? null : <span className="w-20 shrink-0" />}
           </div>
           {rows.map((position) => {
             // Whether this row reads as a win follows the money beside it,
@@ -641,7 +668,7 @@ function PositionList({
                     </p>
                   ) : null}
                 </div>
-                {isClosed ? null : (
+                {isClosed || !userAddress ? null : (
                   <div className="w-20 shrink-0 text-right">
                     {isUnclaimed ? (
                       <ClaimButton
@@ -805,7 +832,7 @@ function ActivityList({ entries }: { entries: ActivityEntry[] }) {
       <div className="p-10 text-center">
         <p className="text-base font-medium">No activity yet</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          Your buys and sells will show up here.
+          Buys and sells will show up here.
         </p>
       </div>
     );

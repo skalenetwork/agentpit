@@ -47,7 +47,7 @@ def migrate_users(
     report = MigrationReport()
     rows = conn.execute(
         "SELECT USER_ID, EMAIL, PASSWORD_HASH, WORKOS_USER_ID FROM users "
-        "ORDER BY CREATED_AT"
+        "WHERE AGENT_APP IS NULL ORDER BY CREATED_AT"
     ).fetchall()
     for row in rows:
         user_id, email, password_hash, existing = (

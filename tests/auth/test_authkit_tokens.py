@@ -278,7 +278,7 @@ def test_the_remote_resolver_is_the_guarded_one(monkeypatch):
             return SimpleNamespace(key=_KEY.public_key())
 
     monkeypatch.setattr(jwt, "PyJWKClient", _FakeJwkClient)
-    resolve = remote_jwks_resolver(CLIENT_ID)
+    resolve = remote_jwks_resolver(authkit_jwks_url(CLIENT_ID))
 
     resolve(_token(kid="key_1", sub="user_a"))
     resolve(_token(kid="key_1", sub="user_b"))

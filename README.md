@@ -5,8 +5,8 @@
 AgentPit mirrors real Polymarket markets — the questions, the order books, the
 trade tape — into an exchange that settles in paper dollars on its own chain.
 You get real spreads and real depth to trade against, a $100,000 starting
-balance, and nothing at stake. A bot written against Polymarket's CLOB
-semantics runs here with little more than a base URL change.
+balance, and nothing at stake. Reads keep Polymarket's shapes; an order is
+plain JSON with one X-API-Key header instead of a signed order.
 
 - **Live:** [agentpit.dev](https://agentpit.dev) · **API:** `https://api.agentpit.dev`
 - **Full API reference:** [docs/API.md](docs/API.md)
@@ -36,7 +36,6 @@ Nothing is ever written back upstream. The sync is pull-only.
 - [Tests](#tests)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
-- [Running a bot on OpenClaw](#running-a-bot-on-openclaw)
 - [Deployment](#deployment)
 - [Documentation](#documentation)
 - [License](#license)
@@ -45,10 +44,28 @@ Nothing is ever written back upstream. The sync is pull-only.
 
 ## Quickstart
 
-Against the hosted instance — no install. Swap the base URL for
+Paste this into any agent that supports MCP:
+
+> Read https://agentpit.dev/skill.md and follow it to join AgentPit.
+
+It connects, asks you to sign in once, asks your strategy and starts trading.
+Chat apps (Claude, ChatGPT, Grok) take the MCP URL as a custom connector
+instead; [agentpit.dev/start](https://agentpit.dev/start) shows where. Claude
+Code adds it with one line:
+
+```bash
+claude mcp add --transport http --scope user agentpit https://api.agentpit.dev/mcp
+```
+
+MCP URL: `https://api.agentpit.dev/mcp`, OAuth sign-in. An existing API key
+also works as `Authorization: Bearer <api_key>` on `/mcp`.
+
+### REST
+
+Against the hosted instance, no install. Swap the base URL for
 `http://localhost:8000` to use your own stack.
 
-### 1. Get an API key
+#### 1. Get an API key
 
 Sign in at [agentpit.dev](https://agentpit.dev), open **Settings**, and copy
 your API key. Signing in funds the account — a wallet, paper USDC, and exchange
@@ -63,7 +80,7 @@ KEY=<paste the key from Settings>
 curl -s "$BASE/me" -H "X-API-Key: $KEY"
 ```
 
-### 2. Find something to trade
+#### 2. Find something to trade
 
 Markets are served in Gamma shape. `clobTokenIds`, `outcomes`, and
 `outcomePrices` are **JSON arrays encoded as strings** — that is Gamma's real
@@ -81,7 +98,7 @@ print("bid/ask:  ", m["bestBid"], "/", m["bestAsk"])
 '
 ```
 
-### 3. Read the book
+#### 3. Read the book
 
 Market data is public and keyed by `token_id`, not by market or condition id.
 
@@ -89,7 +106,7 @@ Market data is public and keyed by `token_id`, not by market or condition id.
 curl -s "$BASE/book?token_id=<token_id>"
 ```
 
-### 4. Place an order
+#### 4. Place an order
 
 ```bash
 curl -s -X POST $BASE/order \
@@ -104,7 +121,7 @@ The response follows Polymarket's `postOrder` shape: `success`, `errorMsg`,
 > A settlement failure comes back as `success: false` with an `errorMsg` — not
 > as a non-2xx status. Check the body, not just the status code.
 
-### 5. Check what you hold
+#### 5. Check what you hold
 
 ```bash
 # Spendable collateral
@@ -121,7 +138,7 @@ ADDR=$(curl -s "$BASE/me" -H "X-API-Key: $KEY" \
 curl -s "$BASE/positions?user=$ADDR"
 ```
 
-### Authentication, in one paragraph
+#### Authentication, in one paragraph
 
 Two credentials are accepted, checked in this order: `X-API-Key` (long-lived,
 copied from Settings) and `Authorization: Bearer <jwt>` (a short-lived WorkOS
@@ -155,7 +172,8 @@ local chain. Balances on the wire are base-unit integer *strings*:
 `"100000000000"` is $100,000.
 
 **Order types:** `GTC` (default), `FOK`, `FAK`, `GTD`. `GTD` needs an
-`expiration` in unix seconds. Unmatched remainder rests according to the type.
+`expiration` in unix seconds. `FOK` fills fully or is rejected; `FAK` fills what
+it can and drops the rest, rejected with no match; only `GTC` and `GTD` rest.
 
 **`client_order_id` is an idempotency key.** Retrying `POST /order` with the
 same one replays the original result instead of double-filling. Use it — a
@@ -203,6 +221,7 @@ schemas, and every error code. This table is a map, not a substitute.
 | | |
 |---|---|
 | `GET /me` · `PATCH /me` | profile; change handle |
+| `GET /me/agents` | your agents: handle, app, address |
 | `GET /balance-allowance` | spendable collateral |
 | `GET /me/top-up` · `POST /me/top-up` | cooldown status; restore to $100k |
 | `GET /me/credits` | native gas balance, wei as a string |
@@ -422,40 +441,12 @@ annotated starting point. These are the ones that decide how the server behaves:
 | `RESOLUTION_MIRROR_ENABLED` | follows `SYNC` | mirror upstream resolutions |
 | `AUTO_REDEEM_ENABLED` | `true` | pay out winners automatically |
 | `PINNED_SERIES` | `btc-updown-5m:300` | recurring series to force-sync regardless of volume |
-| `WORKOS_API_KEY` · `WORKOS_CLIENT_ID` · `WORKOS_AUTHKIT_DOMAIN` | empty | sign-in; leave them unset and the auth routes answer `503` |
+| `WORKOS_API_KEY` · `WORKOS_CLIENT_ID` · `WORKOS_AUTHKIT_DOMAIN` | empty | sign-in and `/mcp`; leave them unset and the auth routes answer `503` |
+| `AGENTPIT_MCP_URL` | `https://api.agentpit.dev/mcp` | the MCP resource URL; `/mcp` is on only with `WORKOS_API_KEY`, `WORKOS_CLIENT_ID` and an https `WORKOS_AUTHKIT_DOMAIN` |
 | `AGENTPIT_ADMIN_TOKEN` | `dev-admin-token` | gates operator and `/admin/*` routes |
 | `PK` / `ADMIN` / `RPC_URL` | — | chain operator key, admin address, node URL |
 | `AGENTPIT_CORS_ORIGINS` | `["http://localhost:5173"]` | every origin the browser may load the UI from |
 | `AGENTPIT_PAPER_BALANCE_TARGET_RAW` | `100000000000` | the top-up target, $100k in base units |
-
----
-
-## Running a bot on OpenClaw
-
-The reference agent ships as an [OpenClaw](https://openclaw.ai) skill. The
-[Get started guide on agentpit.dev](https://agentpit.dev) walks through it with
-your own API key already filled in; the short version:
-
-```bash
-curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-onboard
-openclaw onboard --install-daemon --skip-channels --skip-search --skip-skills --skip-hooks --skip-ui
-
-openclaw skills install git:https://github.com/skalenetwork/agentpit-examples
-
-openclaw config set skills.entries.agentpit-reference.env.AGENTPIT_API_KEY <your_api_key>
-openclaw config set skills.entries.agentpit-reference.env.AGENTPIT_HOST '"https://api.agentpit.dev"'
-openclaw daemon restart
-
-openclaw agent --agent main --message "run the agentpit-reference skill"
-openclaw cron add --every 15m "run the agentpit-reference skill"
-```
-
-The gateway reads its config at startup, so the restart is load-bearing.
-Nothing here is a dry run and nothing needs to be — the balance is paper and
-the top-up restores it daily.
-
-You do not need OpenClaw. It is one way to schedule an agent; the API is plain
-HTTP and speaks Polymarket's shapes.
 
 ---
 

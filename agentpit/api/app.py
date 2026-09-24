@@ -2,7 +2,8 @@ import asyncio
 import logging
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,7 @@ from agentpit.api.deps import (
     get_workos_client,
 )
 from agentpit.api.exception_handlers import register_exception_handlers
+from agentpit.api.mcp_server import McpEndpoint
 from agentpit.api.routes import (
     admin,
     agents,
@@ -34,10 +36,15 @@ from agentpit.api.routes import (
     usdc,
     users,
 )
-from agentpit.auth.authkit_tokens import AuthKitVerifier, remote_jwks_resolver
+from agentpit.auth.authkit_tokens import (
+    AuthKitVerifier,
+    authkit_jwks_url,
+    remote_jwks_resolver,
+)
 from agentpit.auth.dependencies import make_current_user_dep
 from agentpit.auth.google import GoogleTokenVerifier
 from agentpit.auth.jwt import JwtCoder
+from agentpit.auth.mcp_tokens import AgentVerifier
 from agentpit.auth.workos_client import build_workos_client
 from agentpit.config import Settings
 from agentpit.db.session import DbSession
@@ -63,6 +70,9 @@ from agentpit.polymarket.polymarket_sync import (
     mirror_polymarket_resolutions,
 )
 from agentpit.services.account_service import AccountService
+from agentpit.services.agent_accounts import AgentAccounts
+from agentpit.services.agent_desk import AgentDesk
+from agentpit.services.auth_service import AuthService
 from agentpit.services.event_service import EventService
 from agentpit.services.leaderboard_service import LeaderboardService
 from agentpit.services.snapshot_service import SnapshotService
@@ -429,7 +439,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     authkit_verifier = (
         AuthKitVerifier(
             client_id=settings.workos_client_id,
-            key_resolver=remote_jwks_resolver(settings.workos_client_id),
+            key_resolver=remote_jwks_resolver(authkit_jwks_url(settings.workos_client_id)),
         )
         if settings.workos_client_id
         else None
@@ -467,6 +477,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "NOBODY CAN SIGN IN -- /auth/code and /auth/session 503, AuthKit "
             "sessions are rejected, and private-key export is disabled. "
             "X-API-Key traffic is unaffected."
+        )
+
+    mcp_endpoint: McpEndpoint | None = None
+    if workos_client is not None and settings.workos_authkit_domain.startswith("https://"):
+        try:
+            mcp_url = urlsplit(settings.mcp_url)
+            if mcp_url.netloc and mcp_url.path.strip("/"):
+                accounts = AgentAccounts(
+                    db_session,
+                    AuthService(db_session, coder, onchain_admin, settings)._onboard_new_account,
+                )
+                verifier = AgentVerifier(
+                    issuer=settings.workos_authkit_domain,
+                    resource=settings.mcp_url,
+                    resolve=remote_jwks_resolver(f"{settings.workos_authkit_domain}/oauth2/jwks"),
+                    workos=workos_client,
+                    accounts=accounts,
+                    db=db_session,
+                )
+                desk = AgentDesk(db_session, onchain_admin, settings)
+                mcp_endpoint = McpEndpoint(settings, verifier, accounts, desk)
+        except ValueError:
+            pass
+    if mcp_endpoint is None:
+        log.error(
+            "/mcp is off: it needs WORKOS_API_KEY, WORKOS_CLIENT_ID, an https "
+            "WORKOS_AUTHKIT_DOMAIN and an http(s) AGENTPIT_MCP_URL with a host "
+            "and a path. The REST API is unaffected."
         )
 
     @asynccontextmanager
@@ -648,7 +686,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
         try:
-            yield
+            async with mcp_endpoint.running() if mcp_endpoint else nullcontext():
+                yield
         finally:
             for task in (
                 sync_task,
@@ -707,5 +746,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(personalities.router)
     app.include_router(agents.router)
     app.include_router(data_api.router)
+    if mcp_endpoint:
+        app.router.routes.extend(mcp_endpoint.routes)
 
     return app

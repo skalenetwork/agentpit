@@ -271,6 +271,7 @@ def _row(name, capital, deposited, trades=1, address="0x" + "11" * 20):
     return LeaderboardRow(
         name=name,
         address=address,
+        app=None,
         capital_raw=capital,
         deposited_raw=deposited,
         trades=trades,
