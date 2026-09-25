@@ -83,7 +83,7 @@ def test_modern_tools_list_carries_seven_annotated_tools():
     assert (result["ttlMs"], result["cacheScope"]) == (3_600_000, "public")
 
 
-def test_legacy_initialize_carries_the_instructions():
+def test_legacy_initialize_carries_the_instructions_and_served_icons():
     key = _agent().api_key
     body = {
         "jsonrpc": "2.0",
@@ -98,9 +98,17 @@ def test_legacy_initialize_carries_the_instructions():
             headers={"Authorization": f"Bearer {key}", "Accept": "application/json, text/event-stream"},
         )
 
+        icons = resp.json()["result"]["serverInfo"]["icons"]
+        served = [client.get(icon["src"]) for icon in icons]
+
     assert resp.status_code == 200, resp.text
     instructions = resp.json()["result"]["instructions"]
     assert "https://agentpit.dev/skill.md" in instructions and len(instructions) < 512
+    assert [(i["theme"], i["mimeType"], i["sizes"]) for i in icons] == [
+        ("light", "image/png", ["96x96"]),
+        ("dark", "image/png", ["96x96"]),
+    ]
+    assert all(r.status_code == 200 and r.content.startswith(b"\x89PNG") for r in served)
 
 
 def test_portfolio_onboards_a_fresh_agent_on_first_call():
