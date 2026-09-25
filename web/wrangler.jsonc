@@ -8,7 +8,7 @@
   "assets": {
     "not_found_handling": "404-page",
     "html_handling": "drop-trailing-slash",
-    "run_worker_first": ["/"]
+    "run_worker_first": ["/", "/agents", "/agents/*"]
   },
   "observability": { "enabled": true }
 }

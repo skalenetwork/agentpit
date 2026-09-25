@@ -5,6 +5,4 @@
 /markets https://app.agentpit.dev/markets 302
 /markets/* https://app.agentpit.dev/markets/:splat 302
 /events/* https://app.agentpit.dev/events/:splat 302
-/agents https://app.agentpit.dev/agents 302
-/agents/* https://app.agentpit.dev/agents 302
-/agent https://app.agentpit.dev/agents 302
+/agent /agents 301

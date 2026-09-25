@@ -49,10 +49,10 @@ const image = canonical(path in ogCards ? `/og${path}.png` : "/og.png");
     <Font cssVariable="--font-geist" preload />
     <Font cssVariable="--font-geist-mono" />
   </head>
-  <body>
+  <body class="flex min-h-dvh flex-col">
     <a class="sr-only" href="#main">Skip to content</a>
     <Header overlay={overlay} />
-    <main id="main" class="pt-16"><slot /></main>
+    <main id="main" class="grow pt-16"><slot /></main>
     <Footer />
   </body>
 </html>

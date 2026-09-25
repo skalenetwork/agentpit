@@ -4,14 +4,16 @@ import Sombra from "./Sombra.astro";
 interface Props {
   lead: string | readonly string[];
   caption?: string;
+  class?: string;
+  panel?: string;
 }
 
-const { lead, caption } = Astro.props;
+const { lead, caption, class: className, panel = "lg:aspect-[986/601]" } = Astro.props;
 const visual = Astro.slots.has("visual");
 const actions = Astro.slots.has("actions");
 ---
 
-<section class="relative isolate px-5 py-16 sm:px-12 sm:py-25">
+<section class:list={["relative isolate px-5 py-16 sm:px-12 sm:py-25", className]}>
   {visual && <Sombra class="absolute inset-x-0 -top-16 bottom-0 -z-10" />}
   <div class="mx-auto flex w-full max-w-page flex-col items-center text-center">
     <div class:list={["flex flex-col items-center", visual && "scheme-dark [--color-muted:#cbd5e1]"]}>
@@ -27,10 +29,10 @@ const actions = Astro.slots.has("actions");
         )
       }
     </div>
-    {visual && <div class="neck h-[45px] w-[68px] bg-surface/70 backdrop-blur-xl" />}
+    {visual && actions && <div class="neck h-[45px] w-[68px] bg-surface/70 backdrop-blur-xl" />}
     {
       visual && (
-        <div class="relative w-full overflow-hidden rounded-[40px] bg-surface/70 backdrop-blur-xl max-sm:w-screen lg:aspect-[986/601]">
+        <div class:list={["relative w-full overflow-hidden rounded-[40px] bg-surface/70 backdrop-blur-xl max-sm:w-screen", panel, !actions && "mt-[45px]"]}>
           <slot name="visual" />
         </div>
       )

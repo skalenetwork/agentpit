@@ -1,0 +1,241 @@
+---
+import { Crown } from "@lucide/astro";
+import Logo from "../../assets/logo.svg";
+import { RANK_FLOOR as floor, type Agent } from "../../lib/api";
+import { count, day, pct, profile, tone, type League } from "../../lib/leaderboard";
+import AgentAvatar from "../AgentAvatar.astro";
+
+interface Props {
+  leagues: readonly League[];
+  asOf: Date;
+}
+
+interface Frame {
+  readonly show: string;
+  readonly compact: boolean;
+  readonly width: number;
+  readonly height: number;
+  readonly size: number;
+  readonly champion: number;
+}
+
+interface Dot {
+  readonly agent: Agent;
+  readonly champion: boolean;
+  readonly r: number;
+  readonly x: number;
+  readonly y: number;
+}
+
+const { leagues, asOf } = Astro.props;
+const inset = 16;
+const gap = 8;
+const air = 4;
+const foot = 56;
+const n = (v: number) => Math.round(v * 10) / 10;
+const sym = (v: number) => Math.sign(v) * Math.log10(1 + Math.abs(v));
+const glyphs = (text: string, px: number) => text.length * px * 0.58;
+const label = ({ compact }: Frame, { name, returnPct }: Agent) =>
+  compact ? glyphs(pct(returnPct), 13) : Math.max(glyphs(name, 14), glyphs(pct(returnPct), 13));
+const shade = (agent: Agent) => (agent.trades < floor ? "flat" : tone(agent.returnPct));
+const levels = leagues.flatMap(({ agents }) => agents.map(({ returnPct }) => sym(returnPct)));
+const [high, low] = [Math.max(...levels), Math.min(...levels)];
+
+const frames: readonly Frame[] = [
+  { show: "block min-[480px]:hidden", compact: true, width: 360, height: 540, size: 24, champion: 34 },
+  { show: "hidden min-[480px]:block sm:hidden", compact: false, width: 520, height: 440, size: 26, champion: 38 },
+  { show: "hidden sm:block md:hidden", compact: false, width: 600, height: 460, size: 28, champion: 42 },
+  { show: "hidden md:block lg:hidden", compact: false, width: 800, height: 520, size: 32, champion: 50 },
+  { show: "hidden lg:block", compact: false, width: 960, height: 580, size: 36, champion: 54 },
+];
+
+const layout = (f: Frame) => {
+  const lane = (f.width - 2 * inset - (leagues.length - 1) * gap) / leagues.length;
+  const top = inset + 124 + f.champion / 2;
+  const bottom = f.height - foot - f.size / 2 - 14;
+  const y = (v: number) => top + ((high - sym(v)) / (high - low)) * (bottom - top);
+  const dots: Dot[] = [];
+  leagues.forEach(({ agents, min: least, next }, i) => {
+    const x0 = inset + i * (lane + gap);
+    const lo = Math.log10(Math.max(1, least));
+    const hi = Math.log10(next?.min ?? Math.max(1000, ...agents.map(({ trades }) => trades)));
+    const crowned = y(agents[0]?.returnPct ?? 0);
+    agents.forEach((agent, place) => {
+      const champion = place === 0;
+      const r = (champion ? f.champion : f.size) / 2;
+      const reach = Math.min(lane / 2, champion ? Math.max(r + f.size * 0.4, label(f, agent) / 2 + 10) : r + f.size * 0.4);
+      const [min, max] = [x0 + reach, x0 + lane - reach];
+      const base = Math.min(max, Math.max(min, x0 + ((Math.log10(Math.max(1, agent.trades)) - lo) / (hi - lo)) * lane));
+      const xs = [base, ...Array.from({ length: 16 }, (_, k) => [base + ((k + 1) * f.size) / 3, base - ((k + 1) * f.size) / 3]).flat()].filter(
+        (x) => x >= min && x <= max,
+      );
+      const away = agent.returnPct > 0 ? -1 : 1;
+      const ys = [0, 1, 2, 3, 4, -1, -2].map((k) => y(agent.returnPct) + away * k * f.size * 0.6).filter((v) => champion || v >= crowned);
+      const slack = ([x, v]: readonly [number, number]) => Math.min(...dots.map((d) => Math.hypot(x - d.x, v - d.y) - r - d.r - air));
+      const spots = ys.flatMap((v) => xs.map((x) => [x, v] as const));
+      const [x, v] = spots.find((spot) => slack(spot) >= 0) ?? spots.reduce((best, spot) => (slack(spot) > slack(best) ? spot : best));
+      dots.push({ agent, champion, r, x, y: v });
+    });
+  });
+  return { lane, dots, y };
+};
+
+const views = frames.map((frame) => ({ frame, ...layout(frame) }));
+---
+
+{
+  views.map(({ frame: f, lane, dots, y }) => {
+    const badge = Math.max(8, f.champion * 0.2);
+    const icon = n(badge * 1.3);
+    return (
+      <svg
+        class:list={["field w-full", f.show]}
+        viewBox={`0 0 ${f.width} ${f.height}`}
+        role="group"
+        aria-label="Every agent in its league, higher means a better return"
+      >
+        {leagues.map(({ name, short, icon: Icon }, i) => {
+          const x0 = inset + i * (lane + gap);
+          const mid = n(x0 + lane / 2);
+          return (
+            <Fragment>
+              <rect class="fill-paper opacity-50" x={n(x0)} y={inset} width={n(lane)} height={f.height - foot - inset} rx={20} />
+              {f.compact ? (
+                <Fragment>
+                  <Icon class="text-signal" x={mid - 8} y={inset + 18} width={16} height={16} />
+                  <text class="fill-ink text-caption font-medium" x={mid} y={inset + 54} text-anchor="middle">{name}</text>
+                  <text class="fill-muted text-caption tabular-nums" x={mid} y={inset + 72} text-anchor="middle">{short}</text>
+                </Fragment>
+              ) : (
+                <Fragment>
+                  <Icon class="text-signal" x={n(x0 + 16)} y={inset + 18} width={16} height={16} />
+                  <text class="fill-ink text-small font-medium" x={n(x0 + 40)} y={inset + 31}>{name}</text>
+                  <text class="fill-muted text-caption tabular-nums" x={n(x0 + 16)} y={inset + 52}>{short} trades</text>
+                </Fragment>
+              )}
+            </Fragment>
+          );
+        })}
+
+        <line
+          class="stroke-muted"
+          x1={inset}
+          x2={f.width - inset}
+          y1={n(y(0))}
+          y2={n(y(0))}
+          stroke-dasharray="4 4"
+          vector-effect="non-scaling-stroke"
+        />
+
+        {dots.map(({ agent, champion, r, x, y: cy }) => {
+          const edge = x > f.width - 90 ? "end" : x < 90 ? "start" : "middle";
+          return (
+            <a class="dot" href={profile(agent)}>
+              <title>{`${agent.name}, ${pct(agent.returnPct)}, ${count(agent.trades)} trades`}</title>
+              <g transform={`translate(${n(x)} ${n(cy)})`}>
+                <circle class="rim" r={r + 2} />
+                <foreignObject x={-r} y={-r} width={2 * r} height={2 * r}>
+                  <span class="block size-full overflow-hidden rounded-control">
+                    <AgentAvatar seed={agent.address} class="size-full" />
+                  </span>
+                </foreignObject>
+                {champion && (
+                  <g class="crown" transform={`translate(${n(r * 0.72)} ${n(-r * 0.72)})`}>
+                    <circle class="fill-paper" r={n(badge)} />
+                    <Crown x={-icon / 2} y={-icon / 2} width={icon} height={icon} stroke-width={2.25} />
+                  </g>
+                )}
+                {!f.compact && !champion && (
+                  <text
+                    class="tag halo text-caption font-medium"
+                    x={edge === "end" ? r : edge === "start" ? -r : 0}
+                    y={r + 16}
+                    text-anchor={edge}
+                  ><tspan class="fill-ink">{agent.name}</tspan><tspan class={shade(agent)} dx="5">{pct(agent.returnPct)}</tspan></text>
+                )}
+              </g>
+            </a>
+          );
+        })}
+
+        {dots
+          .filter(({ champion }) => champion)
+          .map(({ agent, r, x, y: cy }) => {
+            const at = n(x);
+            const base = n(cy - r - 12);
+            return (
+              <Fragment>
+                {!f.compact && (
+                  <text class="fill-ink text-small font-medium" x={at} y={base - 19} text-anchor="middle">{agent.name}</text>
+                )}
+                <text class:list={["text-caption font-medium tabular-nums", shade(agent)]} x={at} y={base} text-anchor="middle">{pct(agent.returnPct)}</text>
+              </Fragment>
+            );
+          })}
+
+        <foreignObject x={inset} y={f.height - foot} width={f.width - 2 * inset} height={foot}>
+          <div class="flex h-full items-center justify-between gap-4 px-3 text-caption text-muted">
+            <p class="flex items-center gap-3">
+              <Logo class="h-3.5 w-auto shrink-0 text-ink" aria-hidden="true" />
+              <time datetime={asOf.toISOString()}>{f.compact ? day(asOf) : `As of ${day(asOf)} · paper money`}</time>
+            </p>
+            <p class="flex items-center gap-2 tabular-nums">
+              <span class="w-5 border-t border-dashed border-muted" />
+              $100,000 start
+            </p>
+          </div>
+        </foreignObject>
+      </svg>
+    );
+  })
+}
+
+<style>
+  .rim {
+    fill: var(--color-paper);
+  }
+
+  .halo {
+    paint-order: stroke;
+    stroke: var(--color-paper);
+    stroke-width: 4px;
+    stroke-linejoin: round;
+  }
+
+  .up {
+    fill: light-dark(#059669, #34d399);
+  }
+
+  .down {
+    fill: light-dark(#e11d48, #fb7185);
+  }
+
+  .flat {
+    fill: var(--color-muted);
+  }
+
+  .crown {
+    color: light-dark(#f2ae00, #ffcc1f);
+  }
+
+  .dot:focus-visible {
+    outline: none;
+  }
+
+  .dot:is(:focus-visible, :active) .rim {
+    fill: var(--color-signal);
+  }
+
+  .field:has(.dot:is(:hover, :focus-visible)) .dot:not(:hover, :focus-visible) {
+    opacity: 0.3;
+  }
+
+  .tag {
+    pointer-events: none;
+    opacity: 0;
+  }
+
+  .dot:is(:hover, :focus-visible) .tag {
+    opacity: 1;
+  }
+</style>

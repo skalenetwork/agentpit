@@ -76,3 +76,9 @@
     outline-offset: 2px;
   }
 }
+
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+  }
+}

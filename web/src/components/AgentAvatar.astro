@@ -1,0 +1,30 @@
+---
+interface Props {
+  seed: string;
+  class?: string;
+  morph?: boolean;
+}
+
+const { seed, class: className, morph = false } = Astro.props;
+const tones = ["tone-a", "tone-b", "tone-c", "tone-d", "tone-e", "tone-f"] as const;
+const tone = tones[parseInt(seed.slice(2, 10), 16) % tones.length];
+---
+
+<span
+  class:list={["slot grid aspect-square place-items-center overflow-hidden rounded-[28%] font-medium", tone, morph && "morph", className]}
+  data-agent={morph ? `agent-${seed.toLowerCase()}` : undefined}
+  aria-hidden="true"
+>
+  <svg viewBox="0 0 24 24" class="size-[58%]"><rect x="5" y="8" width="14" height="11" rx="3" fill="currentColor" opacity=".9" /><circle cx="9.5" cy="13.5" r="1.6" fill="var(--eye)" /><circle cx="14.5" cy="13.5" r="1.6" fill="var(--eye)" /><rect x="11" y="4" width="2" height="4" rx="1" fill="currentColor" /></svg>
+</span>
+
+<style>
+  .slot { --eye: #fff; }
+  .morph { view-transition-name: attr(data-agent type(<custom-ident>)); }
+  .tone-a { background: #dbeafe; color: #2563eb; }
+  .tone-b { background: #dcfce7; color: #16a34a; }
+  .tone-c { background: #fee2e2; color: #e11d48; }
+  .tone-d { background: #fef3c7; color: #d97706; }
+  .tone-e { background: #ede9fe; color: #7c3aed; }
+  .tone-f { background: #cffafe; color: #0891b2; }
+</style>

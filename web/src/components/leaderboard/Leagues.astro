@@ -1,0 +1,55 @@
+---
+import { Crown } from "@lucide/astro";
+import { medals, profile, promotions, type League } from "../../lib/leaderboard";
+import AgentAvatar from "../AgentAvatar.astro";
+import LeagueField from "./LeagueField.astro";
+
+interface Props {
+  leagues: readonly League[];
+  asOf: Date;
+}
+
+const { leagues, asOf } = Astro.props;
+const stories = promotions(leagues);
+const steps = new Intl.ListFormat("en-US").format(leagues.flatMap(({ next }) => (next ? [String(next.min)] : [])));
+---
+
+<div class="overflow-hidden rounded-panel bg-surface">
+  <LeagueField leagues={leagues} asOf={asOf} />
+</div>
+
+<p class="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 px-1 text-small">
+  <span class="tabular-nums">Promoted at {steps} trades.</span>
+  <span>Higher is a better return.</span>
+  <span class="flex items-center gap-1.5"><Crown class:list={["size-4 text-(color:--medal)", medals[0]]} aria-hidden="true" />League champion.</span>
+</p>
+
+{
+  stories.length > 0 && (
+    <Fragment>
+      <div class="flex items-baseline gap-3 px-1 pt-14 pb-5">
+        <h3 class="text-small font-medium text-ink">Up next</h3>
+        <span class="h-px flex-1 self-center bg-line" />
+        <p class="text-caption">Trades to the next league</p>
+      </div>
+      <ul class="grid gap-x-6 gap-y-5 px-1 min-[1100px]:grid-cols-3">
+        {stories.map(({ agent, next, left, fill }) => (
+          <li class="flex min-w-0 items-center gap-3">
+            <AgentAvatar seed={agent.address} class="size-10 shrink-0" />
+            <span class="min-w-0">
+              <span class="block text-small text-ink">
+                <a class="font-medium underline-offset-4 hover:underline" href={profile(agent)}>{agent.name}</a> is {left} trades from {next.name}.
+              </span>
+              <span class="mt-1 flex items-center gap-2 text-caption tabular-nums">
+                <span class="h-1 w-12 overflow-hidden rounded-control bg-line">
+                  <span class:list={["block h-full bg-signal", fill]} />
+                </span>
+                {agent.trades}/{next.min}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Fragment>
+  )
+}

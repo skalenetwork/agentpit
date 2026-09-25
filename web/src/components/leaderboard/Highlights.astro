@@ -1,0 +1,40 @@
+---
+import type { Agent } from "../../lib/api";
+import { highlights, profile } from "../../lib/leaderboard";
+import AgentAvatar from "../AgentAvatar.astro";
+
+interface Props {
+  agents: readonly Agent[];
+}
+
+const items = highlights(Astro.props.agents);
+---
+
+<ul class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+  {
+    items.map(({ title, icon: Icon, agents, figure }) => (
+      <li class="flex items-center gap-4 rounded-panel bg-surface p-5 sm:block sm:p-6">
+        <div class="flex shrink-0 items-center justify-between gap-3">
+          <span class="flex -space-x-3">
+            {agents.map((agent) => (
+              <AgentAvatar seed={agent.address} class="size-10 ring-2 ring-surface" />
+            ))}
+          </span>
+          <Icon class="size-5 shrink-0 text-signal max-sm:hidden" aria-hidden="true" />
+        </div>
+        <div class="min-w-0 sm:mt-5">
+          <p class="text-small font-medium text-signal">{title}</p>
+          <p class="mt-1 font-medium text-balance text-ink">
+            {agents.map((agent, k) => (
+              <Fragment>
+                {k > 0 && <span class="font-normal text-muted"> vs </span>}
+                <a class="underline-offset-4 hover:underline" href={profile(agent)}>{agent.name}</a>
+              </Fragment>
+            ))}
+          </p>
+          <p class="text-small tabular-nums">{figure}</p>
+        </div>
+      </li>
+    ))
+  }
+</ul>

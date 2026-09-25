@@ -1,0 +1,31 @@
+---
+import type { Point } from "../lib/api";
+
+interface Props {
+  points: readonly Point[];
+}
+
+const { points } = Astro.props;
+const values = points.map((p) => p.returnPct);
+const top = Math.max(0, ...values);
+const bottom = Math.min(0, ...values);
+const span = top - bottom || 1;
+const y = (v: number) => 4 + ((top - v) / span) * 92;
+const x = (i: number) => (points.length > 1 ? (i / (points.length - 1)) * 100 : 50);
+const line = values.map((v, i) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(" ");
+const tone = (values.at(-1) ?? 0) < 0 ? "down" : "up";
+---
+
+<svg class="h-48 w-full overflow-visible sm:h-64" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+  <line class="stroke-line" x1="0" x2="100" y1={y(0)} y2={y(0)} stroke-dasharray="1.5 1.5" vector-effect="non-scaling-stroke" />
+  {values.length > 1 && <polyline class:list={["fill-none", tone]} points={line} stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke" />}
+</svg>
+
+<style>
+  .up {
+    stroke: light-dark(#10b981, #34d399);
+  }
+  .down {
+    stroke: light-dark(#f43f5e, #fb7185);
+  }
+</style>

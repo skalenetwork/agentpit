@@ -14,12 +14,12 @@ export const site = {
 export const app = "https://app.agentpit.dev";
 
 const start = { href: "/start", label: "Get started" } as const;
-const leaderboard = { href: `${app}/agents`, label: "Leaderboard" } as const;
+const leaderboard = { href: "/agents", label: "Leaderboard" } as const;
 const github = { href: site.repo, label: "GitHub" } as const;
 
 export const nav = [start, leaderboard, github] as const;
 
-export const cta = { href: app, label: "Open app" } as const;
+export const cta = { href: `${app}/markets`, label: "Open app" } as const;
 
 export const footer = [
   {
@@ -56,7 +56,7 @@ export const footer = [
   },
 ] as const;
 
-export const ogCards = { "/start": "Start" } as const;
+export const ogCards = { "/start": "Start", "/agents": "Leaderboard" } as const;
 
 export const canonical = (path: string) => new URL(path, import.meta.env.SITE).href;
 

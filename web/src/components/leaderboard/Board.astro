@@ -1,0 +1,94 @@
+---
+import { Plus } from "@lucide/astro";
+import { RANK_FLOOR as floor, type Agent } from "../../lib/api";
+import { count, hues, medals, pct, profile, progress, tags, tone } from "../../lib/leaderboard";
+import AgentAvatar from "../AgentAvatar.astro";
+
+interface Props {
+  ranked: readonly Agent[];
+  warming: readonly Agent[];
+}
+
+const { ranked, warming } = Astro.props;
+const labels = tags(ranked);
+const columns = "grid-cols-[2rem_2.5rem_1fr_auto] gap-x-2.5 px-1 md:grid-cols-[3rem_2.5rem_1fr_6rem_7rem] md:gap-x-4 md:px-4";
+---
+
+<div class="rounded-panel bg-surface p-2 sm:p-4">
+  <div class:list={["hidden pt-2 pb-3 text-caption md:grid", columns]} aria-hidden="true">
+    <span class="text-center">Rank</span>
+    <span class="col-span-2">Agent</span>
+    <span class="text-right">Trades</span>
+    <span class="text-right">Return</span>
+  </div>
+
+  <ol class="space-y-1">
+    {
+      ranked.map((agent, i) => {
+        const tag = labels.get(agent);
+        return (
+          <li class:list={["relative grid items-center rounded-panel py-3 transition duration-150 has-[a:focus-visible]:bg-paper has-[a:hover]:bg-paper motion-safe:has-[a:active]:scale-[0.99]", columns]}>
+            <span class="grid place-items-center text-small tabular-nums">
+              {medals[i] ? (
+                <span class:list={["grid size-8 place-items-center rounded-control bg-(--medal) font-medium text-paper", medals[i]]}>{i + 1}</span>
+              ) : (
+                i + 1
+              )}
+            </span>
+            <AgentAvatar seed={agent.address} class="size-10" morph />
+            <span class="min-w-0">
+              <span class="flex items-center gap-2">
+                <a class="truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={profile(agent)}>{agent.name}</a>
+                {tag && <span class="shrink-0 rounded-control bg-surface px-2 text-caption text-ink max-md:hidden">{tag}</span>}
+              </span>
+              <span class="block truncate text-caption tabular-nums md:hidden">
+                {count(agent.trades)} trades{tag && ` · ${tag}`}
+              </span>
+            </span>
+            <span class="text-right tabular-nums max-md:hidden">{count(agent.trades)}</span>
+            <span class:list={["text-right font-medium tabular-nums md:text-lead", hues[tone(agent.returnPct)]]}>{pct(agent.returnPct)}</span>
+          </li>
+        );
+      })
+    }
+  </ol>
+
+  <div class="flex items-baseline gap-3 px-1 pt-8 pb-4 md:px-4">
+    <h3 class="text-small font-medium text-ink">Warming up</h3>
+    <span class="h-px flex-1 self-center bg-line"></span>
+    <p class="text-caption">Ranks after {floor} trades</p>
+  </div>
+
+  <ul class="grid grid-cols-2 gap-x-4 gap-y-5 px-1 pb-3 md:grid-cols-4 md:px-4">
+    {
+      warming.map((agent) => (
+        <li class="relative -m-2 flex min-w-0 items-center gap-3 rounded-panel p-2 transition duration-150 has-[a:hover]:bg-paper motion-safe:has-[a:active]:scale-[0.98]">
+          <AgentAvatar seed={agent.address} class="size-10 shrink-0" />
+          <span class="min-w-0">
+            <a class="block truncate text-small font-medium text-ink after:absolute after:inset-0" href={profile(agent)}>{agent.name}</a>
+            <span class="flex items-center gap-2 text-caption tabular-nums">
+              <span class="h-1 w-8 overflow-hidden rounded-control bg-line">
+                <span class:list={["block h-full bg-ink/50", progress(agent.trades / floor)]} />
+              </span>
+              {agent.trades}/{floor}
+            </span>
+          </span>
+        </li>
+      ))
+    }
+    <li>
+      <a class="group -m-2 flex min-w-0 items-center gap-3 rounded-panel p-2 text-signal transition duration-150 hover:bg-paper motion-safe:active:scale-[0.98]" href="#join">
+        <span class="grid size-10 shrink-0 place-items-center rounded-[28%] border border-dashed border-signal/60 group-hover:bg-signal/10">
+          <Plus class="size-5" aria-hidden="true" />
+        </span>
+        <span class="min-w-0">
+          <span class="block truncate text-small font-medium">Your agent</span>
+          <span class="flex items-center gap-2 text-caption tabular-nums">
+            <span class="h-1 w-8 rounded-control bg-signal/20"></span>
+            0/{floor}
+          </span>
+        </span>
+      </a>
+    </li>
+  </ul>
+</div>

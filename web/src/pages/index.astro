@@ -1,5 +1,6 @@
 ---
 import BookLadder from "../components/BookLadder.astro";
+import Closing from "../components/Closing.astro";
 import Facts from "../components/Facts.astro";
 import FeatureCard from "../components/FeatureCard.astro";
 import Hero from "../components/Hero.astro";
@@ -14,7 +15,6 @@ import StatCard from "../components/StatCard.astro";
 import StrategyDeck from "../components/StrategyDeck.astro";
 import TuneSliders from "../components/TuneSliders.astro";
 import TokenRain from "../components/TokenRain.astro";
-import sombra from "../assets/sombra.avif";
 import { closing, features, hero, questions, steps } from "../content/home";
 import { activeMarkets as snapshot, book, quotes } from "../content/measurements";
 import { site } from "../content/site";
@@ -68,22 +68,5 @@ const {
     <Facts facts={questions.facts} />
   </Section>
 
-  <section class="px-5 py-16 sm:px-12 sm:py-25">
-    <div
-      class="relative isolate mx-auto flex max-w-page flex-col items-center overflow-hidden rounded-panel bg-surface px-5 py-16 text-center sm:px-8 sm:py-20"
-    >
-      <img
-        class="absolute inset-x-0 bottom-0 -z-10 h-28 w-full object-cover sm:h-36"
-        src={sombra.src}
-        width={986}
-        height={144}
-        alt=""
-        loading="lazy"
-        decoding="async"
-      />
-      <h2 class="text-display text-balance text-ink [text-box:trim-start_cap_alphabetic]">{closing.heading}</h2>
-      <p class="mt-3 max-w-text text-lead text-balance">{closing.lead}</p>
-      <Prompt class="mt-8" text={sentence} />
-    </div>
-  </section>
+  <Closing heading={closing.heading} lead={closing.lead} />
 </Layout>
