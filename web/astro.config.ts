@@ -10,7 +10,7 @@ const copyHash = `sha256-${createHash("sha256")
   .digest("base64")}` as const;
 
 export default defineConfig({
-  site: process.env.SITE_URL ?? "https://agentpit.dev",
+  site: "https://agentpit.dev",
   adapter: cloudflare({ imageService: "compile", prerenderEnvironment: "node" }),
   session: false,
   cache: { provider: cacheCloudflare() },

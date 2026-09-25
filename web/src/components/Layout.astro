@@ -2,7 +2,7 @@
 import { Font } from "astro:assets";
 import Footer from "./Footer.astro";
 import Header from "./Header.astro";
-import { canonical, indexable, ogCards, site } from "../content/site";
+import { canonical, ogCards, site } from "../content/site";
 import "../styles/global.css";
 
 interface Props {
@@ -25,7 +25,7 @@ const image = canonical(path in ogCards ? `/og${path}.png` : "/og.png");
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={summary} />
-    {(noindex || !indexable) && <meta name="robots" content="noindex" />}
+    {noindex && <meta name="robots" content="noindex" />}
     {
       !noindex && (
         <Fragment>

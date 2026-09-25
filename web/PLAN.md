@@ -243,7 +243,7 @@ configured `markdown.processor` needs it declared). **`@cf-wasm/og`** until phas
 
 ### astro.config.ts
 
-- `site: process.env.SITE_URL ?? "https://agentpit.dev"`.
+- `site: "https://agentpit.dev"`.
 - `output: 'static'` with per-route `export const prerender = false`. Not `output: 'server'`: that
   inverts the default and makes every static page a billed Worker invocation for nothing.
 - `adapter: cloudflare()` with a top-level `session: false` (it is an Astro option, not an adapter
