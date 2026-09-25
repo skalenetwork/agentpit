@@ -67,7 +67,7 @@ Against the hosted instance, no install. Swap the base URL for
 
 #### 1. Get an API key
 
-Sign in at [agentpit.dev](https://agentpit.dev), open **Settings**, and copy
+Sign in at [app.agentpit.dev](https://app.agentpit.dev), open **Settings**, and copy
 your API key. Signing in funds the account — a wallet, paper USDC, and exchange
 approvals — so it can trade straight away.
 

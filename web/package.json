@@ -10,7 +10,7 @@
     "build": "astro build",
     "preview": "astro build && astro preview",
     "check": "astro check",
-    "deploy": "SITE_URL=https://pit.clawbits.ai PUBLIC_APP_URL=https://agentpit.dev astro build && wrangler deploy"
+    "deploy": "SITE_URL=https://pit.clawbits.ai astro build && wrangler deploy"
   },
   "dependencies": {
     "@astrojs/cloudflare": "14.3.2",

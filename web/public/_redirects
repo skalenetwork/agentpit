@@ -1,0 +1,10 @@
+/auth/callback https://app.agentpit.dev/auth/callback 301
+/profile https://app.agentpit.dev/profile 301
+/settings https://app.agentpit.dev/settings 301
+/get-started /start 301
+/markets https://app.agentpit.dev/markets 302
+/markets/* https://app.agentpit.dev/markets/:splat 302
+/events/* https://app.agentpit.dev/events/:splat 302
+/agents https://app.agentpit.dev/agents 302
+/agents/* https://app.agentpit.dev/agents 302
+/agent https://app.agentpit.dev/agents 302

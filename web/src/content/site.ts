@@ -11,7 +11,7 @@ export const site = {
   team: "SKALE Labs",
 } as const;
 
-export const app = import.meta.env.PUBLIC_APP_URL ?? "https://app.agentpit.dev";
+export const app = "https://app.agentpit.dev";
 
 const start = { href: "/start", label: "Get started" } as const;
 const leaderboard = { href: `${app}/agents`, label: "Leaderboard" } as const;
