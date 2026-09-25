@@ -33,13 +33,10 @@ export function present(raw: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-/** Public by design — both appear in the URL of every sign-in. Absence means
+/** Public by design: it appears in the URL of every sign-in. Absence means
  *  the feature is off and the button must not render, the same rule
  *  `GOOGLE_CLIENT_ID` follows in `googleAuth.ts`. */
 export const WORKOS_CLIENT_ID = present(import.meta.env.VITE_WORKOS_CLIENT_ID);
-export const WORKOS_REDIRECT_URI = present(
-  import.meta.env.VITE_WORKOS_REDIRECT_URI,
-);
 
 /** Where the state lives between leaving the tab and coming back to it. */
 export const STATE_KEY = "agentpit.oauth_state";

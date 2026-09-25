@@ -11,10 +11,10 @@ import { Label } from "@/components/ui/label";
 import { useAuth } from "@/auth/useAuth";
 import {
   buildAuthorizeUrl,
+  CALLBACK_PATH,
   createState,
   STATE_KEY,
   WORKOS_CLIENT_ID,
-  WORKOS_REDIRECT_URI,
 } from "@/lib/workosAuth";
 import {
   CODE_LENGTH,
@@ -157,18 +157,18 @@ export function AuthDialog() {
     // Narrowing an imported const doesn't survive into this closure (see
     // GoogleSignInButton), so re-check rather than trust the render guard
     // that decided whether this block exists at all.
-    if (!WORKOS_CLIENT_ID || !WORKOS_REDIRECT_URI) return;
+    if (!WORKOS_CLIENT_ID) return;
     const state = createState();
     sessionStorage.setItem(STATE_KEY, state);
     window.location.href = buildAuthorizeUrl({
       clientId: WORKOS_CLIENT_ID,
-      redirectUri: WORKOS_REDIRECT_URI,
+      redirectUri: new URL(CALLBACK_PATH, location.origin).href,
       provider: "GoogleOAuth",
       state,
     });
   };
 
-  const googleBlock = WORKOS_CLIENT_ID && WORKOS_REDIRECT_URI && (
+  const googleBlock = WORKOS_CLIENT_ID && (
     <div className="space-y-4">
       {/* Below the fields, not above them: the emailed code is the primary
           path, and the divider reads as "or, instead of the above". */}

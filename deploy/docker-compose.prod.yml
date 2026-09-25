@@ -121,14 +121,13 @@ services:
         # recreate was refused for a value the recreated service never reads.
         #
         # The requirement did not go away, it moved to where it belongs:
-        # `Dockerfile.ui` refuses to build without these three, with a message
+        # `Dockerfile.ui` refuses to build without these two, with a message
         # naming what breaks. A missing value now costs a failed build instead
         # of a system that cannot be operated.
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
         VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
         # Baked in, not read at runtime -- see Dockerfile.ui.
         VITE_WORKOS_CLIENT_ID: ${VITE_WORKOS_CLIENT_ID:-}
-        VITE_WORKOS_REDIRECT_URI: ${VITE_WORKOS_REDIRECT_URI:-}
     restart: unless-stopped
     logging: *default-logging
     ports:

@@ -13,9 +13,9 @@ import { signInErrorMessage } from "@/components/auth/codeFlow";
 
 describe("present", () => {
   // Mirrors `readGoogleClientId` in `googleAuth.ts` — same rule, same cases,
-  // because this is the function that decides whether `WORKOS_CLIENT_ID` /
-  // `WORKOS_REDIRECT_URI` count as set, which gates whether the Google button
-  // renders at all in `AuthDialog`.
+  // because this is the function that decides whether `WORKOS_CLIENT_ID`
+  // counts as set, which gates whether the Google button renders at all in
+  // `AuthDialog`.
   it("returns the value when set", () => {
     expect(present("client_1")).toBe("client_1");
   });

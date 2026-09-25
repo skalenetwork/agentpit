@@ -8,7 +8,7 @@
 # certificate the site does not merely lose the padlock -- it does not load.
 
 # --- UI: static SPA ------------------------------------------------------------
-agentpit.dev {
+agentpit.dev, app.agentpit.dev {
 	encode gzip
 
 	# Vite puts a content hash in every file name under /assets, so a name never

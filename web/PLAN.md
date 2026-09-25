@@ -349,8 +349,8 @@ Both hosts now work and nothing has moved.
 
 ### Phase 0d: SPA cutover.
 
-Point `VITE_WORKOS_REDIRECT_URI` at the new callback, delete the SPA's landing page, make its `/`
-redirect into the console, and rebuild: a restart leaves the old redirect URI inlined in the bundle.
+The SPA derives its callback from its own origin, so only WorkOS needs the new URI. Delete the SPA's
+landing page, make its `/` redirect into the console, and rebuild the `caddy` image.
 
 **Announce a one-time sign-out.** Tokens live in `localStorage` on `agentpit.dev` and the backend sets no
 cookies, so no cookie-domain trick can carry sessions across. Do not build a fragment token handoff for

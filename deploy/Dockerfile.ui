@@ -13,15 +13,13 @@ ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 # Optional: absent means the "Continue with Google" button does not render.
 ARG VITE_GOOGLE_CLIENT_ID
 ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
-# Both required for the WorkOS Google redirect, and both must be present HERE:
+# Required for the WorkOS Google redirect, and it must be present HERE:
 # vite inlines import.meta.env at build time, so a value supplied only at
 # container runtime is already too late -- `present()` in lib/workosAuth.ts
 # reads undefined and the Google block silently does not render, however
 # correctly WorkOS itself is configured.
 ARG VITE_WORKOS_CLIENT_ID
 ENV VITE_WORKOS_CLIENT_ID=$VITE_WORKOS_CLIENT_ID
-ARG VITE_WORKOS_REDIRECT_URI
-ENV VITE_WORKOS_REDIRECT_URI=$VITE_WORKOS_REDIRECT_URI
 # The gate lives HERE and not in the compose file's interpolation, because
 # compose interpolates the WHOLE file on EVERY command: a `${VAR:?}` on a
 # caddy build arg makes `docker compose restart anvil` fail too, which is
@@ -33,8 +31,6 @@ missing one shows localhost to real users}" \
  && : "${VITE_WORKOS_CLIENT_ID:?set it in .env — vite inlines this at build time, \
 and without it the sign-in dialog renders no Google button however correctly \
 WorkOS itself is configured}" \
- && : "${VITE_WORKOS_REDIRECT_URI:?set it in .env — must match a redirect URI \
-registered with WorkOS exactly, or every Google sign-in is refused}" \
  && yarn build
 
 FROM caddy:2
