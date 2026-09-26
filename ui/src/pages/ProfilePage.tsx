@@ -38,7 +38,7 @@ import {
 } from "@/lib/sortPositions";
 import type { PositionColumn, PositionSort } from "@/lib/sortPositions";
 import { Sparkline } from "@/components/Sparkline";
-import { getAvatarStyle } from "@/lib/avatarColor";
+import { avatarUrl } from "@/lib/avatar";
 import { claimErrorMessage } from "@/lib/claimError";
 import {
   formatCredits,
@@ -121,7 +121,6 @@ export function ProfilePage() {
   const { data: credits } = useCredits(own);
   const { data: topUpStatus } = useTopUpStatus(own);
   const topUp = useTopUp();
-  const avatarStyle = getAvatarStyle(address || user?.email);
   const now = Math.floor(Date.now() / 1000);
   const topUpState = topUpButtonState(topUpStatus, topUp.isPending, now);
 
@@ -240,12 +239,11 @@ export function ProfilePage() {
         <Card className="h-full rounded-2xl border-border/80 lg:col-span-2">
           <CardContent className="flex h-full flex-col justify-between p-6">
             <div className="flex min-w-0 items-center gap-3">
-              <div
-                className="flex size-14 shrink-0 items-center justify-center rounded-full text-lg font-semibold text-white"
-                style={avatarStyle}
-              >
-                {name.slice(0, 1).toUpperCase()}
-              </div>
+              {address ? (
+                <img className="size-14 shrink-0 rounded-[28%] bg-muted" src={avatarUrl(address)} alt="" />
+              ) : (
+                <div className="size-14 shrink-0 rounded-[28%] bg-muted" />
+              )}
               <div className="min-w-0">
                 {/* The handle leads: it is the name this account carries on the
                     public board, and the one a person would say out loud. The

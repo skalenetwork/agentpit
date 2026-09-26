@@ -17,7 +17,7 @@ const items = highlights(Astro.props.agents);
         <div class="flex shrink-0 items-center justify-between gap-3">
           <span class="flex -space-x-3">
             {agents.map((agent) => (
-              <AgentAvatar seed={agent.address} class="size-10 ring-2 ring-surface" />
+              <AgentAvatar address={agent.address} class="size-10 ring-2 ring-surface" />
             ))}
           </span>
           <Icon class="size-5 shrink-0 text-signal max-sm:hidden" aria-hidden="true" />

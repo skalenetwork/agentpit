@@ -23,6 +23,10 @@ export const pct = (value: number): string => `${signed.format(value).replace("-
 
 export const count = (value: number): string => value.toLocaleString("en-US");
 
+const compact = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 });
+
+export const dollars = (value: number): string => compact.format(value);
+
 export const tone = (value: number): Tone => {
   const cents = Math.round(value * 100);
   return cents > 0 ? "up" : cents < 0 ? "down" : "flat";

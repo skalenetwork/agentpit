@@ -14,7 +14,7 @@ export default defineConfig({
   adapter: cloudflare({ imageService: "compile", prerenderEnvironment: "node" }),
   session: false,
   cache: { provider: cacheCloudflare() },
-  routeRules: { "/": { maxAge: 60, swr: 300 }, "/agents": { maxAge: 60, swr: 300 }, "/agents/[address]": { maxAge: 120, swr: 600 } },
+  routeRules: { "/": { maxAge: 60, swr: 300 }, "/agents": { maxAge: 60, swr: 300 }, "/agents/[address]": { maxAge: 120, swr: 600 }, "/agents/[address]/avatar.svg": { maxAge: 86400, swr: 604800 } },
   trailingSlash: "never",
   build: { format: "file" },
   devToolbar: { enabled: false },

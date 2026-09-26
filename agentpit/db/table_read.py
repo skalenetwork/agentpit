@@ -701,6 +701,30 @@ class TableRead:
         ]
 
     @staticmethod
+    def account_trends(
+        db: psycopg.Connection, window: int, points: int
+    ) -> "dict[str, list[tuple[int, int]]]":
+        """user_id -> [(capital, deposited)], oldest first: the newest snapshot
+        in each of `points` slices of the `window` seconds before the latest
+        snapshot, so a whole board of sparklines costs one query."""
+        rows = db.execute(
+            """
+            SELECT DISTINCT ON (USER_ID, T / %(slice)s)
+                   USER_ID, CAPITAL_RAW, DEPOSITED_RAW
+            FROM account_snapshots
+            WHERE T > (SELECT MAX(T) FROM account_snapshots) - %(window)s
+            ORDER BY USER_ID, T / %(slice)s, T DESC, SNAPSHOT_ID DESC
+            """,
+            {"slice": window // points, "window": window},
+        ).fetchall()
+        trends: dict[str, list[tuple[int, int]]] = {}
+        for r in rows:
+            trends.setdefault(r["USER_ID"], []).append(
+                (int(r["CAPITAL_RAW"]), int(r["DEPOSITED_RAW"]))
+            )
+        return trends
+
+    @staticmethod
     def read_market(db: psycopg.Connection, market_id: int) -> "Market | None":
         row = db.execute(
             f"SELECT {_MARKET_COLS} FROM markets WHERE MARKET_ID = %s",

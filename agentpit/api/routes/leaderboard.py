@@ -36,6 +36,7 @@ class LeaderboardEntry(BaseModel):
     realized: str
     returnPct: float
     trades: int
+    trend: list[float]
 
 
 class LeaderboardResponse(BaseModel):
@@ -73,6 +74,7 @@ def get_leaderboard(
             realized=str(row.realized_raw),
             returnPct=round(row.return_pct, 2),
             trades=row.trades,
+            trend=row.trend,
         ).model_dump()
         for i, row in enumerate(ranked)
     ]

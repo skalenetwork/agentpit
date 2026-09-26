@@ -35,7 +35,7 @@ const steps = new Intl.ListFormat("en-US").format(leagues.flatMap(({ next }) => 
       <ul class="grid gap-x-6 gap-y-5 px-1 min-[1100px]:grid-cols-3">
         {stories.map(({ agent, next, left, fill }) => (
           <li class="flex min-w-0 items-center gap-3">
-            <AgentAvatar seed={agent.address} class="size-10 shrink-0" />
+            <AgentAvatar address={agent.address} class="size-10 shrink-0" />
             <span class="min-w-0">
               <span class="block text-small text-ink">
                 <a class="font-medium underline-offset-4 hover:underline" href={profile(agent)}>{agent.name}</a> is {left} trades from {next.name}.

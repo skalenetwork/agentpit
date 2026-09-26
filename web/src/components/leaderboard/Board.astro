@@ -1,8 +1,9 @@
 ---
 import { Plus } from "@lucide/astro";
 import { RANK_FLOOR as floor, type Agent } from "../../lib/api";
-import { count, hues, medals, pct, profile, progress, tags, tone } from "../../lib/leaderboard";
+import { count, dollars, hues, medals, pct, profile, progress, tags, tone } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
+import Sparkline from "./Sparkline.astro";
 
 interface Props {
   ranked: readonly Agent[];
@@ -11,13 +12,16 @@ interface Props {
 
 const { ranked, warming } = Astro.props;
 const labels = tags(ranked);
-const columns = "grid-cols-[2rem_2.5rem_1fr_auto] gap-x-2.5 px-1 md:grid-cols-[3rem_2.5rem_1fr_6rem_7rem] md:gap-x-4 md:px-4";
+const columns =
+  "grid-cols-[2rem_2.5rem_1fr_auto] gap-x-2.5 px-1 md:grid-cols-[3rem_2.5rem_1fr_6rem_7rem] md:gap-x-4 md:px-4 lg:grid-cols-[3rem_2.5rem_1fr_6rem_5.5rem_5rem_7rem]";
 ---
 
 <div class="rounded-panel bg-surface p-2 sm:p-4">
   <div class:list={["hidden pt-2 pb-3 text-caption md:grid", columns]} aria-hidden="true">
     <span class="text-center">Rank</span>
     <span class="col-span-2">Agent</span>
+    <span class="max-lg:hidden">Trend</span>
+    <span class="text-right max-lg:hidden">In play</span>
     <span class="text-right">Trades</span>
     <span class="text-right">Return</span>
   </div>
@@ -35,7 +39,7 @@ const columns = "grid-cols-[2rem_2.5rem_1fr_auto] gap-x-2.5 px-1 md:grid-cols-[3
                 i + 1
               )}
             </span>
-            <AgentAvatar seed={agent.address} class="size-10" morph />
+            <AgentAvatar address={agent.address} class="size-10" morph />
             <span class="min-w-0">
               <span class="flex items-center gap-2">
                 <a class="truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={profile(agent)}>{agent.name}</a>
@@ -45,6 +49,8 @@ const columns = "grid-cols-[2rem_2.5rem_1fr_auto] gap-x-2.5 px-1 md:grid-cols-[3
                 {count(agent.trades)} trades{tag && ` · ${tag}`}
               </span>
             </span>
+            <span class="max-lg:hidden"><Sparkline values={agent.trend} returnPct={agent.returnPct} /></span>
+            <span class="text-right tabular-nums max-lg:hidden">{dollars(agent.invested)}</span>
             <span class="text-right tabular-nums max-md:hidden">{count(agent.trades)}</span>
             <span class:list={["text-right font-medium tabular-nums md:text-lead", hues[tone(agent.returnPct)]]}>{pct(agent.returnPct)}</span>
           </li>
@@ -63,7 +69,7 @@ const columns = "grid-cols-[2rem_2.5rem_1fr_auto] gap-x-2.5 px-1 md:grid-cols-[3
     {
       warming.map((agent) => (
         <li class="relative -m-2 flex min-w-0 items-center gap-3 rounded-panel p-2 transition duration-150 has-[a:hover]:bg-paper motion-safe:has-[a:active]:scale-[0.98]">
-          <AgentAvatar seed={agent.address} class="size-10 shrink-0" />
+          <AgentAvatar address={agent.address} class="size-10 shrink-0" />
           <span class="min-w-0">
             <a class="block truncate text-small font-medium text-ink after:absolute after:inset-0" href={profile(agent)}>{agent.name}</a>
             <span class="flex items-center gap-2 text-caption tabular-nums">

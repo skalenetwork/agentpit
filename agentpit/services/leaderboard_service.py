@@ -14,6 +14,9 @@ from agentpit.services.deployment_reset import reconcile_deployment
 
 log = logging.getLogger(__name__)
 
+TREND_WINDOW = 7 * 86_400
+TREND_POINTS = 24
+
 SORTS = ("return", "earned", "capital", "trades")
 
 
@@ -57,6 +60,7 @@ class LeaderboardRow(BaseModel):
     #: Mark-to-market gain on those open positions -- profit only on paper.
     unrealized_raw: int = 0
     trades: int
+    trend: list[float] = []
 
     @property
     def earned_raw(self) -> int:
@@ -209,6 +213,7 @@ class LeaderboardService:
             accounts = TableRead.list_traded_accounts(conn)
             latest = TableRead.latest_account_snapshots(conn)
             counts = TableRead.count_trades_by_user(conn)
+            trends = TableRead.account_trends(conn, TREND_WINDOW, TREND_POINTS)
 
         rows = []
         for account in accounts:
@@ -227,6 +232,10 @@ class LeaderboardService:
                     invested_raw=invested,
                     unrealized_raw=unrealized,
                     trades=counts.get(account.user_id, 0),
+                    trend=[
+                        round(compute_return_pct(c, d), 2)
+                        for c, d in trends.get(account.user_id, [])
+                    ],
                 )
             )
         return rows

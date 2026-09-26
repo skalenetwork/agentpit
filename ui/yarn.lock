@@ -2067,13 +2067,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/color-hash@npm:^2":
-  version: 2.0.0
-  resolution: "@types/color-hash@npm:2.0.0"
-  checksum: 10c0/62a2fce95a380bba9679368f9db9c84d05e31e29454c58d41b07c979ae10d73fc494c81ef5c0d6fe1261c4b876f78ddca2f01a374808a41a30e825e8d97fba0e
-  languageName: node
-  linkType: hard
-
 "@types/estree@npm:1.0.8, @types/estree@npm:^1.0.6":
   version: 1.0.8
   resolution: "@types/estree@npm:1.0.8"
@@ -2416,7 +2409,6 @@ __metadata:
     "@radix-ui/react-slot": "npm:^1.1.1"
     "@tanstack/react-query": "npm:^5.62.7"
     "@testing-library/jest-dom": "npm:^6.9.1"
-    "@types/color-hash": "npm:^2"
     "@types/node": "npm:^22.10.5"
     "@types/react": "npm:^18.3.18"
     "@types/react-dom": "npm:^18.3.5"
@@ -2424,7 +2416,6 @@ __metadata:
     autoprefixer: "npm:^10.4.20"
     class-variance-authority: "npm:^0.7.1"
     clsx: "npm:^2.1.1"
-    color-hash: "npm:^2.0.2"
     eslint: "npm:^9.17.0"
     eslint-config-prettier: "npm:^9.1.0"
     eslint-plugin-react-hooks: "npm:^5.1.0"
@@ -2740,13 +2731,6 @@ __metadata:
   dependencies:
     color-name: "npm:~1.1.4"
   checksum: 10c0/37e1150172f2e311fe1b2df62c6293a342ee7380da7b9cfdba67ea539909afbd74da27033208d01d6d5cfc65ee7868a22e18d7e7648e004425441c0f8a15a7d7
-  languageName: node
-  linkType: hard
-
-"color-hash@npm:^2.0.2":
-  version: 2.0.2
-  resolution: "color-hash@npm:2.0.2"
-  checksum: 10c0/aff414012383f6db3440f5a07505f1c6d63b0bd296bb42fcc7ec23c4912a9ff7ab2661bba8403d9b74aba25b30b5530d174d25eaecfdfc5e180883fd90ad9503
   languageName: node
   linkType: hard
 

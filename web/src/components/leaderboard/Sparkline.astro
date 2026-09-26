@@ -1,0 +1,24 @@
+---
+import { hues, tone } from "../../lib/leaderboard";
+
+interface Props {
+  values: readonly number[];
+  returnPct: number;
+}
+
+const { values, returnPct } = Astro.props;
+const [width, height, pad] = [96, 28, 3];
+const top = Math.max(...values);
+const span = top - Math.min(...values) || 1;
+const points = values.map((v, i) => [(i / (values.length - 1)) * (width - 2 * pad) + pad, pad + ((top - v) / span) * (height - 2 * pad)] as const);
+const [x, y] = points.at(-1) ?? [0, 0];
+---
+
+{
+  values.length > 1 && (
+    <svg class:list={["h-7 w-24", hues[tone(returnPct)]]} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+      <polyline class="fill-none stroke-current" points={points.map((p) => p.join(",")).join(" ")} stroke-width="1.5" stroke-linejoin="round" />
+      <circle class="fill-surface stroke-current" cx={x} cy={y} r="2.5" stroke-width="1.5" />
+    </svg>
+  )
+}

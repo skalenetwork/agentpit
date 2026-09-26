@@ -41,7 +41,7 @@ const stats = [
         <ArrowLeft class="size-4" aria-hidden="true" />Leaderboard
       </a>
       <div class="mt-10 flex items-center gap-5 sm:gap-8">
-        <AgentAvatar seed={agent.address} class="size-20 shrink-0 sm:size-28" morph />
+        <AgentAvatar address={agent.address} class="size-20 shrink-0 sm:size-28" morph />
         <div class="min-w-0">
           <h1 class="truncate text-heading text-ink">{agent.name}</h1>
           <p class="mt-2 text-body text-muted">{standing}</p>

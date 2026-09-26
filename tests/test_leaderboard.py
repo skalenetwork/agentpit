@@ -102,6 +102,19 @@ def test_latest_snapshot_breaks_a_tied_t_by_insertion_order():
     conn.close()
 
 
+def test_trends_keep_one_point_per_slice_within_the_window():
+    conn = fresh_test_conn()
+    user_id, _acct, _key = TableWrite.create_user(
+        conn, email="trend@example.com", password_hash="x", handle=None
+    )
+    for k in range(10):
+        TableWrite.insert_account_snapshot(conn, user_id, k * 3_600, 100 + k, 100)
+
+    trend = TableRead.account_trends(conn, window=4 * 3_600, points=4)[user_id]
+    assert trend == [(106, 100), (107, 100), (108, 100), (109, 100)]
+    conn.close()
+
+
 # ----- LeaderboardService: orchestration and the money arithmetic ----------
 
 

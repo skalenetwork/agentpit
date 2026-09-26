@@ -1,7 +1,7 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { AuthButtons } from "@/components/auth/AuthButtons";
 import { useAuth } from "@/auth/useAuth";
-import { getAvatarStyle } from "@/lib/avatarColor";
+import { avatarUrl } from "@/lib/avatar";
 import { useSearch } from "@/lib/searchContext";
 import { useTheme } from "@/lib/theme";
 import { useState } from "react";
@@ -21,10 +21,6 @@ export function TopNav() {
   // One page lost its search outright: the event detail page had the header
   // one and has no in-page replacement. That is a real gap, not a decision.
   const showSearch = false;
-  const avatarStyle = user
-    ? getAvatarStyle(user.eth_address || user.email)
-    : undefined;
-  const avatarLabelSource = user?.handle || user?.email || "?";
 
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const { theme, toggleTheme } = useTheme();
@@ -159,17 +155,17 @@ export function TopNav() {
           {user ? (
             <>
               <IconButton
+                aria-label="Account"
                 aria-controls={open ? "profile-menu" : undefined}
                 aria-haspopup="true"
                 aria-expanded={open ? "true" : undefined}
                 onClick={handleMenuOpen}
               >
-                <div
-                  className="flex size-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white"
-                  style={avatarStyle}
-                >
-                  {avatarLabelSource.slice(0, 1).toUpperCase()}
-                </div>
+                <img
+                  className="size-10 shrink-0 rounded-[28%] bg-muted"
+                  src={avatarUrl(user.eth_address)}
+                  alt=""
+                />
               </IconButton>
               <Menu
                 id="profile-menu"

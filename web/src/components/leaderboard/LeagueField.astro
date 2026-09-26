@@ -136,7 +136,7 @@ const views = frames.map((frame) => ({ frame, ...layout(frame) }));
                 <circle class="rim" r={r + 2} />
                 <foreignObject x={-r} y={-r} width={2 * r} height={2 * r}>
                   <span class="block size-full overflow-hidden rounded-control">
-                    <AgentAvatar seed={agent.address} class="size-full" />
+                    <AgentAvatar address={agent.address} class="size-full" />
                   </span>
                 </foreignObject>
                 {champion && (
