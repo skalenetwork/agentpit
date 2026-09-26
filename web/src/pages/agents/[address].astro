@@ -10,9 +10,13 @@ import { count, pct } from "../../lib/leaderboard";
 export const prerender = false;
 
 const address = Astro.params.address ?? "";
-const board = /^0x[0-9a-fA-F]{40}$/.test(address) ? await leaderboard() : undefined;
-const agent = board?.find((a) => a.address.toLowerCase() === address.toLowerCase());
-if (!board || !agent) return new Response(null, { status: 404 });
+const board = /^0x[0-9a-fA-F]{40}$/.test(address) ? await leaderboard() : [];
+if (!board) {
+  Astro.cache.set(false);
+  return new Response(null, { status: 503 });
+}
+const agent = board.find((a) => a.address.toLowerCase() === address.toLowerCase());
+if (!agent) return new Response(null, { status: 404 });
 if (agent.address !== address) return Astro.redirect(`/agents/${agent.address}`, 301);
 
 const points = await history(agent.address);

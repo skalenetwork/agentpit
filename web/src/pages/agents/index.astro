@@ -14,7 +14,9 @@ import { leaguesOf, standings, tone } from "../../lib/leaderboard";
 
 export const prerender = false;
 
-const agents = (await leaderboard()) ?? [];
+const board = await leaderboard();
+if (!board) Astro.cache.set(false);
+const agents = board ?? [];
 const asOf = new Date();
 const { ranked, warming } = standings(agents);
 const up = ranked.filter((agent) => tone(agent.returnPct) === "up").length;
