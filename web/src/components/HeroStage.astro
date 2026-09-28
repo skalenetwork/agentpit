@@ -2,7 +2,7 @@
 import type { Quote } from "../content/measurements";
 import SkaleOnBase from "../assets/skale-on-base.svg";
 import { avatars } from "../lib/avatars";
-import { cents, shares } from "../lib/format";
+import { cents, count } from "../lib/format";
 import MarketCard from "./MarketCard.astro";
 
 interface Props {
@@ -149,7 +149,7 @@ const ladder = ({ asks, bids }: Quote) => {
               <div class:list={[side, level.touch && "touch", "relative grid h-6 grid-cols-[3.5rem_1fr] items-center px-3"]}>
                 <span class:list={["bar absolute inset-y-0.5 left-0 rounded-control", level.width]} />
                 <span class="relative font-medium text-ink">{cents(level.price)}</span>
-                <span class="relative text-right text-ink">{shares(level.size)}</span>
+                <span class="relative text-right text-ink">{count(level.size)}</span>
               </div>
             );
             return (

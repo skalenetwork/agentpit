@@ -4,8 +4,8 @@ import type { SparklineSample } from "@/lib/chartGeometry";
 
 /** One point of a cumulative-P/L curve. */
 interface PnlPoint {
-  t: number; // unix seconds (0 = baseline)
-  p: number; // cumulative realized P/L in USD
+  t: number;
+  p: number;
 }
 
 /** Pad an equity curve to >= 2 points so a fresh account (single $0 point)
@@ -34,6 +34,7 @@ export interface BoardEntry {
   realized: string;
   returnPct: number;
   trades: number;
+  trend: string[];
 }
 
 export interface BoardResponse {
@@ -133,49 +134,12 @@ export function boardViewState(
   return error ? "error" : "loading";
 }
 
-/** One point of `GET /leaderboard/{address}/history`. Amounts are base-unit
- *  integer strings; `returnPct` is already a percentage. */
-export interface BoardHistoryPoint {
-  t: number;
-  capital: string;
-  earned: string;
-  returnPct: number;
-}
-
-export interface BoardHistory {
-  points: BoardHistoryPoint[];
-}
-
-/** One account's equity curve. Polled at half the board's rate: a new point
- *  only exists once the valuation pass has run (every five minutes), so
- *  fetching faster would re-download the same curve per row per poll. */
-export function useBoardHistory(address: string) {
-  return useQuery({
-    queryKey: ["leaderboard-history", address],
-    queryFn: () =>
-      apiFetch<BoardHistory>(
-        `/leaderboard/${encodeURIComponent(address)}/history`,
-      ),
-    refetchInterval: 60_000,
-    staleTime: 55_000,
-    retry: false,
-  });
-}
-
-/** History to sparkline samples, plotting **earned** rather than capital —
- *  the figure the board ranks on by default, so the curve and the Earned
- *  column beside it tell the same story. Capital would be a flat line at
- *  \$100k with the whole story buried in its last two digits.
- *
- *  `equityPoints` pads a single point to two so a fresh account renders a flat
- *  line instead of a lone dot. */
+/** The entry's trend to sparkline samples: **earned** at each UTC daily close. */
 export function boardTrendPoints(
-  history: BoardHistory | undefined,
+  trend: ReadonlyArray<string>,
 ): SparklineSample[] {
-  if (!history || history.points.length === 0) return [];
-  return equityPoints(
-    history.points.map((d) => ({ t: d.t, p: Number(d.earned) })),
-  );
+  if (trend.length === 0) return [];
+  return equityPoints(trend.map((p, t) => ({ t, p: Number(p) })));
 }
 
 /** Same sign convention as the Return column's colour. */

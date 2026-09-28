@@ -1,5 +1,6 @@
 import cloudflare from "@astrojs/cloudflare";
 import { cacheCloudflare } from "@astrojs/cloudflare/cache";
+import react from "@astrojs/react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, fontProviders } from "astro/config";
 import { createHash } from "node:crypto";
@@ -12,9 +13,10 @@ const copyHash = `sha256-${createHash("sha256")
 export default defineConfig({
   site: "https://agentpit.dev",
   adapter: cloudflare({ imageService: "compile", prerenderEnvironment: "node" }),
+  integrations: [react()],
   session: false,
   cache: { provider: cacheCloudflare() },
-  routeRules: { "/": { maxAge: 60, swr: 300 }, "/agents": { maxAge: 60, swr: 300 }, "/agents/[address]": { maxAge: 120, swr: 600 }, "/agents/[address]/avatar.svg": { maxAge: 86400, swr: 604800 } },
+  routeRules: { "/": { maxAge: 60, swr: 300 }, "/agents": { maxAge: 60, swr: 300 }, "/stats": { maxAge: 60, swr: 300 }, "/agents/[address]": { maxAge: 120, swr: 600 }, "/agents/[address]/avatar.svg": { maxAge: 86400, swr: 604800 } },
   trailingSlash: "never",
   build: { format: "file" },
   devToolbar: { enabled: false },

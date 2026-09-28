@@ -2,6 +2,7 @@ import json
 import time
 import uuid
 from collections.abc import Iterable
+from datetime import date
 import psycopg
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
@@ -24,6 +25,24 @@ class TradedAccount(BaseModel):
     eth_address: str
     handle: str | None
     app: str | None
+
+
+class TradeTally(BaseModel):
+    trades: int
+    last_trade_at: int
+
+
+class ActivityDay(BaseModel):
+    day: date
+    agents: int
+    active: int
+    trades: int
+
+
+class DailyClose(BaseModel):
+    day: date
+    capital: int
+    deposited: int
 
 
 def _excluded_lower(excluded: "Iterable[str] | None") -> "list[str]":
@@ -604,8 +623,9 @@ class TableRead:
         return [TradedAccount.model_validate(r) for r in rows]
 
     @staticmethod
-    def count_trades_by_user(db: psycopg.Connection) -> "dict[str, int]":
-        """user_id -> number of non-failed trades it took part in, either side.
+    def count_trades_by_user(db: psycopg.Connection) -> "dict[str, TradeTally]":
+        """user_id -> how many non-failed trades it took part in, either side,
+        and when the latest of them matched.
 
         Drives from `users` for the same reason as `list_traded_accounts`:
         `trades` is dominated by the liquidity mirror's unbounded synthetic
@@ -628,20 +648,22 @@ class TableRead:
         """
         rows = db.execute(
             """
-            SELECT u.USER_ID AS UID, COUNT(DISTINCT x.TRADE_ID) AS N
+            SELECT u.USER_ID AS uid,
+                   COUNT(DISTINCT x.TRADE_ID) AS trades,
+                   MAX(x.MATCH_TIME) AS last_trade_at
             FROM users u
             JOIN LATERAL (
-                SELECT TRADE_ID FROM trades
+                SELECT TRADE_ID, MATCH_TIME FROM trades
                 WHERE TAKER_API_KEY = u.API_KEY AND STATUS != 'FAILED'
                 UNION ALL
-                SELECT TRADE_ID FROM trades
+                SELECT TRADE_ID, MATCH_TIME FROM trades
                 WHERE MAKER_API_KEY = u.API_KEY AND STATUS != 'FAILED'
             ) x ON true
             WHERE u.IS_BOT = 0
             GROUP BY u.USER_ID
             """
         ).fetchall()
-        return {r["UID"]: int(r["N"]) for r in rows}
+        return {r["uid"]: TradeTally.model_validate(r) for r in rows}
 
     @staticmethod
     def latest_account_snapshots(
@@ -674,55 +696,65 @@ class TableRead:
         }
 
     @staticmethod
-    def list_account_snapshots(
-        db: psycopg.Connection, user_id: str, limit: int
-    ) -> "list[tuple[int, int, int]]":
-        """The newest `limit` snapshots for one account, oldest first.
-
-        `ORDER BY T DESC LIMIT n` is what `idx_account_snapshots_user_t`
-        drives; the reversal into chronological order happens here so callers
-        get a curve rather than a stack. Bounded on purpose: retention keeps
-        30 days, which at the 5-minute cadence is 8,640 rows nobody wants to
-        serialise.
-        """
+    def daily_activity(db: psycopg.Connection, today: date) -> "list[ActivityDay]":
+        """Per UTC day from the first trade to `today`: agents counted from
+        their first trade, agents that traded that day, and trades with an
+        agent on either side, each counted once. A failed trade never counts."""
         rows = db.execute(
             """
-            SELECT T, CAPITAL_RAW, DEPOSITED_RAW
-            FROM account_snapshots
-            WHERE USER_ID = %s
-            ORDER BY T DESC, SNAPSHOT_ID DESC
-            LIMIT %s
+            WITH fills AS (
+                SELECT u.USER_ID, x.TRADE_ID, x.MATCH_TIME / 86400 AS DAY
+                FROM users u
+                CROSS JOIN LATERAL (
+                    SELECT TRADE_ID, MATCH_TIME FROM trades
+                    WHERE TAKER_API_KEY = u.API_KEY AND STATUS <> 'FAILED'
+                    UNION ALL
+                    SELECT TRADE_ID, MATCH_TIME FROM trades
+                    WHERE MAKER_API_KEY = u.API_KEY AND STATUS <> 'FAILED'
+                ) x
+                WHERE u.IS_BOT = 0
+            ),
+            firsts AS (
+                SELECT MIN(DAY) AS DAY FROM fills GROUP BY USER_ID
+            )
+            SELECT DATE 'epoch' + d.DAY::int AS day,
+                   (SELECT COUNT(*) FROM firsts f WHERE f.DAY <= d.DAY) AS agents,
+                   COUNT(DISTINCT fl.USER_ID) AS active,
+                   COUNT(DISTINCT fl.TRADE_ID) AS trades
+            FROM generate_series(
+                (SELECT MIN(DAY) FROM firsts), %(today)s::date - DATE 'epoch'
+            ) AS d(DAY)
+            LEFT JOIN fills fl ON fl.DAY = d.DAY
+            GROUP BY d.DAY
+            ORDER BY d.DAY
             """,
-            (user_id, limit),
+            {"today": today},
         ).fetchall()
-        return [
-            (int(r["T"]), int(r["CAPITAL_RAW"]), int(r["DEPOSITED_RAW"]))
-            for r in reversed(rows)
-        ]
+        return [ActivityDay.model_validate(r) for r in rows]
 
     @staticmethod
-    def account_trends(
-        db: psycopg.Connection, window: int, points: int
-    ) -> "dict[str, list[tuple[int, int]]]":
-        """user_id -> [(capital, deposited)], oldest first: the newest snapshot
-        in each of `points` slices of the `window` seconds before the latest
-        snapshot, so a whole board of sparklines costs one query."""
-        rows = db.execute(
+    def daily_closes(
+        db: psycopg.Connection, user_ids: "list[str]", since: date
+    ) -> "dict[str, list[DailyClose]]":
+        """user_id -> each UTC day's last valuation from `since` on, oldest
+        first; a day without one is absent."""
+        closes: dict[str, list[DailyClose]] = {}
+        for r in db.execute(
             """
-            SELECT DISTINCT ON (USER_ID, T / %(slice)s)
-                   USER_ID, CAPITAL_RAW, DEPOSITED_RAW
+            SELECT DISTINCT ON (USER_ID, T / 86400)
+                   USER_ID AS user_id,
+                   DATE 'epoch' + (T / 86400)::int AS day,
+                   CAPITAL_RAW AS capital,
+                   DEPOSITED_RAW AS deposited
             FROM account_snapshots
-            WHERE T > (SELECT MAX(T) FROM account_snapshots) - %(window)s
-            ORDER BY USER_ID, T / %(slice)s, T DESC, SNAPSHOT_ID DESC
+            WHERE USER_ID = ANY(%(users)s)
+              AND T >= (%(since)s::date - DATE 'epoch')::bigint * 86400
+            ORDER BY USER_ID, T / 86400, T DESC, SNAPSHOT_ID DESC
             """,
-            {"slice": window // points, "window": window},
-        ).fetchall()
-        trends: dict[str, list[tuple[int, int]]] = {}
-        for r in rows:
-            trends.setdefault(r["USER_ID"], []).append(
-                (int(r["CAPITAL_RAW"]), int(r["DEPOSITED_RAW"]))
-            )
-        return trends
+            {"users": user_ids, "since": since},
+        ):
+            closes.setdefault(r["user_id"], []).append(DailyClose.model_validate(r))
+        return closes
 
     @staticmethod
     def read_market(db: psycopg.Connection, market_id: int) -> "Market | None":

@@ -1,18 +1,14 @@
-"""The public board. Served from memory; the chain work happens on a timer."""
+"""The public board and platform stats. Neither reads the chain; that work happens on a timer."""
 import time
+from datetime import UTC, date, datetime
+from statistics import median
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from agentpit.api.deps import LeaderboardServiceDep, SessionDep
 from agentpit.db.table_read import TableRead
-from agentpit.services.leaderboard_service import (
-    SORTS,
-    compute_earned_raw,
-    compute_return_pct,
-    downsample,
-    rank_rows,
-)
+from agentpit.services.leaderboard_service import SORTS, compute_earned_raw, rank_rows
 
 router = APIRouter(tags=["leaderboard"])
 
@@ -36,12 +32,27 @@ class LeaderboardEntry(BaseModel):
     realized: str
     returnPct: float
     trades: int
-    trend: list[float]
+    lastTradeAt: int
+    trend: list[str]
 
 
 class LeaderboardResponse(BaseModel):
     sort: str
     entries: "list[LeaderboardEntry]"
+
+
+class StatsDay(BaseModel):
+    day: date
+    agents: int
+    active: int
+    trades: int
+    valued: int
+    up: int
+    medianEarned: str | None
+
+
+class StatsResponse(BaseModel):
+    days: "list[StatsDay]"
 
 
 @router.get("/leaderboard", response_model=LeaderboardResponse)
@@ -74,6 +85,7 @@ def get_leaderboard(
             realized=str(row.realized_raw),
             returnPct=round(row.return_pct, 2),
             trades=row.trades,
+            lastTradeAt=row.last_trade_at,
             trend=row.trend,
         ).model_dump()
         for i, row in enumerate(ranked)
@@ -82,55 +94,32 @@ def get_leaderboard(
     return LeaderboardResponse(sort=key, entries=entries)
 
 
-# 7 days at the 5-minute valuation cadence, thinned to what a 72-pixel
-# sparkline can show. Fetching a bounded window and thinning it beats sending
-# 8,640 points the client immediately discards.
-_HISTORY_ROWS = 2_016
-_HISTORY_POINTS = 60
-
-
-class HistoryPoint(BaseModel):
-    t: int
-    capital: str
-    earned: str
-    returnPct: float
-
-
-class HistoryResponse(BaseModel):
-    points: "list[HistoryPoint]"
-
-
-@router.get("/leaderboard/{address}/history", response_model=HistoryResponse)
-def get_leaderboard_history(
-    db: SessionDep,
-    address: str = Path(...),
-) -> HistoryResponse:
-    """One account's equity curve, for the sparkline on its board row.
-
-    Return rather than a bare balance, because return is what the board ranks
-    on by default and a curve that disagreed with the column beside it would
-    be worse than no curve. Public and database-only, like the board itself --
-    and carrying no email, for the same reason.
-
-    The address must match what `GET /leaderboard` returned; that is the only
-    caller, and it passes the stored string back verbatim.
-    """
+@router.get("/stats", response_model=StatsResponse)
+def get_stats(db: SessionDep) -> StatsResponse:
+    """Agents, trades and P&L per UTC day, from the first trade to today."""
+    today = datetime.now(UTC).date()
     with db.read() as conn:
-        user = TableRead.get_user_by_eth_address(conn, address)
-        if user is None:
-            raise HTTPException(status_code=404, detail="no such account")
-        rows = TableRead.list_account_snapshots(
-            conn, user.user_id, _HISTORY_ROWS
-        )
+        activity = TableRead.daily_activity(conn, today)
+        if not activity:
+            return StatsResponse(days=[])
+        accounts = TableRead.list_traded_accounts(conn)
+        closes = TableRead.daily_closes(conn, [a.user_id for a in accounts], activity[0].day)
 
-    return HistoryResponse(
-        points=[
-            HistoryPoint(
-                t=t,
-                capital=str(capital),
-                earned=str(compute_earned_raw(capital, deposited)),
-                returnPct=round(compute_return_pct(capital, deposited), 2),
+    earned: dict[date, list[int]] = {}
+    for series in closes.values():
+        for close in series:
+            earned.setdefault(close.day, []).append(compute_earned_raw(close.capital, close.deposited))
+    return StatsResponse(
+        days=[
+            StatsDay(
+                day=a.day,
+                agents=a.agents,
+                active=a.active,
+                trades=a.trades,
+                valued=len(values := earned.get(a.day, [])),
+                up=sum(v > 0 for v in values),
+                medianEarned=str(round(median(values))) if values else None,
             )
-            for t, capital, deposited in downsample(rows, _HISTORY_POINTS)
+            for a in activity
         ]
     )

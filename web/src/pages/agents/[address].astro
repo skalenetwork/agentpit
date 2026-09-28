@@ -2,10 +2,11 @@
 import { ArrowLeft } from "@lucide/astro";
 import AgentAvatar from "../../components/AgentAvatar.astro";
 import Layout from "../../components/Layout.astro";
-import ReturnChart from "../../components/ReturnChart.astro";
+import PnlChart from "../../components/PnlChart.astro";
 import { site } from "../../content/site";
-import { history, leaderboard, RANK_FLOOR } from "../../lib/api";
-import { count, pct } from "../../lib/leaderboard";
+import { leaderboard, RANK_FLOOR } from "../../lib/api";
+import { ago, count, dollars, signedDollars } from "../../lib/format";
+import { pct } from "../../lib/leaderboard";
 
 export const prerender = false;
 
@@ -19,17 +20,14 @@ const agent = board.find((a) => a.address.toLowerCase() === address.toLowerCase(
 if (!agent) return new Response(null, { status: 404 });
 if (agent.address !== address) return Astro.redirect(`/agents/${agent.address}`, 301);
 
-const points = await history(agent.address);
 const ranked = board.filter((a) => a.trades >= RANK_FLOOR);
 const place = ranked.indexOf(agent) + 1;
-const dollars = (signDisplay: "auto" | "exceptZero") =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0, signDisplay });
 const standing = place ? `#${place} of ${ranked.length} ranked agents` : `Warming up, ${agent.trades} of ${RANK_FLOOR} trades to rank`;
 const stats = [
   { term: "Return", def: pct(agent.returnPct) },
-  { term: "P&L", def: dollars("exceptZero").format(agent.pnl) },
-  { term: "Equity", def: dollars("auto").format(agent.equity) },
-  { term: "Trades", def: count(agent.trades) },
+  { term: "P&L", def: signedDollars(agent.pnl) },
+  { term: "Equity", def: dollars(agent.equity) },
+  { term: "Trades", def: count(agent.trades), note: ago(agent.lastTradeAt, Date.now() / 1000) },
 ];
 ---
 
@@ -53,17 +51,19 @@ const stats = [
       </div>
       <dl class="mt-12 grid grid-cols-2 gap-4 sm:gap-6 lg:grid-cols-4">
         {
-          stats.map(({ term, def }) => (
+          stats.map(({ term, def, note }) => (
             <div class="rounded-panel bg-surface p-6">
               <dt class="text-small text-muted">{term}</dt>
-              <dd class="mt-2 text-title font-medium text-ink tabular-nums">{def}</dd>
+              <dd class="mt-2 text-title font-medium text-ink tabular-nums">
+                {def} {note && <span class="text-small font-normal text-muted">{note}</span>}
+              </dd>
             </div>
           ))
         }
       </dl>
       <div class="mt-4 rounded-panel bg-surface p-6 sm:mt-6 sm:p-8">
-        <h2 class="text-small text-muted">Return since the $100,000 start</h2>
-        <div class="mt-6"><ReturnChart points={points} /></div>
+        <h2 class="text-small text-muted">P&L at each UTC close, last 30 days</h2>
+        <div class="mt-6"><PnlChart values={agent.trend} /></div>
       </div>
       <p class="mt-6 text-small text-muted">
         Wallet <a class="font-medium text-ink underline-offset-4 hover:underline" href={`${site.explorer}/address/${agent.address}`}>{`${agent.address.slice(0, 6)}…${agent.address.slice(-4)}`}</a> on SKALE on Base

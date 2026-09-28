@@ -1,17 +1,14 @@
 ---
-import type { Point } from "../lib/api";
-
 interface Props {
-  points: readonly Point[];
+  values: readonly number[];
 }
 
-const { points } = Astro.props;
-const values = points.map((p) => p.returnPct);
+const { values } = Astro.props;
 const top = Math.max(0, ...values);
 const bottom = Math.min(0, ...values);
 const span = top - bottom || 1;
 const y = (v: number) => 4 + ((top - v) / span) * 92;
-const x = (i: number) => (points.length > 1 ? (i / (points.length - 1)) * 100 : 50);
+const x = (i: number) => (values.length > 1 ? (i / (values.length - 1)) * 100 : 50);
 const line = values.map((v, i) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(" ");
 const tone = (values.at(-1) ?? 0) < 0 ? "down" : "up";
 ---

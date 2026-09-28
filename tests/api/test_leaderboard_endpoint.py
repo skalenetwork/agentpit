@@ -1,8 +1,11 @@
+import time
+
 from fastapi.testclient import TestClient
 
 from agentpit.api.deps import get_account_service, get_onchain_admin
 from agentpit.api.main import app
 from agentpit.db.table_write import TableWrite
+from agentpit.services.leaderboard_service import TREND_DAYS
 from tests.db_helpers import fresh_test_conn
 
 
@@ -119,53 +122,106 @@ def test_get_leaderboard_does_not_touch_the_chain():
         assert entry["trades"] == 1
 
 
-def test_history_returns_the_accounts_curve():
-    conn = fresh_test_conn()
-    user_id, acct, key = TableWrite.create_user(
-        conn, email="curve@example.com", password_hash="x", handle="curvy"
-    )
+DAY = 86_400
+X = 20_454 * DAY
+G = 100_000_000_000
+
+
+def _account(conn, handle: str) -> tuple[str, str]:
+    user_id, _acct, key = TableWrite.create_user(conn, email=f"{handle}@example.com", password_hash="x", handle=handle)
+    return user_id, key
+
+
+def _trade(conn, trade_id: str, taker: str, maker: str | None, at: int, status: str = "PENDING") -> None:
     conn.execute(
-        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME) "
-        "VALUES (%s, %s, %s)",
-        ("t-curve", key, 1_700_000_000),
+        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MAKER_API_KEY, MATCH_TIME, STATUS) VALUES (%s, %s, %s, %s, %s)",
+        (trade_id, taker, maker, at, status),
     )
-    TableWrite.insert_account_snapshot(
-        conn, user_id, 1_800_000_000, 100_000_000_000, 100_000_000_000
-    )
-    TableWrite.insert_account_snapshot(
-        conn, user_id, 1_800_000_300, 150_000_000_000, 100_000_000_000
-    )
-    conn.close()
-
-    with TestClient(app) as client:
-        resp = client.get(f"/leaderboard/{acct.address}/history")
-
-    assert resp.status_code == 200, resp.text
-    points = resp.json()["points"]
-    assert [p["t"] for p in points] == [1_800_000_000, 1_800_000_300]
-    assert points[-1]["capital"] == "150000000000"
-    assert points[-1]["earned"] == "50000000000"
-    assert points[-1]["returnPct"] == 50.0
 
 
-def test_history_of_an_unknown_address_is_a_404():
-    with TestClient(app) as client:
-        resp = client.get("/leaderboard/0x" + "00" * 20 + "/history")
-    assert resp.status_code == 404
-
-
-def test_history_carries_no_email():
-    """Same guarantee as the board: nobody's signup address on a public
-    endpoint, asserted against the raw body."""
+def test_stats_count_each_match_once_and_skip_tape_failures_and_bots():
     conn = fresh_test_conn()
-    user_id, acct, _key = TableWrite.create_user(
-        conn, email="private@example.com", password_hash="x", handle="private1"
-    )
-    TableWrite.insert_account_snapshot(
-        conn, user_id, 1_800_000_000, 1, 1
-    )
+    _, house = _account(conn, "house")
+    TableWrite.mark_user_as_bot(conn, house)
+    _, a = _account(conn, "alpha")
+    _, b = _account(conn, "beta")
+    _trade(conn, "a-house", a, house, X + DAY // 2)
+    _trade(conn, "a-b", a, b, X + DAY + DAY // 2)
+    _trade(conn, "a-self", a, a, X + DAY + DAY // 2)
+    _trade(conn, "a-failed", a, house, X + DAY + DAY // 2, "FAILED")
+    _trade(conn, "tape", "mirror-tape", "mirror-tape", X + DAY + DAY // 2, "MIRRORED")
+    _trade(conn, "house-only", house, house, X + DAY + DAY // 2)
     conn.close()
-
     with TestClient(app) as client:
-        body = client.get(f"/leaderboard/{acct.address}/history").text
-    assert "@" not in body
+        days = client.get("/stats").json()["days"]
+    assert days[0]["day"] == "2026-01-01"
+    assert [(d["agents"], d["active"], d["trades"]) for d in days[:3]] == [(1, 1, 1), (2, 2, 2), (2, 0, 0)]
+
+
+def test_stats_median_is_each_agents_last_valuation_of_the_day():
+    conn = fresh_test_conn()
+    users = {}
+    for handle, earned, topup in (("lo", -10_000_000, 0), ("mid", 5_000_000, 8_264_000_000), ("hi", 100_000_000, 0)):
+        user_id, key = _account(conn, handle)
+        users[handle] = user_id
+        _trade(conn, f"{handle}-1", key, None, X + DAY // 2)
+        TableWrite.insert_account_snapshot(conn, user_id, X + DAY + 60, G + 999, G)
+        TableWrite.insert_account_snapshot(conn, user_id, X + DAY + 80_000, G + topup + earned, G + topup)
+    TableWrite.insert_account_snapshot(conn, users["lo"], X + 2 * DAY + 60, G + 3, G)
+    TableWrite.insert_account_snapshot(conn, users["hi"], X + 2 * DAY + 60, G, G)
+    bot_id, bot = _account(conn, "flagged")
+    _trade(conn, "flagged-1", bot, None, X + DAY // 2)
+    TableWrite.mark_user_as_bot(conn, bot)
+    TableWrite.insert_account_snapshot(conn, bot_id, X + DAY + 80_000, 2 * G, G)
+    failed_id, failed = _account(conn, "failed")
+    _trade(conn, "failed-1", failed, None, X + DAY // 2, "FAILED")
+    TableWrite.insert_account_snapshot(conn, failed_id, X + DAY + 80_000, 9 * G, G)
+    conn.close()
+    with TestClient(app) as client:
+        days = client.get("/stats").json()["days"]
+    assert [(d["valued"], d["up"], d["medianEarned"]) for d in days[:4]] == [
+        (0, 0, None),
+        (3, 2, "5000000"),
+        (2, 1, "2"),
+        (0, 0, None),
+    ]
+
+
+def test_the_platform_counts_a_trade_once_where_the_board_counts_it_per_agent():
+    conn = fresh_test_conn()
+    _, house = _account(conn, "house")
+    TableWrite.mark_user_as_bot(conn, house)
+    alpha_id, a = _account(conn, "alpha")
+    beta_id, b = _account(conn, "beta")
+    _trade(conn, "r1", a, house, X + 100)
+    _trade(conn, "r2", house, a, X + DAY + 100)
+    _trade(conn, "r3", a, b, X + DAY + 200)
+    _trade(conn, "r4", a, a, X + 2 * DAY + 100)
+    for user_id in (alpha_id, beta_id):
+        TableWrite.insert_account_snapshot(conn, user_id, X + 2 * DAY + 200, G, G)
+    conn.close()
+    with TestClient(app) as client:
+        days = client.get("/stats").json()["days"]
+        board = {e["name"]: (e["trades"], e["lastTradeAt"]) for e in client.get("/leaderboard").json()["entries"]}
+    assert sum(d["trades"] for d in days) == board["alpha"][0] == 4
+    assert board["alpha"][1] == X + 2 * DAY + 100
+    assert board["beta"] == (1, X + DAY + 200)
+
+
+def test_the_board_trend_is_the_agents_pnl_at_each_days_close():
+    conn = fresh_test_conn()
+    user_id, key = _account(conn, "trendy")
+    base = int(time.time()) // DAY * DAY
+    _trade(conn, "trendy-1", key, None, base - 3 * DAY)
+    for days_ago, earned in ((TREND_DAYS, 9), (2, 1), (2, 2), (1, 5), (0, 7)):
+        TableWrite.insert_account_snapshot(conn, user_id, base - days_ago * DAY + 100 + earned, G + earned, G)
+    conn.close()
+    with TestClient(app) as client:
+        entry = client.get("/leaderboard").json()["entries"][0]
+    assert entry["trend"] == ["2", "5", "7"]
+    assert entry["trend"][-1] == entry["earned"]
+
+
+def test_stats_on_an_empty_platform_is_an_empty_list():
+    with TestClient(app) as client:
+        assert client.get("/stats").json() == {"days": []}

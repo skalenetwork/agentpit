@@ -1,6 +1,6 @@
 """Valuing every trading account on a timer, so ranking never reads the chain."""
 import logging
-import math
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel
 
@@ -14,8 +14,8 @@ from agentpit.services.deployment_reset import reconcile_deployment
 
 log = logging.getLogger(__name__)
 
-TREND_WINDOW = 7 * 86_400
-TREND_POINTS = 24
+TREND_DAYS = 30
+DENSE_WINDOW = 48 * 3_600
 
 SORTS = ("return", "earned", "capital", "trades")
 
@@ -36,19 +36,6 @@ def compute_return_pct(capital_raw: int, deposited_raw: int) -> float:
     return 100.0 * compute_earned_raw(capital_raw, deposited_raw) / deposited_raw
 
 
-def downsample(points: list, max_points: int) -> list:
-    """At most `max_points` evenly spaced samples, newest always kept.
-
-    Anchored on the end rather than the start: the last point is where the
-    curve meets the Return column beside it, and a stride that dropped it
-    would draw a line disagreeing with the number it sits next to.
-    """
-    if max_points <= 0 or len(points) <= max_points:
-        return list(points)
-    stride = math.ceil(len(points) / max_points)
-    return points[::-1][::stride][::-1]
-
-
 class LeaderboardRow(BaseModel):
     name: str
     address: str
@@ -60,7 +47,8 @@ class LeaderboardRow(BaseModel):
     #: Mark-to-market gain on those open positions -- profit only on paper.
     unrealized_raw: int = 0
     trades: int
-    trend: list[float] = []
+    last_trade_at: int
+    trend: list[str] = []
 
     @property
     def earned_raw(self) -> int:
@@ -194,32 +182,27 @@ class LeaderboardService:
             written += 1
         return written
 
-    def prune_old(self, older_than: int) -> int:
-        """Drop snapshots older than `older_than`. Returns rows deleted.
-
-        Takes an absolute cutoff rather than a window so the caller owns the
-        clock -- the same reason `take_snapshot` takes `now`. Without this the
-        table grows by one row per account per tick forever.
-        """
+    def thin_snapshots(self, now: int) -> int:
         with self._db.write() as conn:
-            return TableWrite.prune_account_snapshots(conn, older_than)
+            return TableWrite.thin_account_snapshots(conn, now - DENSE_WINDOW)
 
     def build_board(self) -> "list[LeaderboardRow]":
         """Assemble the board from the latest snapshot of each account.
 
         Reads only the database -- the chain work happened in `take_snapshot`.
         """
+        since = datetime.now(UTC).date() - timedelta(days=TREND_DAYS - 1)
         with self._db.read() as conn:
             accounts = TableRead.list_traded_accounts(conn)
             latest = TableRead.latest_account_snapshots(conn)
-            counts = TableRead.count_trades_by_user(conn)
-            trends = TableRead.account_trends(conn, TREND_WINDOW, TREND_POINTS)
+            tallies = TableRead.count_trades_by_user(conn)
+            closes = TableRead.daily_closes(conn, [a.user_id for a in accounts], since)
 
         rows = []
         for account in accounts:
             snapshot = latest.get(account.user_id)
-            if snapshot is None:
-                # Traded, but the valuation pass has not reached it yet.
+            tally = tallies.get(account.user_id)
+            if snapshot is None or tally is None:
                 continue
             capital, deposited, invested, unrealized = snapshot
             rows.append(
@@ -231,10 +214,11 @@ class LeaderboardService:
                     deposited_raw=deposited,
                     invested_raw=invested,
                     unrealized_raw=unrealized,
-                    trades=counts.get(account.user_id, 0),
+                    trades=tally.trades,
+                    last_trade_at=tally.last_trade_at,
                     trend=[
-                        round(compute_return_pct(c, d), 2)
-                        for c, d in trends.get(account.user_id, [])
+                        str(compute_earned_raw(c.capital, c.deposited))
+                        for c in closes.get(account.user_id, [])
                     ],
                 )
             )

@@ -393,9 +393,24 @@ class TableWrite:
         )
 
     @staticmethod
-    def prune_account_snapshots(db: psycopg.Connection, older_than: int) -> int:
+    def thin_account_snapshots(db: psycopg.Connection, before: int) -> int:
+        """Of the rows older than `before`, keep only each account's last
+        valuation of each UTC day. Returns rows deleted."""
         cur = db.execute(
-            "DELETE FROM account_snapshots WHERE T < %s", (older_than,)
+            """
+            DELETE FROM account_snapshots s
+            USING (
+                SELECT SNAPSHOT_ID,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY USER_ID, T / 86400
+                           ORDER BY T DESC, SNAPSHOT_ID DESC
+                       ) AS K
+                FROM account_snapshots
+                WHERE T / 86400 <= %(before)s / 86400
+            ) d
+            WHERE s.SNAPSHOT_ID = d.SNAPSHOT_ID AND d.K > 1 AND s.T < %(before)s
+            """,
+            {"before": before},
         )
         return cur.rowcount
 

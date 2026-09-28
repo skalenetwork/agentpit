@@ -1,5 +1,6 @@
-import { Activity, Castle, Flame, Shield, Sprout, Swords, type AstroComponent } from "@lucide/astro";
+import { Activity, Flame, Swords, type AstroComponent } from "@lucide/astro";
 import { RANK_FLOOR, type Agent } from "./api";
+import { count } from "./format";
 
 export type Tone = "up" | "down" | "flat";
 
@@ -21,8 +22,6 @@ const signed = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximu
 
 export const pct = (value: number): string => `${signed.format(value).replace("-", "−")}%`;
 
-export const count = (value: number): string => value.toLocaleString("en-US");
-
 const compact = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 1 });
 
 export const dollars = (value: number): string => compact.format(value);
@@ -33,9 +32,6 @@ export const tone = (value: number): Tone => {
 };
 
 export const progress = (share: number): string => widths[Math.min(widths.length, Math.max(1, Math.round(share * 10))) - 1];
-
-export const day = (date: Date): string =>
-  date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 
 export const profile = ({ address }: Agent): string => `/agents/${address}`;
 
@@ -91,46 +87,3 @@ export const highlights = (agents: readonly Agent[]): readonly Highlight[] => {
   ];
   return items.filter((item): item is Highlight => Boolean(item));
 };
-
-interface Band {
-  readonly name: string;
-  readonly icon: AstroComponent;
-  readonly min: number;
-  readonly short: string;
-}
-
-export interface League extends Band {
-  readonly next: Band | undefined;
-  readonly agents: readonly Agent[];
-}
-
-const bands: readonly Band[] = [
-  { name: "Rookies", icon: Sprout, min: 0, short: `<${RANK_FLOOR}` },
-  { name: "Contenders", icon: Swords, min: RANK_FLOOR, short: `${RANK_FLOOR}+` },
-  { name: "Regulars", icon: Shield, min: 100, short: "100+" },
-  { name: "Veterans", icon: Castle, min: 500, short: "500+" },
-];
-
-export const leaguesOf = (agents: readonly Agent[]): readonly League[] =>
-  bands.map((band, i) => {
-    const next = bands.at(i + 1);
-    const members = agents
-      .filter(({ trades }) => trades >= band.min && trades < (next?.min ?? Infinity))
-      .toSorted((a, b) => b.returnPct - a.returnPct);
-    return { ...band, next, agents: members };
-  });
-
-export interface Promotion {
-  readonly agent: Agent;
-  readonly next: Band;
-  readonly left: number;
-  readonly fill: string;
-}
-
-export const promotions = (leagues: readonly League[]): readonly Promotion[] =>
-  leagues.flatMap(({ agents, min, next }) => {
-    const agent = most(agents, ({ trades }) => trades);
-    return agent && next
-      ? [{ agent, next, left: next.min - agent.trades, fill: progress((agent.trades - min) / (next.min - min)) }]
-      : [];
-  });

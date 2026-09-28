@@ -1,7 +1,7 @@
-import math
+from datetime import date
 
 from agentpit.config import Settings
-from agentpit.db.table_read import TableRead
+from agentpit.db.table_read import DailyClose, TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.services.leaderboard_service import LeaderboardService
 from tests.db_helpers import fresh_test_conn, fresh_test_db
@@ -71,7 +71,7 @@ def test_maker_only_trade_still_counts_as_traded():
     conn.close()
 
 
-def test_snapshots_round_trip_and_prune():
+def test_snapshots_round_trip():
     conn = fresh_test_conn()
     user_id, _acct, _key = TableWrite.create_user(
         conn, email="snap@example.com", password_hash="x", handle=None
@@ -81,8 +81,6 @@ def test_snapshots_round_trip_and_prune():
 
     latest = TableRead.latest_account_snapshots(conn)
     assert latest[user_id] == (333, 444, 0, 0), "the most recent row wins"
-
-    assert TableWrite.prune_account_snapshots(conn, older_than=1_500) == 1
     conn.close()
 
 
@@ -102,16 +100,29 @@ def test_latest_snapshot_breaks_a_tied_t_by_insertion_order():
     conn.close()
 
 
-def test_trends_keep_one_point_per_slice_within_the_window():
+def test_daily_closes_keep_the_last_snapshot_of_each_utc_day():
     conn = fresh_test_conn()
-    user_id, _acct, _key = TableWrite.create_user(
-        conn, email="trend@example.com", password_hash="x", handle=None
-    )
-    for k in range(10):
-        TableWrite.insert_account_snapshot(conn, user_id, k * 3_600, 100 + k, 100)
+    user_id, _a, _k = TableWrite.create_user(conn, email="closes@example.com", password_hash="x", handle=None)
+    other_id, _b, _o = TableWrite.create_user(conn, email="other@example.com", password_hash="x", handle=None)
+    x = 20_454 * 86_400
+    for t, capital in ((x, 1), (x + 86_399, 2), (x + 86_405, 3), (x + 86_405, 4), (x + 3 * 86_400, 5)):
+        TableWrite.insert_account_snapshot(conn, user_id, t, capital, 0)
+    TableWrite.insert_account_snapshot(conn, other_id, x + 86_405, 9, 0)
+    closes = TableRead.daily_closes(conn, [user_id], date(2026, 1, 2))
+    conn.close()
+    assert closes == {user_id: [
+        DailyClose(day=date(2026, 1, 2), capital=4, deposited=0),
+        DailyClose(day=date(2026, 1, 4), capital=5, deposited=0),
+    ]}
 
-    trend = TableRead.account_trends(conn, window=4 * 3_600, points=4)[user_id]
-    assert trend == [(106, 100), (107, 100), (108, 100), (109, 100)]
+
+def test_thinning_breaks_a_tied_close_by_insertion_order():
+    conn = fresh_test_conn()
+    user_id, _a, _k = TableWrite.create_user(conn, email="tieclose@example.com", password_hash="x", handle=None)
+    TableWrite.insert_account_snapshot(conn, user_id, 5_000, 111, 0)
+    TableWrite.insert_account_snapshot(conn, user_id, 5_000, 999, 0)
+    assert TableWrite.thin_account_snapshots(conn, 10**9) == 1
+    assert TableRead.latest_account_snapshots(conn)[user_id] == (999, 0, 0, 0)
     conn.close()
 
 
@@ -288,6 +299,7 @@ def _row(name, capital, deposited, trades=1, address="0x" + "11" * 20):
         capital_raw=capital,
         deposited_raw=deposited,
         trades=trades,
+        last_trade_at=0,
     )
 
 
@@ -470,23 +482,26 @@ def test_the_snapshot_records_the_reset_figure_not_the_stale_one():
     db.close()
 
 
-def test_prune_old_deletes_past_the_window_and_keeps_the_rest():
+def test_thin_snapshots_leaves_the_last_48_hours_dense():
+    day = 86_400
     conn = fresh_test_conn()
     user_id, _acct, _key = TableWrite.create_user(
-        conn, email="pruned@example.com", password_hash="x", handle=None
+        conn, email="dense@example.com", password_hash="x", handle=None
     )
-    TableWrite.insert_account_snapshot(conn, user_id, 1_000, 1, 1)
-    TableWrite.insert_account_snapshot(conn, user_id, 5_000, 2, 2)
+    kept = [7 * day + 200, 8 * day + 43_201, 9 * day + 100, 9 * day + 200, 10 * day + 43_100]
+    for t in (7 * day + 100, 8 * day + 43_199, *kept):
+        TableWrite.insert_account_snapshot(conn, user_id, t, t, 0)
     conn.close()
 
     db = fresh_test_db()
     service = LeaderboardService(db, onchain=None, accounts=None, settings=Settings())
-    assert service.prune_old(4_000) == 1
+    assert service.thin_snapshots(10 * day + 43_200) == 2
+    assert service.thin_snapshots(10 * day + 43_200) == 0
 
     check = fresh_test_conn()
-    rows = check.execute("SELECT T FROM account_snapshots").fetchall()
+    rows = check.execute("SELECT T FROM account_snapshots ORDER BY T").fetchall()
     check.close()
-    assert [r["T"] for r in rows] == [5_000]
+    assert [r["T"] for r in rows] == sorted(kept)
     db.close()
 
 
@@ -506,7 +521,7 @@ def test_a_self_matched_trade_counts_once_not_twice():
         ("t-self", key, key, 1_700_000_000, "PENDING"),
     )
 
-    assert TableRead.count_trades_by_user(conn)[user_id] == 1
+    assert TableRead.count_trades_by_user(conn)[user_id].trades == 1
     assert [r.user_id for r in TableRead.list_traded_accounts(conn)] == [user_id]
     conn.close()
 
@@ -530,9 +545,9 @@ def test_counts_cover_both_sides_of_a_trade():
         ("t-taker-only", taker_key, 1_700_000_100, "PENDING"),
     )
 
-    counts = TableRead.count_trades_by_user(conn)
-    assert counts[taker_id] == 2
-    assert counts[maker_id] == 1
+    tallies = TableRead.count_trades_by_user(conn)
+    assert (tallies[taker_id].trades, tallies[taker_id].last_trade_at) == (2, 1_700_000_100)
+    assert (tallies[maker_id].trades, tallies[maker_id].last_trade_at) == (1, 1_700_000_000)
     conn.close()
 
 
@@ -569,66 +584,26 @@ def test_a_failed_trade_does_not_put_an_account_on_the_board():
     assert only_failed_id not in ids
     assert mixed_id in ids
 
-    counts = TableRead.count_trades_by_user(conn)
-    assert only_failed_id not in counts
-    assert counts[mixed_id] == 1
+    tallies = TableRead.count_trades_by_user(conn)
+    assert only_failed_id not in tallies
+    assert (tallies[mixed_id].trades, tallies[mixed_id].last_trade_at) == (1, 1_700_000_000)
     conn.close()
 
 
 from agentpit.services.leaderboard_service import (
     compute_earned_raw,
     compute_return_pct,
-    downsample,
 )
 
 
 def test_the_shared_arithmetic_matches_the_row_properties():
-    """One formula, two callers: the board row and the history point. The
+    """One formula, two callers: the board row and the stats route. The
     properties delegate rather than restate, so a change cannot land in one
     and miss the other."""
     row = _row("a", capital=120_000_000_000, deposited=100_000_000_000)
     assert compute_earned_raw(120_000_000_000, 100_000_000_000) == row.earned_raw
     assert compute_return_pct(120_000_000_000, 100_000_000_000) == row.return_pct
     assert compute_return_pct(5, 0) == 0.0
-
-
-def test_downsample_keeps_the_newest_point_and_respects_the_cap():
-    """A 30-day history at the 5-minute cadence is 8,640 points; a 72-pixel
-    sparkline needs a fraction of that, and sending the rest would be the
-    board's whole payload. The newest point must survive -- it is the one the
-    curve ends on, and dropping it would make the line disagree with the
-    Return column beside it."""
-    points = [(t, t, 0) for t in range(1_000)]
-    thinned = downsample(points, 60)
-    assert len(thinned) <= 60
-    assert thinned[-1] == points[-1]
-    assert thinned == sorted(thinned)
-    # The three assertions above are all satisfied by `points[-60:]`, which
-    # would silently reduce a 7-day curve to its last five hours. What
-    # downsample actually promises is *evenly spaced* samples across the
-    # whole window, so pin the other end too: the first kept point must be
-    # close to the true first point, not merely somewhere before the last.
-    stride = math.ceil(len(points) / 60)
-    assert thinned[0][0] - points[0][0] <= stride
-
-
-def test_downsample_leaves_a_short_history_alone():
-    points = [(1, 10, 10), (2, 20, 10)]
-    assert downsample(points, 60) == points
-    assert downsample([], 60) == []
-
-
-def test_list_account_snapshots_returns_the_newest_rows_oldest_first():
-    conn = fresh_test_conn()
-    user_id, _acct, _key = TableWrite.create_user(
-        conn, email="history@example.com", password_hash="x", handle=None
-    )
-    for t in (1_000, 2_000, 3_000):
-        TableWrite.insert_account_snapshot(conn, user_id, t, t * 10, 500)
-
-    rows = TableRead.list_account_snapshots(conn, user_id, limit=2)
-    conn.close()
-    assert rows == [(2_000, 20_000, 500), (3_000, 30_000, 500)]
 
 
 def test_the_snapshot_records_what_the_account_put_to_work():

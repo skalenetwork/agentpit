@@ -1,6 +1,6 @@
 ---
 import type { Book, BookState, Level } from "../content/measurements";
-import { cents, dollars, shares } from "../lib/format";
+import { cents, count, dollars } from "../lib/format";
 import Roll from "./Roll.astro";
 
 interface Props {
@@ -43,7 +43,7 @@ const pair = (side: "ask" | "bid") =>
             ]}
           />
           <Roll class="relative font-medium text-ink" values={[cents(row.was.price), cents(row.now.price)]} />
-          <Roll class="relative text-right text-ink" values={[shares(row.was.size), shares(row.now.size)]} />
+          <Roll class="relative text-right text-ink" values={[count(row.was.size), count(row.now.size)]} />
           <Roll class="relative text-right" values={[dollars(row.was.total), dollars(row.now.total)]} />
         </div>
       ) : (

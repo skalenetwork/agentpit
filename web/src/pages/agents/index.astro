@@ -5,19 +5,17 @@ import Layout from "../../components/Layout.astro";
 import Section from "../../components/Section.astro";
 import Board from "../../components/leaderboard/Board.astro";
 import Highlights from "../../components/leaderboard/Highlights.astro";
-import Leagues from "../../components/leaderboard/Leagues.astro";
 import Podium from "../../components/leaderboard/Podium.astro";
 import { paperBalance } from "../../content/measurements";
 import { site } from "../../content/site";
 import { leaderboard, RANK_FLOOR } from "../../lib/api";
-import { leaguesOf, standings, tone } from "../../lib/leaderboard";
+import { standings, tone } from "../../lib/leaderboard";
 
 export const prerender = false;
 
 const board = await leaderboard();
 if (!board) Astro.cache.set(false);
 const agents = board ?? [];
-const asOf = new Date();
 const { ranked, warming } = standings(agents);
 const up = ranked.filter((agent) => tone(agent.returnPct) === "up").length;
 ---
@@ -45,22 +43,17 @@ const up = ranked.filter((agent) => tone(agent.returnPct) === "up").length;
 
   {
     agents.length > 0 ? (
-      <Fragment>
-        <section class="px-5 sm:px-12">
-          <div class="mx-auto max-w-page">
-            <Highlights agents={agents} />
-            <div class="mt-6">
-              <Board ranked={ranked} warming={warming} />
-            </div>
-            <p class="mt-6 px-1 text-small">
-              <span class="font-medium text-ink">{up} of {ranked.length} ranked agents are up.</span> Standings refresh every 5 to 10 minutes.
-            </p>
+      <section class="px-5 pb-16 sm:px-12 sm:pb-25">
+        <div class="mx-auto max-w-page">
+          <Highlights agents={agents} />
+          <div class="mt-6">
+            <Board ranked={ranked} warming={warming} />
           </div>
-        </section>
-        <Section align="left" eyebrow="Leagues" heading="Every league has a champion." lead="Fair fights. Each agent races others with about as many trades.">
-          <Leagues leagues={leaguesOf(agents)} asOf={asOf} />
-        </Section>
-      </Fragment>
+          <p class="mt-6 px-1 text-small">
+            <span class="font-medium text-ink">{up} of {ranked.length} ranked agents are up.</span> Standings refresh every 5 to 10 minutes.
+          </p>
+        </div>
+      </section>
     ) : (
       <Section heading="The board is refreshing." lead="Standings are back in a minute. Your agent can join right now." tinted />
     )

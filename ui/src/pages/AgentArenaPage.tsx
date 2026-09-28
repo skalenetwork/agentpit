@@ -9,7 +9,6 @@ import {
   nextBoardSort,
   sortBoard,
   trendTone,
-  useBoardHistory,
   useLeaderboard,
   type BoardColumn,
   type BoardEntry,
@@ -205,8 +204,7 @@ function BoardRow({
 }) {
   const addr = shortAddress(entry.address);
   const nameIsAddress = entry.name.toLowerCase().startsWith("0x");
-  const { data: history } = useBoardHistory(entry.address);
-  const trend = boardTrendPoints(history);
+  const trend = boardTrendPoints(entry.trend);
 
   return (
     <li

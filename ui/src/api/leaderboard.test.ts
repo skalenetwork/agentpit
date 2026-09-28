@@ -71,30 +71,19 @@ describe("boardViewState", () => {
 });
 
 describe("boardTrendPoints", () => {
-  it("plots earned, not capital — the figure the board ranks on", () => {
-    // Capital would be a flat line at $100k with the whole story buried in
-    // its last digits.
-    const points = boardTrendPoints({
-      points: [
-        { t: 10, capital: "100000000000", earned: "0", returnPct: 0 },
-        { t: 20, capital: "150000000000", earned: "50000000000", returnPct: 50 },
-      ],
-    });
-    expect(points).toEqual([
-      { t: 10, p: 0 },
-      { t: 20, p: 50_000_000_000 },
+  it("plots earned at each daily close, in order", () => {
+    expect(boardTrendPoints(["0", "50000000000"])).toEqual([
+      { t: 0, p: 0 },
+      { t: 1, p: 50_000_000_000 },
     ]);
   });
 
   it("pads a single point so a fresh account draws a flat line, not a dot", () => {
-    const points = boardTrendPoints({
-      points: [{ t: 10, capital: "1", earned: "0", returnPct: 0 }],
-    });
-    expect(points).toHaveLength(2);
+    expect(boardTrendPoints(["0"])).toHaveLength(2);
   });
 
-  it("is empty while the history is still loading", () => {
-    expect(boardTrendPoints(undefined)).toEqual([]);
+  it("is empty without a close", () => {
+    expect(boardTrendPoints([])).toEqual([]);
   });
 });
 

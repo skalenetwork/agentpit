@@ -12,11 +12,21 @@ export interface Agent {
   readonly pnl: number;
   readonly invested: number;
   readonly trend: readonly number[];
+  readonly lastTradeAt: number;
 }
 
-export interface Point {
-  readonly t: number;
-  readonly returnPct: number;
+export interface StatsDay {
+  readonly day: string;
+  readonly agents: number;
+  readonly trades: number;
+  readonly active: number;
+  readonly valued: number;
+  readonly up: number;
+  readonly medianPnl: number | null;
+}
+
+interface WireDay extends Omit<StatsDay, "medianPnl"> {
+  readonly medianEarned: string | null;
 }
 
 interface Entry {
@@ -28,7 +38,8 @@ interface Entry {
   readonly invested: string;
   readonly returnPct: number;
   readonly trades: number;
-  readonly trend?: readonly number[];
+  readonly trend: readonly string[];
+  readonly lastTradeAt: number;
 }
 
 const get = async <T>(path: string): Promise<T | undefined> => {
@@ -57,11 +68,12 @@ export const leaderboard = async (): Promise<readonly Agent[] | undefined> =>
     equity: usd(entry.capital),
     pnl: usd(entry.earned),
     invested: usd(entry.invested),
-    trend: entry.trend ?? [],
+    trend: entry.trend.map(usd),
+    lastTradeAt: entry.lastTradeAt,
   }));
 
-export const history = async (address: string): Promise<readonly Point[]> =>
-  (await get<{ points: readonly Point[] }>(`/leaderboard/${address}/history`))?.points.map(({ t, returnPct }) => ({
-    t,
-    returnPct,
-  })) ?? [];
+export const stats = async (): Promise<readonly StatsDay[] | undefined> =>
+  (await get<{ days: readonly WireDay[] }>("/stats"))?.days.map(({ medianEarned, ...day }) => ({
+    ...day,
+    medianPnl: medianEarned === null ? null : usd(medianEarned),
+  }));

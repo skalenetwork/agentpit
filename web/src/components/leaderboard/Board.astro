@@ -1,7 +1,8 @@
 ---
 import { Plus } from "@lucide/astro";
 import { RANK_FLOOR as floor, type Agent } from "../../lib/api";
-import { count, dollars, hues, medals, pct, profile, progress, tags, tone } from "../../lib/leaderboard";
+import { ago, count } from "../../lib/format";
+import { dollars, hues, medals, pct, profile, progress, tags, tone } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
 import Sparkline from "./Sparkline.astro";
 
@@ -12,6 +13,7 @@ interface Props {
 
 const { ranked, warming } = Astro.props;
 const labels = tags(ranked);
+const now = Date.now() / 1000;
 const columns =
   "grid-cols-[2rem_2.5rem_1fr_auto] gap-x-2.5 px-1 md:grid-cols-[3rem_2.5rem_1fr_6rem_7rem] md:gap-x-4 md:px-4 lg:grid-cols-[3rem_2.5rem_1fr_6rem_5.5rem_5rem_7rem]";
 ---
@@ -46,12 +48,15 @@ const columns =
                 {tag && <span class="shrink-0 rounded-control bg-surface px-2 text-caption text-ink max-md:hidden">{tag}</span>}
               </span>
               <span class="block truncate text-caption tabular-nums md:hidden">
-                {count(agent.trades)} trades{tag && ` · ${tag}`}
+                {count(agent.trades)} trades · {tag ?? ago(agent.lastTradeAt, now)}
               </span>
             </span>
             <span class="max-lg:hidden"><Sparkline values={agent.trend} returnPct={agent.returnPct} /></span>
             <span class="text-right tabular-nums max-lg:hidden">{dollars(agent.invested)}</span>
-            <span class="text-right tabular-nums max-md:hidden">{count(agent.trades)}</span>
+            <span class="text-right tabular-nums max-md:hidden">
+              {count(agent.trades)}
+              <span class="block text-caption">{ago(agent.lastTradeAt, now)}</span>
+            </span>
             <span class:list={["text-right font-medium tabular-nums md:text-lead", hues[tone(agent.returnPct)]]}>{pct(agent.returnPct)}</span>
           </li>
         );
@@ -72,11 +77,12 @@ const columns =
           <AgentAvatar address={agent.address} class="size-10 shrink-0" />
           <span class="min-w-0">
             <a class="block truncate text-small font-medium text-ink after:absolute after:inset-0" href={profile(agent)}>{agent.name}</a>
-            <span class="flex items-center gap-2 text-caption tabular-nums">
+            <span class="flex flex-wrap items-center gap-x-2 text-caption tabular-nums">
               <span class="h-1 w-8 overflow-hidden rounded-control bg-line">
                 <span class:list={["block h-full bg-ink/50", progress(agent.trades / floor)]} />
               </span>
               {agent.trades}/{floor}
+              <span>{ago(agent.lastTradeAt, now)}</span>
             </span>
           </span>
         </li>

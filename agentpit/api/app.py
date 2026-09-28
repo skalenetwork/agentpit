@@ -369,23 +369,19 @@ async def _snapshot_loop(
         await asyncio.sleep(interval_seconds)
 
 
-def _run_leaderboard_tick(service, retention_seconds: int) -> tuple[int, int]:
+def _run_leaderboard_tick(service) -> tuple[int, int]:
     now = int(time.time())
     written = service.take_snapshot(now)
-    deleted = service.prune_old(now - retention_seconds)
+    deleted = service.thin_snapshots(now)
     return written, deleted
 
 
-async def _leaderboard_loop(
-    service: LeaderboardService, interval_seconds: int, retention_seconds: int
-) -> None:
+async def _leaderboard_loop(service: LeaderboardService, interval_seconds: int) -> None:
     while True:
         try:
-            written, deleted = await asyncio.to_thread(
-                _run_leaderboard_tick, service, retention_seconds
-            )
+            written, deleted = await asyncio.to_thread(_run_leaderboard_tick, service)
             log.info(
-                "Leaderboard tick: %d accounts valued, %d snapshots pruned",
+                "Leaderboard tick: %d accounts valued, %d snapshots thinned",
                 written,
                 deleted,
             )
@@ -550,9 +546,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         leaderboard_task: asyncio.Task | None = None
         if settings.leaderboard_enabled:
             log.info(
-                "Leaderboard loop enabled (interval=%ds, retention=%dd)",
+                "Leaderboard loop enabled (interval=%ds)",
                 settings.leaderboard_interval_seconds,
-                settings.snapshot_retention_days,
             )
             leaderboard_service = LeaderboardService(
                 db_session,
@@ -564,7 +559,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 _leaderboard_loop(
                     leaderboard_service,
                     settings.leaderboard_interval_seconds,
-                    settings.snapshot_retention_days * 86_400,
                 )
             )
         else:
