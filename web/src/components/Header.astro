@@ -1,6 +1,7 @@
 ---
+import { Menu, X } from "@lucide/astro";
 import Logo from "../assets/logo.svg";
-import { cta, nav, site } from "../content/site";
+import { cta, menu, nav, site } from "../content/site";
 import Button from "./Button.astro";
 
 interface Props {
@@ -11,14 +12,14 @@ const { overlay = false } = Astro.props;
 ---
 
 <header
-  class="fixed inset-x-0 top-0 z-10 h-16 bg-paper/60 px-5 backdrop-blur-xl sm:px-12"
+  class="group fixed inset-x-0 top-0 z-10 h-16 bg-paper/60 px-5 backdrop-blur-xl sm:px-12"
   data-overlay={overlay || undefined}
 >
   <div class="mx-auto flex h-full w-full max-w-page items-center justify-between gap-4">
     <a class="light text-ink" href="/" aria-label={site.name}>
       <Logo class="h-4.5 w-auto" aria-hidden="true" />
     </a>
-    <nav class="flex items-center gap-6 text-small font-medium" aria-label="Site">
+    <nav class="flex items-center gap-6 text-small font-medium max-sm:gap-1.5" aria-label="Site">
       {
         nav.map((link) => (
           <a
@@ -30,6 +31,24 @@ const { overlay = false } = Astro.props;
         ))
       }
       <Button class="cta" href={cta.href} size="sm">{cta.label}</Button>
+      <button class="light -mr-2.5 grid size-10 cursor-pointer place-items-center rounded-control text-ink sm:hidden" type="button" popovertarget="menu" aria-label="Menu">
+        <Menu class="size-5 group-has-open:hidden" aria-hidden="true" />
+        <X class="hidden size-5 group-has-open:block" aria-hidden="true" />
+      </button>
+    </nav>
+    <nav
+      id="menu"
+      class="inset-x-0 top-16 bottom-auto m-0 w-auto border-0 bg-paper/60 px-5 pb-4 text-ink backdrop-blur-xl transition-[opacity,display,overlay] transition-discrete duration-150 not-open:opacity-0 starting:open:opacity-0"
+      popover
+      aria-label="Menu"
+    >
+      {
+        menu.map((link) => (
+          <a class="flex h-12 items-center text-lead font-medium" href={link.href}>
+            {link.label}
+          </a>
+        ))
+      }
     </nav>
   </div>
 </header>
@@ -57,6 +76,12 @@ const { overlay = false } = Astro.props;
     [data-overlay] :global(.cta) {
       animation-name: invert;
     }
+  }
+
+  header:has(:popover-open),
+  header:has(:popover-open) .light,
+  header:has(:popover-open) :global(.cta) {
+    animation: none;
   }
 
   @keyframes condense {

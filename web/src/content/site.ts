@@ -19,6 +19,8 @@ const github = { href: site.repo, label: "GitHub" } as const;
 
 export const nav = [start, leaderboard, github] as const;
 
+export const menu = [leaderboard, start] as const;
+
 export const cta = { href: `${app}/markets`, label: "Open app" } as const;
 
 export const footer = [

@@ -32,9 +32,9 @@ const {
 <Layout title={`${site.name}: ${site.tagline}`} path="/" overlay>
   <Hero lead={hero.subhead} caption={hero.visualNote}>
     <span class="text-signal">{hero.headline.accent}</span>{hero.headline.rest}
-    <div slot="actions" class="flex flex-col items-center gap-3">
+    <div slot="actions" class="flex flex-col items-center gap-3 max-sm:px-5">
       <p class="text-body text-balance text-muted [text-box:trim-start_cap_alphabetic] sm:text-lead">{hero.cue}</p>
-      <div class="flex w-full scheme-light-dark rounded-panel bg-surface/70 p-2.5 backdrop-blur-xl lg:rounded-control lg:p-3.75">
+      <div class="flex w-full scheme-light-dark rounded-[40px] bg-surface/70 p-2.5 backdrop-blur-xl lg:rounded-control lg:p-3.75">
         <Prompt class="grow" text={sentence} />
       </div>
     </div>
