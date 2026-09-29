@@ -1,7 +1,7 @@
 from datetime import date
 
 from agentpit.config import Settings
-from agentpit.db.table_read import DailyClose, TableRead
+from agentpit.db.table_read import DailyClose, TableRead, TradeTally
 from agentpit.db.table_write import TableWrite
 from agentpit.services.leaderboard_service import LeaderboardService
 from tests.db_helpers import fresh_test_conn, fresh_test_db
@@ -299,6 +299,7 @@ def _row(name, capital, deposited, trades=1, address="0x" + "11" * 20):
         capital_raw=capital,
         deposited_raw=deposited,
         trades=trades,
+        first_trade_at=0,
         last_trade_at=0,
     )
 
@@ -546,8 +547,8 @@ def test_counts_cover_both_sides_of_a_trade():
     )
 
     tallies = TableRead.count_trades_by_user(conn)
-    assert (tallies[taker_id].trades, tallies[taker_id].last_trade_at) == (2, 1_700_000_100)
-    assert (tallies[maker_id].trades, tallies[maker_id].last_trade_at) == (1, 1_700_000_000)
+    assert tallies[taker_id] == TradeTally(trades=2, first_trade_at=1_700_000_000, last_trade_at=1_700_000_100)
+    assert tallies[maker_id] == TradeTally(trades=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000)
     conn.close()
 
 
@@ -579,6 +580,11 @@ def test_a_failed_trade_does_not_put_an_account_on_the_board():
         "VALUES (%s, %s, %s, %s)",
         ("t-mixed-failed", mixed_key, 1_700_000_100, "FAILED"),
     )
+    conn.execute(
+        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) "
+        "VALUES (%s, %s, %s, %s)",
+        ("t-mixed-early-failed", mixed_key, 1_699_999_900, "FAILED"),
+    )
 
     ids = {r.user_id for r in TableRead.list_traded_accounts(conn)}
     assert only_failed_id not in ids
@@ -586,7 +592,7 @@ def test_a_failed_trade_does_not_put_an_account_on_the_board():
 
     tallies = TableRead.count_trades_by_user(conn)
     assert only_failed_id not in tallies
-    assert (tallies[mixed_id].trades, tallies[mixed_id].last_trade_at) == (1, 1_700_000_000)
+    assert tallies[mixed_id] == TradeTally(trades=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000)
     conn.close()
 
 
@@ -597,7 +603,7 @@ from agentpit.services.leaderboard_service import (
 
 
 def test_the_shared_arithmetic_matches_the_row_properties():
-    """One formula, two callers: the board row and the stats route. The
+    """One formula, two callers: the board row and its trend. The
     properties delegate rather than restate, so a change cannot land in one
     and miss the other."""
     row = _row("a", capital=120_000_000_000, deposited=100_000_000_000)

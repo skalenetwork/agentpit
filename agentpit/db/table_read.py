@@ -29,6 +29,7 @@ class TradedAccount(BaseModel):
 
 class TradeTally(BaseModel):
     trades: int
+    first_trade_at: int
     last_trade_at: int
 
 
@@ -37,6 +38,7 @@ class ActivityDay(BaseModel):
     agents: int
     active: int
     trades: int
+    volume: int
 
 
 class DailyClose(BaseModel):
@@ -625,7 +627,7 @@ class TableRead:
     @staticmethod
     def count_trades_by_user(db: psycopg.Connection) -> "dict[str, TradeTally]":
         """user_id -> how many non-failed trades it took part in, either side,
-        and when the latest of them matched.
+        and when the first and the latest of them matched.
 
         Drives from `users` for the same reason as `list_traded_accounts`:
         `trades` is dominated by the liquidity mirror's unbounded synthetic
@@ -650,6 +652,7 @@ class TableRead:
             """
             SELECT u.USER_ID AS uid,
                    COUNT(DISTINCT x.TRADE_ID) AS trades,
+                   MIN(x.MATCH_TIME) AS first_trade_at,
                    MAX(x.MATCH_TIME) AS last_trade_at
             FROM users u
             JOIN LATERAL (
@@ -699,28 +702,36 @@ class TableRead:
     def daily_activity(db: psycopg.Connection, today: date) -> "list[ActivityDay]":
         """Per UTC day from the first trade to `today`: agents counted from
         their first trade, agents that traded that day, and trades with an
-        agent on either side, each counted once. A failed trade never counts."""
+        agent on either side and their paper notional at the taker's price,
+        each counted once. A failed trade never counts."""
         rows = db.execute(
             """
             WITH fills AS (
-                SELECT u.USER_ID, x.TRADE_ID, x.MATCH_TIME / 86400 AS DAY
+                SELECT u.USER_ID, x.TRADE_ID, x.MATCH_TIME / 86400 AS DAY,
+                       (CASE WHEN COALESCE(x.MATCH_KIND, 'NORMAL') IN ('MINT', 'MERGE')
+                             THEN 1000000 - x.PRICE ELSE x.PRICE END)
+                       * x.TRADE_SIZE / 1000000 AS NOTIONAL
                 FROM users u
                 CROSS JOIN LATERAL (
-                    SELECT TRADE_ID, MATCH_TIME FROM trades
+                    SELECT TRADE_ID, MATCH_TIME, MATCH_KIND, PRICE, TRADE_SIZE FROM trades
                     WHERE TAKER_API_KEY = u.API_KEY AND STATUS <> 'FAILED'
                     UNION ALL
-                    SELECT TRADE_ID, MATCH_TIME FROM trades
+                    SELECT TRADE_ID, MATCH_TIME, MATCH_KIND, PRICE, TRADE_SIZE FROM trades
                     WHERE MAKER_API_KEY = u.API_KEY AND STATUS <> 'FAILED'
                 ) x
                 WHERE u.IS_BOT = 0
             ),
             firsts AS (
                 SELECT MIN(DAY) AS DAY FROM fills GROUP BY USER_ID
+            ),
+            matches AS (
+                SELECT DISTINCT TRADE_ID, DAY, NOTIONAL FROM fills
             )
             SELECT DATE 'epoch' + d.DAY::int AS day,
                    (SELECT COUNT(*) FROM firsts f WHERE f.DAY <= d.DAY) AS agents,
                    COUNT(DISTINCT fl.USER_ID) AS active,
-                   COUNT(DISTINCT fl.TRADE_ID) AS trades
+                   COUNT(DISTINCT fl.TRADE_ID) AS trades,
+                   (SELECT COALESCE(SUM(m.NOTIONAL), 0) FROM matches m WHERE m.DAY = d.DAY) AS volume
             FROM generate_series(
                 (SELECT MIN(DAY) FROM firsts), %(today)s::date - DATE 'epoch'
             ) AS d(DAY)
@@ -889,6 +900,15 @@ class TableRead:
             "SELECT EVENT_ID, SLUG FROM events WHERE EVENT_ID = ANY(%s)", (wanted,)
         )
         return {int(r["EVENT_ID"]): str(r["SLUG"]) for r in cur.fetchall()}
+
+    @staticmethod
+    def categories_by_market_id(db: psycopg.Connection, market_ids: "list[int]") -> "dict[int, str]":
+        rows = db.execute(
+            "SELECT m.MARKET_ID, e.CATEGORY FROM markets m JOIN events e ON e.EVENT_ID = m.EVENT_ID "
+            "WHERE m.MARKET_ID = ANY(%s) AND e.CATEGORY IS NOT NULL",
+            (market_ids,),
+        ).fetchall()
+        return {int(r["MARKET_ID"]): str(r["CATEGORY"]) for r in rows}
 
     @staticmethod
     def get_event_by_slug(db: psycopg.Connection, slug: str) -> "Event | None":

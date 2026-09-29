@@ -1,14 +1,13 @@
 """The public board and platform stats. Neither reads the chain; that work happens on a timer."""
 import time
 from datetime import UTC, date, datetime
-from statistics import median
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from agentpit.api.deps import LeaderboardServiceDep, SessionDep
 from agentpit.db.table_read import TableRead
-from agentpit.services.leaderboard_service import SORTS, compute_earned_raw, rank_rows
+from agentpit.services.leaderboard_service import SORTS, rank_rows
 
 router = APIRouter(tags=["leaderboard"])
 
@@ -32,6 +31,7 @@ class LeaderboardEntry(BaseModel):
     realized: str
     returnPct: float
     trades: int
+    firstTradeAt: int
     lastTradeAt: int
     trend: list[str]
 
@@ -46,9 +46,7 @@ class StatsDay(BaseModel):
     agents: int
     active: int
     trades: int
-    valued: int
-    up: int
-    medianEarned: str | None
+    volume: str
 
 
 class StatsResponse(BaseModel):
@@ -85,6 +83,7 @@ def get_leaderboard(
             realized=str(row.realized_raw),
             returnPct=round(row.return_pct, 2),
             trades=row.trades,
+            firstTradeAt=row.first_trade_at,
             lastTradeAt=row.last_trade_at,
             trend=row.trend,
         ).model_dump()
@@ -96,30 +95,12 @@ def get_leaderboard(
 
 @router.get("/stats", response_model=StatsResponse)
 def get_stats(db: SessionDep) -> StatsResponse:
-    """Agents, trades and P&L per UTC day, from the first trade to today."""
-    today = datetime.now(UTC).date()
+    """Agents, trades and paper volume per UTC day, from the first trade to today."""
     with db.read() as conn:
-        activity = TableRead.daily_activity(conn, today)
-        if not activity:
-            return StatsResponse(days=[])
-        accounts = TableRead.list_traded_accounts(conn)
-        closes = TableRead.daily_closes(conn, [a.user_id for a in accounts], activity[0].day)
-
-    earned: dict[date, list[int]] = {}
-    for series in closes.values():
-        for close in series:
-            earned.setdefault(close.day, []).append(compute_earned_raw(close.capital, close.deposited))
+        activity = TableRead.daily_activity(conn, datetime.now(UTC).date())
     return StatsResponse(
         days=[
-            StatsDay(
-                day=a.day,
-                agents=a.agents,
-                active=a.active,
-                trades=a.trades,
-                valued=len(values := earned.get(a.day, [])),
-                up=sum(v > 0 for v in values),
-                medianEarned=str(round(median(values))) if values else None,
-            )
+            StatsDay(day=a.day, agents=a.agents, active=a.active, trades=a.trades, volume=str(a.volume))
             for a in activity
         ]
     )

@@ -12,6 +12,7 @@ export interface Agent {
   readonly pnl: number;
   readonly invested: number;
   readonly trend: readonly number[];
+  readonly firstTradeAt: number;
   readonly lastTradeAt: number;
 }
 
@@ -20,13 +21,11 @@ export interface StatsDay {
   readonly agents: number;
   readonly trades: number;
   readonly active: number;
-  readonly valued: number;
-  readonly up: number;
-  readonly medianPnl: number | null;
+  readonly volume: number;
 }
 
-interface WireDay extends Omit<StatsDay, "medianPnl"> {
-  readonly medianEarned: string | null;
+interface WireDay extends Omit<StatsDay, "volume"> {
+  readonly volume: string;
 }
 
 interface Entry {
@@ -39,6 +38,7 @@ interface Entry {
   readonly returnPct: number;
   readonly trades: number;
   readonly trend: readonly string[];
+  readonly firstTradeAt: number;
   readonly lastTradeAt: number;
 }
 
@@ -69,11 +69,9 @@ export const leaderboard = async (): Promise<readonly Agent[] | undefined> =>
     pnl: usd(entry.earned),
     invested: usd(entry.invested),
     trend: entry.trend.map(usd),
+    firstTradeAt: entry.firstTradeAt,
     lastTradeAt: entry.lastTradeAt,
   }));
 
 export const stats = async (): Promise<readonly StatsDay[] | undefined> =>
-  (await get<{ days: readonly WireDay[] }>("/stats"))?.days.map(({ medianEarned, ...day }) => ({
-    ...day,
-    medianPnl: medianEarned === null ? null : usd(medianEarned),
-  }));
+  (await get<{ days: readonly WireDay[] }>("/stats"))?.days.map(({ volume, ...day }) => ({ ...day, volume: usd(volume) }));

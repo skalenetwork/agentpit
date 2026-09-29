@@ -116,6 +116,7 @@ def test_search_lists_only_live_two_sided_markets_busiest_first():
 
     assert [m.question for m in listed] == ["Will it rain in Paris?", "Will bitcoin reach 100k?"]
     assert [(q.name, q.bid, q.ask) for q in listed[0].outcomes] == [("Yes", 0.4, 0.6), ("No", None, None)]
+    assert [m.category for m in listed] == ["Weather", "Crypto"]
     assert [m.question for m in desk.search_markets("bitcoins").markets] == ["Will bitcoin reach 100k?"]
 
 
@@ -177,6 +178,7 @@ def test_portfolio_matches_the_leaderboard():
     board = desk.leaderboard()
     standing = next(s for s in board.agents if s.agent == mine.agent)
 
+    assert mine.address == agent.eth_address
     assert mine.cash_usd == 100_000 - 20
     assert mine.equity_usd == pytest.approx(mine.cash_usd + mine.positions_value_usd)
     assert (mine.equity_usd, mine.pnl_usd, mine.rank) == (standing.equity_usd, standing.pnl_usd, standing.rank)

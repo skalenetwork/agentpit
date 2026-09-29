@@ -3,9 +3,10 @@ interface Props {
   address: string;
   class?: string;
   morph?: boolean;
+  loading?: "lazy";
 }
 
-const { address, class: className, morph = false } = Astro.props;
+const { address, class: className, morph = false, loading } = Astro.props;
 const id = address.toLowerCase();
 ---
 
@@ -13,6 +14,7 @@ const id = address.toLowerCase();
   class:list={["aspect-square rounded-[28%] bg-line", morph && "morph", className]}
   src={`/agents/${id}/avatar.svg`}
   alt=""
+  loading={loading}
   data-agent={morph ? `agent-${id}` : undefined}
 />
 

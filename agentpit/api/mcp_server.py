@@ -5,6 +5,7 @@ from typing import Annotated, cast
 from urllib.parse import urlsplit
 
 from mcp.server import CacheHint, MCPServer
+from mcp.server.apps import Apps, ResourceCsp
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver.exceptions import ToolError
@@ -45,6 +46,7 @@ INSTRUCTIONS = (
 )
 THEMES = ("light", "dark")
 ICONS = Path(__file__).with_name("icons")
+CARD = "ui://agentpit/card.html"
 SETTING_UP = "This agent's wallet is still being set up. Try again in a few seconds."
 HOUR = CacheHint(ttl_ms=3_600_000, scope="public")
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
@@ -79,6 +81,45 @@ def _icon(theme: str) -> Route:
 
 
 def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts, desk: AgentDesk) -> MCPServer:
+    def agent() -> User:
+        return accounts.ready(cast(AgentToken, get_access_token()).user)
+
+    apps = Apps()
+    csp = ResourceCsp(resource_domains=["https://agentpit.dev", "https://assets.claude.ai"])
+    apps.add_html_resource(CARD, Path(__file__).with_name("card.html").read_text(), csp=csp, prefers_border=False)
+
+    @apps.tool(
+        resource_uri=CARD,
+        title="Search markets",
+        description="Live markets with bids and asks on both sides, busiest first: slug, question, closing time, and each outcome's bid and ask.",
+        annotations=READ,
+    )
+    def search_markets(
+        query: Annotated[str | None, Field(description="Words to match in the question or event, e.g. 'bitcoin'. Omit for the busiest markets.")] = None,
+        limit: Annotated[SearchLimit, Field(description="1 to 20 markets, default 10.")] = 10,
+    ) -> MarketList:
+        return desk.search_markets(query, limit)
+
+    @apps.tool(
+        resource_uri=CARD,
+        title="Get market",
+        description="One market in full: question, rules, status, closing time, winner, and per outcome the bid, ask, last price, 1-day change and 5 book levels a side.",
+        annotations=READ,
+    )
+    def get_market(market: MarketSlug) -> MarketDetail:
+        with _tool_errors():
+            return desk.get_market(market)
+
+    @apps.tool(
+        resource_uri=CARD,
+        title="Portfolio",
+        description="Cash, positions value, equity, P&L, return, leaderboard rank, next top-up time, and up to 20 positions and 20 open orders.",
+        annotations=READ,
+    )
+    def portfolio() -> Portfolio:
+        with _tool_errors():
+            return desk.portfolio(agent())
+
     server = MCPServer(
         "agentpit",
         title="AgentPit",
@@ -97,31 +138,9 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
                 "validate_token_resource": True,
             }
         ),
-        cache_hints={"server/discover": HOUR, "tools/list": HOUR},
+        cache_hints={"server/discover": HOUR, "tools/list": HOUR, "resources/read": HOUR},
+        extensions=[apps],
     )
-
-    def agent() -> User:
-        return accounts.ready(cast(AgentToken, get_access_token()).user)
-
-    @server.tool(
-        title="Search markets",
-        description="Live markets with bids and asks on both sides, busiest first: slug, question, closing time, and each outcome's bid and ask.",
-        annotations=READ,
-    )
-    def search_markets(
-        query: Annotated[str | None, Field(description="Words to match in the question or event, e.g. 'bitcoin'. Omit for the busiest markets.")] = None,
-        limit: Annotated[SearchLimit, Field(description="1 to 20 markets, default 10.")] = 10,
-    ) -> MarketList:
-        return desk.search_markets(query, limit)
-
-    @server.tool(
-        title="Get market",
-        description="One market in full: question, rules, status, closing time, winner, and per outcome the bid, ask, last price, 1-day change and 5 book levels a side.",
-        annotations=READ,
-    )
-    def get_market(market: MarketSlug) -> MarketDetail:
-        with _tool_errors():
-            return desk.get_market(market)
 
     @server.tool(
         title="Paper trade",
@@ -154,15 +173,6 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
     ) -> CancelResult:
         with _tool_errors():
             return desk.cancel(agent(), order_id)
-
-    @server.tool(
-        title="Portfolio",
-        description="Cash, positions value, equity, P&L, return, leaderboard rank, next top-up time, and up to 20 positions and 20 open orders.",
-        annotations=READ,
-    )
-    def portfolio() -> Portfolio:
-        with _tool_errors():
-            return desk.portfolio(agent())
 
     @server.tool(
         title="Top up paper cash",

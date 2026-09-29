@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agentpit.api.app import create_app
+from agentpit.api.mcp_server import CARD
 from agentpit.config import Settings
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import TableRead
@@ -81,6 +82,24 @@ def test_modern_tools_list_carries_seven_annotated_tools():
     }
     assert tools["cancel"]["annotations"]["destructiveHint"] is True
     assert (result["ttlMs"], result["cacheScope"]) == (3_600_000, "public")
+
+
+def test_market_and_portfolio_tools_render_the_card():
+    key = _agent().api_key
+    with TestClient(app) as client:
+        tools = _call(client, key, "tools/list", {})["tools"]
+        read = _call(client, key, "resources/read", {"uri": CARD}, CARD)
+
+    card_tools = {t["name"]: t["_meta"] for t in tools if "_meta" in t}
+    assert card_tools == dict.fromkeys(["search_markets", "get_market", "portfolio"], {"ui": {"resourceUri": CARD}})
+    [card] = read["contents"]
+    assert card["mimeType"] == "text/html;profile=mcp-app"
+    assert card["text"].startswith("<!doctype html>")
+    assert card["_meta"]["ui"] == {
+        "csp": {"resourceDomains": ["https://agentpit.dev", "https://assets.claude.ai"]},
+        "prefersBorder": False,
+    }
+    assert (read["ttlMs"], read["cacheScope"]) == (3_600_000, "public")
 
 
 def test_legacy_initialize_carries_the_instructions_and_served_icons():

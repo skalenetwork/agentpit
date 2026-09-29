@@ -1,0 +1,124 @@
+---
+import Readout from "./Readout.astro";
+
+interface Props {
+  values: readonly number[];
+  top: number;
+  format: (value: number) => string;
+  readings: readonly { readonly fig: string; readonly ctx: string; readonly note: string }[];
+  step?: boolean;
+}
+
+const { values, top, format, readings, step = false } = Astro.props;
+const n = values.length;
+const y = (value: number) => 100 - (value / top) * 100;
+const pc = (value: number) => `${+value.toFixed(2)}%`;
+const line = [[0, y(values[0])], ...values.slice(1).flatMap((value, k) => [[k + 1.5, y(values[k])], [k + 1.5, y(value)]]), [n, y(values[n - 1])]];
+const cut = Math.max(0, 2 * n - 15);
+const points = (from: readonly number[][]) => from.map(([x, v]) => `${x},${+v.toFixed(2)}`).join(" ");
+---
+
+<div class="relative -z-10">
+  <span class="absolute inset-x-0 bottom-full h-px bg-line">
+    <span class="absolute right-0 bottom-1 text-caption leading-4 tabular-nums">{format(top)}</span>
+  </span>
+  <span class="absolute inset-x-0 bottom-1/2 h-px bg-line"></span>
+  {
+    step && (
+      <svg
+        class="absolute inset-0 size-full overflow-visible fill-none stroke-2"
+        viewBox={`0 0 ${n} 100`}
+        preserveAspectRatio="none"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <polygon class="fill-muted/6 stroke-none" points={points([[0, 100], ...line, [n, 100]])} />
+        <polyline class="stroke-muted/70" points={points(line.slice(0, cut + 1))} vector-effect="non-scaling-stroke" />
+        <polyline class="stroke-signal" points={points(line.slice(cut))} vector-effect="non-scaling-stroke" />
+      </svg>
+    )
+  }
+</div>
+<div class:list={["days grid grid-flow-col grid-rows-1 auto-cols-fr", !step && "gap-x-px sm:gap-x-0.5"]}>
+  {
+    values.map((value, i) => {
+      const height = Math.max(100 - y(value), i === n - 1 ? 2.5 : 1.25);
+      return (
+        <div class:list={["day", i >= n - 7 && "recent", i === n - 1 && "today", step && value > (values[i - 1] ?? 0) && "join"]} tabindex="-1">
+          <svg class="block size-full overflow-visible" aria-hidden="true">
+            <line x1="50%" x2="50%" y2={step || !value ? "100%" : pc(100 - height)} shape-rendering="crispEdges" />
+            {step ? <circle cx="50%" cy={pc(y(value))} r="3" /> : value > 0 && <rect y={pc(100 - height)} width="100%" height={pc(height)} />}
+          </svg>
+          <Readout floating fig={readings[i].fig} ctx={readings[i].ctx}>
+            {readings[i].note}
+          </Readout>
+        </div>
+      );
+    })
+  }
+</div>
+
+<style>
+  .day {
+    min-width: 0;
+    cursor: crosshair;
+    outline: none;
+  }
+  rect {
+    fill: color-mix(in oklab, var(--color-muted) 38%, transparent);
+    clip-path: inset(0 round 1.5px 1.5px 0 0) fill-box;
+  }
+  .recent rect {
+    fill: var(--color-signal);
+  }
+  .today rect {
+    fill: none;
+    stroke: var(--color-signal);
+    stroke-width: 3;
+  }
+  circle {
+    visibility: hidden;
+    fill: var(--color-muted);
+    stroke: var(--color-surface);
+    stroke-width: 3;
+    paint-order: stroke;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .join circle {
+    visibility: visible;
+  }
+  .recent circle {
+    fill: var(--color-signal);
+  }
+  .today circle {
+    visibility: visible;
+    fill: var(--color-surface);
+    stroke: var(--color-signal);
+    stroke-width: 2;
+    paint-order: normal;
+  }
+  .day:is(:hover, .days:not(:has(:hover)) :focus) {
+    --show: flex;
+
+    & line {
+      stroke: var(--color-muted);
+    }
+    & rect {
+      fill: var(--color-ink);
+    }
+    &.today rect {
+      fill: none;
+      stroke: var(--color-ink);
+    }
+    & circle {
+      visibility: visible;
+      fill: var(--color-ink);
+      stroke: var(--color-surface);
+      stroke-width: 3;
+      paint-order: stroke;
+      scale: calc(4 / 3);
+    }
+  }
+</style>

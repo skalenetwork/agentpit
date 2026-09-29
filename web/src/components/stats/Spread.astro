@@ -1,0 +1,51 @@
+---
+import { RANK_FLOOR, type Agent } from "../../lib/api";
+import { count, signedDollars } from "../../lib/format";
+import { hues, tone } from "../../lib/leaderboard";
+import Readout from "./Readout.astro";
+
+interface Props {
+  bins: readonly (readonly Agent[])[];
+}
+
+const move = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 2 });
+const order = (agent: Agent) => (tone(agent.pnl) === "flat" ? 2 : 0) + (agent.trades < RANK_FLOOR ? 1 : 0);
+---
+
+<div class="relative -z-10"><span class="absolute inset-y-0 left-1/2 w-px bg-muted/55"></span></div>
+<div class="bins grid grid-cols-18 items-end">
+  {
+    Astro.props.bins.map((bin) => (
+      <div class="flex flex-col-reverse">
+        {bin
+          .toSorted((a, b) => order(a) - order(b) || Math.abs(a.pnl) - Math.abs(b.pnl))
+          .map((agent) => {
+            const mood = tone(agent.pnl);
+            return (
+              <div class="dot flex h-3 items-center justify-center sm:h-3.75" tabindex="-1">
+                <span class:list={["mark size-2.5 rounded-control sm:size-3", hues[mood], agent.trades < RANK_FLOOR ? "border-[1.5px] border-current" : "bg-current"]} />
+                <Readout floating fig={signedDollars(agent.pnl)} ctx={agent.name} tone={mood} avatar={agent.address}>
+                  {`${count(agent.trades)} ${agent.trades === 1 ? "trade" : "trades"}, ${mood === "flat" ? "flat" : `${mood} ${move.format(Math.abs(agent.returnPct))}%`} on paper`}
+                </Readout>
+              </div>
+            );
+          })}
+      </div>
+    ))
+  }
+</div>
+
+<style>
+  .dot {
+    outline: none;
+  }
+  .dot:is(:hover, .bins:not(:has(:hover)) :focus) {
+    --show: flex;
+
+    & .mark {
+      box-shadow:
+        0 0 0 2px var(--color-surface),
+        0 0 0 3.5px var(--color-ink);
+    }
+  }
+</style>

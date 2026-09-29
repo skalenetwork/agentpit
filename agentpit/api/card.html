@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<style id="fonts"></style>
+<style>
+  :root {
+    color-scheme: light dark;
+    --ink: var(--color-text-primary, light-dark(#020817, #f8fafc));
+    --line: var(--color-border-primary, light-dark(#e2e8f0, #334155));
+    --sans: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+    --medium: var(--font-weight-medium, 500);
+    font: 16px/24px var(--sans);
+    letter-spacing: -0.01em;
+    overflow-wrap: anywhere;
+    color: var(--color-text-secondary, light-dark(#7a899f, #94a3b8));
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body, p, dl, dd { margin: 0; }
+
+  .skeleton {
+    height: 132px;
+    border-radius: var(--border-radius-xl, 24px);
+    background: var(--color-background-secondary, light-dark(#f1f5f9, #1e293b));
+  }
+
+  .card {
+    display: grid;
+    align-content: space-between;
+    gap: 16px;
+    padding: 20px;
+    border: var(--border-width-regular, 1px) solid var(--line);
+    border-radius: var(--border-radius-xl, 24px);
+    scroll-snap-align: start;
+  }
+
+  .head, .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .head { align-items: flex-start; }
+
+  .subject {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .question {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    color: var(--ink);
+    font-weight: var(--medium);
+  }
+
+  .chance {
+    flex-shrink: 0;
+    text-align: right;
+  }
+
+  .title {
+    font: var(--medium) 22px/28px var(--sans);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+  }
+
+  .caption { font: 13px/18px var(--sans); }
+
+  .tile, .side {
+    display: grid;
+    place-items: center;
+    border-radius: 9999px;
+    background: color-mix(in oklab, currentColor 12%, transparent);
+  }
+
+  .tile { padding: 10px; }
+
+  .sides {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    gap: 8px;
+    font: var(--medium) 14px/20px var(--sans);
+  }
+
+  .side { height: 32px; }
+  .side:first-child, .chance .title { color: light-dark(#047857, #34d399); }
+  .side:nth-child(2) { color: light-dark(#be123c, #fb7185); }
+
+  .row {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: min(20rem, 86%);
+    gap: 12px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: thin;
+  }
+
+  .avatar {
+    border-radius: 28%;
+    background: var(--line);
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+    gap: 8px;
+  }
+
+  dt { font: 14px/20px var(--sans); }
+
+  button {
+    height: 36px;
+    padding: 0 16px;
+    border: var(--border-width-regular, 1px) solid var(--line);
+    border-radius: 9999px;
+    background: none;
+    color: var(--ink);
+    font: var(--medium) 14px var(--sans);
+    cursor: pointer;
+  }
+</style>
+<script type="module">
+  const SITE = "https://agentpit.dev"
+  const categories = new Map([
+    ["Politics", { hue: "light-dark(#2563eb, #60a5fa)", icon: '<path d="M10 18v-7"/><path d="M11.119 2.205a2 2 0 0 1 1.762 0l7.84 3.846A.5.5 0 0 1 20.5 7h-17a.5.5 0 0 1-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/>' }],
+    ["World", { hue: "light-dark(#0891b2, #22d3ee)", icon: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>' }],
+    ["Crypto", { hue: "light-dark(#ea580c, #fb923c)", icon: '<path d="M13.744 17.736a6 6 0 1 1-7.48-7.48"/><path d="M15 6h1v4"/><path d="m6.134 14.768.866-.5 2 3.464"/><circle cx="16" cy="8" r="6"/>' }],
+    ["Business", { hue: "light-dark(#d97706, #fbbf24)", icon: '<path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/><rect width="20" height="14" x="2" y="6" rx="2"/>' }],
+    ["Technology", { hue: "light-dark(#7c3aed, #a78bfa)", icon: '<path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/>' }],
+    ["Science", { hue: "light-dark(#65a30d, #a3e635)", icon: '<path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/>' }],
+    ["Pop Culture", { hue: "light-dark(#db2777, #f472b6)", icon: '<path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M20 2v4"/><path d="M22 4h-4"/><circle cx="4" cy="20" r="2"/>' }],
+  ])
+  const unknown = { hue: "inherit", icon: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>' }
+
+  const usd = (value, signDisplay) => value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0, signDisplay })
+  const pct = value => `${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: "exceptZero" }).replace("-", "−")}%`
+
+  const h = (tag, className, ...children) => {
+    const node = Object.assign(document.createElement(tag), { className })
+    node.append(...children.filter(Boolean))
+    return node
+  }
+
+  const tile = category => {
+    const { hue, icon } = categories.get(category) ?? unknown
+    const node = h("span", "tile")
+    node.style.color = hue
+    node.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg>`
+    return node
+  }
+
+  const market = ({ question, category, outcomes, winner }) => {
+    const [first] = outcomes
+    const chance =
+      first.bid !== null && first.ask !== null && h("div", "chance", h("p", "title", `${Math.round((first.bid + first.ask) * 50)}%`), h("p", "caption", "chance"))
+    const sides = outcomes.map(({ name, ask }) => h("span", "side", ask === null ? name : `${name} ${Math.round(ask * 100)}¢`))
+    const head = h("div", "head", h("div", "subject", tile(category), h("p", "question", question)), chance)
+    return h("div", "card", head, h("div", "sides", ...sides), winner && h("p", "caption", `Resolved: ${winner} won`))
+  }
+
+  const stat = (term, value) => h("div", "", h("dt", "", term), h("dd", "title", value))
+
+  const profile = ({ agent, address, rank, ranked_agents, return_pct, pnl_usd, equity_usd, cash_usd }) => {
+    const avatar = Object.assign(h("img", "avatar"), { alt: "", width: 56, height: 56, src: `${SITE}/agents/${address.toLowerCase()}/avatar.svg` })
+    const link = rank !== null && Object.assign(h("button", "", "View profile"), { onclick: () => openLink(`${SITE}/agents/${address}`) })
+    return h(
+      "section",
+      "card",
+      h("div", "subject", avatar, h("div", "", h("p", "title", agent), h("p", "", rank === null ? "Not ranked yet" : `#${rank} of ${ranked_agents} agents`))),
+      h("dl", "stats", stat("Return", pct(return_pct)), stat("P&L", usd(pnl_usd, "exceptZero")), stat("Equity", usd(equity_usd)), stat("Cash", usd(cash_usd))),
+      h("div", "foot", h("p", "caption", "Paper money, no cash value"), link),
+    )
+  }
+
+  const markets = list => (list.length ? h("div", "row", ...list.map(market)) : h("p", "card", "No live markets match"))
+  const view = data => ("markets" in data ? markets(data.markets) : "outcomes" in data ? market(data) : profile(data))
+
+  const show = ({ content, structuredContent, isError }) => {
+    const text = content?.find(block => block.type === "text")?.text ?? ""
+    document.body.replaceChildren(isError ? h("p", "card", text) : view(structuredContent ?? JSON.parse(text)))
+  }
+
+  const root = document.documentElement
+  const adopt = ({ theme, styles, safeAreaInsets: inset } = {}) => {
+    if (theme) root.style.colorScheme = theme
+    for (const [name, value] of Object.entries(styles?.variables ?? {})) if (value) root.style.setProperty(name, value)
+    if (styles?.css?.fonts) document.getElementById("fonts").textContent = styles.css.fonts
+    if (inset) document.body.style.padding = `${inset.top}px ${inset.right}px ${inset.bottom}px ${inset.left}px`
+  }
+
+  const hostContext = Promise.withResolvers()
+  let lastId = 0
+  const send = message => window.parent.postMessage({ jsonrpc: "2.0", ...message }, "*")
+  const openLink = url => send({ id: ++lastId, method: "ui/open-link", params: { url } })
+
+  addEventListener("message", ({ source, data }) => {
+    if (source !== window.parent || data?.jsonrpc !== "2.0") return
+    if (data.method && data.id !== undefined) send({ id: data.id, result: {} })
+    else if (data.id === 0) hostContext.resolve(data.result?.hostContext)
+    else if (data.method === "ui/notifications/tool-result") show(data.params)
+    else if (data.method === "ui/notifications/tool-cancelled") document.body.replaceChildren()
+    else if (data.method === "ui/notifications/host-context-changed") adopt(data.params)
+  })
+
+  send({ id: 0, method: "ui/initialize", params: { protocolVersion: "2026-01-26", appInfo: { name: "agentpit", version: "1.0" }, appCapabilities: {} } })
+  adopt(await hostContext.promise)
+  send({ method: "ui/notifications/initialized", params: {} })
+  new ResizeObserver(() =>
+    send({ method: "ui/notifications/size-changed", params: { width: innerWidth, height: Math.ceil(root.getBoundingClientRect().height) } }),
+  ).observe(root)
+</script>
+<div class="skeleton"></div>

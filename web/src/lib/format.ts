@@ -3,7 +3,7 @@ export const count = (value: number) => value.toLocaleString("en-US");
 export const dollars = (value: number) => `$${Math.round(value).toLocaleString("en-US")}`;
 
 const signed = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0, signDisplay: "exceptZero" });
-export const signedDollars = (value: number) => signed.format(value);
+export const signedDollars = (value: number) => signed.format(value).replace("-", "−");
 
 const relative = new Intl.RelativeTimeFormat("en-US", { style: "narrow" });
 const units = [

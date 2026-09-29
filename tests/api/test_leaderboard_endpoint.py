@@ -132,10 +132,22 @@ def _account(conn, handle: str) -> tuple[str, str]:
     return user_id, key
 
 
-def _trade(conn, trade_id: str, taker: str, maker: str | None, at: int, status: str = "PENDING") -> None:
+def _trade(
+    conn,
+    trade_id: str,
+    taker: str,
+    maker: str | None,
+    at: int,
+    status: str = "PENDING",
+    *,
+    price: int | None = None,
+    size: int | None = None,
+    kind: str | None = None,
+) -> None:
     conn.execute(
-        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MAKER_API_KEY, MATCH_TIME, STATUS) VALUES (%s, %s, %s, %s, %s)",
-        (trade_id, taker, maker, at, status),
+        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MAKER_API_KEY, MATCH_TIME, STATUS, PRICE, TRADE_SIZE, MATCH_KIND) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (trade_id, taker, maker, at, status, price, size, kind),
     )
 
 
@@ -145,45 +157,20 @@ def test_stats_count_each_match_once_and_skip_tape_failures_and_bots():
     TableWrite.mark_user_as_bot(conn, house)
     _, a = _account(conn, "alpha")
     _, b = _account(conn, "beta")
-    _trade(conn, "a-house", a, house, X + DAY // 2)
-    _trade(conn, "a-b", a, b, X + DAY + DAY // 2)
-    _trade(conn, "a-self", a, a, X + DAY + DAY // 2)
-    _trade(conn, "a-failed", a, house, X + DAY + DAY // 2, "FAILED")
-    _trade(conn, "tape", "mirror-tape", "mirror-tape", X + DAY + DAY // 2, "MIRRORED")
-    _trade(conn, "house-only", house, house, X + DAY + DAY // 2)
+    _trade(conn, "a-house", a, house, X + DAY // 2, price=400_000, size=10_000_000)
+    _trade(conn, "a-b", a, b, X + DAY + DAY // 2, price=300_000, size=5_000_000, kind="MINT")
+    _trade(conn, "a-self", a, a, X + DAY + DAY // 2, price=500_000, size=2_000_000, kind="NORMAL")
+    _trade(conn, "a-failed", a, house, X + DAY + DAY // 2, "FAILED", price=400_000, size=10_000_000)
+    _trade(conn, "tape", "mirror-tape", "mirror-tape", X + DAY + DAY // 2, "MIRRORED", price=400_000, size=10_000_000)
+    _trade(conn, "house-only", house, house, X + DAY + DAY // 2, price=400_000, size=10_000_000)
     conn.close()
     with TestClient(app) as client:
         days = client.get("/stats").json()["days"]
     assert days[0]["day"] == "2026-01-01"
-    assert [(d["agents"], d["active"], d["trades"]) for d in days[:3]] == [(1, 1, 1), (2, 2, 2), (2, 0, 0)]
-
-
-def test_stats_median_is_each_agents_last_valuation_of_the_day():
-    conn = fresh_test_conn()
-    users = {}
-    for handle, earned, topup in (("lo", -10_000_000, 0), ("mid", 5_000_000, 8_264_000_000), ("hi", 100_000_000, 0)):
-        user_id, key = _account(conn, handle)
-        users[handle] = user_id
-        _trade(conn, f"{handle}-1", key, None, X + DAY // 2)
-        TableWrite.insert_account_snapshot(conn, user_id, X + DAY + 60, G + 999, G)
-        TableWrite.insert_account_snapshot(conn, user_id, X + DAY + 80_000, G + topup + earned, G + topup)
-    TableWrite.insert_account_snapshot(conn, users["lo"], X + 2 * DAY + 60, G + 3, G)
-    TableWrite.insert_account_snapshot(conn, users["hi"], X + 2 * DAY + 60, G, G)
-    bot_id, bot = _account(conn, "flagged")
-    _trade(conn, "flagged-1", bot, None, X + DAY // 2)
-    TableWrite.mark_user_as_bot(conn, bot)
-    TableWrite.insert_account_snapshot(conn, bot_id, X + DAY + 80_000, 2 * G, G)
-    failed_id, failed = _account(conn, "failed")
-    _trade(conn, "failed-1", failed, None, X + DAY // 2, "FAILED")
-    TableWrite.insert_account_snapshot(conn, failed_id, X + DAY + 80_000, 9 * G, G)
-    conn.close()
-    with TestClient(app) as client:
-        days = client.get("/stats").json()["days"]
-    assert [(d["valued"], d["up"], d["medianEarned"]) for d in days[:4]] == [
-        (0, 0, None),
-        (3, 2, "5000000"),
-        (2, 1, "2"),
-        (0, 0, None),
+    assert [(d["agents"], d["active"], d["trades"], d["volume"]) for d in days[:3]] == [
+        (1, 1, 1, "4000000"),
+        (2, 2, 2, "4500000"),
+        (2, 0, 0, "0"),
     ]
 
 
@@ -202,10 +189,13 @@ def test_the_platform_counts_a_trade_once_where_the_board_counts_it_per_agent():
     conn.close()
     with TestClient(app) as client:
         days = client.get("/stats").json()["days"]
-        board = {e["name"]: (e["trades"], e["lastTradeAt"]) for e in client.get("/leaderboard").json()["entries"]}
+        board = {
+            e["name"]: (e["trades"], e["firstTradeAt"], e["lastTradeAt"])
+            for e in client.get("/leaderboard").json()["entries"]
+        }
     assert sum(d["trades"] for d in days) == board["alpha"][0] == 4
-    assert board["alpha"][1] == X + 2 * DAY + 100
-    assert board["beta"] == (1, X + DAY + 200)
+    assert board["alpha"][1:] == (X + 100, X + 2 * DAY + 100)
+    assert board["beta"] == (1, X + DAY + 200, X + DAY + 200)
 
 
 def test_the_board_trend_is_the_agents_pnl_at_each_days_close():

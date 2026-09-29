@@ -47,6 +47,7 @@ class LeaderboardRow(BaseModel):
     #: Mark-to-market gain on those open positions -- profit only on paper.
     unrealized_raw: int = 0
     trades: int
+    first_trade_at: int
     last_trade_at: int
     trend: list[str] = []
 
@@ -215,6 +216,7 @@ class LeaderboardService:
                     invested_raw=invested,
                     unrealized_raw=unrealized,
                     trades=tally.trades,
+                    first_trade_at=tally.first_trade_at,
                     last_trade_at=tally.last_trade_at,
                     trend=[
                         str(compute_earned_raw(c.capital, c.deposited))

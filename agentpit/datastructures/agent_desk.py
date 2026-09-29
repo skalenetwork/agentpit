@@ -20,6 +20,7 @@ class Quote(BaseModel):
 class MarketCard(BaseModel):
     market: str
     question: str
+    category: str | None
     closes_at: datetime | None
     outcomes: list[Quote]
 
@@ -38,6 +39,7 @@ class OutcomeBook(Quote):
 class MarketDetail(BaseModel):
     market: str
     question: str
+    category: str | None
     rules: str
     status: str
     closes_at: datetime | None
@@ -79,6 +81,7 @@ class RestingOrder(BaseModel):
 
 class Portfolio(BaseModel):
     agent: str
+    address: str
     app: str | None
     cash_usd: float
     positions_value_usd: float
