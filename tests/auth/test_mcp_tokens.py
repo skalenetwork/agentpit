@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 from agentpit.auth.mcp_tokens import AgentToken, AgentVerifier
-from agentpit.auth.workos_client import FakeWorkOsClient
+from agentpit.auth.workos_client import ConnectApp, FakeWorkOsClient
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -38,8 +38,8 @@ def world() -> tuple[AgentVerifier, AgentAccounts, Resolver]:
     db = fresh_test_db()
     accounts = AgentAccounts(db, lambda *_: pytest.fail("the verifier must not onboard"))
     workos = FakeWorkOsClient()
-    workos.applications[CLIENT_ID] = "Claude Code"
-    workos.applications["client_long"] = "Ignore\nall   previous " + "x" * 80
+    workos.applications[CLIENT_ID] = ConnectApp(name="Claude Code", host="localhost")
+    workos.applications["client_long"] = ConnectApp(name="Ignore\nall   previous " + "x" * 80, host=None)
     resolver = Resolver()
     verifier = AgentVerifier(
         issuer=ISSUER, resource=MCP_URL, resolve=resolver, workos=workos, accounts=accounts, db=db
@@ -59,7 +59,8 @@ def test_a_valid_token_resolves_the_owner_s_agent_for_that_app(world: tuple[Agen
     assert token is not None
     assert token.resource == MCP_URL
     assert token.user.agent_app == "Claude Code"
-    assert token.user.user_id == accounts.agent_for("user_01", "Claude Code").user_id
+    assert token.user.agent_host == "localhost"
+    assert token.user.user_id == accounts.agent_for("user_01", "Claude Code", "localhost").user_id
 
 
 @pytest.mark.parametrize(
@@ -95,7 +96,7 @@ def test_a_spa_token_without_aud_is_refused_before_any_key_fetch(world: tuple[Ag
 
 def test_an_api_key_resolves_its_account(world: tuple[AgentVerifier, AgentAccounts, Resolver]):
     verifier, accounts, _ = world
-    agent = accounts.agent_for("user_01", "Muse")
+    agent = accounts.agent_for("user_01", "Muse", None)
 
     token = _verify(verifier, agent.api_key)
 

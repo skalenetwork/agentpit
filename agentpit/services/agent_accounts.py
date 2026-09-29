@@ -20,10 +20,16 @@ class AgentAccounts:
         self._onboard = onboard
         self._onboarding = threading.Lock()
 
-    def agent_for(self, owner_workos_id: str, app: str) -> User:
+    def agent_for(self, owner_workos_id: str, app: str, host: str | None) -> User:
         with self._db.read() as conn:
             agent = TableRead.get_agent(conn, owner_workos_id, app)
-        return agent or self._create(owner_workos_id, app)
+        if agent is None:
+            return self._create(owner_workos_id, app, host)
+        if agent.agent_host != host:
+            with self._db.write() as conn:
+                TableWrite.set_agent_host(conn, agent.user_id, host)
+            return agent.model_copy(update={"agent_host": host})
+        return agent
 
     def ready(self, user: User) -> User:
         if user.onboarded_at is not None:
@@ -37,7 +43,7 @@ class AgentAccounts:
                 return fresh
             return self._onboard(fresh.user_id, fresh.eth_key)
 
-    def _create(self, owner_workos_id: str, app: str) -> User:
+    def _create(self, owner_workos_id: str, app: str, host: str | None) -> User:
         try:
             with self._db.write() as conn:
                 handle = pick_handle(taken=lambda name: TableRead.handle_taken(conn, name))
@@ -48,6 +54,7 @@ class AgentAccounts:
                     handle=handle,
                     owner_workos_id=owner_workos_id,
                     agent_app=app,
+                    agent_host=host,
                 )
                 TableWrite.set_auto_redeem(conn, user_id, True)
                 created = TableRead.get_user_by_userid(conn, user_id)

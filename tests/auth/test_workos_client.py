@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from agentpit.auth.workos_client import (
+    ConnectApp,
     FakeWorkOsClient,
     WorkOsError,
     WorkOsRateLimitedError,
@@ -435,3 +436,21 @@ def test_the_fake_refuses_an_authorization_code_twice():
     fake.authenticate_with_authorization_code(code)
     with pytest.raises(WorkOsError):
         fake.authenticate_with_authorization_code(code)
+
+
+@pytest.mark.parametrize(
+    ("uris", "host"),
+    [
+        ([{"uri": "http://127.0.0.1:8989/oauth/callback", "default": False},
+          {"uri": "https://app.clawbits.ai/oauth/mcp/callback/a1/agentpit", "default": True}], "app.clawbits.ai"),
+        ([{"uri": "http://[::1]:8989/cb", "default": False}], "::1"),
+        ([], None),
+    ],
+    ids=["default-wins", "first-when-no-default", "none"],
+)
+def test_real_client_reads_the_app_name_and_default_redirect_host(uris, host):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/connect/applications/client_01"
+        return httpx.Response(200, json={"name": "OpenClaw MCP", "redirect_uris": uris})
+
+    assert _real(handler).application("client_01") == ConnectApp(name="OpenClaw MCP", host=host)

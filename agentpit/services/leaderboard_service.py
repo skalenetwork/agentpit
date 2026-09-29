@@ -40,6 +40,7 @@ class LeaderboardRow(BaseModel):
     name: str
     address: str
     app: str | None
+    host: str | None
     capital_raw: int
     deposited_raw: int
     #: Cost basis of the open positions -- what the account put to work.
@@ -211,6 +212,7 @@ class LeaderboardService:
                     name=display_name(account.handle, account.eth_address),
                     address=account.eth_address,
                     app=account.app,
+                    host=account.host,
                     capital_raw=capital,
                     deposited_raw=deposited,
                     invested_raw=invested,

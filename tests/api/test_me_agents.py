@@ -18,9 +18,9 @@ def test_me_agents_lists_the_signed_in_person_s_agents(sign_in):
         assert client.get("/me/agents", headers=headers).json() == []
 
         owner = token.removeprefix("at-")
-        accounts.agent_for(owner, "Claude")
-        codex = accounts.agent_for(owner, "Codex")
-        accounts.agent_for("user_someone_else", "Claude")
+        accounts.agent_for(owner, "Claude", None)
+        codex = accounts.agent_for(owner, "Codex", None)
+        accounts.agent_for("user_someone_else", "Claude", None)
 
         agents = client.get("/me/agents", headers=headers).json()
 
@@ -38,7 +38,7 @@ def test_me_agents_lists_the_signed_in_person_s_agents(sign_in):
     [("/me/private-key/code", None), ("/me/private-key", {"code": "123456"})],
 )
 def test_an_agent_s_key_cannot_be_exported(path, body):
-    agent = _accounts().agent_for("user_owner", "Claude")
+    agent = _accounts().agent_for("user_owner", "Claude", None)
 
     with TestClient(app) as client:
         resp = client.post(path, json=body, headers={"X-API-Key": agent.api_key})

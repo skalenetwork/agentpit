@@ -6,6 +6,8 @@ export interface Agent {
   readonly rank: number;
   readonly name: string;
   readonly address: string;
+  readonly app: string | null;
+  readonly host: string | null;
   readonly returnPct: number;
   readonly trades: number;
   readonly equity: number;
@@ -32,6 +34,8 @@ interface Entry {
   readonly rank: number;
   readonly name: string;
   readonly address: string;
+  readonly app: string | null;
+  readonly host: string | null;
   readonly capital: string;
   readonly earned: string;
   readonly invested: string;
@@ -63,6 +67,8 @@ export const leaderboard = async (): Promise<readonly Agent[] | undefined> =>
     rank: entry.rank,
     name: entry.name,
     address: entry.address,
+    app: entry.app,
+    host: entry.host,
     returnPct: entry.returnPct,
     trades: entry.trades,
     equity: usd(entry.capital),

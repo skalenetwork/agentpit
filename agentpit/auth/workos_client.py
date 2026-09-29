@@ -11,7 +11,7 @@ what the migration script needs.
 import re
 from dataclasses import dataclass
 from typing import Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -23,6 +23,12 @@ class WorkOsUser:
     workos_user_id: str
     email: str
     email_verified: bool
+
+
+@dataclass(frozen=True)
+class ConnectApp:
+    name: str
+    host: str | None
 
 
 @dataclass(frozen=True)
@@ -76,7 +82,8 @@ class WorkOsClient(Protocol):
     def refresh_session(self, refresh_token: str) -> WorkOsSession:
         ...
 
-    def application_name(self, client_id: str) -> str:
+    def application(self, client_id: str) -> ConnectApp:
+        """The OAuth client's name, and the host of its default redirect URI."""
         ...
 
 
@@ -310,10 +317,10 @@ class RealWorkOsClient:
             {"grant_type": "refresh_token", "refresh_token": refresh_token}
         )
 
-    def application_name(self, client_id: str) -> str:
-        return self._request(
-            "GET", f"/connect/applications/{quote(client_id, safe='')}"
-        )["name"]
+    def application(self, client_id: str) -> ConnectApp:
+        app = self._request("GET", f"/connect/applications/{quote(client_id, safe='')}")
+        uris = sorted(app.get("redirect_uris", []), key=lambda r: not r.get("default"))
+        return ConnectApp(name=app["name"], host=urlsplit(uris[0]["uri"]).hostname if uris else None)
 
 
 class FakeWorkOsClient:
@@ -332,7 +339,7 @@ class FakeWorkOsClient:
         #: which a status code alone cannot show, since the round trip and the
         #: local rejection both end in the same 4xx.
         self.authenticate_calls = 0
-        self.applications: dict[str, str] = {}
+        self.applications: dict[str, ConnectApp] = {}
 
     def create_user(self, *, email: str, password_hash: str | None) -> WorkOsUser:
         existing = self.find_user_by_email(email)
@@ -418,7 +425,7 @@ class FakeWorkOsClient:
                 )
         raise WorkOsError("WorkOS rejected the refresh token")
 
-    def application_name(self, client_id: str) -> str:
+    def application(self, client_id: str) -> ConnectApp:
         return self.applications[client_id]
 
 

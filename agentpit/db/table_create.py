@@ -189,6 +189,7 @@ class TableCreate:
             ("WORKOS_USER_ID", "TEXT"),
             ("OWNER_WORKOS_ID", "TEXT"),
             ("AGENT_APP", "TEXT"),
+            ("AGENT_HOST", "TEXT"),
         ]
         for col, col_type in additions:
             conn.execute(

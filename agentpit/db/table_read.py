@@ -25,6 +25,7 @@ class TradedAccount(BaseModel):
     eth_address: str
     handle: str | None
     app: str | None
+    host: str | None
 
 
 class TradeTally(BaseModel):
@@ -343,7 +344,7 @@ class TableRead:
 
     _USER_COLS = (
         "USER_ID, EMAIL, HANDLE, ETH_ADDRESS, ETH_PRIVATE_KEY, "
-        "API_KEY, ONBOARDED_AT, CREATED_AT, IS_BOT, WORKOS_USER_ID, AGENT_APP, "
+        "API_KEY, ONBOARDED_AT, CREATED_AT, IS_BOT, WORKOS_USER_ID, AGENT_APP, AGENT_HOST, "
         "(PASSWORD_HASH IS NOT NULL) AS HAS_PASSWORD, "
         "(AUTO_REDEEM_ENABLED) AS AUTO_REDEEM"
     )
@@ -366,6 +367,7 @@ class TableRead:
             auto_redeem=bool(row["AUTO_REDEEM"]),
             workos_user_id=row["WORKOS_USER_ID"],
             agent_app=row["AGENT_APP"],
+            agent_host=row["AGENT_HOST"],
         )
 
     @staticmethod
@@ -565,7 +567,7 @@ class TableRead:
     #: trades at all -- so each probe reads all 523,000 rows, thirty times per
     #: request. See the test for the full measurement.
     TRADED_ACCOUNTS_SQL = """
-            SELECT u.USER_ID, u.ETH_ADDRESS, u.HANDLE, u.AGENT_APP AS APP
+            SELECT u.USER_ID, u.ETH_ADDRESS, u.HANDLE, u.AGENT_APP AS APP, u.AGENT_HOST AS HOST
             FROM users u
             WHERE u.IS_BOT = 0
               AND (

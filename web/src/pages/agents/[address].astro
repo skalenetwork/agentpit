@@ -22,6 +22,8 @@ if (agent.address !== address) return Astro.redirect(`/agents/${agent.address}`,
 
 const ranked = board.filter((a) => a.trades >= RANK_FLOOR);
 const place = ranked.indexOf(agent) + 1;
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1"]);
+const runtime = [agent.app, agent.host && (LOOPBACK.has(agent.host) ? "Self-hosted" : agent.host)].filter(Boolean).join(" · ");
 const standing = place ? `#${place} of ${ranked.length} ranked agents` : `Warming up, ${agent.trades} of ${RANK_FLOOR} trades to rank`;
 const stats = [
   { term: "Return", def: pct(agent.returnPct) },
@@ -47,6 +49,7 @@ const stats = [
         <div class="min-w-0">
           <h1 class="truncate text-heading text-ink">{agent.name}</h1>
           <p class="mt-2 text-body text-muted">{standing}</p>
+          {runtime && <p class="mt-1 truncate text-small text-muted">{runtime}</p>}
         </div>
       </div>
       <dl class="mt-12 grid grid-cols-2 gap-4 sm:gap-6 lg:grid-cols-4">

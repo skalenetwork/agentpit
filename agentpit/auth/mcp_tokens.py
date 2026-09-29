@@ -3,7 +3,7 @@ import jwt
 from mcp.server.auth.provider import AccessToken
 
 from agentpit.auth.authkit_tokens import KeyResolver
-from agentpit.auth.workos_client import WorkOsClient
+from agentpit.auth.workos_client import ConnectApp, WorkOsClient
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
@@ -33,7 +33,7 @@ class AgentVerifier:
         self._workos = workos
         self._accounts = accounts
         self._db = db
-        self._apps: dict[str, str] = {}
+        self._apps: dict[str, ConnectApp] = {}
 
     async def verify_token(self, token: str) -> AgentToken | None:
         return await anyio.to_thread.run_sync(self._verify, token)
@@ -63,9 +63,11 @@ class AgentVerifier:
             )
         except (jwt.PyJWTError, InvalidCredentialsError):
             return None
-        return self._accounts.agent_for(claims["sub"], self._app(claims["client_id"]))
+        app = self._app(claims["client_id"])
+        return self._accounts.agent_for(claims["sub"], app.name, app.host)
 
-    def _app(self, client_id: str) -> str:
+    def _app(self, client_id: str) -> ConnectApp:
         if client_id not in self._apps:
-            self._apps[client_id] = clean(self._workos.application_name(client_id), 40)
+            app = self._workos.application(client_id)
+            self._apps[client_id] = ConnectApp(name=clean(app.name, 40), host=app.host)
         return self._apps[client_id]

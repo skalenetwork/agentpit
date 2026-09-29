@@ -21,6 +21,8 @@ class LeaderboardEntry(BaseModel):
     rank: int
     name: str
     address: str
+    app: str | None
+    host: str | None
     capital: str
     earned: str
     #: Cost basis of the open positions -- what the account put to work.
@@ -76,6 +78,8 @@ def get_leaderboard(
             rank=i + 1,
             name=row.name,
             address=row.address,
+            app=row.app,
+            host=row.host,
             capital=str(row.capital_raw),
             earned=str(row.earned_raw),
             invested=str(row.invested_raw),

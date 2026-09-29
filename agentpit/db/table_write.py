@@ -25,6 +25,7 @@ class TableWrite:
         google_sub: str | None = None,
         owner_workos_id: str | None = None,
         agent_app: str | None = None,
+        agent_host: str | None = None,
     ) -> tuple[str, LocalAccount, str]:
         """Create a new user with an auto-generated eth keypair.
 
@@ -44,8 +45,8 @@ class TableWrite:
                 USER_ID, EMAIL, PASSWORD_HASH, HANDLE,
                 ETH_ADDRESS, ETH_PRIVATE_KEY, API_KEY,
                 ONBOARDED_AT, CREATED_AT, GOOGLE_SUB,
-                OWNER_WORKOS_ID, AGENT_APP
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
+                OWNER_WORKOS_ID, AGENT_APP, AGENT_HOST
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
             """,
             (
                 user_id,
@@ -59,9 +60,14 @@ class TableWrite:
                 google_sub,
                 owner_workos_id,
                 agent_app,
+                agent_host,
             ),
         )
         return user_id, acct, api_key
+
+    @staticmethod
+    def set_agent_host(db: psycopg.Connection, user_id: str, host: str | None) -> None:
+        db.execute("UPDATE users SET AGENT_HOST = %s WHERE USER_ID = %s", (host, user_id))
 
     @staticmethod
     def mark_user_onboarded(db: psycopg.Connection, user_id: str) -> None:

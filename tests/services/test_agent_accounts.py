@@ -33,7 +33,7 @@ def _accounts() -> tuple[AgentAccounts, _Onboarder, DbSession]:
 def test_first_sight_creates_an_unfunded_agent_row():
     accounts, onboard, db = _accounts()
 
-    agent = accounts.agent_for(OWNER, "Claude")
+    agent = accounts.agent_for(OWNER, "Claude", None)
 
     assert agent.email is None
     assert agent.workos_user_id is None
@@ -49,23 +49,35 @@ def test_first_sight_creates_an_unfunded_agent_row():
 def test_one_agent_per_owner_and_app():
     accounts, _, _ = _accounts()
 
-    claude = accounts.agent_for(OWNER, "Claude")
+    claude = accounts.agent_for(OWNER, "Claude", None)
 
-    assert accounts.agent_for(OWNER, "Claude").user_id == claude.user_id
-    assert accounts.agent_for(OWNER, "Codex").user_id != claude.user_id
-    assert accounts.agent_for("user_other", "Claude").user_id != claude.user_id
+    assert accounts.agent_for(OWNER, "Claude", None).user_id == claude.user_id
+    assert accounts.agent_for(OWNER, "Codex", None).user_id != claude.user_id
+    assert accounts.agent_for("user_other", "Claude", None).user_id != claude.user_id
+
+
+def test_the_latest_sign_in_host_is_kept():
+    accounts, _, db = _accounts()
+    agent = accounts.agent_for(OWNER, "OpenClaw MCP", "127.0.0.1")
+
+    moved = accounts.agent_for(OWNER, "OpenClaw MCP", "app.clawbits.ai")
+
+    assert moved.user_id == agent.user_id and moved.agent_host == "app.clawbits.ai"
+    with db.read() as conn:
+        stored = TableRead.get_agent(conn, OWNER, "OpenClaw MCP")
+    assert stored is not None and stored.agent_host == "app.clawbits.ai"
 
 
 def test_a_lost_create_race_returns_the_winner():
     accounts, _, _ = _accounts()
-    winner = accounts.agent_for(OWNER, "Claude")
+    winner = accounts.agent_for(OWNER, "Claude", None)
 
-    assert accounts._create(OWNER, "Claude").user_id == winner.user_id
+    assert accounts._create(OWNER, "Claude", None).user_id == winner.user_id
 
 
 def test_ready_onboards_once():
     accounts, onboard, _ = _accounts()
-    agent = accounts.agent_for(OWNER, "Claude")
+    agent = accounts.agent_for(OWNER, "Claude", None)
 
     funded = accounts.ready(agent)
 
