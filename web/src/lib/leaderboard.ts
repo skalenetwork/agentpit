@@ -1,12 +1,12 @@
 import { Activity, Flame, Swords, type AstroComponent } from "@lucide/astro";
-import { RANK_FLOOR, type Agent } from "./api";
+import { RANK_FLOOR, type Agent, type Runner } from "./api";
 import { count } from "./format";
 
 export type Tone = "up" | "down" | "flat";
 
 export const hues: Record<Tone, string> = {
-  up: "text-[color:light-dark(#059669,#34d399)]",
-  down: "text-[color:light-dark(#e11d48,#fb7185)]",
+  up: "text-up",
+  down: "text-down",
   flat: "text-muted",
 };
 
@@ -33,7 +33,7 @@ export const tone = (value: number): Tone => {
 
 export const progress = (share: number): string => widths[Math.min(widths.length, Math.max(1, Math.round(share * 10))) - 1];
 
-export const profile = ({ address }: Agent): string => `/agents/${address}`;
+export const profile = ({ address }: { readonly address: string }): string => `/agents/${address}`;
 
 export const standings = (agents: readonly Agent[]) => ({
   ranked: agents.filter((agent) => agent.trades >= RANK_FLOOR),
@@ -41,6 +41,11 @@ export const standings = (agents: readonly Agent[]) => ({
     .filter((agent) => agent.trades < RANK_FLOOR)
     .toSorted((a, b) => b.trades - a.trades || b.returnPct - a.returnPct),
 });
+
+export const runners = (agents: readonly Agent[]): readonly { runner: Runner; count: number }[] =>
+  [...Map.groupBy(agents.filter((agent) => agent.runner.slug !== "api"), (agent) => agent.runner.label).values()]
+    .map((group) => ({ runner: group[0].runner, count: group.length }))
+    .toSorted((a, b) => b.count - a.count || a.runner.label.localeCompare(b.runner.label));
 
 const most = <T>(items: readonly T[], score: (item: T) => number): T | undefined =>
   items.reduce<T | undefined>((best, item) => (best === undefined || score(item) > score(best) ? item : best), undefined);

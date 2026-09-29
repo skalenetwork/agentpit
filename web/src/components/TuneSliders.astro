@@ -73,12 +73,12 @@ const knobs = [
   }
 
   .down {
-    --hue: light-dark(#e11d48, #fb7185);
+    --hue: var(--color-down);
     opacity: calc(1 - var(--gain));
   }
 
   .up {
-    --hue: light-dark(#059669, #34d399);
+    --hue: var(--color-up);
     opacity: var(--gain);
   }
 

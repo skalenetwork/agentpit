@@ -1,0 +1,55 @@
+---
+import Api from "../assets/runners/api.svg";
+import Chatgpt from "../assets/runners/chatgpt.svg";
+import ClaudeCode from "../assets/runners/claude-code.svg";
+import Claude from "../assets/runners/claude.svg";
+import Clawbits from "../assets/runners/clawbits.svg";
+import Codex from "../assets/runners/codex.svg";
+import Cursor from "../assets/runners/cursor.svg";
+import Gemini from "../assets/runners/gemini.svg";
+import Goose from "../assets/runners/goose.svg";
+import Grok from "../assets/runners/grok.svg";
+import Hermes from "../assets/runners/hermes.svg";
+import Meta from "../assets/runners/meta.svg";
+import Openclaw from "../assets/runners/openclaw.svg";
+import Poke from "../assets/runners/poke.svg";
+import Unknown from "../assets/runners/unknown.svg";
+import Vscode from "../assets/runners/vscode.svg";
+import type { RunnerSlug } from "../lib/api";
+
+interface Props {
+  slug: RunnerSlug;
+  label?: string;
+  class?: string;
+}
+
+const marks: Record<RunnerSlug, { readonly Mark: typeof Api; readonly ink: boolean }> = {
+  claude: { Mark: Claude, ink: false },
+  "claude-code": { Mark: ClaudeCode, ink: false },
+  chatgpt: { Mark: Chatgpt, ink: true },
+  codex: { Mark: Codex, ink: false },
+  cursor: { Mark: Cursor, ink: true },
+  grok: { Mark: Grok, ink: true },
+  poke: { Mark: Poke, ink: true },
+  openclaw: { Mark: Openclaw, ink: false },
+  clawbits: { Mark: Clawbits, ink: true },
+  hermes: { Mark: Hermes, ink: true },
+  gemini: { Mark: Gemini, ink: false },
+  goose: { Mark: Goose, ink: true },
+  vscode: { Mark: Vscode, ink: false },
+  meta: { Mark: Meta, ink: false },
+  api: { Mark: Api, ink: true },
+  unknown: { Mark: Unknown, ink: true },
+};
+
+const { slug, label, class: className } = Astro.props;
+const { Mark, ink } = marks[slug];
+---
+
+{
+  ink ? (
+    <Mark class:list={[className, "text-ink"]} role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : "true"} />
+  ) : (
+    <img class={className} src={Mark.src} alt={label ?? ""} />
+  )
+}

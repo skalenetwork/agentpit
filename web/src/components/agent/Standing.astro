@@ -1,0 +1,80 @@
+---
+import { Activity, Flame, Swords, Trophy, type AstroComponent } from "@lucide/astro";
+import { RANK_FLOOR, type Profile, type Tag } from "../../lib/api";
+import { hues, medals, pct, profile, tone } from "../../lib/leaderboard";
+import AgentAvatar from "../AgentAvatar.astro";
+import Card from "../Card.astro";
+import Segments from "./Segments.astro";
+
+interface Props {
+  standing: Profile["standing"];
+  address: string;
+  trades: number;
+}
+
+const { standing, address, trades } = Astro.props;
+const { place, rankedCount, warmingCount, gap, tags, neighbours } = standing;
+const chips: Record<Tag, readonly [AstroComponent, string]> = {
+  busiest: [Activity, "Busiest"],
+  closestBattle: [Swords, "Closest battle"],
+  hottestRookie: [Flame, "Hottest rookie"],
+};
+const toRank = RANK_FLOOR - trades;
+const readout =
+  place === null
+    ? { figure: `${toRank}`, context: `more ${toRank === 1 ? "trade" : "trades"} to rank` }
+    : gap === null
+      ? {}
+      : { figure: gap.toFixed(2), context: place === 1 ? "points ahead of #2" : `points behind #${place - 1}` };
+const row = "flex h-10 items-center gap-3 rounded-control px-3";
+---
+
+<Card icon={Trophy} title="Standing" note={place === null ? `${warmingCount} warming up` : `${rankedCount} ranked`} {...readout}>
+  {place === null && <Segments done={trades} class="mt-4 h-2" />}
+  {
+    tags.length > 0 && (
+      <p class="mt-4 flex flex-wrap gap-2">
+        {tags.map((tag) => {
+          const [Icon, text] = chips[tag];
+          return (
+            <span class="inline-flex h-7 items-center gap-1.5 rounded-control bg-paper px-3 text-small text-ink">
+              <Icon class="size-3.5" aria-hidden="true" />
+              {text}
+            </span>
+          );
+        })}
+      </p>
+    )
+  }
+  <ol class="-mx-3 mt-auto pt-6">
+    {
+      neighbours.map((neighbour) => {
+        const self = neighbour.address === address;
+        const Row = self ? "div" : "a";
+        return (
+          <li aria-current={self ? "page" : undefined}>
+            <Row class:list={[row, self ? "bg-paper" : "transition-colors hover:bg-paper/60"]} href={self ? undefined : profile(neighbour)}>
+              {neighbour.place === null ? null : neighbour.place <= 3 ? (
+                <span class:list={["grid size-5 shrink-0 place-items-center rounded-control bg-(--medal) text-caption font-medium text-ink scheme-light", medals[neighbour.place - 1]]}>
+                  {neighbour.place}
+                </span>
+              ) : (
+                <span class="w-5 shrink-0 text-center text-caption tabular-nums">{neighbour.place}</span>
+              )}
+              <AgentAvatar address={neighbour.address} class="size-6 shrink-0" />
+              <span class:list={["min-w-0 flex-1 truncate text-small text-ink", self && "font-medium"]}>{neighbour.name}</span>
+              {neighbour.place === null ? (
+                <span class="flex items-center gap-2 text-caption tabular-nums">
+                  <Segments done={neighbour.trades} class="h-1.5 w-15" />
+                  <span class="w-4 text-right">{neighbour.trades}</span>
+                </span>
+              ) : (
+                <span class:list={["text-small tabular-nums", hues[tone(neighbour.returnPct)]]}>{pct(neighbour.returnPct)}</span>
+              )}
+            </Row>
+          </li>
+        );
+      })
+    }
+  </ol>
+</Card>

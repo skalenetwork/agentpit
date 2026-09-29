@@ -254,6 +254,9 @@ class Settings(BaseSettings):
     mcp_url: str = Field(
         default="https://api.agentpit.dev/mcp", validation_alias="AGENTPIT_MCP_URL"
     )
+    landing_url: str = Field(
+        default="https://agentpit.dev", validation_alias="AGENTPIT_LANDING_URL"
+    )
 
     leaderboard_interval_seconds: int = Field(
         default=300, validation_alias="AGENTPIT_LEADERBOARD_INTERVAL_SECONDS"

@@ -1,0 +1,57 @@
+---
+import { Layers } from "@lucide/astro";
+import type { Profile } from "../../lib/api";
+import { cents, dollars, percent, signedDollars } from "../../lib/format";
+import { hues, tone } from "../../lib/leaderboard";
+import Card from "../Card.astro";
+import MarketRow from "./MarketRow.astro";
+import Outcome from "./Outcome.astro";
+
+interface Props {
+  positions: Profile["positions"];
+}
+
+const { count, mark, sellsFor, top } = Astro.props.positions;
+const kept = mark ? sellsFor / mark : 0;
+---
+
+{
+  count ? (
+    <Card icon={Layers} title="Open positions" note={count > top.length ? `Top ${top.length} of ${count}` : `${count} open`} figure={dollars(mark)} context="at mark">
+      <svg class="mt-4 h-2 w-full" aria-hidden="true">
+        <rect width="100%" height="100%" rx="4" class="fill-line" />
+        <rect width={`${+(kept * 100).toFixed(1)}%`} height="100%" rx="4" class="fill-ink" />
+      </svg>
+      <p class="mt-2 flex justify-between text-caption tabular-nums">
+        <span>Sells for <span class="text-ink">{dollars(sellsFor)}</span> now</span><span>{percent(kept)}</span>
+      </p>
+      <ul class="mt-auto pt-6">
+        {
+          top.map((position) => {
+            const share = position.value ? position.sellsFor / position.value : 1;
+            return (
+              <li class="border-t border-line py-4 first:border-t-0 first:pt-0 last:pb-0">
+                <MarketRow title={position.title} category={position.category}>
+                  <Fragment slot="what">
+                    <Outcome outcome={position.outcome} />
+                    {position.avgPrice ? `${cents(position.avgPrice)} → ${cents(position.curPrice)}` : `Split, now ${cents(position.curPrice)}`}
+                  </Fragment>
+                  <Fragment slot="value">
+                    <p class="text-small text-ink">
+                      {dollars(position.value)} <span class={hues[tone(position.pnl)]}>{signedDollars(position.pnl)}</span>
+                    </p>
+                    {share < 0.9 && <p class:list={["mt-1 text-caption", share < 0.5 && "text-ink"]}>Sells for {dollars(position.sellsFor)}</p>}
+                  </Fragment>
+                </MarketRow>
+              </li>
+            );
+          })
+        }
+      </ul>
+    </Card>
+  ) : (
+    <Card icon={Layers} title="Open positions">
+      <p class="mt-2.5 text-body">Nothing open.</p>
+    </Card>
+  )
+}

@@ -3,6 +3,7 @@ import time
 from dataclasses import dataclass
 
 from agentpit.datastructures.activity_wire import ActivityWire
+from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.match_leg import legs_for_user
 from agentpit.datastructures.position_wire import PositionWire
@@ -10,7 +11,7 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.polymarket.format import price_to_float, size_to_float
-from agentpit.polymarket.resolve import resolve_by_token_id
+from agentpit.polymarket.resolve import ResolvedOutcome, resolve_by_token_id
 
 
 @dataclass(frozen=True)
@@ -426,21 +427,8 @@ class AccountService:
             last_sell_time=last_sell_time,
         )
 
-    def value_and_cost(self, eth_address: str) -> tuple[float, float]:
-        """`(market value, cost basis)` of the open positions, in dollars.
-
-        Both come from ONE walk. Valuing an account reads every touched market
-        on chain, so a caller that needs both -- the leaderboard does -- must
-        not ask twice.
-        """
-        positions = self.list_positions(eth_address)
-        return (
-            sum(p.currentValue for p in positions),
-            sum(p.initialValue for p in positions),
-        )
-
     def total_value(self, eth_address: str) -> list[dict]:
-        value, _cost = self.value_and_cost(eth_address)
+        value = sum(p.currentValue for p in self.list_positions(eth_address))
         return [{"user": eth_address, "value": value}]
 
     def list_activity(
@@ -452,18 +440,20 @@ class AccountService:
         limit: int = 100,
         offset: int = 0,
     ) -> list[ActivityWire]:
+        cap = None if type_filter or market else offset + limit
         with self._db.read() as conn:
             user = TableRead.get_user_by_eth_address(conn, eth_address)
             if user is None:
                 return []
             acts: list[ActivityWire] = AccountService._trade_activity(
-                conn, user.api_key, eth_address
+                conn, user.api_key, eth_address, cap
             )
             tx_rows = conn.execute(
                 "SELECT TRANSACTION_TYPE, MARKET_ID, DETAILS, "
                 "EXTRACT(EPOCH FROM TIMESTAMP)::bigint AS TS "
-                "FROM transactions WHERE API_KEY = %s",
-                (user.api_key,),
+                "FROM transactions WHERE API_KEY = %s "
+                "ORDER BY TIMESTAMP DESC LIMIT %s",
+                (user.api_key, cap),
             ).fetchall()
 
             # One account fills the same handful of markets repeatedly, so the
@@ -478,11 +468,12 @@ class AccountService:
                     slug_cache[mkt.event_id] = found.get(mkt.event_id, "")
                 return slug_cache[mkt.event_id]
 
+            markets: dict[int | None, Market | None] = {None: None}
             for r in tx_rows:
-                mkt = (
-                    TableRead.read_market(conn, r["MARKET_ID"])
-                    if r["MARKET_ID"] is not None else None
-                )
+                market_id = r["MARKET_ID"]
+                if market_id not in markets:
+                    markets[market_id] = TableRead.read_market(conn, market_id)
+                mkt = markets[market_id]
                 details = json.loads(r["DETAILS"]) if r["DETAILS"] else {}
                 amount = details.get("amount", details.get("collateral_amount", 0))
                 size = (amount or 0) / 1_000_000
@@ -507,7 +498,9 @@ class AccountService:
         return acts[offset:offset + limit]
 
     @staticmethod
-    def _trade_activity(conn, api_key: str, eth_address: str) -> "list[ActivityWire]":
+    def _trade_activity(
+        conn, api_key: str, eth_address: str, limit: int | None = None
+    ) -> "list[ActivityWire]":
         """One ActivityWire per leg this account holds.
 
         A NORMAL self-match yields two rows, a buy and a sell — that is the
@@ -518,12 +511,14 @@ class AccountService:
             "SELECT MARKET, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, SIDE, PRICE, "
             "TRADE_SIZE, MATCH_TIME, TRANSACTION_HASH, TAKER_API_KEY, "
             "MAKER_API_KEY FROM trades "
-            "WHERE (TAKER_API_KEY = %s OR MAKER_API_KEY = %s) AND STATUS != 'FAILED'",
-            (api_key, api_key),
+            "WHERE (TAKER_API_KEY = %s OR MAKER_API_KEY = %s) AND STATUS != 'FAILED' "
+            "ORDER BY MATCH_TIME DESC LIMIT %s",
+            (api_key, api_key, limit),
         ).fetchall()
 
         acts: list[ActivityWire] = []
         slug_cache: dict[int, str] = {}
+        outcomes: dict[str, ResolvedOutcome | None] = {}
 
         def event_slug_of(mkt) -> str:
             if mkt is None or mkt.event_id is None:
@@ -538,7 +533,9 @@ class AccountService:
                 # Resolve the token THIS leg moved, not the row's ASSET_ID:
                 # they differ for a MINT/MERGE maker, and the outcome label
                 # and index have to follow the corrected token.
-                resolved = resolve_by_token_id(conn, leg.token_id)
+                if leg.token_id not in outcomes:
+                    outcomes[leg.token_id] = resolve_by_token_id(conn, leg.token_id)
+                resolved = outcomes[leg.token_id]
                 mkt = resolved.market if resolved else None
                 price = price_to_float(leg.price_micro)
                 size = size_to_float(leg.size_micro)

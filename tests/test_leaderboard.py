@@ -1,9 +1,14 @@
 from datetime import date
 
+import pytest
+
 from agentpit.config import Settings
+from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.table_read import DailyClose, TableRead, TradeTally
 from agentpit.db.table_write import TableWrite
-from agentpit.services.leaderboard_service import LeaderboardService
+from agentpit.domain.runner import Runner, runner_for
+from agentpit.services import leaderboard_service
+from agentpit.services.leaderboard_service import LeaderboardService, daily_trend
 from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 
@@ -149,50 +154,65 @@ class _FakeOnchainBalance:
 
 
 class _FakeAccounts:
-    """`value_and_cost` keyed by address. An address with no positions -- or
-    one never given a value -- reads back as (0, 0), like the real
-    AccountService does for an account holding nothing.
-
-    `costs` is optional so the tests that only care about capital stay short.
-    """
+    """Open and closed positions keyed by address; an address never given any
+    holds nothing, like the real AccountService for an account that never traded."""
 
     def __init__(
         self,
-        values: dict[str, float] | None = None,
-        costs: dict[str, float] | None = None,
+        positions: dict[str, list[PositionWire]] | None = None,
+        closed: dict[str, list[PositionWire]] | None = None,
     ):
-        self._values = values or {}
-        self._costs = costs or {}
+        self._positions = positions or {}
+        self._closed = closed or {}
 
-    def value_and_cost(self, address: str) -> tuple[float, float]:
-        return (self._values.get(address, 0.0), self._costs.get(address, 0.0))
+    def list_positions(self, address: str) -> list[PositionWire]:
+        return self._positions.get(address, [])
 
-    def total_value(self, address: str) -> list[dict]:
-        if address not in self._values:
-            return []
-        return [{"user": address, "value": self._values[address]}]
+    def list_closed_positions(self, address: str) -> list[PositionWire]:
+        return self._closed.get(address, [])
 
 
-def test_capital_raw_sums_cash_and_position_value():
-    onchain = _FakeOnchainBalance({"0xabc": 30_000_000_000})
-    accounts = _FakeAccounts({"0xabc": 70_000.0})
+def _worth(value: float, cost: float = 0.0) -> list[PositionWire]:
+    return [PositionWire(currentValue=value, initialValue=cost)]
+
+
+def test_valuing_an_account_keeps_what_it_holds_for_the_profile():
+    closed = [PositionWire(cashPnl=12.5)]
     service = LeaderboardService(
-        db=None, onchain=onchain, accounts=accounts, settings=Settings()
+        db=None,
+        onchain=_FakeOnchainBalance({"0xabc": 30_000_000_000}),
+        accounts=_FakeAccounts({"0xabc": _worth(70_000.0, 50_000.0)}, {"0xabc": closed}),
+        settings=Settings(),
     )
-    assert service._capital_invested_unrealized_raw("0xabc") == (
+    held = service.value_account("0xabc", 1_700_000_000)
+    assert (held.valued_at, held.cash_raw + held.value_raw, held.cost_raw) == (
+        1_700_000_000,
         100_000_000_000,
-        0,
-        70_000_000_000,
+        50_000_000_000,
     )
+    assert held.closed == closed
+    assert service.holdings("0xabc") is leaderboard_service._holdings["0xabc"] is held
 
 
-def test_capital_raw_with_no_positions_is_just_cash():
-    onchain = _FakeOnchainBalance({"0xabc": 42_000_000})
-    accounts = _FakeAccounts()  # no address has ever been valued
+def test_holdings_the_pass_has_not_reached_are_valued_once_on_demand():
     service = LeaderboardService(
-        db=None, onchain=onchain, accounts=accounts, settings=Settings()
+        db=None,
+        onchain=_FakeOnchainBalance({"0xabc": 42_000_000}),
+        accounts=_FakeAccounts(),
+        settings=Settings(),
     )
-    assert service._capital_invested_unrealized_raw("0xabc") == (42_000_000, 0, 0)
+    held = service.holdings("0xabc")
+    assert (held.cash_raw, held.value_raw, held.cost_raw, held.positions) == (42_000_000, 0, 0, [])
+    assert service.holdings("0xabc") is held
+
+
+def test_the_daily_trend_starts_at_the_first_close_and_carries_a_missing_day():
+    closes = [
+        DailyClose(day=date(2026, 1, 2), capital=101, deposited=100),
+        DailyClose(day=date(2026, 1, 4), capital=97, deposited=100),
+    ]
+    assert daily_trend(closes, date(2026, 1, 6)) == (date(2026, 1, 2), ["1", "1", "-3", "-3", "-3"])
+    assert daily_trend([], date(2026, 1, 6)) == (None, [])
 
 
 def test_take_snapshot_writes_one_row_per_traded_account_with_deposited():
@@ -210,7 +230,7 @@ def test_take_snapshot_writes_one_row_per_traded_account_with_deposited():
 
     db = fresh_test_db()
     onchain = _FakeOnchainBalance({acct.address: 30_000_000_000})
-    accounts = _FakeAccounts({acct.address: 70_000.0})
+    accounts = _FakeAccounts({acct.address: _worth(70_000.0)})
     service = LeaderboardService(db, onchain, accounts, Settings())
 
     written = service.take_snapshot(1_700_001_000)
@@ -634,7 +654,7 @@ def test_the_snapshot_records_what_the_account_put_to_work():
         onchain=_FakeOnchainBalance({acct.address: 30_000_000}),
         # Positions worth $70 that cost $50: capital is cash + value, and
         # invested is the cost -- they must not be confused for each other.
-        accounts=_FakeAccounts({acct.address: 70.0}, {acct.address: 50.0}),
+        accounts=_FakeAccounts({acct.address: _worth(70.0, 50.0)}),
         settings=Settings(),
     )
     assert service.take_snapshot(1_700_001_000) == 1
@@ -693,3 +713,23 @@ def test_a_snapshot_written_before_the_column_existed_reads_as_zero_invested():
     latest = TableRead.latest_account_snapshots(conn)
     conn.close()
     assert latest[user_id] == (10, 20, 0, 0)
+
+
+@pytest.mark.parametrize(
+    ("app", "host", "slug", "label", "shown"),
+    [
+        ("Cursor", "127.0.0.1", "cursor", "Cursor", "Self-hosted"),
+        ("Cursor", None, "grok", "Grok Bot", None),
+        ("Cursor", "cursor.com", "grok", "Grok Bot", None),
+        ("OpenClaw MCP", "app.clawbits.ai", "clawbits", "Clawbits", None),
+        ("OpenClaw MCP", "localhost", "openclaw", "OpenClaw", "Self-hosted"),
+        ("Codex", "::1", "codex", "Codex", "Self-hosted"),
+        ("Claude", "claude.ai", "claude", "Claude", None),
+        ("ChatGPT", "chatgpt.com", "chatgpt", "ChatGPT", None),
+        ("Hermes Agent", "hermes.example.org", "hermes", "Hermes Agent", "hermes.example.org"),
+        (None, None, "api", "API", None),
+        ("Some Bot", "somebot.dev", "unknown", "Some Bot", "somebot.dev"),
+    ],
+)
+def test_the_runner_comes_from_the_oauth_client_and_its_redirect_host(app, host, slug, label, shown):
+    assert runner_for(app, host) == Runner(slug=slug, label=label, host=shown)

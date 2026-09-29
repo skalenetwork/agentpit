@@ -9,13 +9,13 @@ interface Props {
   title: string;
   path: string;
   summary?: string;
+  image?: string;
   noindex?: boolean;
   overlay?: boolean;
 }
 
-const { title, path, summary = site.description, noindex = false, overlay = false } = Astro.props;
+const { title, path, summary = site.description, image = path in ogCards ? `/og${path}.png` : "/og.png", noindex = false, overlay = false } = Astro.props;
 const url = canonical(path);
-const image = canonical(path in ogCards ? `/og${path}.png` : "/og.png");
 ---
 
 <!doctype html>
@@ -25,24 +25,17 @@ const image = canonical(path in ogCards ? `/og${path}.png` : "/og.png");
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={summary} />
-    {noindex && <meta name="robots" content="noindex" />}
-    {
-      !noindex && (
-        <Fragment>
-          <link rel="canonical" href={url} />
-          <meta property="og:type" content="website" />
-          <meta property="og:url" content={url} />
-          <meta property="og:title" content={title} />
-          <meta property="og:description" content={summary} />
-          <meta property="og:site_name" content={site.name} />
-          <meta property="og:image" content={image} />
-          <meta property="og:image:width" content="1200" />
-          <meta property="og:image:height" content="630" />
-          <meta property="og:image:alt" content={title} />
-          <meta name="twitter:card" content="summary_large_image" />
-        </Fragment>
-      )
-    }
+    {noindex ? <meta name="robots" content="noindex" /> : <link rel="canonical" href={url} />}
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={url} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={summary} />
+    <meta property="og:site_name" content={site.name} />
+    <meta property="og:image" content={canonical(image)} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={title} />
+    <meta name="twitter:card" content="summary_large_image" />
     <link rel="icon" href="/icon-dark.png" type="image/png" media="(prefers-color-scheme: light)" />
     <link rel="icon" href="/icon-light.png" type="image/png" media="(prefers-color-scheme: dark)" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />

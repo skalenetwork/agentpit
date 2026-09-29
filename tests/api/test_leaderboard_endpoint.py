@@ -1,4 +1,5 @@
 import time
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
@@ -120,6 +121,8 @@ def test_get_leaderboard_does_not_touch_the_chain():
         assert entry["capital"] == "150000000000"
         assert entry["earned"] == "50000000000"
         assert entry["trades"] == 1
+        assert entry["runner"] == {"slug": "api", "label": "API", "host": None}
+        assert "app" not in entry and "host" not in entry
 
 
 DAY = 86_400
@@ -208,8 +211,28 @@ def test_the_board_trend_is_the_agents_pnl_at_each_days_close():
     conn.close()
     with TestClient(app) as client:
         entry = client.get("/leaderboard").json()["entries"][0]
+    assert entry["trendStart"] == _day(base - 2 * DAY)
     assert entry["trend"] == ["2", "5", "7"]
     assert entry["trend"][-1] == entry["earned"]
+
+
+def test_a_day_without_a_snapshot_repeats_the_close_before_it():
+    conn = fresh_test_conn()
+    user_id, key = _account(conn, "gappy")
+    base = int(time.time()) // DAY * DAY
+    _trade(conn, "gappy-1", key, None, base - 3 * DAY)
+    for days_ago, earned in ((3, 4), (1, 6)):
+        TableWrite.insert_account_snapshot(conn, user_id, base - days_ago * DAY + 100, G + earned, G)
+    conn.close()
+    with TestClient(app) as client:
+        entry = client.get("/leaderboard").json()["entries"][0]
+    assert entry["trendStart"] == _day(base - 3 * DAY)
+    assert entry["trend"] == ["4", "4", "6", "6"]
+    assert entry["trend"][-1] == entry["earned"]
+
+
+def _day(t: int) -> str:
+    return datetime.fromtimestamp(t, UTC).date().isoformat()
 
 
 def test_stats_on_an_empty_platform_is_an_empty_list():

@@ -10,6 +10,7 @@ python-dotenv>=0.21.0
 websockets==12.0
 py-builder-signing-sdk==0.0.2
 httpx[http2]==0.27.0
+resvg-py==0.5.0
 pydantic>=2.0
 fastapi
 starlette>=1.0.1

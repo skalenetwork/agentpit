@@ -83,7 +83,10 @@ const categories: Readonly<Record<string, AstroComponent>> = {
   Technology: Cpu,
   Science: FlaskConical,
   "Pop Culture": Sparkles,
+  Sports: Trophy,
 };
 
-export const marketIcon = ({ question, category }: { question: string; category?: string }): AstroComponent =>
-  subjects.find(([pattern]) => pattern.test(question))?.[1] ?? categories[category ?? ""] ?? CircleQuestionMark;
+export const categoryIcon = (category: string | null | undefined): AstroComponent => categories[category ?? ""] ?? CircleQuestionMark;
+
+export const marketIcon = ({ question, category }: { question: string; category?: string | null }): AstroComponent =>
+  subjects.find(([pattern]) => pattern.test(question))?.[1] ?? categoryIcon(category);

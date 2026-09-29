@@ -1,6 +1,7 @@
 ---
 import type { AstroComponent } from "@lucide/astro";
 import type { Tone } from "../../lib/leaderboard";
+import Card from "../Card.astro";
 import Readout from "./Readout.astro";
 
 interface Props {
@@ -13,11 +14,10 @@ interface Props {
   ticks: readonly { readonly at: number; readonly label: string }[];
 }
 
-const { icon: Icon, title, fig, ctx, tone, label, ticks } = Astro.props;
+const { icon, title, fig, ctx, tone, label, ticks } = Astro.props;
 ---
 
-<article class="relative rounded-panel bg-surface p-5 sm:p-7 sm:pb-6">
-  <h2 class="flex items-center gap-2 text-small"><Icon class="size-4 shrink-0 text-signal" aria-hidden="true" />{title}</h2>
+<Card class="relative sm:pb-6" icon={icon} title={title}>
   <Readout fig={fig} ctx={ctx} tone={tone}><slot name="note" /></Readout>
   <div class="isolate mt-9 grid h-34 grid-rows-1 *:[grid-area:1/1] sm:h-40" role="img" aria-label={label}>
     <div class="relative -z-10"><span class="absolute inset-x-0 bottom-0 h-px bg-muted/55"></span></div>
@@ -32,4 +32,4 @@ const { icon: Icon, title, fig, ctx, tone, label, ticks } = Astro.props;
       ))
     }
   </svg>
-</article>
+</Card>

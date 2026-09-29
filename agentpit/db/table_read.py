@@ -904,13 +904,13 @@ class TableRead:
         return {int(r["EVENT_ID"]): str(r["SLUG"]) for r in cur.fetchall()}
 
     @staticmethod
-    def categories_by_market_id(db: psycopg.Connection, market_ids: "list[int]") -> "dict[int, str]":
+    def categories_by_condition_id(db: psycopg.Connection, condition_ids: "list[str]") -> "dict[str, str]":
         rows = db.execute(
-            "SELECT m.MARKET_ID, e.CATEGORY FROM markets m JOIN events e ON e.EVENT_ID = m.EVENT_ID "
-            "WHERE m.MARKET_ID = ANY(%s) AND e.CATEGORY IS NOT NULL",
-            (market_ids,),
+            "SELECT m.CONDITION_ID, e.CATEGORY FROM markets m JOIN events e ON e.EVENT_ID = m.EVENT_ID "
+            "WHERE m.CONDITION_ID = ANY(%s) AND e.CATEGORY IS NOT NULL",
+            (condition_ids,),
         ).fetchall()
-        return {int(r["MARKET_ID"]): str(r["CATEGORY"]) for r in rows}
+        return {str(r["CONDITION_ID"]): str(r["CATEGORY"]) for r in rows}
 
     @staticmethod
     def get_event_by_slug(db: psycopg.Connection, slug: str) -> "Event | None":

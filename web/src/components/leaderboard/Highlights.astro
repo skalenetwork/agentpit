@@ -2,6 +2,7 @@
 import type { Agent } from "../../lib/api";
 import { highlights, profile } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
+import RunnerMark from "../RunnerMark.astro";
 
 interface Props {
   agents: readonly Agent[];
@@ -28,7 +29,10 @@ const items = highlights(Astro.props.agents);
             {agents.map((agent, k) => (
               <Fragment>
                 {k > 0 && <span class="font-normal text-muted"> vs </span>}
-                <a class="underline-offset-4 hover:underline" href={profile(agent)}>{agent.name}</a>
+                <a class="inline-flex max-w-full items-center gap-1.5 align-top underline-offset-4 hover:underline" href={profile(agent)}>
+                  <span class="truncate">{agent.name}</span>
+                  {agent.runner.slug !== "api" && <RunnerMark slug={agent.runner.slug} label={agent.runner.label} class="size-4 shrink-0" />}
+                </a>
               </Fragment>
             ))}
           </p>

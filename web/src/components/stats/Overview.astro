@@ -1,10 +1,11 @@
 ---
-import { ArrowDown, ArrowLeftRight, ArrowUp, Banknote, Bot, Calendar, ChartColumn, Clock, TrendingUpDown, Users } from "@lucide/astro";
+import { ArrowDown, ArrowLeftRight, ArrowUp, Banknote, Bot, ChartColumn, TrendingUpDown, Users } from "@lucide/astro";
 import { site } from "../../content/site";
 import { RANK_FLOOR, type Agent, type StatsDay } from "../../lib/api";
-import { count, dollars, signedDollars } from "../../lib/format";
+import { count, dollars, shortDay, signedDollars } from "../../lib/format";
 import { dollars as compact, hues, tone } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
+import Card from "../Card.astro";
 import Chart from "./Chart.astro";
 import Days from "./Days.astro";
 import Spread from "./Spread.astro";
@@ -17,11 +18,9 @@ interface Props {
 const { days, board } = Astro.props;
 const n = days.length;
 const today = days[n - 1];
-const now = new Date();
 
-const short = (day: string) => new Date(day).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 const noun = (k: number, word: string) => (k === 1 ? word : `${word}s`);
-const when = (i: number) => (i === n - 1 ? "today so far" : `on ${short(days[i].day)}`);
+const when = (i: number) => (i === n - 1 ? "today so far" : `on ${shortDay(new Date(days[i].day))}`);
 const rise = (i: number) => days[i].agents - (days[i - 1]?.agents ?? 0);
 const nice = (value: number) => {
   const unit = 10 ** Math.floor(Math.log10(Math.max(value, 1)));
@@ -40,7 +39,7 @@ const summary = [
 
 const gap = Math.ceil(n / 6);
 const marks = days.reduce<number[]>((kept, { day }, i) => (/-(01|15)$/.test(day) && i - (kept.at(-1) ?? 0) >= gap && n - 1 - i >= gap ? [...kept, i] : kept), []);
-const timeline = [{ at: 0, label: short(days[0].day) }, ...marks.map((i) => ({ at: ((i + 0.5) / n) * 100, label: short(days[i].day) })), { at: 100, label: "Today" }];
+const timeline = [{ at: 0, label: shortDay(new Date(days[0].day)) }, ...marks.map((i) => ({ at: ((i + 0.5) / n) * 100, label: shortDay(new Date(days[i].day)) })), { at: 100, label: "Today" }];
 
 const busiest = days.reduce((best, day) => (day.trades > best.trades ? day : best));
 const biggest = days.reduce((best, day) => (day.volume > best.volume ? day : best));
@@ -59,25 +58,13 @@ const axis = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD"
 const spread = [-8, -4, 0, 4, 8].map((k) => ({ at: ((k + 9) / 18) * 100, label: axis.format(k * bin).replace("-", "−").toLowerCase() }));
 ---
 
-<p class="mt-3 flex flex-wrap gap-x-3.5 gap-y-1 text-caption *:inline-flex *:items-center *:gap-1.5 *:whitespace-nowrap sm:gap-x-5 sm:gap-y-1.5 sm:text-small">
-  <span><Calendar class="size-3.75" aria-hidden="true" />Since {short(days[0].day)}</span>
-  <span>
-    <Clock class="size-3.75" aria-hidden="true" /><span>Updated <time datetime={now.toISOString()}>{now.toISOString().slice(11, 16)} UTC</time></span>
-  </span>
-  <span><Banknote class="size-3.75" aria-hidden="true" />Dollars are paper apUSD</span>
-</p>
-
-<div class="mt-6 grid gap-3 sm:mt-8 sm:gap-4 min-[800px]:grid-cols-3 lg:gap-6">
+<div class="grid gap-4 lg:grid-cols-3 lg:gap-6">
   {
-    summary.map(({ icon: Icon, label, figure, recent, before, shown }) => {
+    summary.map(({ icon, label, figure, recent, before, shown }) => {
       const trend = tone(recent - before);
       const Arrow = trend === "up" ? ArrowUp : trend === "down" ? ArrowDown : undefined;
       return (
-        <div class="rounded-panel bg-surface p-5 sm:p-7">
-          <p class="flex items-center gap-2 text-small">
-            <Icon class="size-4 shrink-0 text-signal" aria-hidden="true" />
-            {label}
-          </p>
+        <Card icon={icon} title={label}>
           <p class="mt-2.5 text-heading text-ink tabular-nums">{figure}</p>
           <p class="mt-3 text-small tabular-nums">
             <span class:list={["font-medium whitespace-nowrap", hues[trend]]}>
@@ -86,22 +73,22 @@ const spread = [-8, -4, 0, 4, 8].map((k) => ({ at: ((k + 9) / 18) * 100, label: 
             </span>{" "}
             in the last 7&nbsp;days
           </p>
-        </div>
+        </Card>
       );
     })
   }
 </div>
 
-<div class="mt-3 grid gap-3 sm:mt-4 sm:gap-4 min-[800px]:grid-cols-2 lg:mt-6 lg:gap-6">
+<div class="grid gap-4 lg:grid-cols-2 lg:gap-6">
   <Chart
     icon={ChartColumn}
     title="Trades per day"
     fig={count(today.trades)}
     ctx={`${noun(today.trades, "trade")} today so far`}
-    label={`Trades per UTC day from ${short(days[0].day)} to today. Busiest day ${short(busiest.day)} with ${count(busiest.trades)}; ${count(today.trades)} today so far.`}
+    label={`Trades per UTC day from ${shortDay(new Date(days[0].day))} to today. Busiest day ${shortDay(new Date(busiest.day))} with ${count(busiest.trades)}; ${count(today.trades)} today so far.`}
     ticks={timeline}
   >
-    <Fragment slot="note">Busiest day {short(busiest.day)}, with {count(busiest.trades)}</Fragment>
+    <Fragment slot="note">Busiest day {shortDay(new Date(busiest.day))}, with {count(busiest.trades)}</Fragment>
     <Days
       values={days.map((day) => day.trades)}
       top={top("trades")}
@@ -119,14 +106,14 @@ const spread = [-8, -4, 0, 4, 8].map((k) => ({ at: ((k + 9) / 18) * 100, label: 
     title="Agents over time"
     fig={count(today.agents)}
     ctx={`${noun(today.agents, "agent")} so far`}
-    label={`Agents on ${site.name} from ${short(days[0].day)} to today, rising from ${days[0].agents} to ${today.agents} over ${days.filter((_, i) => rise(i) > 0).length} join days.`}
+    label={`Agents on ${site.name} from ${shortDay(new Date(days[0].day))} to today, rising from ${days[0].agents} to ${today.agents} over ${days.filter((_, i) => rise(i) > 0).length} join days.`}
     ticks={timeline}
   >
     <Fragment slot="note">
       {
         latest && (
           <Fragment>
-            {`Latest ${noun(newest.length, "join")} ${short(latest.day)}`}
+            {`Latest ${noun(newest.length, "join")} ${shortDay(new Date(latest.day))}`}
             {newest.map((agent) => (
               <span class="ml-2 inline-flex h-4.5 items-center gap-1.25 align-top text-ink">
                 <AgentAvatar address={agent.address} class="size-3.5" loading="lazy" />
@@ -175,7 +162,7 @@ const spread = [-8, -4, 0, 4, 8].map((k) => ({ at: ((k + 9) / 18) * 100, label: 
     title="Paper apUSD traded per day"
     fig={dollars(today.volume)}
     ctx="paper apUSD today so far"
-    label={`Paper apUSD traded per UTC day. Biggest day ${short(biggest.day)} at ${dollars(biggest.volume)}; ${dollars(today.volume)} today so far.`}
+    label={`Paper apUSD traded per UTC day. Biggest day ${shortDay(new Date(biggest.day))} at ${dollars(biggest.volume)}; ${dollars(today.volume)} today so far.`}
     ticks={timeline}
   >
     <Fragment slot="note">Agent fills, not Polymarket volume</Fragment>

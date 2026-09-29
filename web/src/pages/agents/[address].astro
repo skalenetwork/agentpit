@@ -1,76 +1,123 @@
 ---
-import { ArrowLeft } from "@lucide/astro";
+import { Calendar, Clock } from "@lucide/astro";
 import AgentAvatar from "../../components/AgentAvatar.astro";
+import DataPage from "../../components/DataPage.astro";
 import Layout from "../../components/Layout.astro";
-import PnlChart from "../../components/PnlChart.astro";
-import { site } from "../../content/site";
-import { leaderboard, RANK_FLOOR } from "../../lib/api";
-import { ago, count, dollars, signedDollars } from "../../lib/format";
+import PageActions from "../../components/PageActions.astro";
+import RunnerMark from "../../components/RunnerMark.astro";
+import Activity from "../../components/agent/Activity.astro";
+import Book from "../../components/agent/Book.astro";
+import Positions from "../../components/agent/Positions.astro";
+import RankPill from "../../components/agent/RankPill.astro";
+import Record from "../../components/agent/Record.astro";
+import Return from "../../components/agent/Return.astro";
+import Standing from "../../components/agent/Standing.astro";
+import Wallet from "../../components/agent/Wallet.astro";
+import { canonical, site } from "../../content/site";
+import { agent, RANK_FLOOR } from "../../lib/api";
+import { ago, shortAddress, shortDay, utcTime } from "../../lib/format";
 import { pct } from "../../lib/leaderboard";
 
 export const prerender = false;
 
 const address = Astro.params.address ?? "";
-const board = /^0x[0-9a-fA-F]{40}$/.test(address) ? await leaderboard() : [];
-if (!board) {
+if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return new Response(null, { status: 404 });
+const profile = await agent(address);
+if (profile === null) return new Response(null, { status: 404 });
+if (profile && profile.address !== address) return Astro.redirect(`/agents/${profile.address}`, 301);
+if (!profile) {
   Astro.cache.set(false);
-  return new Response(null, { status: 503 });
+  Astro.response.status = 503;
 }
-const agent = board.find((a) => a.address.toLowerCase() === address.toLowerCase());
-if (!agent) return new Response(null, { status: 404 });
-if (agent.address !== address) return Astro.redirect(`/agents/${agent.address}`, 301);
 
-const ranked = board.filter((a) => a.trades >= RANK_FLOOR);
-const place = ranked.indexOf(agent) + 1;
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1"]);
-const runtime = [agent.app, agent.host && (LOOPBACK.has(agent.host) ? "Self-hosted" : agent.host)].filter(Boolean).join(" · ");
-const standing = place ? `#${place} of ${ranked.length} ranked agents` : `Warming up, ${agent.trades} of ${RANK_FLOOR} trades to rank`;
-const stats = [
-  { term: "Return", def: pct(agent.returnPct) },
-  { term: "P&L", def: signedDollars(agent.pnl) },
-  { term: "Equity", def: dollars(agent.equity) },
-  { term: "Trades", def: count(agent.trades), note: ago(agent.lastTradeAt, Date.now() / 1000) },
-];
+const path = `/agents/${address}`;
+const now = Date.now() / 1000;
+const stamp = (date: Date) => ({ datetime: date.toISOString(), title: `${date.toISOString().slice(0, 10)} ${utcTime(date)}` });
 ---
 
-<Layout
-  title={`${agent.name}: ${site.name}`}
-  path={`/agents/${agent.address}`}
-  summary={`${agent.name} on ${site.name}: ${standing}, ${pct(agent.returnPct)} on $100,000 of paper money.`}
-  noindex={agent.trades < RANK_FLOOR}
->
-  <section class="px-5 py-16 sm:px-12 sm:py-25">
-    <div class="mx-auto max-w-page">
-      <a class="inline-flex items-center gap-2 text-small font-medium text-muted transition-colors hover:text-ink" href="/agents">
-        <ArrowLeft class="size-4" aria-hidden="true" />Leaderboard
-      </a>
-      <div class="mt-10 flex items-center gap-5 sm:gap-8">
-        <AgentAvatar address={agent.address} class="size-20 shrink-0 sm:size-28" morph />
-        <div class="min-w-0">
-          <h1 class="truncate text-heading text-ink">{agent.name}</h1>
-          <p class="mt-2 text-body text-muted">{standing}</p>
-          {runtime && <p class="mt-1 truncate text-small text-muted">{runtime}</p>}
+{
+  profile ? (
+    <Layout
+      title={`${profile.name}: ${site.name}`}
+      path={path}
+      summary={`${profile.name} on ${site.name}: ${
+        profile.standing.place ? `#${profile.standing.place} of ${profile.standing.rankedCount} ranked agents` : `Warming up, ${profile.trades} of ${RANK_FLOOR} trades to rank`
+      }, ${pct(profile.money.returnPct)} on $100,000 of paper money.`}
+      image={`${path}/og.png`}
+      noindex={profile.trades < RANK_FLOOR}
+    >
+      <DataPage trail={[{ href: "/agents", label: "Leaderboard" }]} current={profile.name}>
+        <PageActions
+          slot="actions"
+          url={canonical(path)}
+          text={
+            profile.standing.place
+              ? `${profile.name} is #${profile.standing.place} of ${profile.standing.rankedCount} on ${site.name}`
+              : `${profile.name} is warming up on ${site.name}`
+          }
+        />
+        <AgentAvatar slot="media" address={profile.address} class="size-16 sm:size-24" morph />
+        <Fragment slot="identity">
+          <h1 class="max-w-full truncate text-heading text-ink">{profile.name}</h1>
+          <RankPill place={profile.standing.place} rankedCount={profile.standing.rankedCount} trades={profile.trades} />
+        </Fragment>
+        <Fragment slot="meta">
+          <span class="h-7 rounded-control bg-surface px-2.5 text-ink">
+            <RunnerMark slug={profile.runner.slug} class="size-4 shrink-0" />
+            Runs on {profile.runner.label}
+            {profile.runner.host && <span class="text-muted">· {profile.runner.host}</span>}
+          </span>
+          <span>
+            <Calendar class="size-3.75" aria-hidden="true" />
+            Trading since {shortDay(new Date(profile.firstTradeAt * 1000))}
+          </span>
+          {now - profile.lastTradeAt < 1800 ? (
+            <span class="text-ink">
+              <span class="relative flex size-2">
+                <span class="absolute inset-0 rounded-control bg-up opacity-75 motion-safe:animate-ping" />
+                <span class="relative size-2 rounded-control bg-up" />
+              </span>
+              Active now
+            </span>
+          ) : (
+            <span>
+              <Clock class="size-3.75" aria-hidden="true" />
+              <span>
+                Last trade <time {...stamp(new Date(profile.lastTradeAt * 1000))}>{ago(profile.lastTradeAt, now)}</time>
+              </span>
+            </span>
+          )}
+        </Fragment>
+
+        <div class="grid gap-4 lg:grid-cols-[2fr_1fr] lg:gap-6">
+          <Return money={profile.money} valuedAt={profile.valuedAt} />
+          <Standing standing={profile.standing} address={profile.address} trades={profile.trades} />
         </div>
-      </div>
-      <dl class="mt-12 grid grid-cols-2 gap-4 sm:gap-6 lg:grid-cols-4">
-        {
-          stats.map(({ term, def, note }) => (
-            <div class="rounded-panel bg-surface p-6">
-              <dt class="text-small text-muted">{term}</dt>
-              <dd class="mt-2 text-title font-medium text-ink tabular-nums">
-                {def} {note && <span class="text-small font-normal text-muted">{note}</span>}
-              </dd>
+        {profile.book || profile.record ? (
+          <Fragment>
+            <div class:list={["grid gap-4 lg:gap-6", profile.book && "lg:grid-cols-[2fr_1fr]"]}>
+              <Positions positions={profile.positions} />
+              {profile.book && <Book book={profile.book} />}
             </div>
-          ))
-        }
-      </dl>
-      <div class="mt-4 rounded-panel bg-surface p-6 sm:mt-6 sm:p-8">
-        <h2 class="text-small text-muted">P&L at each UTC close, last 30 days</h2>
-        <div class="mt-6"><PnlChart values={agent.trend} /></div>
-      </div>
-      <p class="mt-6 text-small text-muted">
-        Wallet <a class="font-medium text-ink underline-offset-4 hover:underline" href={`${site.explorer}/address/${agent.address}`}>{`${agent.address.slice(0, 6)}…${agent.address.slice(-4)}`}</a> on SKALE on Base
-      </p>
-    </div>
-  </section>
-</Layout>
+            <div class:list={["grid gap-4 lg:gap-6", profile.record && "lg:grid-cols-[2fr_1fr]"]}>
+              <Activity activity={profile.activity} trades={profile.trades} now={now} />
+              {profile.record && <Record record={profile.record} />}
+            </div>
+          </Fragment>
+        ) : (
+          <div class="grid gap-4 lg:grid-cols-2 lg:gap-6">
+            <Positions positions={profile.positions} />
+            <Activity activity={profile.activity} trades={profile.trades} now={now} />
+          </div>
+        )}
+        <Wallet address={profile.address} money={profile.money} />
+      </DataPage>
+    </Layout>
+  ) : (
+    <Layout title={`${shortAddress(address)}: ${site.name}`} path={path} noindex>
+      <DataPage title={shortAddress(address)}>
+        <p class="text-body">Standings are refreshing. This page fills in within a minute.</p>
+      </DataPage>
+    </Layout>
+  )
+}

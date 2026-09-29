@@ -1,28 +1,29 @@
-"""The public board and platform stats. Neither reads the chain; that work happens on a timer."""
+"""The public board, agent profiles and platform stats, from the database and what the valuation timer keeps."""
 import time
 from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel
 
-from agentpit.api.deps import LeaderboardServiceDep, SessionDep
+from agentpit.api.deps import AccountServiceDep, LeaderboardServiceDep, SessionDep
 from agentpit.db.table_read import TableRead
-from agentpit.services.leaderboard_service import SORTS, rank_rows
+from agentpit.domain.runner import Runner, runner_for
+from agentpit.services.agent_profile import ACTIVITY, AgentProfile, build_profile
+from agentpit.services.leaderboard_service import SORTS, LeaderboardRow, LeaderboardService, rank_rows
 
 router = APIRouter(tags=["leaderboard"])
 
 # Same shape as routes/events.py's listing cache: the board only changes when
 # the valuation pass runs, and the Arena polls every four seconds.
 _CACHE_TTL_SECONDS = 30.0
-_board_cache: "dict[str, tuple[float, list[dict]]]" = {}
+_board_cache: "dict[str, tuple[float, list[LeaderboardRow]]]" = {}
 
 
 class LeaderboardEntry(BaseModel):
     rank: int
     name: str
     address: str
-    app: str | None
-    host: str | None
+    runner: Runner
     capital: str
     earned: str
     #: Cost basis of the open positions -- what the account put to work.
@@ -35,6 +36,7 @@ class LeaderboardEntry(BaseModel):
     trades: int
     firstTradeAt: int
     lastTradeAt: int
+    trendStart: date | None
     trend: list[str]
 
 
@@ -55,6 +57,16 @@ class StatsResponse(BaseModel):
     days: "list[StatsDay]"
 
 
+def _ranked(service: LeaderboardService, sort: str) -> "list[LeaderboardRow]":
+    now = time.monotonic()
+    hit = _board_cache.get(sort)
+    if hit is not None and now - hit[0] < _CACHE_TTL_SECONDS:
+        return hit[1]
+    rows = rank_rows(service.build_board(), sort)
+    _board_cache[sort] = (now, rows)
+    return rows
+
+
 @router.get("/leaderboard", response_model=LeaderboardResponse)
 def get_leaderboard(
     service: LeaderboardServiceDep,
@@ -67,19 +79,12 @@ def get_leaderboard(
     API. No email address appears in this payload under any sort.
     """
     key = sort if sort in SORTS else "return"
-    now = time.monotonic()
-    hit = _board_cache.get(key)
-    if hit is not None and now - hit[0] < _CACHE_TTL_SECONDS:
-        return LeaderboardResponse(sort=key, entries=hit[1])
-
-    ranked = rank_rows(service.build_board(), key)
     entries = [
         LeaderboardEntry(
             rank=i + 1,
             name=row.name,
             address=row.address,
-            app=row.app,
-            host=row.host,
+            runner=runner_for(row.app, row.host),
             capital=str(row.capital_raw),
             earned=str(row.earned_raw),
             invested=str(row.invested_raw),
@@ -89,12 +94,35 @@ def get_leaderboard(
             trades=row.trades,
             firstTradeAt=row.first_trade_at,
             lastTradeAt=row.last_trade_at,
+            trendStart=row.trend_start,
             trend=row.trend,
-        ).model_dump()
-        for i, row in enumerate(ranked)
+        )
+        for i, row in enumerate(_ranked(service, key))
     ]
-    _board_cache[key] = (now, entries)
     return LeaderboardResponse(sort=key, entries=entries)
+
+
+@router.get("/agents/{address}", response_model=AgentProfile)
+def get_agent(
+    address: str,
+    service: LeaderboardServiceDep,
+    accounts: AccountServiceDep,
+    db: SessionDep,
+) -> AgentProfile | Response:
+    """One agent's whole page in one read: the board, the valuation pass's
+    holdings and the newest fills. Any letter case; an agent not on the board
+    is an empty 404."""
+    board = _ranked(service, "return")
+    row = next((r for r in board if r.address.lower() == address.lower()), None)
+    if row is None:
+        return Response(status_code=404)
+    held = service.holdings(row.address)
+    fills = accounts.list_activity(row.address, limit=ACTIVITY)
+    with db.read() as conn:
+        categories = TableRead.categories_by_condition_id(
+            conn, [p.conditionId for p in (*held.positions, *held.closed, *fills)]
+        )
+    return build_profile(row, board, held, fills, categories, int(time.time()))
 
 
 @router.get("/stats", response_model=StatsResponse)

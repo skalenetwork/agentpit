@@ -13,6 +13,8 @@
   --color-muted: light-dark(#7a899f, #94a3b8);
   --color-line: light-dark(#e2e8f0, #334155);
   --color-signal: light-dark(#2563eb, #60a5fa);
+  --color-up: light-dark(#059669, #34d399);
+  --color-down: light-dark(#e11d48, #fb7185);
 
   --font-weight-*: initial;
   --font-weight-normal: 400;

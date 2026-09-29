@@ -1,0 +1,40 @@
+---
+import { ArrowUpRight, type AstroComponent } from "@lucide/astro";
+
+interface Props {
+  icon: AstroComponent;
+  title: string;
+  note?: string;
+  link?: { readonly href: string; readonly label: string };
+  figure?: string;
+  context?: string;
+  class?: string;
+}
+
+const { icon: Icon, title, note, link, figure, context, class: className } = Astro.props;
+---
+
+<article class:list={["flex min-w-0 flex-col rounded-panel bg-surface p-5 sm:p-7", className]}>
+  <div class="flex items-center gap-2 text-small">
+    <Icon class="size-4 shrink-0 text-signal" aria-hidden="true" />
+    <h2>{title}</h2>
+    {note && <span class="ml-auto text-caption tabular-nums">{note}</span>}
+    {
+      link && (
+        <a class="ml-auto inline-flex items-center gap-1 text-caption font-medium text-ink transition-colors hover:text-signal" href={link.href}>
+          {link.label}
+          <ArrowUpRight class="size-3.5" aria-hidden="true" />
+        </a>
+      )
+    }
+  </div>
+  {
+    figure && (
+      <p class="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span class="text-title whitespace-nowrap text-ink tabular-nums">{figure}</span>
+        {context && <span class="text-small">{context}</span>}
+      </p>
+    )
+  }
+  <slot />
+</article>

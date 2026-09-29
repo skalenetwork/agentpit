@@ -1,0 +1,26 @@
+---
+import { Link, Share } from "@lucide/astro";
+import copy from "../scripts/copy.js?raw";
+
+interface Props {
+  url: string;
+  text: string;
+}
+
+const { url, text } = Astro.props;
+const intent = `https://x.com/intent/post?${new URLSearchParams({ text, url })}`;
+const act =
+  "inline-flex h-8 items-center justify-center gap-1.5 rounded-control bg-surface text-small font-medium whitespace-nowrap text-ink transition-colors hover:bg-line max-sm:w-8 sm:px-3.5";
+---
+
+<div class="flex shrink-0 gap-2">
+  <div class="contents">
+    <p hidden>{url}</p>
+    <label class={`${act} cursor-pointer`} hidden>
+      <Link class="size-4" aria-hidden="true" />
+      <button class="cursor-pointer max-sm:sr-only" type="button" aria-label="Copy link" aria-live="polite">Copy</button>
+    </label>
+    <script is:inline set:html={copy} />
+  </div>
+  <a class={act} href={intent}><Share class="size-4" aria-hidden="true" /><span class="max-sm:sr-only">Share</span></a>
+</div>

@@ -1,0 +1,66 @@
+---
+import { ChartPie } from "@lucide/astro";
+import type { Profile } from "../../lib/api";
+import { count, percent } from "../../lib/format";
+import { categoryIcon } from "../../lib/marketIcon";
+import Card from "../Card.astro";
+
+interface Props {
+  book: NonNullable<Profile["book"]>;
+}
+
+const { mix, entryPrice, horizonDays } = Astro.props.book;
+const peak = Math.max(...entryPrice.map(({ yes, no }) => yes + no));
+const height = (cost: number) => (cost ? Math.max(6, (cost / peak) * 100) : 0);
+const bins = entryPrice.map(({ yes, no }, i) => ({ x: `${i * 10 + 1}%`, yes: height(yes), no: height(no) }));
+const pc = (value: number) => `${+value.toFixed(2)}%`;
+---
+
+<Card icon={ChartPie} title="Book" note="By cost">
+  <ul class="mt-5 space-y-3">
+    {
+      mix.map((group, i) => {
+        const Icon = categoryIcon(group.category);
+        return (
+          <li class="grid grid-cols-[auto_6.5rem_minmax(0,1fr)_2.25rem] items-center gap-3 text-small">
+            <Icon class="size-4 text-ink" aria-hidden="true" />
+            <span class="truncate text-ink">
+              {group.category ?? "Other"} <span class="text-caption text-muted tabular-nums">{group.count}</span>
+            </span>
+            <svg class="h-1.5 w-full" aria-hidden="true">
+              <rect width="100%" height="100%" rx="3" class="fill-line" />
+              <rect width={pc(group.share * 100)} height="100%" rx="3" class={i ? "fill-signal/55" : "fill-signal"} />
+            </svg>
+            <span class="text-right text-ink tabular-nums">{percent(group.share)}</span>
+          </li>
+        );
+      })
+    }
+  </ul>
+  <div class="flex flex-1 flex-col pt-6">
+    <p class="flex justify-between text-caption">
+      <span>Entry price</span><span class="flex gap-2.5 font-medium"><span class="text-up">Yes</span><span class="text-down">No</span></span>
+    </p>
+    <div class="relative mt-3 min-h-20 flex-1 lg:min-h-14">
+      <svg class="absolute inset-0 size-full overflow-visible" aria-hidden="true">
+        <rect y="100%" width="100%" height="1" class="fill-line" />
+        {
+          bins.map(({ x, yes, no }) => (
+            <Fragment>
+              {yes > 0 && <rect x={x} y={pc(100 - yes)} width="8%" height={pc(yes)} rx="2" class="fill-up stroke-surface" stroke-width="1.5" />}
+              {no > 0 && <rect x={x} y={pc(100 - yes - no)} width="8%" height={pc(no)} rx="2" class="fill-down stroke-surface" stroke-width="1.5" />}
+            </Fragment>
+          ))
+        }
+      </svg>
+    </div>
+    <p class="mt-2 grid grid-cols-3 text-caption tabular-nums"><span>0¢</span><span class="text-center">50¢</span><span class="text-right">100¢</span></p>
+  </div>
+  {
+    horizonDays !== null && (
+      <p class="mt-4 border-t border-line pt-4 text-caption tabular-nums">
+        Median {count(horizonDays)} {horizonDays === 1 ? "day" : "days"} to resolve
+      </p>
+    )
+  }
+</Card>

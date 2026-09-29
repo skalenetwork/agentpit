@@ -1,12 +1,15 @@
 """Valuing every trading account on a timer, so ranking never reads the chain."""
 import logging
-from datetime import UTC, datetime, timedelta
+import time
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 
 from pydantic import BaseModel
 
 from agentpit.config import Settings
+from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.session import DbSession
-from agentpit.db.table_read import TableRead
+from agentpit.db.table_read import DailyClose, TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.services.account_service import AccountService
@@ -16,6 +19,7 @@ log = logging.getLogger(__name__)
 
 TREND_DAYS = 30
 DENSE_WINDOW = 48 * 3_600
+RANK_FLOOR = 10
 
 SORTS = ("return", "earned", "capital", "trades")
 
@@ -36,6 +40,40 @@ def compute_return_pct(capital_raw: int, deposited_raw: int) -> float:
     return 100.0 * compute_earned_raw(capital_raw, deposited_raw) / deposited_raw
 
 
+def daily_trend(closes: list[DailyClose], today: date) -> tuple[date | None, list[str]]:
+    """Earned at each UTC close from the first one to `today`, a day without a
+    snapshot repeating the day before."""
+    if not closes:
+        return None, []
+    earned = {c.day: str(compute_earned_raw(c.capital, c.deposited)) for c in closes}
+    start = closes[0].day
+    trend = [earned[start]]
+    for k in range(1, (today - start).days + 1):
+        trend.append(earned.get(start + timedelta(days=k), trend[-1]))
+    return start, trend
+
+
+@dataclass(frozen=True)
+class Holdings:
+    """What the valuation pass saw of one account, kept so a profile never reads the chain."""
+
+    valued_at: int
+    cash_raw: int
+    positions: list[PositionWire]
+    closed: list[PositionWire]
+
+    @property
+    def value_raw(self) -> int:
+        return int(round(sum(p.currentValue for p in self.positions) * 10**6))
+
+    @property
+    def cost_raw(self) -> int:
+        return int(round(sum(p.initialValue for p in self.positions) * 10**6))
+
+
+_holdings: dict[str, Holdings] = {}
+
+
 class LeaderboardRow(BaseModel):
     name: str
     address: str
@@ -50,6 +88,7 @@ class LeaderboardRow(BaseModel):
     trades: int
     first_trade_at: int
     last_trade_at: int
+    trend_start: date | None = None
     trend: list[str] = []
 
     @property
@@ -124,21 +163,21 @@ class LeaderboardService:
         self._accounts = accounts
         self._settings = settings
 
-    def _capital_invested_unrealized_raw(self, address: str) -> tuple[int, int, int]:
-        """`(capital, invested, unrealized)` in base units, from ONE walk.
+    def value_account(self, address: str, now: int) -> Holdings:
+        held = Holdings(
+            valued_at=now,
+            cash_raw=self._onchain.usd_balance(address),
+            positions=self._accounts.list_positions(address),
+            closed=self._accounts.list_closed_positions(address),
+        )
+        _holdings[address] = held
+        return held
 
-        Capital is cash plus what the open positions are worth now; invested is
-        what they cost; unrealized is the difference. The three together are
-        what makes the board legible: $22 up on $1,426 at work is a different
-        story from $2 on $35, and neither is money anyone has actually banked.
-        """
-        cash = self._onchain.usd_balance(address)
-        value_whole, cost_whole = self._accounts.value_and_cost(address)
-        value_raw = int(round(value_whole * 10**6))
-        cost_raw = int(round(cost_whole * 10**6))
-        # Subtracting after rounding, so unrealized + invested == value exactly
-        # and the columns cannot disagree by a base unit.
-        return (cash + value_raw, cost_raw, value_raw - cost_raw)
+    def holdings(self, address: str) -> Holdings:
+        """The pass's view of the account, or one read of the chain when the
+        pass has not reached it since the process started."""
+        held = _holdings.get(address)
+        return held if held is not None else self.value_account(address, int(time.time()))
 
     def take_snapshot(self, now: int) -> int:
         """Value every trading account. Returns the number of rows written.
@@ -152,9 +191,7 @@ class LeaderboardService:
         written = 0
         for account in accounts:
             try:
-                capital, invested, unrealized = (
-                    self._capital_invested_unrealized_raw(account.eth_address)
-                )
+                held = self.value_account(account.eth_address, now)
                 with self._db.write() as conn:
                     # Before the deposit is read, not after: the row written
                     # this tick must carry the corrected figure. See
@@ -170,10 +207,10 @@ class LeaderboardService:
                         conn,
                         account.user_id,
                         now,
-                        capital,
+                        held.cash_raw + held.value_raw,
                         deposited,
-                        invested,
-                        unrealized,
+                        held.cost_raw,
+                        held.value_raw - held.cost_raw,
                     )
             except Exception:
                 # One account must not cost every other account its data
@@ -193,7 +230,8 @@ class LeaderboardService:
 
         Reads only the database -- the chain work happened in `take_snapshot`.
         """
-        since = datetime.now(UTC).date() - timedelta(days=TREND_DAYS - 1)
+        today = datetime.now(UTC).date()
+        since = today - timedelta(days=TREND_DAYS - 1)
         with self._db.read() as conn:
             accounts = TableRead.list_traded_accounts(conn)
             latest = TableRead.latest_account_snapshots(conn)
@@ -207,6 +245,7 @@ class LeaderboardService:
             if snapshot is None or tally is None:
                 continue
             capital, deposited, invested, unrealized = snapshot
+            trend_start, trend = daily_trend(closes.get(account.user_id, []), today)
             rows.append(
                 LeaderboardRow(
                     name=display_name(account.handle, account.eth_address),
@@ -220,10 +259,8 @@ class LeaderboardService:
                     trades=tally.trades,
                     first_trade_at=tally.first_trade_at,
                     last_trade_at=tally.last_trade_at,
-                    trend=[
-                        str(compute_earned_raw(c.capital, c.deposited))
-                        for c in closes.get(account.user_id, [])
-                    ],
+                    trend_start=trend_start,
+                    trend=trend,
                 )
             )
         return rows

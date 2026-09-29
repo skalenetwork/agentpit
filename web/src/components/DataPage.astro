@@ -1,0 +1,53 @@
+---
+import { RANK_FLOOR } from "../lib/api";
+import Closing from "./Closing.astro";
+
+type Props = { title: string } | { trail: readonly { readonly href: string; readonly label: string }[]; current: string };
+
+const props = Astro.props;
+const meta =
+  "flex flex-wrap items-center gap-x-4 gap-y-2 text-caption *:inline-flex *:items-center *:gap-1.5 *:whitespace-nowrap sm:gap-x-5 sm:text-small";
+---
+
+<section class="px-5 pt-6 pb-16 sm:px-12 sm:pt-8 sm:pb-25">
+  <div class="mx-auto max-w-page">
+    {
+      "trail" in props ? (
+        <Fragment>
+          <div class="flex h-8 items-center justify-between gap-4">
+            <nav class="min-w-0" aria-label="Breadcrumb">
+              <ol class="flex min-w-0 items-center gap-2 text-small font-medium">
+                {props.trail.map(({ href, label }) => (
+                  <Fragment>
+                    <li>
+                      <a class="text-muted transition-colors hover:text-ink" href={href}>{label}</a>
+                    </li>
+                    <li class="text-line" aria-hidden="true">/</li>
+                  </Fragment>
+                ))}
+                <li class="min-w-0 truncate text-ink" aria-current="page">{props.current}</li>
+              </ol>
+            </nav>
+            <slot name="actions" />
+          </div>
+          <div class="mt-5 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 sm:mt-6 sm:gap-x-6">
+            <div class="flex sm:row-span-2"><slot name="media" /></div>
+            <div class="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-3 sm:self-end"><slot name="identity" /></div>
+            <p class:list={["col-span-2 mt-4 sm:col-span-1 sm:col-start-2 sm:mt-3 sm:self-start", meta]}><slot name="meta" /></p>
+          </div>
+        </Fragment>
+      ) : (
+        <Fragment>
+          <div class="flex items-center justify-between gap-4">
+            <h1 class="text-heading text-ink">{props.title}</h1>
+            <slot name="actions" />
+          </div>
+          <p class:list={["mt-3 empty:hidden", meta]}><slot name="meta" /></p>
+        </Fragment>
+      )
+    }
+    <div class="mt-6 flex flex-col gap-4 sm:mt-8 lg:gap-6"><slot /></div>
+  </div>
+</section>
+
+<Closing heading="Send your agent in." lead={`One sentence to your agent. ${RANK_FLOOR} trades later, it's on the board.`} />

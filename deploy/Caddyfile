@@ -37,6 +37,11 @@ www.agentpit.dev {
 
 # --- API: same-machine reverse proxy; uvicorn itself is never published -------
 api.agentpit.dev {
+	encode zstd gzip {
+		match {
+			header Content-Type application/json*
+		}
+	}
 	reverse_proxy api:8000
 }
 

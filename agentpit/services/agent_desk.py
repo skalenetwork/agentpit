@@ -123,13 +123,13 @@ class AgentDesk:
                 excluded_tags=self._settings.excluded_tags,
             )
             tops = TableRead.book_tops_for_tokens(conn, [t for m in found for t, _ in m.erc1155_tokens])
-            categories = TableRead.categories_by_market_id(conn, [m.market_id for m in found])
+            categories = TableRead.categories_by_condition_id(conn, [m.condition_id.value for m in found])
         return MarketList(
             markets=[
                 MarketCard(
                     market=m.slug,
                     question=clean(m.question, 200),
-                    category=categories.get(m.market_id),
+                    category=categories.get(m.condition_id.value),
                     closes_at=_when(m.end_date),
                     outcomes=[_quote(label, tops.get(token, (None, None))) for token, label in m.erc1155_tokens],
                 )
@@ -140,7 +140,7 @@ class AgentDesk:
     def get_market(self, market: str) -> MarketDetail:
         m = self._market(market)
         with self._db.read() as conn:
-            category = TableRead.categories_by_market_id(conn, [m.market_id]).get(m.market_id)
+            category = TableRead.categories_by_condition_id(conn, [m.condition_id.value]).get(m.condition_id.value)
         outcomes: list[OutcomeBook] = []
         for token, label in m.erc1155_tokens:
             book = self._orders.get_book(token)

@@ -1,0 +1,9 @@
+---
+interface Props {
+  outcome: string;
+}
+
+const { outcome } = Astro.props;
+---
+
+<span class:list={["inline-flex h-5 items-center rounded-control bg-paper px-2 text-caption font-medium", outcome === "Yes" ? "text-up" : outcome === "No" ? "text-down" : "text-ink"]}>{outcome}</span>

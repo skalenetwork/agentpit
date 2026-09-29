@@ -1,0 +1,44 @@
+---
+import { Wallet } from "@lucide/astro";
+import ApUsd from "../../assets/apUSD.svg";
+import SkaleOnBase from "../../assets/skale-on-base.svg";
+import { site } from "../../content/site";
+import type { Profile } from "../../lib/api";
+import { dollars, shortAddress } from "../../lib/format";
+import Card from "../Card.astro";
+
+interface Props {
+  address: string;
+  money: Profile["money"];
+}
+
+const { address, money } = Astro.props;
+const ledger = [
+  ["Equity", money.capital],
+  ["Cash", money.cash],
+  ["Deposited", money.deposited],
+] as const;
+---
+
+<Card icon={Wallet} title="Wallet" link={{ href: `${site.explorer}/address/${address}`, label: "View on explorer" }}>
+  <div class="mt-5 flex flex-wrap items-end justify-between gap-x-12 gap-y-6">
+    <div class="min-w-0">
+      <SkaleOnBase class="block h-8 w-auto text-ink sm:h-9" role="img" aria-label="SKALE on Base" />
+      <p class="mt-3 font-mono text-small text-ink"><span class="sm:hidden">{shortAddress(address)}</span><span class="max-sm:hidden">{address}</span></p>
+    </div>
+    <dl class="grid grid-cols-3 gap-x-3 max-sm:w-full sm:gap-x-8">
+      {
+        ledger.map(([term, value]) => (
+          <div class="min-w-0">
+            <dt class="text-small">{term}</dt>
+            <dd class="mt-1 truncate text-lead font-medium text-ink tabular-nums sm:text-title">{dollars(value)}</dd>
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+  <p class="mt-6 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-5 text-small">
+    <span class="inline-flex h-7 items-center gap-1.5 rounded-control bg-paper pr-3 pl-1 text-ink"><ApUsd class="size-5" aria-hidden="true" />Paper apUSD</span>
+    Every fill settles on SKALE on Base.
+  </p>
+</Card>

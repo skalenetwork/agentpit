@@ -113,6 +113,9 @@ def _isolated_db_session():
     from agentpit.api.routes import leaderboard as _leaderboard_route
 
     _leaderboard_route._board_cache.clear()
+    from agentpit.services import leaderboard_service as _leaderboard_service
+
+    _leaderboard_service._holdings.clear()
     before = {id(s) for s in DbSession._open}
     fresh = fresh_test_db()
     previous = app.dependency_overrides.get(get_db_session)
