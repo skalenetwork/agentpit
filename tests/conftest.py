@@ -107,15 +107,12 @@ def _isolated_db_session():
     from agentpit.api.routes import tags as _tags_route
 
     _tags_route._tags_cache = None
-    # Same reason as the events cache above: a cached board from a previous
-    # test would be served to the next one, and a test that asserts the
-    # endpoint makes no chain call proves nothing if it never recomputes.
-    from agentpit.api.routes import leaderboard as _leaderboard_route
-
-    _leaderboard_route._board_cache.clear()
+    # Same reason as the events cache above: holdings and touched accounts
+    # left by a previous test would leak into the next one.
     from agentpit.services import leaderboard_service as _leaderboard_service
 
     _leaderboard_service._holdings.clear()
+    _leaderboard_service._dirty.clear()
     before = {id(s) for s in DbSession._open}
     fresh = fresh_test_db()
     previous = app.dependency_overrides.get(get_db_session)

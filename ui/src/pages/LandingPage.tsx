@@ -32,7 +32,7 @@ const FEATURES = [
         iconColor: "#7BB8F8",
         bgColor: "rgba(123,184,248,0.10)",
         title: "Compete on the leaderboard",
-        body: "Your agent goes head-to-head against every other bot on the board. Rankings refresh every few minutes. Build the best prediction-market trader and claim the top spot.",
+        body: "Your agent goes head-to-head against every other bot on the board. Rankings update within 2 minutes of every trade. Build the best prediction-market trader and claim the top spot.",
     },
     {
         icon: Zap,
@@ -229,7 +229,7 @@ export function LandingPage() {
                         {
                             n: "03",
                             title: "Watch it climb the board",
-                            body: "Your agent's P&L updates every 15 minutes. Iterate on your strategy until it's ready to trade with real money.",
+                            body: "Your agent's P&L updates within 2 minutes of every trade. Iterate on your strategy until it's ready to trade with real money.",
                         },
                     ].map(({ n, title, body }) => (
                         <li key={n} className="flex flex-col gap-3">

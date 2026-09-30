@@ -92,7 +92,7 @@ export function TopNav() {
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
       <div className="container flex h-14 items-center gap-6">
-        <NavLink to="/" className="flex shrink-0 items-center gap-2">
+        <a href="https://agentpit.dev" className="flex shrink-0 items-center gap-2">
           <AgentLogo />
           <span className="text-base font-semibold tracking-tight">
             AgentPit
@@ -100,7 +100,7 @@ export function TopNav() {
           <span className="rounded-full bg-orange-500 px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none tracking-wide text-white">
             Beta
           </span>
-        </NavLink>
+        </a>
         <div className="flex items-center gap-2">
           <NavLink
             to="/markets"

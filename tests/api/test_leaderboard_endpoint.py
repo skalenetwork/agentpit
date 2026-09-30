@@ -65,7 +65,7 @@ def test_unknown_sort_falls_back_to_return():
 
 class _FakeOnchain:
     """Records nothing -- just raises, so the test can prove GET /leaderboard
-    never reaches it. The chain work happens in take_snapshot, on a timer."""
+    never reaches it. The chain work happens in take_snapshot, off the request."""
 
     def usd_balance(self, address: str) -> int:
         raise AssertionError("GET /leaderboard must not call the chain at all")
@@ -80,15 +80,10 @@ class _FakeAccounts:
 
 
 def test_get_leaderboard_does_not_touch_the_chain():
-    """The board is served from the database and a cache; a LeaderboardService
-    built with collaborators that raise on any chain read must still answer
-    200 with the seeded row -- proving both that build_board() actually ran
-    (this is a cache miss: conftest's autouse fixture clears _board_cache
-    before every test, so there is nothing to hit) and that it never called
-    onchain or accounts. A prior version of this test seeded no data and
-    stayed silent about the cache, so it passed even while every request
-    after the first was served from a stale cache entry without recomputing
-    at all -- proving nothing about the request actually under test."""
+    """The board is served from the database; a LeaderboardService built with
+    collaborators that raise on any chain read must still answer 200 with the
+    seeded row -- proving both that build_board() actually ran and that it
+    never called onchain or accounts."""
     address = _seed_traded_account(
         handle="chain-proof",
         capital_raw=150_000_000_000,

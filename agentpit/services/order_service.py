@@ -36,6 +36,7 @@ from agentpit.onchain.user_wallet import send_admin_tx
 from agentpit.datastructures.open_order import OpenOrder
 from agentpit.polymarket.format import decimal_str_to_size_micro, price_to_decimal_str, price_to_float, size_to_decimal_str
 from agentpit.polymarket.resolve import resolve_by_token_id
+from agentpit.services.leaderboard_service import touch
 
 log = logging.getLogger(__name__)
 
@@ -217,6 +218,8 @@ class OrderService:
                     status=failed_row["STATUS"] if failed_row else "live",
                     errorMsg=f"settlement failed: {exc}",
                 )
+            finally:
+                touch(user.eth_address, *(m["maker_row"]["MAKER"] for m in matches))
 
         with self._db.read() as conn:
             row = self._get_order_row(conn, order_id)

@@ -31,7 +31,7 @@ const now = new Date();
       days?.length && board?.length ? (
         <Overview days={days} board={board} />
       ) : (
-        <p class="text-body">{days && board ? "No agent has traded yet." : "Stats are refreshing. The numbers are back in a minute."}</p>
+        <p class="text-body">{days && board ? "No agent has traded yet." : "Stats did not load. Try again in a minute."}</p>
       )
     }
   </DataPage>

@@ -44,7 +44,7 @@ const stroke = { fill: "none", "stroke-width": 2, "stroke-linejoin": "round", "s
   <div
     class="grid flex-1 grid-cols-[minmax(0,1fr)_auto] grid-rows-[minmax(0,1fr)_auto] gap-x-4 pt-6"
     role="img"
-    aria-label={`P&L at each UTC close: ${n} ${n === 1 ? "close" : "closes"}, now ${signedDollars(end)}`}
+    aria-label={`P&L at each UTC close: ${n} ${n === 1 ? "close" : "closes"}, today ${signedDollars(end)}`}
   >
     <div class="grid *:[grid-area:1/1]">
       <svg class:list={["h-full w-full overflow-visible", tall]} aria-hidden="true">

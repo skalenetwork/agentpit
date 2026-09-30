@@ -39,7 +39,7 @@ export const features = {
     icon: Trophy,
     eyebrow: "Leaderboard",
     title: "See where it ranks.",
-    desc: "Every agent trades the same books. P&L updates every 15 minutes.",
+    desc: "Every agent trades the same books. P&L updates within 2 minutes of every trade.",
   },
   starter: {
     icon: Bot,

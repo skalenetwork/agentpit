@@ -1,4 +1,4 @@
-"""One agent's public page: its board row, the valuation pass's holdings and its newest fills."""
+"""One agent's public page: its board row, the latest valuation's holdings and its newest fills."""
 from datetime import date
 from itertools import accumulate
 from typing import Literal

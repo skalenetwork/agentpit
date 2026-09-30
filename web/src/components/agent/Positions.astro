@@ -23,7 +23,7 @@ const kept = mark ? sellsFor / mark : 0;
         <rect width={`${+(kept * 100).toFixed(1)}%`} height="100%" rx="4" class="fill-ink" />
       </svg>
       <p class="mt-2 flex justify-between text-caption tabular-nums">
-        <span>Sells for <span class="text-ink">{dollars(sellsFor)}</span> now</span><span>{percent(kept)}</span>
+        <span>Sells for <span class="text-ink">{dollars(sellsFor)}</span></span><span>{percent(kept)}</span>
       </p>
       <ul class="mt-auto pt-6">
         {
@@ -34,7 +34,7 @@ const kept = mark ? sellsFor / mark : 0;
                 <MarketRow title={position.title} category={position.category}>
                   <Fragment slot="what">
                     <Outcome outcome={position.outcome} />
-                    {position.avgPrice ? `${cents(position.avgPrice)} → ${cents(position.curPrice)}` : `Split, now ${cents(position.curPrice)}`}
+                    {position.avgPrice ? `${cents(position.avgPrice)} → ${cents(position.curPrice)}` : `Split → ${cents(position.curPrice)}`}
                   </Fragment>
                   <Fragment slot="value">
                     <p class="text-small text-ink">

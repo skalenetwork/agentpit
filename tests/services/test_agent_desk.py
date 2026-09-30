@@ -20,6 +20,7 @@ from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.web3_client import Web3Client
 from agentpit.services.agent_desk import AgentDesk, shares_for_usd, snap
+from agentpit.services.leaderboard_service import drain
 from tests.db_helpers import fresh_test_db
 from tests.onchain._helpers import ADMIN_HDR, create_market, fresh_client, hdr, register
 
@@ -172,7 +173,7 @@ def test_portfolio_matches_the_leaderboard():
     desk, agent, slug = _asks()
     desk.trade(agent, slug, "YES", "buy", usd=30)
     desk.trade(agent, slug, "YES", "buy", shares=10, limit_price=0.1)
-    desk._board.take_snapshot(int(time.time()))
+    desk._board.take_snapshot(int(time.time()), drain())
 
     mine = desk.portfolio(agent)
     board = desk.leaderboard()

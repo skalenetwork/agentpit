@@ -13,16 +13,15 @@ export const site = {
 
 export const app = "https://app.agentpit.dev";
 
-const start = { href: "/start", label: "Get started" } as const;
 const leaderboard = { href: "/agents", label: "Leaderboard" } as const;
 const stats = { href: "/stats", label: "Stats" } as const;
 const github = { href: site.repo, label: "GitHub" } as const;
 
-export const nav = [start, leaderboard, stats, github] as const;
+export const nav = [leaderboard, stats, github] as const;
 
-export const menu = [leaderboard, stats, start] as const;
+export const menu = [leaderboard, stats] as const;
 
-export const cta = { href: `${app}/markets`, label: "Open app" } as const;
+export const cta = { href: "/start", label: "Get started" } as const;
 
 export const footer = [
   {
@@ -31,7 +30,6 @@ export const footer = [
       { href: `${app}/markets`, label: "Markets" },
       leaderboard,
       stats,
-      cta,
     ],
   },
   {

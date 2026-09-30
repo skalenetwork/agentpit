@@ -1,5 +1,6 @@
-"""Valuing every trading account on a timer, so ranking never reads the chain."""
+"""Valuing every trading account on a timer, after its fills and after resolutions, so ranking never reads the chain."""
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -55,7 +56,7 @@ def daily_trend(closes: list[DailyClose], today: date) -> tuple[date | None, lis
 
 @dataclass(frozen=True)
 class Holdings:
-    """What the valuation pass saw of one account, kept so a profile never reads the chain."""
+    """The latest valuation of one account, kept so a profile never reads the chain."""
 
     valued_at: int
     cash_raw: int
@@ -72,6 +73,26 @@ class Holdings:
 
 
 _holdings: dict[str, Holdings] = {}
+_dirty: set[str] = set()
+_dirty_lock = threading.Lock()
+
+
+def touch(*addresses: str) -> None:
+    """Queue accounts for revaluation on the valuation loop's next tick."""
+    with _dirty_lock:
+        _dirty.update(a.lower() for a in addresses)
+
+
+def touch_holders() -> None:
+    """Queue every account holding an open position, which a resolution can re-mark."""
+    touch(*(address for address, held in _holdings.items() if held.positions))
+
+
+def drain() -> set[str]:
+    with _dirty_lock:
+        batch = set(_dirty)
+        _dirty.clear()
+    return batch
 
 
 class LeaderboardRow(BaseModel):
@@ -130,7 +151,7 @@ def rank_rows(rows: "list[LeaderboardRow]", sort: str) -> "list[LeaderboardRow]"
     Every key ends in `r.address`: Python's sort is stable, but
     `list_traded_accounts` has no guaranteed row order of its own, so two
     accounts tied on every ranking figure could otherwise flip position
-    between two cache refreshes with no change in the underlying data. The
+    between two requests with no change in the underlying data. The
     address is arbitrary but fixed, so the tiebreak is deterministic.
     """
     keys = {
@@ -144,11 +165,12 @@ def rank_rows(rows: "list[LeaderboardRow]", sort: str) -> "list[LeaderboardRow]"
 
 
 class LeaderboardService:
-    """Writes one snapshot row per trading account per pass.
+    """Writes one snapshot row per trading account per pass, and per touched
+    account between passes.
 
     Valuing an account walks its positions on chain, so this cannot happen on
-    read: the Arena polls every four seconds, and pagination would not help --
-    to know who belongs on page one you must value everyone.
+    read, and pagination would not help -- to know who belongs on page one you
+    must value everyone.
     """
 
     def __init__(
@@ -174,19 +196,22 @@ class LeaderboardService:
         return held
 
     def holdings(self, address: str) -> Holdings:
-        """The pass's view of the account, or one read of the chain when the
-        pass has not reached it since the process started."""
+        """The latest valuation of the account, or one read of the chain when
+        none has run since the process started."""
         held = _holdings.get(address)
         return held if held is not None else self.value_account(address, int(time.time()))
 
-    def take_snapshot(self, now: int) -> int:
-        """Value every trading account. Returns the number of rows written.
+    def take_snapshot(self, now: int, only: set[str] | None = None) -> int:
+        """Value every trading account, or those of them whose lowercase
+        address is in `only`. Returns the number of rows written.
 
         One account failing must not lose the whole pass -- a single unreadable
         position would otherwise cost every other account its data point.
         """
         with self._db.read() as conn:
             accounts = TableRead.list_traded_accounts(conn)
+        if only is not None:
+            accounts = [a for a in accounts if a.eth_address.lower() in only]
 
         written = 0
         for account in accounts:

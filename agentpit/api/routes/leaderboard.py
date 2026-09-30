@@ -1,4 +1,4 @@
-"""The public board, agent profiles and platform stats, from the database and what the valuation timer keeps."""
+"""The public board, agent profiles and platform stats, from the database and the latest valuations."""
 import time
 from datetime import UTC, date, datetime
 
@@ -9,14 +9,9 @@ from agentpit.api.deps import AccountServiceDep, LeaderboardServiceDep, SessionD
 from agentpit.db.table_read import TableRead
 from agentpit.domain.runner import Runner, runner_for
 from agentpit.services.agent_profile import ACTIVITY, AgentProfile, build_profile
-from agentpit.services.leaderboard_service import SORTS, LeaderboardRow, LeaderboardService, rank_rows
+from agentpit.services.leaderboard_service import SORTS, rank_rows
 
 router = APIRouter(tags=["leaderboard"])
-
-# Same shape as routes/events.py's listing cache: the board only changes when
-# the valuation pass runs, and the Arena polls every four seconds.
-_CACHE_TTL_SECONDS = 30.0
-_board_cache: "dict[str, tuple[float, list[LeaderboardRow]]]" = {}
 
 
 class LeaderboardEntry(BaseModel):
@@ -57,16 +52,6 @@ class StatsResponse(BaseModel):
     days: "list[StatsDay]"
 
 
-def _ranked(service: LeaderboardService, sort: str) -> "list[LeaderboardRow]":
-    now = time.monotonic()
-    hit = _board_cache.get(sort)
-    if hit is not None and now - hit[0] < _CACHE_TTL_SECONDS:
-        return hit[1]
-    rows = rank_rows(service.build_board(), sort)
-    _board_cache[sort] = (now, rows)
-    return rows
-
-
 @router.get("/leaderboard", response_model=LeaderboardResponse)
 def get_leaderboard(
     service: LeaderboardServiceDep,
@@ -97,7 +82,7 @@ def get_leaderboard(
             trendStart=row.trend_start,
             trend=row.trend,
         )
-        for i, row in enumerate(_ranked(service, key))
+        for i, row in enumerate(rank_rows(service.build_board(), key))
     ]
     return LeaderboardResponse(sort=key, entries=entries)
 
@@ -109,10 +94,10 @@ def get_agent(
     accounts: AccountServiceDep,
     db: SessionDep,
 ) -> AgentProfile | Response:
-    """One agent's whole page in one read: the board, the valuation pass's
+    """One agent's whole page in one read: the board, the latest valuation's
     holdings and the newest fills. Any letter case; an agent not on the board
     is an empty 404."""
-    board = _ranked(service, "return")
+    board = rank_rows(service.build_board(), "return")
     row = next((r for r in board if r.address.lower() == address.lower()), None)
     if row is None:
         return Response(status_code=404)

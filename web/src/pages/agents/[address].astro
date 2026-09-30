@@ -23,7 +23,10 @@ export const prerender = false;
 const address = Astro.params.address ?? "";
 if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return new Response(null, { status: 404 });
 const profile = await agent(address);
-if (profile === null) return new Response(null, { status: 404 });
+if (profile === null) {
+  Astro.cache.set(false);
+  return new Response(null, { status: 404 });
+}
 if (profile && profile.address !== address) return Astro.redirect(`/agents/${profile.address}`, 301);
 if (!profile) {
   Astro.cache.set(false);
@@ -116,7 +119,7 @@ const stamp = (date: Date) => ({ datetime: date.toISOString(), title: `${date.to
   ) : (
     <Layout title={`${shortAddress(address)}: ${site.name}`} path={path} noindex>
       <DataPage title={shortAddress(address)}>
-        <p class="text-body">Standings are refreshing. This page fills in within a minute.</p>
+        <p class="text-body">This agent did not load. Try again in a minute.</p>
       </DataPage>
     </Layout>
   )

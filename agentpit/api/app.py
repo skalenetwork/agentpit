@@ -74,7 +74,7 @@ from agentpit.services.agent_accounts import AgentAccounts
 from agentpit.services.agent_desk import AgentDesk
 from agentpit.services.auth_service import AuthService
 from agentpit.services.event_service import EventService
-from agentpit.services.leaderboard_service import LeaderboardService
+from agentpit.services.leaderboard_service import LeaderboardService, drain, touch_holders
 from agentpit.services.snapshot_service import SnapshotService
 
 log = logging.getLogger(__name__)
@@ -84,6 +84,7 @@ log = logging.getLogger(__name__)
 # (a race that double-logged the payout — phantom collateral from the apUSD
 # delta — even though on-chain only one redeem actually transferred).
 _redeem_lock = threading.Lock()
+_LEADERBOARD_TICK_SECONDS = 2
 
 
 def _configure_root_logging() -> None:
@@ -173,6 +174,8 @@ async def _resolution_mirror_loop(
                 redeemed,
                 scan_after,
             )
+            if resolved:
+                touch_holders()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -310,6 +313,8 @@ async def _pin_resolve_loop(
             )
             if resolved or redeemed:
                 log.info("Pin-resolve: %d resolved, %d redeemed", resolved, redeemed)
+            if resolved:
+                touch_holders()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -377,19 +382,25 @@ def _run_leaderboard_tick(service) -> tuple[int, int]:
 
 
 async def _leaderboard_loop(service: LeaderboardService, interval_seconds: int) -> None:
+    next_pass = 0.0
     while True:
         try:
-            written, deleted = await asyncio.to_thread(_run_leaderboard_tick, service)
-            log.info(
-                "Leaderboard tick: %d accounts valued, %d snapshots thinned",
-                written,
-                deleted,
-            )
+            touched = drain()
+            if touched:
+                await asyncio.to_thread(service.take_snapshot, int(time.time()), touched)
+            if time.monotonic() >= next_pass:
+                next_pass = time.monotonic() + interval_seconds
+                written, deleted = await asyncio.to_thread(_run_leaderboard_tick, service)
+                log.info(
+                    "Leaderboard tick: %d accounts valued, %d snapshots thinned",
+                    written,
+                    deleted,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("Leaderboard tick failed")
-        await asyncio.sleep(interval_seconds)
+        await asyncio.sleep(_LEADERBOARD_TICK_SECONDS)
 
 
 def _build_onchain_admin(settings: Settings) -> OnchainAdmin:
