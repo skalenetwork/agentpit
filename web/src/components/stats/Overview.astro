@@ -52,10 +52,11 @@ const pnls = board.map((agent) => agent.pnl).toSorted((a, b) => a - b);
 const mid = pnls.length >> 1;
 const median = pnls.length % 2 ? pnls[mid] : (pnls[mid - 1] + pnls[mid]) / 2;
 const moods = Object.groupBy(board, (agent) => tone(agent.pnl));
-const bin = nice(Math.max(...pnls.map(Math.abs)) / 9);
-const bins = Array.from({ length: 18 }, (_, k) => board.filter((agent) => Math.min(17, Math.floor((tone(agent.pnl) === "flat" ? 0 : agent.pnl) / bin) + 9) === k));
+const lineup = board.toSorted((a, b) => a.pnl - b.pnl);
+const reach = 10 ** Math.max(3, Math.ceil(Math.log10(Math.max(-pnls[0], pnls[pnls.length - 1]))));
 const axis = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", signDisplay: "exceptZero" });
-const spread = [-8, -4, 0, 4, 8].map((k) => ({ at: ((k + 9) / 18) * 100, label: axis.format(k * bin).replace("-", "−").toLowerCase() }));
+const scaled = (value: number) => axis.format(value).replace("-", "−").toLowerCase();
+const ends = [lineup[0], lineup[lineup.length - 1]].map((agent, k) => ({ at: k * 100, label: scaled(agent.pnl), name: agent.name }));
 ---
 
 <div class="grid gap-4 lg:grid-cols-3 lg:gap-6">
@@ -146,15 +147,15 @@ const spread = [-8, -4, 0, 4, 8].map((k) => ({ at: ((k + 9) / 18) * 100, label: 
     fig={count(moods.up?.length ?? 0)}
     ctx={`of ${count(board.length)} up on paper, median ${signedDollars(median)}`}
     tone="up"
-    label={`Paper P&L of each of ${board.length} agents: ${moods.up?.length ?? 0} up, ${moods.down?.length ?? 0} down, ${moods.flat?.length ?? 0} flat. Median ${signedDollars(median)}.`}
-    ticks={spread}
+    label={`Paper P&L of each of ${board.length} agents, sorted from biggest loss to biggest gain on a log scale: ${moods.up?.length ?? 0} up, ${moods.down?.length ?? 0} down, ${moods.flat?.length ?? 0} flat. Median ${signedDollars(median)}.`}
+    ticks={ends}
   >
     <Fragment slot="note">
       <span class="mr-3 inline-flex items-center gap-1.25"><span class:list={["size-2 rounded-control bg-current", hues.up]} />Up</span>
       <span class="mr-3 inline-flex items-center gap-1.25"><span class:list={["size-2 rounded-control bg-current", hues.down]} />Down</span>
-      <span class="inline-flex items-center gap-1.25"><span class="size-2 rounded-control border-[1.5px] border-muted" />Under {RANK_FLOOR} trades</span>
+      <span class="inline-flex items-center gap-1.25"><span class="flex gap-0.5"><span class="size-2 rounded-control bg-down/38" /><span class="size-2 rounded-control bg-up/38" /></span>Under {RANK_FLOOR} trades</span>
     </Fragment>
-    <Spread bins={bins} />
+    <Spread agents={lineup} reach={reach} format={scaled} />
   </Chart>
 
   <Chart

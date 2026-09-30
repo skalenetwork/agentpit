@@ -5,47 +5,67 @@ import { hues, tone } from "../../lib/leaderboard";
 import Readout from "./Readout.astro";
 
 interface Props {
-  bins: readonly (readonly Agent[])[];
+  agents: readonly Agent[];
+  reach: number;
+  format: (value: number) => string;
 }
 
+const { agents, reach, format } = Astro.props;
 const move = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 2 });
-const order = (agent: Agent) => (tone(agent.pnl) === "flat" ? 2 : 0) + (agent.trades < RANK_FLOOR ? 1 : 0);
+const depth = (value: number) => (Math.log10(1 + Math.abs(value) / 100) / Math.log10(1 + reach / 100)) * 50;
+const pc = (value: number) => `${+value.toFixed(2)}%`;
 ---
 
-<div class="relative -z-10"><span class="absolute inset-y-0 left-1/2 w-px bg-muted/55"></span></div>
-<div class="bins grid grid-cols-18 items-end">
+<div class="relative -z-10 text-caption leading-4 tabular-nums">
+  <span class="absolute inset-x-0 bottom-full h-px bg-line"><span class="absolute bottom-1 left-0">{format(reach)}</span></span>
+  <span class="absolute inset-x-0 bottom-1/2 h-px bg-muted/55"><span class="absolute bottom-1 left-0">{format(0)}</span></span>
+  <span class="absolute right-0 bottom-1">{format(-reach)}</span>
+</div>
+<div class="lineup grid grid-flow-col grid-rows-1 auto-cols-fr">
   {
-    Astro.props.bins.map((bin) => (
-      <div class="flex flex-col-reverse">
-        {bin
-          .toSorted((a, b) => order(a) - order(b) || Math.abs(a.pnl) - Math.abs(b.pnl))
-          .map((agent) => {
-            const mood = tone(agent.pnl);
-            return (
-              <div class="dot flex h-3 items-center justify-center sm:h-3.75" tabindex="-1">
-                <span class:list={["mark size-2.5 rounded-control sm:size-3", hues[mood], agent.trades < RANK_FLOOR ? "border-[1.5px] border-current" : "bg-current"]} />
-                <Readout floating fig={signedDollars(agent.pnl)} ctx={agent.name} tone={mood} avatar={agent.address}>
-                  {`${count(agent.trades)} ${agent.trades === 1 ? "trade" : "trades"}, ${mood === "flat" ? "flat" : `${mood} ${move.format(Math.abs(agent.returnPct))}%`} on paper`}
-                </Readout>
-              </div>
-            );
-          })}
-      </div>
-    ))
+    agents.map((agent) => {
+      const mood = tone(agent.pnl);
+      const height = mood === "flat" ? 1.5 : Math.max(depth(agent.pnl), 1.5);
+      return (
+        <div class:list={["bar min-w-0", mood, hues[mood], agent.trades < RANK_FLOOR && "few"]} tabindex="-1">
+          <svg class="block size-full overflow-visible" aria-hidden="true">
+            <line x1="50%" x2="50%" y2="100%" shape-rendering="crispEdges" />
+            <rect x="15%" y={pc(mood === "down" ? 50 : mood === "up" ? 50 - height : 49.25)} width="70%" height={pc(height)} />
+          </svg>
+          <Readout floating fig={signedDollars(agent.pnl)} ctx={agent.name} tone={mood} avatar={agent.address}>
+            {`${count(agent.trades)} ${agent.trades === 1 ? "trade" : "trades"}, ${mood === "flat" ? "flat" : `${mood} ${move.format(Math.abs(agent.returnPct))}%`} on paper`}
+          </Readout>
+        </div>
+      );
+    })
   }
 </div>
 
 <style>
-  .dot {
+  .bar {
+    cursor: crosshair;
     outline: none;
   }
-  .dot:is(:hover, .bins:not(:has(:hover)) :focus) {
+  rect {
+    fill: currentColor;
+  }
+  .up rect {
+    clip-path: inset(0 round 1.5px 1.5px 0 0) fill-box;
+  }
+  .down rect {
+    clip-path: inset(0 round 0 0 1.5px 1.5px) fill-box;
+  }
+  .few rect {
+    fill: color-mix(in oklab, currentColor 38%, transparent);
+  }
+  .bar:is(:hover, .lineup:not(:has(:hover)) :focus) {
     --show: flex;
 
-    & .mark {
-      box-shadow:
-        0 0 0 2px var(--color-surface),
-        0 0 0 3.5px var(--color-ink);
+    & line {
+      stroke: var(--color-muted);
+    }
+    & rect {
+      fill: var(--color-ink);
     }
   }
 </style>

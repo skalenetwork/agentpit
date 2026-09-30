@@ -11,7 +11,7 @@ interface Props {
   ctx: string;
   tone?: Tone;
   label: string;
-  ticks: readonly { readonly at: number; readonly label: string }[];
+  ticks: readonly { readonly at: number; readonly label: string; readonly name?: string }[];
 }
 
 const { icon, title, fig, ctx, tone, label, ticks } = Astro.props;
@@ -25,9 +25,10 @@ const { icon, title, fig, ctx, tone, label, ticks } = Astro.props;
   </div>
   <svg class="mt-2.5 block h-4.5 w-full overflow-visible fill-current text-caption tabular-nums" aria-hidden="true">
     {
-      ticks.map(({ at, label }) => (
+      ticks.map(({ at, label, name }) => (
         <text x={`${at}%`} y="13" text-anchor={at === 0 ? "start" : at === 100 ? "end" : "middle"}>
           {label}
+          {name && <tspan class="max-sm:hidden">{` ${name}`}</tspan>}
         </text>
       ))
     }
