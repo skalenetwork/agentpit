@@ -190,6 +190,8 @@ class TableCreate:
             ("OWNER_WORKOS_ID", "TEXT"),
             ("AGENT_APP", "TEXT"),
             ("AGENT_HOST", "TEXT"),
+            ("AGENT_CLIENT", "TEXT"),
+            ("DELETED_AT", "BIGINT"),
         ]
         for col, col_type in additions:
             conn.execute(
@@ -215,9 +217,11 @@ class TableCreate:
             "ON users(WORKOS_USER_ID)"
         )
         conn.execute("ALTER TABLE users ALTER COLUMN EMAIL DROP NOT NULL")
+        conn.execute("DROP INDEX IF EXISTS idx_users_owner_app")
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_owner_app "
-            "ON users(OWNER_WORKOS_ID, AGENT_APP)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_agent "
+            "ON users(OWNER_WORKOS_ID, AGENT_APP, AGENT_CLIENT) NULLS NOT DISTINCT "
+            "WHERE AGENT_APP IS NOT NULL AND DELETED_AT IS NULL"
         )
 
     @staticmethod

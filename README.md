@@ -310,7 +310,7 @@ Set `LIQUIDITY_ENGINE=false` to run a completely quiet local exchange instead.
 
 Four processes: Postgres, a local chain, the API, and (optionally) the UI.
 
-**Prerequisites:** Python 3.13, Postgres 14+, [Foundry](https://book.getfoundry.sh)
+**Prerequisites:** Python 3.13, Postgres 15+, [Foundry](https://book.getfoundry.sh)
 (`anvil`, `forge`, `cast`), `jq`, and Node 24 + Yarn 4 if you want the UI.
 
 ```bash

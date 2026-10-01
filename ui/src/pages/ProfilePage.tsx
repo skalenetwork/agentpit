@@ -229,7 +229,7 @@ export function ProfilePage() {
   if (agentAddress && !agent) return <Navigate to="/profile" replace />;
 
   const name = agent
-    ? (agent.handle ?? agent.app)
+    ? (agent.handle ?? agent.runner.label)
     : displayName(user.email, user.handle);
 
   return (

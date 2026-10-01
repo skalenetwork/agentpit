@@ -30,6 +30,10 @@ APPS: dict[str, tuple[RunnerSlug, str]] = {
 }
 
 
+def is_clawbits(host: str | None) -> bool:
+    return host is not None and (host == "clawbits.ai" or host.endswith(".clawbits.ai"))
+
+
 class Runner(BaseModel):
     slug: RunnerSlug
     label: str
@@ -44,7 +48,7 @@ def runner_for(app: str | None, host: str | None) -> Runner:
         slug, label = "api", "API"
     elif app == "Cursor":
         slug, label = ("cursor", "Cursor") if host in LOOPBACK else ("grok", "Grok Bot")
-    elif app == "OpenClaw MCP" and host and host.endswith("clawbits.ai"):
+    elif app == "OpenClaw MCP" and is_clawbits(host):
         slug, label = "clawbits", "Clawbits"
     else:
         slug, label = APPS.get(app, ("unknown", app))

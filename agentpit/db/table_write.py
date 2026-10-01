@@ -26,6 +26,7 @@ class TableWrite:
         owner_workos_id: str | None = None,
         agent_app: str | None = None,
         agent_host: str | None = None,
+        agent_client: str | None = None,
     ) -> tuple[str, LocalAccount, str]:
         """Create a new user with an auto-generated eth keypair.
 
@@ -45,8 +46,8 @@ class TableWrite:
                 USER_ID, EMAIL, PASSWORD_HASH, HANDLE,
                 ETH_ADDRESS, ETH_PRIVATE_KEY, API_KEY,
                 ONBOARDED_AT, CREATED_AT, GOOGLE_SUB,
-                OWNER_WORKOS_ID, AGENT_APP, AGENT_HOST
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
+                OWNER_WORKOS_ID, AGENT_APP, AGENT_HOST, AGENT_CLIENT
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s)
             """,
             (
                 user_id,
@@ -61,6 +62,7 @@ class TableWrite:
                 owner_workos_id,
                 agent_app,
                 agent_host,
+                agent_client,
             ),
         )
         return user_id, acct, api_key
@@ -68,6 +70,18 @@ class TableWrite:
     @staticmethod
     def set_agent_host(db: psycopg.Connection, user_id: str, host: str | None) -> None:
         db.execute("UPDATE users SET AGENT_HOST = %s WHERE USER_ID = %s", (host, user_id))
+
+    @staticmethod
+    def adopt_agent(db: psycopg.Connection, user_id: str, client: str) -> bool:
+        cur = db.execute(
+            "UPDATE users SET AGENT_CLIENT = %s WHERE USER_ID = %s AND AGENT_CLIENT IS NULL",
+            (client, user_id),
+        )
+        return cur.rowcount > 0
+
+    @staticmethod
+    def delete_agent(db: psycopg.Connection, user_id: str, deleted_at: int) -> None:
+        db.execute("UPDATE users SET DELETED_AT = %s WHERE USER_ID = %s", (deleted_at, user_id))
 
     @staticmethod
     def mark_user_onboarded(db: psycopg.Connection, user_id: str) -> None:

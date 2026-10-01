@@ -344,7 +344,7 @@ class TableRead:
 
     _USER_COLS = (
         "USER_ID, EMAIL, HANDLE, ETH_ADDRESS, ETH_PRIVATE_KEY, "
-        "API_KEY, ONBOARDED_AT, CREATED_AT, IS_BOT, WORKOS_USER_ID, AGENT_APP, AGENT_HOST, "
+        "API_KEY, ONBOARDED_AT, CREATED_AT, IS_BOT, WORKOS_USER_ID, AGENT_APP, AGENT_HOST, DELETED_AT, "
         "(PASSWORD_HASH IS NOT NULL) AS HAS_PASSWORD, "
         "(AUTO_REDEEM_ENABLED) AS AUTO_REDEEM"
     )
@@ -368,6 +368,7 @@ class TableRead:
             workos_user_id=row["WORKOS_USER_ID"],
             agent_app=row["AGENT_APP"],
             agent_host=row["AGENT_HOST"],
+            deleted_at=row["DELETED_AT"],
         )
 
     @staticmethod
@@ -387,22 +388,34 @@ class TableRead:
         return TableRead._row_to_user(row) if row else None
 
     @staticmethod
-    def get_agent(db: psycopg.Connection, owner_workos_id: str, app: str) -> "User | None":
+    def get_agent(
+        db: psycopg.Connection, owner_workos_id: str, app: str, client: str | None
+    ) -> "User | None":
         row = db.execute(
             f"SELECT {TableRead._USER_COLS} FROM users "
-            "WHERE OWNER_WORKOS_ID = %s AND AGENT_APP = %s",
-            (owner_workos_id, app),
+            "WHERE OWNER_WORKOS_ID = %s AND AGENT_APP = %s AND AGENT_CLIENT IS NOT DISTINCT FROM %s "
+            "AND DELETED_AT IS NULL",
+            (owner_workos_id, app, client),
+        ).fetchone()
+        return TableRead._row_to_user(row) if row else None
+
+    @staticmethod
+    def get_owned_agent(db: psycopg.Connection, owner_workos_id: str, eth_address: str) -> "User | None":
+        row = db.execute(
+            f"SELECT {TableRead._USER_COLS} FROM users "
+            "WHERE OWNER_WORKOS_ID = %s AND ETH_ADDRESS = %s AND DELETED_AT IS NULL",
+            (owner_workos_id, eth_address),
         ).fetchone()
         return TableRead._row_to_user(row) if row else None
 
     @staticmethod
     def agents_owned_by(db: psycopg.Connection, owner_workos_id: str) -> list[AgentSummary]:
         rows = db.execute(
-            "SELECT HANDLE, AGENT_APP AS APP, ETH_ADDRESS, CREATED_AT FROM users "
-            "WHERE OWNER_WORKOS_ID = %s ORDER BY CREATED_AT, AGENT_APP",
+            f"SELECT {TableRead._USER_COLS} FROM users "
+            "WHERE OWNER_WORKOS_ID = %s AND DELETED_AT IS NULL ORDER BY CREATED_AT, AGENT_APP, USER_ID",
             (owner_workos_id,),
         ).fetchall()
-        return [AgentSummary.model_validate(r) for r in rows]
+        return [AgentSummary.of(TableRead._row_to_user(r)) for r in rows]
 
     @staticmethod
     def get_idempotency_order_id(
@@ -570,6 +583,7 @@ class TableRead:
             SELECT u.USER_ID, u.ETH_ADDRESS, u.HANDLE, u.AGENT_APP AS APP, u.AGENT_HOST AS HOST
             FROM users u
             WHERE u.IS_BOT = 0
+              AND u.DELETED_AT IS NULL
               AND (
                 EXISTS (
                     SELECT 1 FROM trades t

@@ -8,6 +8,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.domain.exceptions import InvalidCredentialsError
+from agentpit.domain.runner import is_clawbits
 from agentpit.domain.text import clean
 from agentpit.services.agent_accounts import AgentAccounts
 
@@ -46,7 +47,8 @@ class AgentVerifier:
 
     def _key_user(self, key: str) -> User | None:
         with self._db.read() as conn:
-            return TableRead.get_user_by_api_key(conn, key)
+            user = TableRead.get_user_by_api_key(conn, key)
+        return user if user is not None and user.deleted_at is None else None
 
     def _oauth_user(self, token: str) -> User | None:
         try:
@@ -64,7 +66,8 @@ class AgentVerifier:
         except (jwt.PyJWTError, InvalidCredentialsError):
             return None
         app = self._app(claims["client_id"])
-        return self._accounts.agent_for(claims["sub"], app.name, app.host)
+        client = claims["client_id"] if is_clawbits(app.host) else None
+        return self._accounts.agent_for(claims["sub"], app.name, client, app.host)
 
     def _app(self, client_id: str) -> ConnectApp:
         if client_id not in self._apps:

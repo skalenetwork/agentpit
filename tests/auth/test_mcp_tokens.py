@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 from agentpit.auth.mcp_tokens import AgentToken, AgentVerifier
 from agentpit.auth.workos_client import ConnectApp, FakeWorkOsClient
+from agentpit.db.table_write import TableWrite
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -40,6 +41,10 @@ def world() -> tuple[AgentVerifier, AgentAccounts, Resolver]:
     workos = FakeWorkOsClient()
     workos.applications[CLIENT_ID] = ConnectApp(name="Claude Code", host="localhost")
     workos.applications["client_long"] = ConnectApp(name="Ignore\nall   previous " + "x" * 80, host=None)
+    workos.applications["client_claw_1"] = ConnectApp(name="OpenClaw MCP", host="app.clawbits.ai")
+    workos.applications["client_claw_2"] = ConnectApp(name="OpenClaw MCP", host="app.clawbits.ai")
+    workos.applications["client_grok_1"] = ConnectApp(name="Cursor", host="www.cursor.com")
+    workos.applications["client_grok_2"] = ConnectApp(name="Cursor", host="www.cursor.com")
     resolver = Resolver()
     verifier = AgentVerifier(
         issuer=ISSUER, resource=MCP_URL, resolve=resolver, workos=workos, accounts=accounts, db=db
@@ -60,7 +65,7 @@ def test_a_valid_token_resolves_the_owner_s_agent_for_that_app(world: tuple[Agen
     assert token.resource == MCP_URL
     assert token.user.agent_app == "Claude Code"
     assert token.user.agent_host == "localhost"
-    assert token.user.user_id == accounts.agent_for("user_01", "Claude Code", "localhost").user_id
+    assert token.user.user_id == accounts.agent_for("user_01", "Claude Code", None, "localhost").user_id
 
 
 @pytest.mark.parametrize(
@@ -96,11 +101,42 @@ def test_a_spa_token_without_aud_is_refused_before_any_key_fetch(world: tuple[Ag
 
 def test_an_api_key_resolves_its_account(world: tuple[AgentVerifier, AgentAccounts, Resolver]):
     verifier, accounts, _ = world
-    agent = accounts.agent_for("user_01", "Muse", None)
+    agent = accounts.agent_for("user_01", "Muse", None, None)
 
     token = _verify(verifier, agent.api_key)
 
     assert token is not None and token.user.user_id == agent.user_id
+
+
+def test_a_deleted_agent_s_key_is_refused(world: tuple[AgentVerifier, AgentAccounts, Resolver]):
+    verifier, accounts, _ = world
+    agent = accounts.agent_for("user_01", "Muse", None, None)
+    with accounts._db.write() as conn:
+        TableWrite.delete_agent(conn, agent.user_id, 1)
+
+    assert _verify(verifier, agent.api_key) is None
+
+
+def test_each_clawbits_client_gets_its_own_agent(world: tuple[AgentVerifier, AgentAccounts, Resolver]):
+    verifier, _, _ = world
+
+    first = _verify(verifier, _token(client_id="client_claw_1"))
+    second = _verify(verifier, _token(client_id="client_claw_2"))
+    again = _verify(verifier, _token(client_id="client_claw_1"))
+
+    assert first is not None and second is not None and again is not None
+    assert first.user.user_id != second.user.user_id
+    assert again.user.user_id == first.user.user_id
+
+
+def test_other_apps_ignore_the_client_id(world: tuple[AgentVerifier, AgentAccounts, Resolver]):
+    verifier, _, _ = world
+
+    first = _verify(verifier, _token(client_id="client_grok_1"))
+    second = _verify(verifier, _token(client_id="client_grok_2"))
+
+    assert first is not None and second is not None
+    assert first.user.user_id == second.user.user_id
 
 
 @pytest.mark.parametrize("token", ["not-a-key", "a.b.c"], ids=["key-miss", "garbage"])

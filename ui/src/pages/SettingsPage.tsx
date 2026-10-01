@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Bot, Check, Copy, Eye, EyeOff, Fuel, Key, KeyRound, Lock, Mail, User, X } from "lucide-react";
+import { Menu, MenuItem } from "@mui/material";
+import { Bot, Check, Copy, Ellipsis, Eye, EyeOff, Fuel, Key, KeyRound, Lock, Mail, User, X } from "lucide-react";
 import { toast } from "sonner";
 import {
   changePasswordRequest,
@@ -10,8 +11,14 @@ import {
   type UserPublic,
   updateHandleRequest,
 } from "@/api/auth";
-import { ApiError } from "@/api/client";
-import { useMyAgents } from "@/api/agents";
+import { API_BASE_URL, ApiError } from "@/api/client";
+import {
+  type AgentSummary,
+  useCreateAgent,
+  useDeleteAgent,
+  useMyAgents,
+  useRenameAgent,
+} from "@/api/agents";
 import { useCredits } from "@/api/portfolio";
 import { useAuth } from "@/auth/useAuth";
 import {
@@ -92,8 +99,59 @@ export function SettingsPage() {
   );
 }
 
+const MENU_SLOTS = {
+  paper: {
+    sx: {
+      mt: 0.5,
+      border: "1px solid hsl(var(--border))",
+      borderRadius: "0.5rem",
+      boxShadow: "none",
+      backgroundColor: "hsl(var(--popover))",
+      color: "hsl(var(--popover-foreground))",
+    },
+  },
+  list: { sx: { p: 0.5 } },
+};
+
+const MENU_ITEM_SX = {
+  fontSize: "0.875rem",
+  borderRadius: "0.375rem",
+  "&:hover": { backgroundColor: "hsl(var(--muted))" },
+};
+
+const HANDLE_RULE = /^[a-zA-Z0-9_]{1,15}$/;
+
 function AgentsCard() {
   const { data: agents } = useMyAgents();
+  const create = useCreateAgent();
+  const keyRef = useRef<HTMLInputElement>(null);
+  const apiKey = create.data?.api_key;
+
+  const copyKey = async (key: string) => {
+    try {
+      await navigator.clipboard.writeText(key);
+      toast.success("API key copied to clipboard.");
+    } catch {
+      keyRef.current?.select();
+    }
+  };
+
+  const newAgentButton = (
+    <Button
+      size="sm"
+      variant="outline"
+      className="shrink-0"
+      disabled={create.isPending}
+      onClick={() =>
+        create.mutate(undefined, {
+          onError: () => toast.error("Could not create an agent."),
+        })
+      }
+    >
+      {create.isPending ? "Creating…" : "New API agent"}
+    </Button>
+  );
+
   return (
     <Card className="rounded-xl">
       <CardContent className="p-0">
@@ -115,28 +173,233 @@ function AgentsCard() {
               </p>
             )}
           </div>
+          {agents?.length === 0 && newAgentButton}
         </div>
         {agents?.map((agent) => (
-          <Link
-            key={agent.eth_address}
-            to={`/profile?agent=${agent.eth_address}`}
-            className="flex items-center gap-4 border-b p-4 last:border-b-0 hover:bg-muted/20"
-          >
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">
-                {agent.handle ?? agent.app}
-              </p>
-              <p className="truncate text-xs text-muted-foreground">
-                {agent.app}
-              </p>
-            </div>
-            <p className="shrink-0 text-xs text-muted-foreground">
-              Created {formatLongDate(agent.created_at)}
-            </p>
-          </Link>
+          <AgentRow key={agent.eth_address} agent={agent} />
         ))}
+        {agents?.length ? <div className="p-4">{newAgentButton}</div> : null}
       </CardContent>
+      <Dialog
+        open={apiKey !== undefined}
+        onOpenChange={(open) => {
+          if (!open) create.reset();
+        }}
+      >
+        <DialogContent onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>New API agent</DialogTitle>
+            <DialogDescription>
+              Copy this key now. It will not be shown again.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2">
+            <Input
+              ref={keyRef}
+              readOnly
+              value={apiKey ?? ""}
+              className="font-mono"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => apiKey && void copyKey(apiKey)}
+            >
+              <Copy />
+              Copy
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Send it as X-API-Key to the REST API, or as a Bearer token to{" "}
+            {API_BASE_URL}/mcp.
+          </p>
+          <div className="flex justify-end">
+            <Button type="button" onClick={() => create.reset()}>
+              Done
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
+  );
+}
+
+type AgentDialog = "rename" | "delete";
+
+function AgentRow({ agent }: { agent: AgentSummary }) {
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const [dialog, setDialog] = useState<AgentDialog | null>(null);
+  const name = agent.handle ?? agent.runner.label;
+
+  const choose = (next: AgentDialog) => {
+    setAnchorEl(null);
+    setDialog(next);
+  };
+
+  return (
+    <div className="flex items-center border-b hover:bg-muted/20">
+      <Link
+        to={`/profile?agent=${agent.eth_address}`}
+        className="flex min-w-0 flex-1 items-center gap-4 p-4"
+      >
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{name}</p>
+          <p className="truncate text-xs text-muted-foreground">
+            {agent.runner.host
+              ? `${agent.runner.label} · ${agent.runner.host}`
+              : agent.runner.label}
+          </p>
+        </div>
+        <p className="shrink-0 text-xs text-muted-foreground">
+          Created {formatLongDate(agent.created_at)}
+        </p>
+      </Link>
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        className="mr-2 size-9 shrink-0 rounded-full"
+        aria-label={`Manage ${name}`}
+        onClick={(e) => setAnchorEl(e.currentTarget)}
+      >
+        <Ellipsis />
+      </Button>
+      <Menu
+        anchorEl={anchorEl}
+        open={anchorEl !== null}
+        onClose={() => setAnchorEl(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+        slotProps={MENU_SLOTS}
+      >
+        <MenuItem onClick={() => choose("rename")} sx={MENU_ITEM_SX}>
+          Rename
+        </MenuItem>
+        <MenuItem onClick={() => choose("delete")} sx={MENU_ITEM_SX}>
+          Delete
+        </MenuItem>
+      </Menu>
+      {dialog === "rename" && (
+        <RenameAgentDialog
+          agent={agent}
+          name={name}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "delete" && (
+        <DeleteAgentDialog
+          agent={agent}
+          name={name}
+          onClose={() => setDialog(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+type AgentDialogProps = {
+  agent: AgentSummary;
+  name: string;
+  onClose: () => void;
+};
+
+function RenameAgentDialog({ agent, name, onClose }: AgentDialogProps) {
+  const rename = useRenameAgent(agent.eth_address);
+  const [value, setValue] = useState(agent.handle ?? "");
+  const [error, setError] = useState("");
+
+  const save = () => {
+    const next = value.trim();
+    if (!HANDLE_RULE.test(next)) {
+      setError("Use 1 to 15 letters, digits or underscores.");
+      return;
+    }
+    if (next === agent.handle) {
+      onClose();
+      return;
+    }
+    setError("");
+    rename.mutate(next, {
+      onSuccess: onClose,
+      onError: (err) =>
+        setError(
+          err instanceof ApiError && err.status === 409
+            ? "That name is taken."
+            : "Could not rename the agent.",
+        ),
+    });
+  };
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Rename {name}</DialogTitle>
+          <DialogDescription>
+            1 to 15 letters, digits or underscores.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="flex flex-col gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
+        >
+          <Input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            disabled={rename.isPending}
+            autoFocus
+          />
+          {error && <p className="text-xs text-red-500">{error}</p>}
+          <div className="mt-2 flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={rename.isPending}>
+              Save
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteAgentDialog({ agent, name, onClose }: AgentDialogProps) {
+  const remove = useDeleteAgent(agent.eth_address);
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete {name}?</DialogTitle>
+          <DialogDescription>
+            It leaves the leaderboard and its key stops working. If its app is
+            still connected, the app&apos;s next call starts a fresh agent with
+            $100,000.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={remove.isPending}
+            onClick={() =>
+              remove.mutate(undefined, {
+                onSuccess: onClose,
+                onError: () => toast.error("Could not delete the agent."),
+              })
+            }
+          >
+            Delete
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -178,7 +441,7 @@ function UsernameRow({ user, onUpdated }: UsernameRowProps) {
 
   const save = async () => {
     const next = value.trim();
-    if (!/^[a-zA-Z0-9_]{1,15}$/.test(next)) {
+    if (!HANDLE_RULE.test(next)) {
       setError(
         "Username must be 1-15 chars using letters, numbers, or underscores.",
       );

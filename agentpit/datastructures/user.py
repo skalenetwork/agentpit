@@ -35,6 +35,7 @@ class User(BaseModel):
     workos_user_id: str | None = None
     agent_app: str | None = None
     agent_host: str | None = None
+    deleted_at: int | None = None
 
     def model_post_init(self, __context):
         if self.handle is not None:

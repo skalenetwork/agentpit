@@ -72,7 +72,7 @@ def make_current_user_dep(authkit: AuthKitVerifier | None):
         if api_key:
             with db.read() as conn:
                 user = TableRead.get_user_by_api_key(conn, api_key)
-            if user is None:
+            if user is None or user.deleted_at is not None:
                 raise _unauth("invalid api key")
             return user
 

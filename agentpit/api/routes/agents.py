@@ -33,7 +33,7 @@ def get_agent_card(address: str, db: SessionDep, settings: SettingsDep) -> Respo
         return Response(status_code=404)
     with db.read() as conn:
         user = TableRead.get_user_by_eth_address(conn, checksummed)
-    if user is None:
+    if user is None or user.deleted_at is not None:
         return Response(status_code=404)
     try:
         robot = fetch_robot(settings.landing_url, user.eth_address)

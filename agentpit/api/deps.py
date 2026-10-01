@@ -11,6 +11,7 @@ from agentpit.db.session import DbSession
 from agentpit.domain.exceptions import FeatureDisabledError
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.services.account_service import AccountService
+from agentpit.services.agent_accounts import AgentAccounts
 from agentpit.services.agent_service import AgentService
 from agentpit.services.auth_service import AuthService
 from agentpit.services.authkit_service import AuthKitService
@@ -203,3 +204,25 @@ def get_authkit_service(
 
 
 AuthKitServiceDep = Annotated[AuthKitService, Depends(get_authkit_service)]
+
+
+def get_agent_accounts(db: SessionDep, auth: AuthServiceDep) -> AgentAccounts:
+    return AgentAccounts(db, auth._onboard_new_account)
+
+
+AgentAccountsDep = Annotated[AgentAccounts, Depends(get_agent_accounts)]
+
+
+def get_owner(
+    user: CurrentUserDep,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> str:
+    if x_api_key is not None or user.workos_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="sign in to the AgentPit dashboard to manage agents",
+        )
+    return user.workos_user_id
+
+
+OwnerDep = Annotated[str, Depends(get_owner)]

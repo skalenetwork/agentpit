@@ -19,7 +19,7 @@ plain = create_app(Settings(workos_authkit_domain=""))
 
 def _agent() -> User:
     return AgentAccounts(fresh_test_db(), lambda *_: pytest.fail("agent_for must not onboard")).agent_for(
-        "user_owner", "Claude", None
+        "user_owner", "Claude", None, None
     )
 
 

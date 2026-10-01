@@ -4,15 +4,19 @@ import psycopg.errors
 
 from fastapi import APIRouter, Response
 from pydantic import BaseModel
+from web3 import Web3
 
 from agentpit.api.deps import (
+    AgentAccountsDep,
     AuthServiceDep,
     BalanceServiceDep,
     CurrentUserDep,
     OnchainAdminDep,
+    OrderServiceDep,
+    OwnerDep,
     SessionDep,
 )
-from agentpit.datastructures.agent_summary import AgentSummary
+from agentpit.datastructures.agent_summary import AgentSummary, NewAgent
 from agentpit.datastructures.auth_response import UserPublic
 from agentpit.datastructures.change_password_request import ChangePasswordRequest
 from agentpit.datastructures.private_key_request import (
@@ -20,9 +24,11 @@ from agentpit.datastructures.private_key_request import (
     PrivateKeyResponse,
 )
 from agentpit.datastructures.update_handle_request import UpdateHandleRequest
+from agentpit.datastructures.user import User
+from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import HandleAlreadyExistsError
+from agentpit.domain.exceptions import HandleAlreadyExistsError, UserNotFoundError
 
 router = APIRouter(tags=["users"])
 
@@ -56,6 +62,46 @@ def get_my_agents(user: CurrentUserDep, db: SessionDep) -> list[AgentSummary]:
         return []
     with db.read() as conn:
         return TableRead.agents_owned_by(conn, user.workos_user_id)
+
+
+@router.post("/me/agents", response_model=NewAgent, status_code=201)
+def create_my_agent(owner: OwnerDep, accounts: AgentAccountsDep) -> NewAgent:
+    agent = accounts.create_api_agent(owner)
+    return NewAgent(**AgentSummary.of(agent).model_dump(), api_key=agent.api_key)
+
+
+@router.patch("/me/agents/{address}", response_model=AgentSummary)
+def rename_my_agent(
+    address: str, payload: UpdateHandleRequest, owner: OwnerDep, db: SessionDep
+) -> AgentSummary:
+    agent = _owned_agent(db, owner, address)
+    try:
+        with db.write() as conn:
+            TableWrite.update_user_handle(conn, agent.user_id, payload.handle)
+    except psycopg.errors.UniqueViolation as exc:
+        raise HandleAlreadyExistsError(payload.handle) from exc
+    return AgentSummary.of(agent.model_copy(update={"handle": payload.handle}))
+
+
+@router.delete("/me/agents/{address}", status_code=204)
+def delete_my_agent(address: str, owner: OwnerDep, db: SessionDep, orders: OrderServiceDep) -> Response:
+    agent = _owned_agent(db, owner, address)
+    with db.write() as conn:
+        TableWrite.delete_agent(conn, agent.user_id, int(time.time()))
+    orders.cancel_all(agent)
+    return Response(status_code=204)
+
+
+def _owned_agent(db: DbSession, owner: str, address: str) -> User:
+    try:
+        checksummed = Web3.to_checksum_address(address)
+    except ValueError as exc:
+        raise UserNotFoundError("agent not found") from exc
+    with db.read() as conn:
+        agent = TableRead.get_owned_agent(conn, owner, checksummed)
+    if agent is None:
+        raise UserNotFoundError("agent not found")
+    return agent
 
 
 @router.patch("/me", response_model=UserPublic)
