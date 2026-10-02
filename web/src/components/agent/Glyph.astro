@@ -3,12 +3,15 @@ import { marketIcon } from "../../lib/marketIcon";
 
 interface Props {
   title: string;
+  icon: string | null;
   category: string | null;
   class?: string;
 }
 
-const { title, category, class: className } = Astro.props;
+const { title, icon, category, class: className } = Astro.props;
 const Icon = marketIcon({ question: title, category });
 ---
 
-<span class:list={["relative grid size-8 shrink-0 place-items-center rounded-control bg-paper", className]}><Icon class="size-4 text-ink" aria-hidden="true" /></span>
+<span class:list={["relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-[28%] bg-paper", icon && "ring-1 ring-line", className]}>
+  {icon ? <img src={icon} alt="" loading="lazy" decoding="async" class="size-full object-cover" /> : <Icon class="size-4 text-ink" aria-hidden="true" />}
+</span>

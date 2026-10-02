@@ -38,6 +38,7 @@ export interface Neighbour {
 
 export interface OpenPosition {
   readonly title: string;
+  readonly icon: string | null;
   readonly category: string | null;
   readonly outcome: string;
   readonly avgPrice: number;
@@ -49,6 +50,7 @@ export interface OpenPosition {
 
 export interface Call {
   readonly title: string;
+  readonly icon: string | null;
   readonly category: string | null;
   readonly outcome: string;
   readonly entry: number;
@@ -64,6 +66,7 @@ export interface Fill {
   readonly shares: number;
   readonly dollars: number;
   readonly title: string;
+  readonly icon: string | null;
   readonly category: string | null;
 }
 

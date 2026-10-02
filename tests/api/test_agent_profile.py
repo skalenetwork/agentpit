@@ -98,6 +98,7 @@ def test_a_lowercase_address_answers_with_the_checksummed_one():
             "shares": 4.0,
             "dollars": "1000000",
             "title": "Will Bitcoin dip?",
+            "icon": None,
             "category": "Crypto",
         }
     ]
@@ -230,7 +231,7 @@ def test_the_record_counts_decided_positions_oldest_first():
     assert (record["wins"], record["losses"]) == (1, 2)
     assert record["pnls"] == ["-20000000", "-5000000", "10000000"]
     assert record["best"] == {
-        "title": "Won", "category": "Crypto", "outcome": "Yes", "entry": 0.4, "exit": 1.0, "pnl": "10000000",
+        "title": "Won", "icon": None, "category": "Crypto", "outcome": "Yes", "entry": 0.4, "exit": 1.0, "pnl": "10000000",
     }
     assert (record["worst"]["title"], record["worst"]["category"], record["worst"]["exit"]) == ("Lost", None, 0.0)
     assert body["positions"]["count"] == 0

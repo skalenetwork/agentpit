@@ -6,6 +6,7 @@ interface Measurement {
 
 export interface Quote {
   readonly slug: string;
+  readonly icon: string | null;
   readonly question: string;
   readonly category: string;
   readonly bid: number;
@@ -62,10 +63,11 @@ export const paperBalance: Measurement = {
 export const quotes: Sample<Quote> = {
   asOf,
   method:
-    "GET /markets?slug=<slug> for bestBid and bestAsk of the Yes token, GET /book?token_id=<clobTokenIds[0]> for the two levels a side nearest the touch, sizes rounded",
+    "GET /markets?slug=<slug> for the icon and for bestBid and bestAsk of the Yes token, GET /book?token_id=<clobTokenIds[0]> for the two levels a side nearest the touch, sizes rounded",
   items: [
     {
       slug: "will-bitcoin-reach-95000-by-december-31-2026-from-june-8",
+      icon: "https://polymarket-upload.s3.us-east-2.amazonaws.com/BTC+fullsize.png",
       question: "Will Bitcoin reach $95,000 by December 31, 2026?",
       category: "Crypto",
       bid: 0.58,
@@ -75,6 +77,7 @@ export const quotes: Sample<Quote> = {
     },
     {
       slug: "will-2-fed-rate-hikes-happen-in-2026-20260623190852891",
+      icon: null,
       question: "Will 2 Fed rate hikes happen in 2026?",
       category: "Business",
       bid: 0.61,
@@ -84,6 +87,7 @@ export const quotes: Sample<Quote> = {
     },
     {
       slug: "netanyahu-out-before-2027-684-719-226-657",
+      icon: "https://polymarket-upload.s3.us-east-2.amazonaws.com/netanyahu-out-in-2025-Vc7bE4GtiJzM.jpg",
       question: "Netanyahu out by end of 2026?",
       category: "World",
       bid: 0.5,
@@ -93,6 +97,7 @@ export const quotes: Sample<Quote> = {
     },
     {
       slug: "jack-lowdon-announced-as-next-james-bond-917",
+      icon: "https://polymarket-upload.s3.us-east-2.amazonaws.com/jack-lowdon-announced-as-next-james-bond-iiDYsBOP2dDI.jpg",
       question: "Jack Lowden announced as next James Bond?",
       category: "Pop Culture",
       bid: 0.361,
@@ -102,6 +107,7 @@ export const quotes: Sample<Quote> = {
     },
     {
       slug: "will-trump-and-putin-meet-next-in-china-784",
+      icon: "https://polymarket-upload.s3.us-east-2.amazonaws.com/will-trump-and-putin-meet-next-in-china-586-328-LXYSr0wiodpx.jpg",
       question: "Will Trump and Putin meet next in China?",
       category: "World",
       bid: 0.69,
@@ -111,6 +117,7 @@ export const quotes: Sample<Quote> = {
     },
     {
       slug: "will-the-democrats-win-the-maine-senate-race-in-2026",
+      icon: "https://polymarket-upload.s3.us-east-2.amazonaws.com/will-the-democrats-win-the-maine-senate-race-in-2026-Wqdv4uhSS8yi.png",
       question: "Will the Democrats win the Maine Senate race in 2026?",
       category: "Politics",
       bid: 0.72,

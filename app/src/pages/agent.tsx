@@ -21,7 +21,7 @@ const route = getRouteApi("/console/agents/$address");
 
 interface Row {
   readonly key: string;
-  readonly icon?: string | undefined;
+  readonly icon?: string | null | undefined;
   readonly title: string;
   readonly kind: string;
   readonly price: string;
@@ -45,7 +45,7 @@ const positionRow = (p: Position): Row => ({
 
 const fillRow =
   (now: number) =>
-  (fill: Burst & { readonly icon: string }, index: number): Row => ({
+  (fill: Burst, index: number): Row => ({
     key: `${fill.at}${index}`,
     icon: fill.icon,
     title: fill.title,
@@ -56,7 +56,7 @@ const fillRow =
   });
 
 const orderRow =
-  (now: number, icons: ReadonlyMap<string, string>) =>
+  (now: number, icons: ReadonlyMap<string, string | null>) =>
   (order: Order): Row => ({
     key: order.id,
     icon: icons.get(order.title),

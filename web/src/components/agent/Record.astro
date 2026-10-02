@@ -45,7 +45,7 @@ const calls = decided === 1 ? [{ label: "Only call", call: best }] : [{ label: l
             <span class:list={["text-small font-medium tabular-nums", hues[tone(call.pnl)]]}>{signedDollars(call.pnl)}</span>
           </p>
           <div class="mt-2 flex items-start gap-3">
-            <Glyph title={call.title} category={call.category} />
+            <Glyph title={call.title} icon={call.icon} category={call.category} />
             <div class="min-w-0 flex-1">
               <p class="line-clamp-2 text-small text-ink">{call.title}</p>
               <p class="mt-1 flex items-center gap-2 text-caption tabular-nums">

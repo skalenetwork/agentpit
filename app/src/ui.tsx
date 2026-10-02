@@ -51,7 +51,7 @@ export const Runner = ({ runner }: { runner: RunnerInfo }) => {
   );
 };
 
-export const Thumb = ({ src }: { src: string | undefined }) =>
+export const Thumb = ({ src }: { src: string | null | undefined }) =>
   src ? (
     <img src={src} alt="" loading="lazy" className="size-8 shrink-0 rounded-item bg-surface object-cover ring-1 ring-line" />
   ) : (

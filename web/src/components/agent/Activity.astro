@@ -32,7 +32,7 @@ const rows = threads(bursts(activity).slice(0, 5)).map(([head, ...rest]) => ({ h
     {
       rows.map(({ head, rest }) => (
         <li class="border-t border-line py-4 first:border-t-0 first:pt-0 last:pb-0">
-          <MarketRow title={head.title} category={head.category} rail={rest.length > 0}>
+          <MarketRow title={head.title} icon={head.icon} category={head.category} rail={rest.length > 0}>
             <Fragment slot="what">
               <span class="flex items-center gap-2">
                 {head.verb}

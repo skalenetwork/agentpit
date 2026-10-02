@@ -46,6 +46,7 @@ class Money(BaseModel):
 
 class OpenPosition(BaseModel):
     title: str
+    icon: str | None
     category: str | None
     outcome: str
     avgPrice: float
@@ -81,6 +82,7 @@ class Book(BaseModel):
 
 class Call(BaseModel):
     title: str
+    icon: str | None
     category: str | None
     outcome: str
     entry: float
@@ -104,6 +106,7 @@ class Fill(BaseModel):
     shares: float
     dollars: str
     title: str
+    icon: str | None
     category: str | None
 
 
@@ -199,6 +202,7 @@ def build_profile(
         best, worst = (
             Call(
                 title=p.title,
+                icon=p.icon or None,
                 category=categories.get(p.conditionId),
                 outcome=p.outcome,
                 entry=p.avgPrice,
@@ -258,6 +262,7 @@ def build_profile(
             top=[
                 OpenPosition(
                     title=p.title,
+                    icon=p.icon or None,
                     category=categories.get(p.conditionId),
                     outcome=p.outcome,
                     avgPrice=p.avgPrice,
@@ -280,6 +285,7 @@ def build_profile(
                 shares=f.size,
                 dollars=_money(f.usdcSize),
                 title=f.title,
+                icon=f.icon or None,
                 category=categories.get(f.conditionId),
             )
             for f in fills

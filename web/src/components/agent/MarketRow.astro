@@ -3,11 +3,12 @@ import Glyph from "./Glyph.astro";
 
 interface Props {
   title: string;
+  icon: string | null;
   category: string | null;
   rail?: boolean;
 }
 
-const { title, category, rail = false } = Astro.props;
+const { title, icon, category, rail = false } = Astro.props;
 ---
 
 <div
@@ -16,7 +17,7 @@ const { title, category, rail = false } = Astro.props;
     rail && "relative before:absolute before:top-4 before:bottom-0 before:left-4 before:w-px before:-translate-x-1/2 before:bg-line sm:before:top-1/2",
   ]}
 >
-  <Glyph class="row-span-2 self-start sm:self-center" title={title} category={category} />
+  <Glyph class="row-span-2 self-start sm:self-center" title={title} icon={icon} category={category} />
   <p class="col-span-2 line-clamp-2 text-small text-ink sm:col-span-1 sm:truncate">{title}</p>
   <p class="col-start-2 mt-2 flex min-w-0 items-center gap-2 overflow-hidden text-caption whitespace-nowrap tabular-nums sm:mt-1"><slot name="what" /></p>
   <div class="col-start-3 row-start-2 mt-2 text-right whitespace-nowrap tabular-nums sm:row-span-2 sm:row-start-1 sm:mt-0 sm:self-start"><slot name="value" /></div>

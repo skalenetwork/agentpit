@@ -12,6 +12,7 @@ const fill = (at: number, change: Partial<Fill> = {}): Fill => ({
   shares: 100,
   dollars: 2,
   title: nobel,
+  icon: null,
   category: "World",
   ...change,
 });

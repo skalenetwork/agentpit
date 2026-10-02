@@ -59,8 +59,8 @@ const AGENTS = ["agents"];
 
 const agent = ({ handle, equity, earned, ...rest }: WireAgent): Agent => ({ ...rest, name: handle ?? rest.runner.label, equity: usd(equity), earned: usd(earned) });
 
-const fill = (wire: WireActivity): Fill & { readonly icon: string } => ({
-  icon: wire.icon,
+const fill = (wire: WireActivity): Fill => ({
+  icon: wire.icon || null,
   at: wire.timestamp,
   type: wire.type,
   side: wire.side || null,

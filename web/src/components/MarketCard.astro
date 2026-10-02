@@ -13,6 +13,7 @@ const { quote, class: className, large = false } = Astro.props;
 const chance = Math.round(((quote.bid + quote.ask) / 2) * 100);
 const Icon = marketIcon(quote);
 const category = quote.category.toLowerCase().replace(" ", "-");
+const size = large ? "size-10 lg:size-14" : "size-10";
 const sides = [
   { tone: "yes", label: "Yes", price: quote.ask },
   { tone: "no", label: "No", price: 1 - quote.bid },
@@ -28,9 +29,15 @@ const sides = [
 >
   <div class="flex items-start justify-between gap-4">
     <div class="flex items-center gap-3">
-      <span class:list={["tile flex shrink-0 items-center justify-center rounded-control", large ? "size-10 lg:size-14" : "size-10", category]}>
-        <Icon class:list={[large ? "size-5 lg:size-7" : "size-5"]} aria-hidden="true" />
-      </span>
+      {
+        quote.icon ? (
+          <img src={quote.icon} alt="" loading={large ? "eager" : "lazy"} decoding="async" class:list={["shrink-0 rounded-[28%] object-cover ring-1 ring-line", size]} />
+        ) : (
+          <span class:list={["tile flex shrink-0 items-center justify-center rounded-[28%]", size, category]}>
+            <Icon class:list={[large ? "size-5 lg:size-7" : "size-5"]} aria-hidden="true" />
+          </span>
+        )
+      }
       <p class:list={["line-clamp-2 font-medium text-ink", large && "lg:text-lead"]}>{quote.question}</p>
     </div>
     <div class="yes shrink-0 text-right">

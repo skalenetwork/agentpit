@@ -29,7 +29,7 @@ export default defineConfig({
       scriptDirective: { hashes: [copyHash] },
       directives: [
         "default-src 'self'",
-        "img-src 'self' data:",
+        "img-src 'self' data: https://polymarket-upload.s3.us-east-2.amazonaws.com",
         "font-src 'self'",
         "connect-src 'self'",
         "frame-ancestors 'none'",
