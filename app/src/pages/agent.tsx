@@ -7,10 +7,10 @@ import { ArrowUpRight } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { type Agent, type Order, type Position, useActivity, useAgents, useDeleteAgent, useOrders, usePositions, useProfile, useRenameAgent } from "../api";
 import { Chart, closeDay } from "../chart";
-import { LastTrade, runnerLabel, signedPercent, tone, when } from "../labels";
+import { LastTrade, signedPercent, tone, when } from "../labels";
 import { ApiError } from "../session";
 import { Crumbs } from "../shell";
-import { Button, Copy, Fact, Fault, Input, Note, Robot, Sheet } from "../ui";
+import { Button, Copy, Fact, Fault, Input, Note, Robot, Runner, Sheet, Thumb } from "../ui";
 
 const VISIBLE = 8;
 const TABS = ["positions", "activity", "orders", "details"] as const;
@@ -21,6 +21,7 @@ const route = getRouteApi("/console/agents/$address");
 
 interface Row {
   readonly key: string;
+  readonly icon?: string | undefined;
   readonly title: string;
   readonly kind: string;
   readonly price: string;
@@ -33,6 +34,7 @@ const VERB = { REDEEM: "Redeemed", SPLIT: "Split", MERGE: "Merged" };
 
 const positionRow = (p: Position): Row => ({
   key: p.asset,
+  icon: p.icon,
   title: p.title,
   kind: p.outcome,
   price: `${cents(p.avgPrice)} → ${cents(p.curPrice)}`,
@@ -43,8 +45,9 @@ const positionRow = (p: Position): Row => ({
 
 const fillRow =
   (now: number) =>
-  (fill: Burst, index: number): Row => ({
+  (fill: Burst & { readonly icon: string }, index: number): Row => ({
     key: `${fill.at}${index}`,
+    icon: fill.icon,
     title: fill.title,
     kind: `${fill.type === "TRADE" ? (fill.side === "BUY" ? "Bought" : "Sold") : VERB[fill.type]} ${fill.outcome ?? ""}`,
     price: fill.type === "TRADE" && fill.shares ? cents(fill.dollars / fill.shares) : "",
@@ -53,9 +56,10 @@ const fillRow =
   });
 
 const orderRow =
-  (now: number) =>
+  (now: number, icons: ReadonlyMap<string, string>) =>
   (order: Order): Row => ({
     key: order.id,
+    icon: icons.get(order.title),
     title: order.title,
     kind: `${order.side === "BUY" ? "Buy" : "Sell"} ${order.outcome}`,
     price: cents(Number(order.price)),
@@ -81,6 +85,7 @@ const List = <T,>({ query, noun, head, row }: { query: UseQueryResult<readonly T
       <ul className="border-t border-line lg:border-t-0">
         {(all ? rows : rows.slice(0, VISIBLE)).map((item) => (
           <li key={item.key} className="flex min-h-14 items-center gap-4 border-b border-line py-2.5 tabular-nums">
+            <Thumb src={item.icon} />
             <span className="min-w-0 flex-1">
               <span className="line-clamp-2 lg:line-clamp-1">{item.title}</span>
               <span className="mt-0.5 block truncate text-caption text-muted lg:hidden">{[item.kind, item.price].filter(Boolean).join(" · ")}</span>
@@ -171,6 +176,7 @@ const View = ({ agent, tab }: { agent: Agent; tab: Tab }) => {
   const positions = usePositions(agent);
   const activity = useActivity(agent);
   const orders = useOrders(agent);
+  const icons = new Map([...(positions.data ?? []), ...(activity.data ?? [])].map((item) => [item.title, item.icon]));
   const traded = agent.trades > 0;
   const trend = profile?.money.trend ?? [];
   const counts: Partial<Record<Tab, number>> = { positions: profile?.positions.count, orders: orders.data?.length };
@@ -183,7 +189,7 @@ const View = ({ agent, tab }: { agent: Agent; tab: Tab }) => {
           <Button variant="ghost" onClick={() => setSheet("rename")}>
             Rename
           </Button>
-          <Button variant="ghost" className="-mr-3.5" onClick={() => setSheet("delete")}>
+          <Button variant="warn" className="-mr-3.5" onClick={() => setSheet("delete")}>
             Delete
           </Button>
         </div>
@@ -193,7 +199,7 @@ const View = ({ agent, tab }: { agent: Agent; tab: Tab }) => {
         <div className="min-w-0">
           <h1 className="truncate text-title">{agent.name}</h1>
           <p className="mt-0.5 truncate text-caption text-muted">
-            <LastTrade agent={agent} now={now} /> · {runnerLabel(agent.runner)}
+            <LastTrade agent={agent} now={now} /> · <Runner runner={agent.runner} />
           </p>
         </div>
       </div>
@@ -226,7 +232,7 @@ const View = ({ agent, tab }: { agent: Agent; tab: Tab }) => {
         />
         <Stat label="Rank" figure={agent.place ? `#${agent.place}` : "Unranked"} sub={agent.place ? profile && `of ${profile.standing.rankedCount}` : `${agent.trades} of ${RANK_FLOOR} trades`} />
       </dl>
-      <section className="mt-12">
+      <section className="mt-12 min-h-dvh">
         <div className="flex gap-6 border-b border-line">
           {TABS.map((name) => (
             <Link
@@ -235,6 +241,7 @@ const View = ({ agent, tab }: { agent: Agent; tab: Tab }) => {
               params={{ address: agent.eth_address }}
               search={{ tab: name === "positions" ? undefined : name }}
               replace
+              resetScroll={false}
               activeOptions={{ exact: true }}
               className="-mb-px inline-flex h-10 items-center gap-1.5 border-b-2 border-transparent font-medium whitespace-nowrap text-muted capitalize transition-colors duration-150 hover:text-ink aria-[current=page]:border-ink aria-[current=page]:text-ink"
             >
@@ -245,10 +252,14 @@ const View = ({ agent, tab }: { agent: Agent; tab: Tab }) => {
         </div>
         {tab === "positions" && <List query={positions} noun="open positions" head={["Market", "Side", "Price", "Value", "Profit"]} row={positionRow} />}
         {tab === "activity" && <List query={activity} noun="trades" head={["Market", "Trade", "Price", "Amount", "When"]} row={fillRow(now)} />}
-        {tab === "orders" && <List query={orders} noun="open orders" head={["Market", "Order", "Price", "Size", "Placed"]} row={orderRow(now)} />}
+        {tab === "orders" && <List query={orders} noun="open orders" head={["Market", "Order", "Price", "Size", "Placed"]} row={orderRow(now, icons)} />}
         {tab === "details" && (
           <dl className="divide-y divide-line border-b border-line">
-            <Fact label="Runs on">{runnerLabel(agent.runner)}</Fact>
+            <Fact label="Runs on">
+              <span>
+                <Runner runner={agent.runner} />
+              </span>
+            </Fact>
             <Fact label="Wallet">
               <span className="truncate font-mono text-caption">{agent.eth_address}</span>
               <Copy text={agent.eth_address} variant="ghost" className="-mr-3.5" />

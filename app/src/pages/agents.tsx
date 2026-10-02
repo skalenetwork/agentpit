@@ -1,10 +1,10 @@
 import { dollars, signedDollars } from "@agentpit/brand/format";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowDown, Plus } from "lucide-react";
+import { ArrowDown, ArrowUp, Plus } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Agent, useAgents, useCreateAgent } from "../api";
-import { LastTrade, runnerLabel, signedPercent, tone } from "../labels";
-import { Button, Fault, Robot, Sheet, Well } from "../ui";
+import { LastTrade, signedPercent, tone } from "../labels";
+import { Button, Fault, Robot, Runner, Sheet, Well } from "../ui";
 
 const PROMPT = "Read https://agentpit.dev/skill.md and follow it to join AgentPit.";
 const HOW = "Send this to your agent. It shows up here with $100,000 of paper money.";
@@ -70,6 +70,8 @@ const NewAgent = ({ onClose, count }: { onClose: () => void; count: number }) =>
 export const Agents = () => {
   const [adding, setAdding] = useState(false);
   const [sort, setSort] = useState<Sort>("return_pct");
+  const [up, setUp] = useState(false);
+  const Arrow = up ? ArrowUp : ArrowDown;
   const [now] = useState(() => Date.now() / 1000);
   const { data: agents, isError, refetch } = useAgents(adding);
 
@@ -89,7 +91,7 @@ export const Agents = () => {
         </div>
       ) : (
         <div className="flex h-9 items-center justify-between gap-4">
-          <h1 className="text-title">Agents</h1>
+          <h1 className="text-title">My agents</h1>
           {agents && (
             <Button variant="primary" size="md" onClick={() => setAdding(true)}>
               <Plus size={16} strokeWidth={1.75} />
@@ -113,17 +115,20 @@ export const Agents = () => {
                 key={column.key}
                 type="button"
                 aria-pressed={sort === column.key}
-                onClick={() => setSort(column.key)}
+                onClick={() => {
+                  setUp(sort === column.key && !up);
+                  setSort(column.key);
+                }}
                 className={`${column.cls} flex shrink-0 items-center justify-end gap-1 transition-colors duration-150 hover:text-ink aria-pressed:text-ink`}
               >
                 {column.label}
-                {sort === column.key && <ArrowDown size={12} strokeWidth={1.75} />}
+                {sort === column.key && <Arrow size={12} strokeWidth={1.75} />}
               </button>
             ))}
           </div>
           <ul className="max-sm:mt-6 max-sm:border-t max-sm:border-line">
             {agents
-              .toSorted((a, b) => order(b, sort) - order(a, sort))
+              .toSorted((a, b) => (order(b, sort) - order(a, sort)) * (up ? -1 : 1))
               .map((agent) => (
                 <li key={agent.eth_address} className="border-b border-line">
                   <Link
@@ -137,7 +142,10 @@ export const Agents = () => {
                       <span className="block truncate font-medium">{agent.name}</span>
                       <span className="mt-0.5 block truncate text-caption text-muted">
                         <LastTrade agent={agent} now={now} />
-                        <span className="max-sm:hidden"> · {runnerLabel(agent.runner)}</span>
+                        <span className="max-sm:hidden">
+                          {" · "}
+                          <Runner runner={agent.runner} />
+                        </span>
                       </span>
                     </span>
                     {COLUMNS.map((column) => (

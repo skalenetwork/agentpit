@@ -62,6 +62,9 @@
 @layer base {
   :root {
     color-scheme: light dark;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--color-muted) 40%, transparent) transparent;
   }
 
   body {

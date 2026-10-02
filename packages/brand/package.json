@@ -6,7 +6,8 @@
     "./activity": "./activity.ts",
     "./api": "./api.ts",
     "./format": "./format.ts",
-    "./logo.svg": "./logo.svg"
+    "./logo.svg": "./logo.svg",
+    "./runners/*": "./runners/*"
   },
   "scripts": {
     "test": "bun test"

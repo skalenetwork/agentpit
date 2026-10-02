@@ -1,21 +1,21 @@
 ---
-import Api from "../assets/runners/api.svg";
-import Chatgpt from "../assets/runners/chatgpt.svg";
-import ClaudeCode from "../assets/runners/claude-code.svg";
-import Claude from "../assets/runners/claude.svg";
-import Clawbits from "../assets/runners/clawbits.svg";
-import Codex from "../assets/runners/codex.svg";
-import Cursor from "../assets/runners/cursor.svg";
-import Gemini from "../assets/runners/gemini.svg";
-import Goose from "../assets/runners/goose.svg";
-import Grok from "../assets/runners/grok.svg";
-import Hermes from "../assets/runners/hermes.svg";
-import Meta from "../assets/runners/meta.svg";
-import Openclaw from "../assets/runners/openclaw.svg";
-import Poke from "../assets/runners/poke.svg";
-import Unknown from "../assets/runners/unknown.svg";
-import Vscode from "../assets/runners/vscode.svg";
-import type { RunnerSlug } from "../lib/api";
+import Api from "@agentpit/brand/runners/api.svg";
+import Chatgpt from "@agentpit/brand/runners/chatgpt.svg";
+import ClaudeCode from "@agentpit/brand/runners/claude-code.svg";
+import Claude from "@agentpit/brand/runners/claude.svg";
+import Clawbits from "@agentpit/brand/runners/clawbits.svg";
+import Codex from "@agentpit/brand/runners/codex.svg";
+import Cursor from "@agentpit/brand/runners/cursor.svg";
+import Gemini from "@agentpit/brand/runners/gemini.svg";
+import Goose from "@agentpit/brand/runners/goose.svg";
+import Grok from "@agentpit/brand/runners/grok.svg";
+import Hermes from "@agentpit/brand/runners/hermes.svg";
+import Meta from "@agentpit/brand/runners/meta.svg";
+import Openclaw from "@agentpit/brand/runners/openclaw.svg";
+import Poke from "@agentpit/brand/runners/poke.svg";
+import Unknown from "@agentpit/brand/runners/unknown.svg";
+import Vscode from "@agentpit/brand/runners/vscode.svg";
+import { INK_RUNNERS, type RunnerSlug } from "@agentpit/brand/api";
 
 interface Props {
   slug: RunnerSlug;
@@ -23,27 +23,28 @@ interface Props {
   class?: string;
 }
 
-const marks: Record<RunnerSlug, { readonly Mark: typeof Api; readonly ink: boolean }> = {
-  claude: { Mark: Claude, ink: false },
-  "claude-code": { Mark: ClaudeCode, ink: false },
-  chatgpt: { Mark: Chatgpt, ink: true },
-  codex: { Mark: Codex, ink: false },
-  cursor: { Mark: Cursor, ink: true },
-  grok: { Mark: Grok, ink: true },
-  poke: { Mark: Poke, ink: true },
-  openclaw: { Mark: Openclaw, ink: false },
-  clawbits: { Mark: Clawbits, ink: true },
-  hermes: { Mark: Hermes, ink: true },
-  gemini: { Mark: Gemini, ink: false },
-  goose: { Mark: Goose, ink: true },
-  vscode: { Mark: Vscode, ink: false },
-  meta: { Mark: Meta, ink: false },
-  api: { Mark: Api, ink: true },
-  unknown: { Mark: Unknown, ink: true },
+const marks: Record<RunnerSlug, typeof Api> = {
+  claude: Claude,
+  "claude-code": ClaudeCode,
+  chatgpt: Chatgpt,
+  codex: Codex,
+  cursor: Cursor,
+  grok: Grok,
+  poke: Poke,
+  openclaw: Openclaw,
+  clawbits: Clawbits,
+  hermes: Hermes,
+  gemini: Gemini,
+  goose: Goose,
+  vscode: Vscode,
+  meta: Meta,
+  api: Api,
+  unknown: Unknown,
 };
 
 const { slug, label, class: className } = Astro.props;
-const { Mark, ink } = marks[slug];
+const Mark = marks[slug];
+const ink = INK_RUNNERS.has(slug);
 ---
 
 {

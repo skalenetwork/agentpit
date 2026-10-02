@@ -24,6 +24,7 @@ export interface Agent extends Omit<WireAgent, "handle" | "equity" | "earned"> {
 
 export interface Position {
   readonly asset: string;
+  readonly icon: string;
   readonly title: string;
   readonly outcome: string;
   readonly avgPrice: number;
@@ -41,6 +42,7 @@ interface WireActivity {
   readonly size: number;
   readonly usdcSize: number;
   readonly title: string;
+  readonly icon: string;
 }
 
 export interface Order {
@@ -57,7 +59,8 @@ const AGENTS = ["agents"];
 
 const agent = ({ handle, equity, earned, ...rest }: WireAgent): Agent => ({ ...rest, name: handle ?? rest.runner.label, equity: usd(equity), earned: usd(earned) });
 
-const fill = (wire: WireActivity): Fill => ({
+const fill = (wire: WireActivity): Fill & { readonly icon: string } => ({
+  icon: wire.icon,
   at: wire.timestamp,
   type: wire.type,
   side: wire.side || null,

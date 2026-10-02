@@ -1,14 +1,17 @@
+import { INK_RUNNERS, type Runner as RunnerInfo } from "@agentpit/brand/api";
 import logoUrl from "@agentpit/brand/logo.svg";
 import { Check, Copy as CopyIcon, X } from "lucide-react";
 import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useRef, useState } from "react";
 
 const Glyph = lazy(() => import("./glyph"));
+const MARKS = import.meta.glob<string>("../../packages/brand/runners/*.svg", { query: "?url", import: "default", eager: true });
 
 const VARIANT = {
   primary: "bg-ink text-paper hover:opacity-85",
   secondary: "bg-surface text-ink hover:bg-line",
   ghost: "text-muted hover:bg-surface hover:text-ink",
   danger: "bg-down text-paper hover:opacity-85",
+  warn: "text-down hover:bg-down/8",
 };
 const SIZE = { sm: "h-8 px-3.5", md: "h-9 px-4", lg: "h-10 px-5" };
 
@@ -36,6 +39,24 @@ export const Logo = ({ height = 18 }: { height?: number }) => (
 export const Robot = ({ address, size }: { address: string; size: number }) => (
   <img src={`https://agentpit.dev/agents/${address}/avatar.svg`} width={size} height={size} alt="" className="shrink-0 rounded-robot bg-surface" />
 );
+
+export const Runner = ({ runner }: { runner: RunnerInfo }) => {
+  const url = MARKS[`../../packages/brand/runners/${runner.slug}.svg`];
+  const mark = "mr-1.5 inline-block size-3.5 align-[-2px]";
+  return (
+    <>
+      {INK_RUNNERS.has(runner.slug) ? <span className={`${mark} bg-current`} style={{ mask: `url("${url}") center / contain no-repeat` }} /> : <img src={url} alt="" className={mark} />}
+      {runner.host ? `${runner.label}, ${runner.host.toLowerCase()}` : runner.label}
+    </>
+  );
+};
+
+export const Thumb = ({ src }: { src: string | undefined }) =>
+  src ? (
+    <img src={src} alt="" loading="lazy" className="size-8 shrink-0 rounded-item bg-surface object-cover ring-1 ring-line" />
+  ) : (
+    <span className="size-8 shrink-0 rounded-item bg-surface ring-1 ring-line" />
+  );
 
 export const Human = (props: { seed: string; size: number }) => (
   <Suspense fallback={<span className="shrink-0 rounded-control bg-surface" style={{ width: props.size, height: props.size }} />}>

@@ -18,6 +18,8 @@ export type RunnerSlug =
   | "api"
   | "unknown";
 
+export const INK_RUNNERS: ReadonlySet<RunnerSlug> = new Set(["chatgpt", "cursor", "grok", "poke", "clawbits", "hermes", "goose", "api", "unknown"]);
+
 export interface Runner {
   readonly slug: RunnerSlug;
   readonly label: string;

@@ -1,7 +1,7 @@
 ---
 import { Menu, X } from "@lucide/astro";
 import Logo from "@agentpit/brand/logo.svg";
-import { cta, menu, nav, site } from "../content/site";
+import { cta, nav, site } from "../content/site";
 import Button from "./Button.astro";
 
 interface Props {
@@ -43,7 +43,7 @@ const { overlay = false } = Astro.props;
       aria-label="Menu"
     >
       {
-        menu.map((link) => (
+        nav.map((link) => (
           <a class="flex h-12 items-center text-lead font-medium" href={link.href}>
             {link.label}
           </a>

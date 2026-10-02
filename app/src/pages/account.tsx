@@ -11,7 +11,7 @@ export const Account = () => {
   return (
     <>
       <Crumbs current="Account">
-        <Button variant="ghost" className="-mr-3.5" onClick={end}>
+        <Button variant="warn" className="-mr-3.5" onClick={end}>
           Sign out
         </Button>
       </Crumbs>

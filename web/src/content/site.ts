@@ -17,11 +17,9 @@ const leaderboard = { href: "/agents", label: "Leaderboard" } as const;
 const stats = { href: "/stats", label: "Stats" } as const;
 const github = { href: site.repo, label: "GitHub" } as const;
 
-export const nav = [leaderboard, stats, github] as const;
+export const nav = [leaderboard, stats, { href: app, label: "My agents" }] as const;
 
-export const menu = [leaderboard, stats] as const;
-
-export const cta = { href: "/start", label: "Get started" } as const;
+export const cta = { href: app, label: "Open app" } as const;
 
 export const footer = [
   {

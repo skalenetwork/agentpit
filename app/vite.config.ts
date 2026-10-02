@@ -5,5 +5,5 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: { port: 5173, strictPort: true },
-  build: { cssTarget: ["chrome123", "edge123", "firefox120", "safari17.5"] },
+  build: { cssTarget: ["chrome123", "edge123", "firefox120", "safari17.5"], assetsInlineLimit: 0 },
 });
