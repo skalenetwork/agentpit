@@ -70,7 +70,7 @@ const orderRow =
 
 const List = <T,>({ query, noun, head, row }: { query: UseQueryResult<readonly T[]>; noun: string; head: readonly string[]; row: (item: T, index: number) => Row }) => {
   const [all, setAll] = useState(false);
-  if (query.isError) return <Note>Could not load {noun}. Reload to try again.</Note>;
+  if (query.isError && !query.data) return <Note>Could not load {noun}. Reload to try again.</Note>;
   if (query.isLoading) return <Note>Loading {noun}</Note>;
   if (!query.data?.length) return <Note>No {noun}.</Note>;
   const rows = query.data.map(row);

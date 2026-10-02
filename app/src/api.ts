@@ -71,14 +71,9 @@ const fill = (wire: WireActivity): Fill => ({
   category: null,
 });
 
-export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => request<Me>("/me"), staleTime: Number.POSITIVE_INFINITY });
+export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => request<Me>("/me"), staleTime: Number.POSITIVE_INFINITY, refetchInterval: false });
 
-export const useAgents = (watch = false) =>
-  useQuery({
-    queryKey: AGENTS,
-    queryFn: async () => (await request<readonly WireAgent[]>("/me/agents")).map(agent),
-    refetchInterval: (query) => (watch || query.state.data?.length === 0 ? 3000 : false),
-  });
+export const useAgents = () => useQuery({ queryKey: AGENTS, queryFn: async () => (await request<readonly WireAgent[]>("/me/agents")).map(agent) });
 
 export const useProfile = ({ eth_address, trades }: Agent) =>
   useQuery({ queryKey: ["profile", eth_address], enabled: trades > 0, queryFn: async () => profile(await open<WireProfile>(`/agents/${eth_address}`)) });

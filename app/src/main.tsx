@@ -55,7 +55,7 @@ declare module "@tanstack/react-router" {
 }
 
 const queries = new QueryClient({
-  defaultOptions: { queries: { staleTime: 30_000, retry: (failures, error) => failures < 2 && !(error instanceof ApiError && error.status < 500) } },
+  defaultOptions: { queries: { staleTime: 3000, refetchInterval: 3000, retry: (failures, error) => failures < 2 && !(error instanceof ApiError && error.status < 500) } },
 });
 
 subscribe(() => {

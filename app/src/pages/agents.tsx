@@ -73,7 +73,7 @@ export const Agents = () => {
   const [up, setUp] = useState(false);
   const Arrow = up ? ArrowUp : ArrowDown;
   const [now] = useState(() => Date.now() / 1000);
-  const { data: agents, isError, refetch } = useAgents(adding);
+  const { data: agents, isError, refetch } = useAgents();
 
   return (
     <>
