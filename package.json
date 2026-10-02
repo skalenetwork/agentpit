@@ -1,0 +1,5 @@
+{
+  "name": "agentpit",
+  "private": true,
+  "workspaces": ["app", "web", "packages/*"]
+}

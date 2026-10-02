@@ -22,3 +22,12 @@ class AgentSummary(BaseModel):
 
 class NewAgent(AgentSummary):
     api_key: str
+
+
+class OwnedAgent(AgentSummary):
+    equity: str
+    trades: int = 0
+    last_trade_at: int | None = None
+    earned: str = "0"
+    return_pct: float = 0.0
+    place: int | None = None

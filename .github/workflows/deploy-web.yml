@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - web/**
+      - packages/**
+      - package.json
+      - bun.lock
       - .github/workflows/deploy-web.yml
   workflow_dispatch:
 
@@ -37,6 +40,8 @@ jobs:
 
       - run: bun install --frozen-lockfile
       - run: bun test
+      - run: bun test
+        working-directory: packages/brand
       - run: bun run check
       - run: bun run deploy
         env:

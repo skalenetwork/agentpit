@@ -23,3 +23,7 @@ class OpenOrder(BaseModel):
     created_at: int
     expiration: str
     order_type: str
+
+
+class TitledOpenOrder(OpenOrder):
+    title: str

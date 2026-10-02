@@ -181,3 +181,5 @@ docs/superpowers/
 # machine's copy got committed once and took the prod API down: docker
 # could not bind-mount it.
 deployments/
+
+node_modules/

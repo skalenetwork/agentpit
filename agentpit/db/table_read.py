@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from web3 import Web3
 
 from agentpit.utils.parse import parse_32b_hex_private_key
-from agentpit.datastructures.agent_summary import AgentSummary
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.event_sort import EventSort
 from agentpit.datastructures.market import Market
@@ -409,13 +408,13 @@ class TableRead:
         return TableRead._row_to_user(row) if row else None
 
     @staticmethod
-    def agents_owned_by(db: psycopg.Connection, owner_workos_id: str) -> list[AgentSummary]:
+    def agents_owned_by(db: psycopg.Connection, owner_workos_id: str) -> list[User]:
         rows = db.execute(
             f"SELECT {TableRead._USER_COLS} FROM users "
             "WHERE OWNER_WORKOS_ID = %s AND DELETED_AT IS NULL ORDER BY CREATED_AT, AGENT_APP, USER_ID",
             (owner_workos_id,),
         ).fetchall()
-        return [AgentSummary.of(TableRead._row_to_user(r)) for r in rows]
+        return [TableRead._row_to_user(r) for r in rows]
 
     @staticmethod
     def get_idempotency_order_id(
@@ -925,6 +924,14 @@ class TableRead:
             (condition_ids,),
         ).fetchall()
         return {str(r["CONDITION_ID"]): str(r["CATEGORY"]) for r in rows}
+
+    @staticmethod
+    def questions_by_condition_id(db: psycopg.Connection, condition_ids: "list[str]") -> "dict[str, str]":
+        rows = db.execute(
+            "SELECT CONDITION_ID, QUESTION FROM markets WHERE CONDITION_ID = ANY(%s)",
+            (condition_ids,),
+        ).fetchall()
+        return {str(r["CONDITION_ID"]): str(r["QUESTION"]) for r in rows}
 
     @staticmethod
     def get_event_by_slug(db: psycopg.Connection, slug: str) -> "Event | None":

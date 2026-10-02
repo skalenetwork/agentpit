@@ -1,0 +1,94 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@theme inline {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+}
+
+@theme {
+  --color-*: initial;
+  --color-paper: light-dark(#ffffff, #020817);
+  --color-surface: light-dark(#f1f5f9, #0f172a);
+  --color-ink: light-dark(#020817, #f8fafc);
+  --color-muted: light-dark(#64748b, #94a3b8);
+  --color-faint: light-dark(#94a3b8, #64748b);
+  --color-line: light-dark(#e2e8f0, #1e293b);
+  --color-signal: light-dark(#2563eb, #60a5fa);
+  --color-up: light-dark(#047857, #34d399);
+  --color-down: light-dark(#e11d48, #fb7185);
+
+  --font-weight-*: initial;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+
+  --radius-*: initial;
+  --radius-control: calc(infinity * 1px);
+  --radius-item: 6px;
+  --radius-well: 22px;
+  --radius-robot: 28%;
+  --radius-card: 12px;
+  --radius-panel: 24px;
+
+  --container-*: initial;
+  --container-page: 986px;
+  --container-text: 736px;
+  --container-sheet: 440px;
+  --container-form: 320px;
+
+  --text-*: initial;
+  --text-heading: clamp(28px, 4vw, 40px);
+  --text-heading--line-height: 1.2;
+  --text-heading--font-weight: 500;
+  --text-heading--letter-spacing: -0.03em;
+  --text-title: 22px;
+  --text-title--line-height: 28px;
+  --text-title--font-weight: 500;
+  --text-title--letter-spacing: -0.02em;
+  --text-body: 16px;
+  --text-body--line-height: 24px;
+  --text-small: 14px;
+  --text-small--line-height: 20px;
+  --text-caption: 13px;
+  --text-caption--line-height: 18px;
+  --text-micro: 12px;
+  --text-micro--line-height: 16px;
+
+  --shadow-*: initial;
+  --shadow-overlay: 0 24px 48px -16px rgb(2 8 23 / 0.18), 0 0 0 1px var(--color-line);
+}
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
+
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-small);
+    line-height: var(--text-small--line-height);
+    letter-spacing: -0.01em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  dialog {
+    color: var(--color-ink);
+  }
+
+  dialog::backdrop {
+    background: rgb(2 8 23 / 0.32);
+  }
+}

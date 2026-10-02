@@ -1,0 +1,17 @@
+{
+  "name": "@agentpit/brand",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./activity": "./activity.ts",
+    "./api": "./api.ts",
+    "./format": "./format.ts",
+    "./logo.svg": "./logo.svg"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2"
+  }
+}

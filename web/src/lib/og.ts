@@ -12,7 +12,7 @@ const dataUri = (mime: string, data: Buffer) => `data:${mime};base64,${data.toSt
 const base = dataUri("image/png", readFileSync("src/assets/og-base.png"));
 const logo = dataUri(
   "image/svg+xml",
-  Buffer.from(readFileSync("src/assets/logo.svg", "utf8").replace('fill="currentColor"', `fill="${INK}"`)),
+  Buffer.from(readFileSync("../packages/brand/logo.svg", "utf8").replace('fill="currentColor"', `fill="${INK}"`)),
 );
 const geist = readFileSync("node_modules/@fontsource/geist/files/geist-latin-500-normal.woff");
 

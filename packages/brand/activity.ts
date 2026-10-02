@@ -20,5 +20,5 @@ export const bursts = (fills: readonly Fill[]): readonly Burst[] =>
 export const threads = (list: readonly Burst[]): readonly (readonly Burst[])[] =>
   list.reduce<readonly (readonly Burst[])[]>((out, burst) => {
     const thread = out.at(-1);
-    return thread?.[0].title === burst.title ? out.with(-1, [...thread, burst]) : [...out, [burst]];
+    return thread?.[0]?.title === burst.title ? out.with(-1, [...thread, burst]) : [...out, [burst]];
   }, []);

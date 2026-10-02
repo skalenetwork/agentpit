@@ -1,6 +1,6 @@
 import { Activity, Flame, Swords, type AstroComponent } from "@lucide/astro";
 import { RANK_FLOOR, type Agent, type Runner } from "./api";
-import { count } from "./format";
+import { count } from "@agentpit/brand/format";
 
 export type Tone = "up" | "down" | "flat";
 

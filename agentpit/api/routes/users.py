@@ -11,14 +11,17 @@ from agentpit.api.deps import (
     AuthServiceDep,
     BalanceServiceDep,
     CurrentUserDep,
+    LeaderboardServiceDep,
     OnchainAdminDep,
     OrderServiceDep,
     OwnerDep,
     SessionDep,
+    SettingsDep,
 )
-from agentpit.datastructures.agent_summary import AgentSummary, NewAgent
+from agentpit.datastructures.agent_summary import AgentSummary, NewAgent, OwnedAgent
 from agentpit.datastructures.auth_response import UserPublic
 from agentpit.datastructures.change_password_request import ChangePasswordRequest
+from agentpit.datastructures.open_order import TitledOpenOrder
 from agentpit.datastructures.private_key_request import (
     PrivateKeyRequest,
     PrivateKeyResponse,
@@ -29,6 +32,7 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import HandleAlreadyExistsError, UserNotFoundError
+from agentpit.services.leaderboard_service import RANK_FLOOR, rank_rows
 
 router = APIRouter(tags=["users"])
 
@@ -56,12 +60,42 @@ def get_me(user: CurrentUserDep) -> UserPublic:
     return UserPublic.model_validate(user.model_dump())
 
 
-@router.get("/me/agents", response_model=list[AgentSummary])
-def get_my_agents(user: CurrentUserDep, db: SessionDep) -> list[AgentSummary]:
+@router.get("/me/agents", response_model=list[OwnedAgent])
+def get_my_agents(
+    user: CurrentUserDep, db: SessionDep, leaderboard: LeaderboardServiceDep, settings: SettingsDep
+) -> list[OwnedAgent]:
+    """Each agent with its board figures. One that is not on the board holds
+    what it was handed and nothing else."""
     if user.workos_user_id is None:
         return []
     with db.read() as conn:
-        return TableRead.agents_owned_by(conn, user.workos_user_id)
+        agents = TableRead.agents_owned_by(conn, user.workos_user_id)
+    if not agents:
+        return []
+    board = rank_rows(leaderboard.build_board(), "return")
+    rows = {r.address: r for r in board}
+    places = {r.address: i + 1 for i, r in enumerate(r for r in board if r.trades >= RANK_FLOOR)}
+    owned: list[OwnedAgent] = []
+    with db.read() as conn:
+        for agent in agents:
+            summary = AgentSummary.of(agent).model_dump()
+            row = rows.get(agent.eth_address)
+            if row is None:
+                handed = TableRead.get_total_deposited(conn, agent.user_id, settings.paper_balance_target_raw)
+                owned.append(OwnedAgent(**summary, equity=str(handed)))
+                continue
+            owned.append(
+                OwnedAgent(
+                    **summary,
+                    equity=str(row.capital_raw),
+                    trades=row.trades,
+                    last_trade_at=row.last_trade_at,
+                    earned=str(row.earned_raw),
+                    return_pct=round(row.return_pct, 2),
+                    place=places.get(row.address),
+                )
+            )
+    return owned
 
 
 @router.post("/me/agents", response_model=NewAgent, status_code=201)
@@ -90,6 +124,16 @@ def delete_my_agent(address: str, owner: OwnerDep, db: SessionDep, orders: Order
         TableWrite.delete_agent(conn, agent.user_id, int(time.time()))
     orders.cancel_all(agent)
     return Response(status_code=204)
+
+
+@router.get("/me/agents/{address}/orders", response_model=list[TitledOpenOrder])
+def list_my_agent_orders(
+    address: str, owner: OwnerDep, db: SessionDep, orders: OrderServiceDep
+) -> list[TitledOpenOrder]:
+    open_orders = orders.list_open_orders(_owned_agent(db, owner, address))
+    with db.read() as conn:
+        titles = TableRead.questions_by_condition_id(conn, [o.market for o in open_orders])
+    return [TitledOpenOrder(**o.model_dump(), title=titles.get(o.market, "")) for o in open_orders]
 
 
 def _owned_agent(db: DbSession, owner: str, address: str) -> User:
