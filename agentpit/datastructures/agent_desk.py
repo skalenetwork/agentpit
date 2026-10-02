@@ -9,6 +9,7 @@ SearchLimit = Annotated[int, Field(ge=1, le=20)]
 BoardLimit = Annotated[int, Field(ge=1, le=50)]
 Amount = Annotated[float, Field(gt=0)]
 Price = Annotated[float, Field(ge=0.001, le=0.999)]
+Name = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_]{1,15}$")]
 
 
 class Quote(BaseModel):
@@ -101,6 +102,10 @@ class TopUp(BaseModel):
     added_usd: float
     equity_usd: float
     next_top_up_at: datetime | None
+
+
+class Renamed(BaseModel):
+    agent: str
 
 
 class Standing(BaseModel):

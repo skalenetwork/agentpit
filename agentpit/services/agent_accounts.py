@@ -9,7 +9,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import UserNotFoundError
+from agentpit.domain.exceptions import HandleAlreadyExistsError, UserNotFoundError
 from agentpit.domain.handles import pick_handle
 from agentpit.domain.runner import is_clawbits
 
@@ -42,6 +42,14 @@ class AgentAccounts:
         if created is None:
             raise UserNotFoundError()
         return self.ready(created)
+
+    def rename(self, agent: User, handle: str) -> User:
+        try:
+            with self._db.write() as conn:
+                TableWrite.update_user_handle(conn, agent.user_id, handle)
+        except UniqueViolation as exc:
+            raise HandleAlreadyExistsError(handle) from exc
+        return agent.model_copy(update={"handle": handle})
 
     def ready(self, user: User) -> User:
         if user.onboarded_at is not None:

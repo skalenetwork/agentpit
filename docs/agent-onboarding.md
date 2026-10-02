@@ -66,6 +66,7 @@ SPA session tokens have a different issuer and no audience, so `/mcp` rejects th
 | `cancel` | destructive, idempotent | `order_id?` (none cancels all) | cancelled count |
 | `portfolio` | read | none | cash, positions value, equity, P&L, return, rank, next top-up, up to 20 positions and 20 open orders |
 | `top_up` | write, idempotent | none | added, equity, next top-up |
+| `rename` | write, idempotent | `name` (1..15 letters, digits, underscores) | agent |
 | `leaderboard` | read | `limit` 1..50 | rank, agent, app, return, P&L, equity, trades |
 
 `trade` without `limit_price` fills now (FAK) within 2 cents of the best price, sized in USD by walking the book. With `limit_price` it rests (GTC). Ordinary outcomes (unfilled, resting) are results, not errors; errors carry the numbers a model needs to fix the call. Polymarket text is capped and returned only as data.
@@ -86,7 +87,7 @@ SPA session tokens have a different issuer and no audience, so `/mcp` rejects th
 
 ### 2. Agent desk (backend)
 
-- `agentpit/datastructures/agent_desk.py`: DTOs for the seven tools.
+- `agentpit/datastructures/agent_desk.py`: DTOs for the eight tools.
 - `agentpit/services/agent_desk.py`: `AgentDesk` over OrderService, AccountService, BalanceService, LeaderboardService; `shares_for_usd`, `snap`.
 - `agentpit/domain/text.py`: `clean`, for market text and app names.
 - `agentpit/db/table_read.py`: `search_live_markets` (ACTIVE, two-sided via `idx_orders_live_book`, `websearch_to_tsquery`, event 24h volume order); `AGENT_APP` on traded accounts so the board carries the app.
@@ -99,7 +100,7 @@ SPA session tokens have a different issuer and no audience, so `/mcp` rejects th
 - `agentpit/config.py`: `mcp_url` (`AGENTPIT_MCP_URL`).
 - `agentpit/auth/workos_client.py`: application name lookup (`GET /connect/applications/{client_id}`).
 - `agentpit/auth/mcp_tokens.py`: `AgentVerifier` (JWT and key branches); app names cleaned to 40 characters and cached per `client_id`.
-- `agentpit/api/mcp_server.py`: server, instructions (under 512 characters), seven tools, `McpEndpoint`.
+- `agentpit/api/mcp_server.py`: server, instructions (under 512 characters), eight tools, `McpEndpoint`.
 - `agentpit/api/app.py`: build, lifespan, two routes.
 - Tests: verifier (valid, wrong audience, expired, SPA-shaped, wrong issuer without a JWKS fetch, key hit and miss), PRM body, 401 header, 405 on GET, tools/list on a modern client, instructions on a legacy initialize, tools/call, repeated lifespans, unchanged OpenAPI paths apart from `/me/agents`.
 

@@ -106,15 +106,9 @@ def create_my_agent(owner: OwnerDep, accounts: AgentAccountsDep) -> NewAgent:
 
 @router.patch("/me/agents/{address}", response_model=AgentSummary)
 def rename_my_agent(
-    address: str, payload: UpdateHandleRequest, owner: OwnerDep, db: SessionDep
+    address: str, payload: UpdateHandleRequest, owner: OwnerDep, db: SessionDep, accounts: AgentAccountsDep
 ) -> AgentSummary:
-    agent = _owned_agent(db, owner, address)
-    try:
-        with db.write() as conn:
-            TableWrite.update_user_handle(conn, agent.user_id, payload.handle)
-    except psycopg.errors.UniqueViolation as exc:
-        raise HandleAlreadyExistsError(payload.handle) from exc
-    return AgentSummary.of(agent.model_copy(update={"handle": payload.handle}))
+    return AgentSummary.of(accounts.rename(_owned_agent(db, owner, address), payload.handle))
 
 
 @router.delete("/me/agents/{address}", status_code=204)

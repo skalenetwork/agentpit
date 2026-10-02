@@ -8,6 +8,7 @@ from agentpit.api.mcp_server import CARD
 from agentpit.config import Settings
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import TableRead
+from agentpit.db.table_write import TableWrite
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -65,13 +66,13 @@ def test_get_is_not_allowed():
     assert resp.json() == {"detail": "Method Not Allowed"}
 
 
-def test_modern_tools_list_carries_seven_annotated_tools():
+def test_modern_tools_list_carries_eight_annotated_tools():
     key = _agent().api_key
     with TestClient(app) as client:
         result = _call(client, key, "tools/list", {})
 
     tools = {t["name"]: t for t in result["tools"]}
-    assert set(tools) == {"search_markets", "get_market", "trade", "cancel", "portfolio", "top_up", "leaderboard"}
+    assert set(tools) == {"search_markets", "get_market", "trade", "cancel", "portfolio", "top_up", "rename", "leaderboard"}
     assert all(t["title"] and t["annotations"]["openWorldHint"] is False for t in tools.values())
     assert tools["portfolio"]["annotations"]["readOnlyHint"] is True
     assert tools["trade"]["annotations"] == {
@@ -145,11 +146,33 @@ def test_portfolio_onboards_a_fresh_agent_on_first_call():
     assert stored is not None and stored.onboarded_at is not None
 
 
+def test_rename_changes_the_name_and_refuses_a_taken_or_malformed_one():
+    db = fresh_test_db()
+    accounts = AgentAccounts(db, lambda *_: pytest.fail("agent_for must not onboard"))
+    agent = accounts.agent_for("user_owner", "Claude", None, None)
+    other = accounts.agent_for("user_someone_else", "Claude", None, None)
+    with db.write() as conn:
+        TableWrite.mark_user_onboarded(conn, agent.user_id)
+
+    with TestClient(app) as client:
+        renamed, taken, malformed = (
+            _call(client, agent.api_key, "tools/call", {"name": "rename", "arguments": {"name": name}}, "rename")
+            for name in ("Ziggy", other.handle, "two words")
+        )
+
+    assert renamed["isError"] is False and renamed["structuredContent"] == {"agent": "Ziggy"}
+    assert taken["isError"] is True and "already in use" in taken["content"][0]["text"]
+    assert malformed["isError"] is True
+    with db.read() as conn:
+        stored = TableRead.get_user_by_userid(conn, agent.user_id)
+    assert stored is not None and stored.handle == "Ziggy"
+
+
 def test_a_second_lifespan_still_serves():
     key = _agent().api_key
     for _ in range(2):
         with TestClient(app) as client:
-            assert len(_call(client, key, "tools/list", {})["tools"]) == 7
+            assert len(_call(client, key, "tools/list", {})["tools"]) == 8
 
 
 def test_mcp_adds_no_openapi_paths():

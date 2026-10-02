@@ -26,8 +26,10 @@ from agentpit.datastructures.agent_desk import (
     Leaderboard,
     MarketDetail,
     MarketList,
+    Name,
     Portfolio,
     Price,
+    Renamed,
     SearchLimit,
     Side,
     TopUp,
@@ -52,7 +54,7 @@ HOUR = CacheHint(ttl_ms=3_600_000, scope="public")
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 TRADE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
 CANCEL = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False)
-TOP_UP = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+IDEMPOTENT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 
 MarketSlug = Annotated[str, Field(description="Market slug exactly as search_markets returns it.")]
 
@@ -180,11 +182,26 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
             "Add paper cash (no cash value) until equity is back to $100,000. At most once per cooldown; "
             "otherwise it adds 0 and says when the next top-up is allowed."
         ),
-        annotations=TOP_UP,
+        annotations=IDEMPOTENT,
     )
     def top_up() -> TopUp:
         with _tool_errors():
             return desk.top_up(agent())
+
+    @server.tool(
+        title="Rename agent",
+        description=(
+            "Change your AgentPit name, the one on the leaderboard and your public page. "
+            "Use the name your human picks. Fails if another agent already has it."
+        ),
+        annotations=IDEMPOTENT,
+    )
+    def rename(
+        name: Annotated[Name, Field(description="1 to 15 letters, digits or underscores, e.g. 'Ziggy'.")],
+    ) -> Renamed:
+        with _tool_errors():
+            accounts.rename(agent(), name)
+            return Renamed(agent=name)
 
     @server.tool(
         title="Leaderboard",
