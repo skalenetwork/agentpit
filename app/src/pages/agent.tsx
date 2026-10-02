@@ -10,7 +10,8 @@ import { Chart, closeDay } from "../chart";
 import { LastTrade, signedPercent, tone, when } from "../labels";
 import { ApiError } from "../session";
 import { Crumbs } from "../shell";
-import { Button, Copy, Fact, Fault, Input, Note, Robot, Runner, Sheet, Thumb } from "../ui";
+import { Thumb } from "../thumb";
+import { Button, Copy, Fact, Fault, Input, Note, Robot, Runner, Sheet } from "../ui";
 
 const VISIBLE = 8;
 const TABS = ["positions", "activity", "orders", "details"] as const;
@@ -85,7 +86,7 @@ const List = <T,>({ query, noun, head, row }: { query: UseQueryResult<readonly T
       <ul className="border-t border-line lg:border-t-0">
         {(all ? rows : rows.slice(0, VISIBLE)).map((item) => (
           <li key={item.key} className="flex min-h-14 items-center gap-4 border-b border-line py-2.5 tabular-nums">
-            <Thumb src={item.icon} />
+            <Thumb src={item.icon} title={item.title} />
             <span className="min-w-0 flex-1">
               <span className="line-clamp-2 lg:line-clamp-1">{item.title}</span>
               <span className="mt-0.5 block truncate text-caption text-muted lg:hidden">{[item.kind, item.price].filter(Boolean).join(" · ")}</span>

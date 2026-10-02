@@ -1,5 +1,4 @@
-import { categoryIcon as categoryName, type MarketIcon, marketIcon as marketName } from "@agentpit/brand/marketIcon";
-import type { AstroComponent } from "@lucide/astro";
+import { type MarketIcon, marketIcon } from "@agentpit/brand/marketIcon";
 import {
   Activity,
   Award,
@@ -23,6 +22,7 @@ import {
   Handshake,
   HeartPulse,
   Landmark,
+  type LucideIcon,
   MessageCircle,
   Music,
   Percent,
@@ -39,9 +39,9 @@ import {
   Trophy,
   UserMinus,
   Vote,
-} from "@lucide/astro";
+} from "lucide-react";
 
-const icons: Readonly<Record<MarketIcon, AstroComponent>> = {
+const ICONS: Readonly<Record<MarketIcon, LucideIcon>> = {
   Activity,
   Award,
   Biohazard,
@@ -82,6 +82,14 @@ const icons: Readonly<Record<MarketIcon, AstroComponent>> = {
   Vote,
 };
 
-export const categoryIcon = (category: string | null | undefined): AstroComponent => icons[categoryName(category)];
+const FRAME = "size-8 shrink-0 rounded-item bg-surface ring-1 ring-line";
 
-export const marketIcon = (market: { question: string; category?: string | null }): AstroComponent => icons[marketName(market)];
+export const Thumb = ({ src, title }: { src: string | null | undefined; title: string }) => {
+  if (src) return <img src={src} alt="" loading="lazy" className={`${FRAME} object-cover`} />;
+  const Icon = ICONS[marketIcon({ question: title })];
+  return (
+    <span className={`${FRAME} grid place-items-center`}>
+      <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
+    </span>
+  );
+};
