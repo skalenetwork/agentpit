@@ -1,38 +1,24 @@
-# UI image: vite build baked into a Caddy server.
-# Build context is the repo root. VITE_API_BASE_URL is REQUIRED — the snippets
-# on /get-started display it, so a wrong value shows localhost to real users.
-FROM node:22-alpine AS build
-WORKDIR /ui
-# The repo pins yarn 4 via packageManager — corepack provides it.
-RUN corepack enable
-COPY ui/package.json ui/yarn.lock ui/.yarnrc.yml ./
-RUN yarn install --immutable
-COPY ui/ .
+# Console image: the app/ build baked into a Caddy server.
+# Build context is the repo root. bun installs, Node runs vite.
+FROM node:24-alpine AS build
+COPY --from=oven/bun:1.4.2-alpine /usr/local/bin/bun /usr/local/bin/bun
+WORKDIR /repo
+COPY package.json bun.lock ./
+COPY web/package.json web/
+COPY packages packages
+COPY app app
+RUN bun install --frozen-lockfile --filter agentpit-app
 ARG VITE_API_BASE_URL
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 # Optional: absent means the "Continue with Google" button does not render.
-ARG VITE_GOOGLE_CLIENT_ID
-ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
-# Required for the WorkOS Google redirect, and it must be present HERE:
-# vite inlines import.meta.env at build time, so a value supplied only at
-# container runtime is already too late -- `present()` in lib/workosAuth.ts
-# reads undefined and the Google block silently does not render, however
-# correctly WorkOS itself is configured.
 ARG VITE_WORKOS_CLIENT_ID
 ENV VITE_WORKOS_CLIENT_ID=$VITE_WORKOS_CLIENT_ID
 # The gate lives HERE and not in the compose file's interpolation, because
 # compose interpolates the WHOLE file on EVERY command: a `${VAR:?}` on a
-# caddy build arg makes `docker compose restart anvil` fail too, which is
-# exactly the command somebody reaches for at 3am with a half-filled `.env`.
-# This runs only when an image is actually being built, which is the only
-# moment a missing value can do harm.
-RUN : "${VITE_API_BASE_URL:?set it in .env — /get-started prints this URL, so a \
-missing one shows localhost to real users}" \
- && : "${VITE_WORKOS_CLIENT_ID:?set it in .env — vite inlines this at build time, \
-and without it the sign-in dialog renders no Google button however correctly \
-WorkOS itself is configured}" \
- && yarn build
+# caddy build arg makes `docker compose restart anvil` fail too. Vite inlines
+# the value at build time, and without it the console calls localhost.
+RUN : "${VITE_API_BASE_URL:?set it in .env}" && bun run --cwd app build
 
 FROM caddy:2
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
-COPY --from=build /ui/dist /srv
+COPY --from=build /repo/app/dist /srv
