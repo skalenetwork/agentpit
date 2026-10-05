@@ -1,4 +1,8 @@
 {
+  const tabs = document.getElementById("x-tabs");
+  const nearest = { block: "nearest", inline: "nearest" };
+  document.fonts.ready.then(() => tabs.querySelector("[aria-current]")?.scrollIntoView({ block: "nearest", inline: "center" }));
+  tabs.addEventListener("focusin", (event) => event.target.scrollIntoView(nearest));
   const status = document.getElementById("x-status");
   const form = document.getElementById("x-search");
   const input = form.elements.q;
