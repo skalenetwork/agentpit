@@ -8,22 +8,22 @@ interface Props {
   panel?: string;
 }
 
-const { lead, caption, class: className, panel = "lg:aspect-[986/601]" } = Astro.props;
+const { lead, caption, class: className, panel = "rounded-panel sm:rounded-[40px] lg:aspect-[986/601]" } = Astro.props;
 const visual = Astro.slots.has("visual");
 const actions = Astro.slots.has("actions");
 ---
 
-<section class:list={["relative isolate px-5 py-16 sm:px-12 sm:py-25", className]}>
-  {visual && <Sombra class="absolute inset-x-0 -top-16 bottom-0 -z-10" />}
+<section class:list={["relative isolate px-4 py-16 sm:px-12 sm:py-25", className]}>
+  {visual && <Sombra class="absolute inset-x-0 -top-15 bottom-0 -z-10" />}
   <div class="mx-auto flex w-full max-w-page flex-col items-center text-center">
     <div class:list={["flex flex-col items-center", visual && "scheme-dark [--color-muted:#cbd5e1]"]}>
       <h1 class="text-display text-balance text-ink [text-box:trim-end_cap_alphabetic]"><slot /></h1>
-      <p class="mt-[45px] max-w-text text-body text-balance text-muted [text-box:trim-both_cap_alphabetic] sm:text-lead">
-        {[lead].flat().map((line) => <span class="block">{line}</span>)}
+      <p class="mt-8 max-w-text text-body text-balance text-muted [text-box:trim-both_cap_alphabetic] sm:text-lead">
+        {[lead].flat().map((line) => <span class="sm:block">{line} </span>)}
       </p>
       {
         actions && (
-          <div class="mt-[45px] flex flex-wrap justify-center gap-3">
+          <div class="mt-14 flex flex-wrap justify-center gap-3">
             <slot name="actions" />
           </div>
         )
@@ -32,7 +32,7 @@ const actions = Astro.slots.has("actions");
     {visual && actions && <div class="neck h-[45px] w-[68px] bg-surface/70 backdrop-blur-xl" />}
     {
       visual && (
-        <div class:list={["relative w-full overflow-hidden rounded-[40px] bg-surface/70 backdrop-blur-xl max-sm:w-screen", panel, !actions && "mt-[45px]"]}>
+        <div class:list={["relative w-full overflow-hidden bg-surface/70 backdrop-blur-xl", panel, !actions && "mt-[45px]"]}>
           <slot name="visual" />
         </div>
       )

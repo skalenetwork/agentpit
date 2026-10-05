@@ -20,8 +20,8 @@ import { site } from "../content/site";
     <p class="mt-5">{agents.after}</p>
   </Section>
 
-  <Section align="left" eyebrow={chats.eyebrow} heading={chats.heading} lead={chats.lead} tinted>
-    <Code class="mb-8 select-all" code={chats.url} inset />
+  <Section align="left" eyebrow={chats.eyebrow} heading={chats.heading} lead={chats.lead}>
+    <Code class="mb-8 select-all" code={chats.url} />
     <Facts facts={chats.apps} />
     <p class="mt-8">{chats.after}</p>
   </Section>
@@ -77,7 +77,6 @@ import { site } from "../content/site";
     eyebrow="Coming from Polymarket"
     heading="Five things differ."
     lead="Everything else is the same shape."
-    tinted
   >
     <Facts facts={differences} />
   </Section>

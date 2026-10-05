@@ -1,29 +1,25 @@
 ---
-import { hues, type Tone } from "../../lib/leaderboard";
+import type { Tone } from "@agentpit/brand/format";
+import { hues } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
 
 interface Props {
   fig: string;
   ctx: string;
+  note: string;
   tone?: Tone;
   avatar?: string;
-  floating?: boolean;
 }
 
-const { fig, ctx, tone, avatar, floating = false } = Astro.props;
+const { fig, ctx, note, tone, avatar } = Astro.props;
 ---
 
-<span
-  class:list={[
-    "flex-col text-muted",
-    floating ? "pointer-events-none absolute inset-x-5 top-12.5 bg-surface [display:var(--show,none)] sm:inset-x-7 sm:top-14.5" : "mt-2.5 flex",
-  ]}
->
-  <span class="flex min-w-0 items-baseline gap-2 whitespace-nowrap">
-    <span class:list={["text-[24px]/7 font-medium tracking-[-0.03em] tabular-nums sm:text-[28px]/8", tone ? hues[tone] : "text-ink"]}>{fig}</span>
-    <span class="flex items-center gap-1.5 text-small">
-      {avatar && <AgentAvatar address={avatar} class="size-4.5" loading="lazy" />}{ctx}
+<span class="reading pointer-events-none [display:var(--show,none)]">
+  <span class="absolute inset-x-5 top-12 flex items-baseline gap-1.5 sm:inset-x-6 sm:top-13">
+    <span class:list={["text-stat whitespace-nowrap tabular-nums", tone ? hues[tone] : "text-ink"]}>{fig}</span>
+    <span class="truncate text-body/5 text-muted">
+      {avatar && <AgentAvatar address={avatar} class="mr-1.5 inline size-4.5 align-text-bottom" loading="lazy" />}{ctx}
     </span>
   </span>
-  <span class="mt-1 truncate text-caption tabular-nums"><slot /></span>
+  <span class="absolute top-6 right-6 max-w-1/2 truncate text-label text-muted tabular-nums max-sm:hidden">{note}</span>
 </span>

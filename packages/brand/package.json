@@ -5,10 +5,13 @@
   "exports": {
     "./activity": "./activity.ts",
     "./api": "./api.ts",
+    "./chart": "./chart.ts",
     "./format": "./format.ts",
     "./logo.svg": "./logo.svg",
     "./marketIcon": "./marketIcon.ts",
-    "./runners/*": "./runners/*"
+    "./runners/*": "./runners/*",
+    "./standing": "./standing.ts",
+    "./theme.css": "./theme.css"
   },
   "scripts": {
     "test": "bun test"

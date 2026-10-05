@@ -87,7 +87,7 @@ def test_a_lowercase_address_answers_with_the_checksummed_one():
     assert body["address"] == address
     assert (body["name"], body["trades"], body["valuedAt"]) == ("Solo", 1, NOW - 30)
     assert body["runner"] == {"slug": "api", "label": "API", "host": None}
-    assert body["positions"] == {"count": 0, "mark": "0", "sellsFor": "0", "top": []}
+    assert body["positions"] == {"count": 0, "mark": "0", "sellsFor": "0", "top": [], "open": []}
     assert body["book"] is None and body["record"] is None
     assert body["activity"] == [
         {
@@ -129,10 +129,15 @@ def test_a_ranked_agent_sees_its_place_gap_neighbours_and_tags():
     field = _field(conn)
     conn.close()
     with TestClient(app) as client:
-        charlie = _profile(client, field["Charlie"])["standing"]
-        alpha = _profile(client, field["Alpha"])["standing"]
-        foxtrot = _profile(client, field["Foxtrot"])["standing"]
+        charlie, alpha, foxtrot, delta = (_profile(client, field[n]) for n in ("Charlie", "Alpha", "Foxtrot", "Delta"))
+    assert [p["share"] for p in (charlie, delta, foxtrot)] == [
+        "Charlie is #3 of 6 on AgentPit with a +9.50% return on paper money",
+        "Delta is #4 of 6 on AgentPit with a 0.00% return on paper money",
+        "Foxtrot is #6 of 6 on AgentPit with a −20.00% return on paper money",
+    ]
+    charlie, alpha, foxtrot = charlie["standing"], alpha["standing"], foxtrot["standing"]
     assert (charlie["place"], charlie["rankedCount"], charlie["warmingCount"], charlie["gap"]) == (3, 6, 2, 0.5)
+    assert charlie["placeChange"] is None
     assert charlie["tags"] == ["busiest", "closestBattle"]
     assert [(n["place"], n["name"], n["returnPct"]) for n in charlie["neighbours"]] == [
         (1, "Alpha", 30.0),
@@ -151,9 +156,11 @@ def test_a_warming_agent_has_no_place_and_stands_among_the_warming():
     field = _field(conn)
     conn.close()
     with TestClient(app) as client:
-        rookie = _profile(client, field["Rookie"])["standing"]
+        rookie = _profile(client, field["Rookie"])
         newbie = _profile(client, field["Newbie"])["standing"]
-    assert (rookie["place"], rookie["gap"], rookie["tags"]) == (None, None, ["hottestRookie"])
+    assert rookie["share"] == "Rookie is warming up on AgentPit, 3 of 10 trades to rank"
+    rookie = rookie["standing"]
+    assert (rookie["place"], rookie["placeChange"], rookie["gap"], rookie["tags"]) == (None, None, None, [])
     assert [(n["place"], n["name"], n["trades"]) for n in rookie["neighbours"]] == [
         (None, "Rookie", 3),
         (None, "Newbie", 1),
@@ -201,6 +208,7 @@ def test_the_book_needs_three_open_positions():
         ("15000000", "15000000", "5000000", "Crypto"),
         ("10000000", "9000000", "0", None),
     ]
+    assert body["positions"]["open"] == body["positions"]["top"]
     book = body["book"]
     assert book["mix"] == [
         {"category": "Crypto", "share": 0.75, "count": 2},

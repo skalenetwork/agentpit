@@ -107,10 +107,13 @@ class LeaderboardRow(BaseModel):
     #: Mark-to-market gain on those open positions -- profit only on paper.
     unrealized_raw: int = 0
     trades: int
+    trades_today: int = 0
     first_trade_at: int
     last_trade_at: int
     trend_start: date | None = None
     trend: list[str] = []
+    place: int | None = None
+    place_change: int | None = None
 
     @property
     def earned_raw(self) -> int:
@@ -162,6 +165,26 @@ def rank_rows(rows: "list[LeaderboardRow]", sort: str) -> "list[LeaderboardRow]"
     }
     key = keys.get(sort, keys["return"])
     return sorted(rows, key=key, reverse=True)
+
+
+def places(rows: "list[LeaderboardRow]") -> dict[str, int]:
+    """Address -> place by return among the rows with RANK_FLOOR trades or more."""
+    ranked = (r for r in rank_rows(rows, "return") if r.trades >= RANK_FLOOR)
+    return {r.address: k for k, r in enumerate(ranked, 1)}
+
+
+def pct(value: float) -> str:
+    """A return as the landing prints it: two places, an explicit sign, a true minus, none on zero."""
+    shown = round(value, 2)
+    return f"{shown:+,.2f}%".replace("-", "−") if shown else "0.00%"
+
+
+def share_text(row: LeaderboardRow, ranked: int) -> str:
+    """The line an agent's human posts, without the link: place and return once
+    ranked, progress to the floor before."""
+    if row.place is None:
+        return f"{row.name} is warming up on AgentPit, {row.trades} of {RANK_FLOOR} trades to rank"
+    return f"{row.name} is #{row.place} of {ranked} on AgentPit with a {pct(row.return_pct)} return on paper money"
 
 
 class LeaderboardService:
@@ -251,41 +274,61 @@ class LeaderboardService:
             return TableWrite.thin_account_snapshots(conn, now - DENSE_WINDOW)
 
     def build_board(self) -> "list[LeaderboardRow]":
-        """Assemble the board from the latest snapshot of each account.
+        """Assemble the board from the latest snapshot of each account, with each
+        place now and its change since the previous UTC day's close.
+
+        Yesterday's board is today's membership at each one's latest close
+        before today, counting only the trades matched before UTC midnight, so
+        a deletion moves nobody.
 
         Reads only the database -- the chain work happened in `take_snapshot`.
         """
-        today = datetime.now(UTC).date()
+        now = int(time.time())
+        today = datetime.fromtimestamp(now, UTC).date()
         since = today - timedelta(days=TREND_DAYS - 1)
         with self._db.read() as conn:
             accounts = TableRead.list_traded_accounts(conn)
             latest = TableRead.latest_account_snapshots(conn)
-            tallies = TableRead.count_trades_by_user(conn)
+            tallies = TableRead.count_trades_by_user(conn, now - now % 86_400)
             closes = TableRead.daily_closes(conn, [a.user_id for a in accounts], since)
 
-        rows = []
+        rows: list[LeaderboardRow] = []
+        then: list[LeaderboardRow] = []
         for account in accounts:
             snapshot = latest.get(account.user_id)
             tally = tallies.get(account.user_id)
             if snapshot is None or tally is None:
                 continue
             capital, deposited, invested, unrealized = snapshot
-            trend_start, trend = daily_trend(closes.get(account.user_id, []), today)
-            rows.append(
-                LeaderboardRow(
-                    name=display_name(account.handle, account.eth_address),
-                    address=account.eth_address,
-                    app=account.app,
-                    host=account.host,
-                    capital_raw=capital,
-                    deposited_raw=deposited,
-                    invested_raw=invested,
-                    unrealized_raw=unrealized,
-                    trades=tally.trades,
-                    first_trade_at=tally.first_trade_at,
-                    last_trade_at=tally.last_trade_at,
-                    trend_start=trend_start,
-                    trend=trend,
-                )
+            own = closes.get(account.user_id, [])
+            trend_start, trend = daily_trend(own, today)
+            row = LeaderboardRow(
+                name=display_name(account.handle, account.eth_address),
+                address=account.eth_address,
+                app=account.app,
+                host=account.host,
+                capital_raw=capital,
+                deposited_raw=deposited,
+                invested_raw=invested,
+                unrealized_raw=unrealized,
+                trades=tally.trades,
+                trades_today=tally.trades - tally.trades_before,
+                first_trade_at=tally.first_trade_at,
+                last_trade_at=tally.last_trade_at,
+                trend_start=trend_start,
+                trend=trend,
             )
+            rows.append(row)
+            close = next((c for c in reversed(own) if c.day < today), None)
+            if close is not None:
+                then.append(
+                    row.model_copy(
+                        update={"capital_raw": close.capital, "deposited_raw": close.deposited, "trades": tally.trades_before}
+                    )
+                )
+        now_places, then_places = places(rows), places(then)
+        for row in rows:
+            row.place = now_places.get(row.address)
+            before = then_places.get(row.address)
+            row.place_change = None if row.place is None or before is None else before - row.place
         return rows

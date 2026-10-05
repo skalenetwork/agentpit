@@ -1,0 +1,100 @@
+@theme {
+  --color-*: initial;
+  --color-paper: light-dark(#ffffff, #020817);
+  --color-surface: light-dark(#f1f5f9, #0f172a);
+  --color-ink: light-dark(#020817, #f8fafc);
+  --color-muted: light-dark(#64748b, #94a3b8);
+  --color-faint: light-dark(#94a3b8, #64748b);
+  --color-line: light-dark(#e2e8f0, #1e293b);
+  --color-signal: light-dark(#2563eb, #60a5fa);
+  --color-up: light-dark(#047857, #34d399);
+  --color-down: light-dark(#e11d48, #fb7185);
+  --color-gold: light-dark(#f2ae00, #ffcc1f);
+  --color-silver: light-dark(#8ea3c8, #cfdaf0);
+  --color-bronze: light-dark(#e8793a, #f89a5a);
+
+  --font-weight-*: initial;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+
+  --radius-*: initial;
+  --radius-control: calc(infinity * 1px);
+  --radius-item: 6px;
+  --radius-card: 16px;
+  --radius-well: 22px;
+  --radius-panel: 24px;
+  --radius-robot: 28%;
+
+  --container-*: initial;
+  --container-page: 986px;
+  --container-text: 736px;
+
+  --text-*: initial;
+  --text-heading: clamp(28px, 4vw, 40px);
+  --text-heading--line-height: 1.2;
+  --text-heading--font-weight: 500;
+  --text-heading--letter-spacing: -0.03em;
+  --text-stat: 34px;
+  --text-stat--line-height: 40px;
+  --text-stat--font-weight: 500;
+  --text-stat--letter-spacing: -0.03em;
+  --text-figure: 28px;
+  --text-figure--line-height: 34px;
+  --text-figure--font-weight: 500;
+  --text-figure--letter-spacing: -0.03em;
+  --text-title: 21px;
+  --text-title--line-height: 28px;
+  --text-title--font-weight: 500;
+  --text-title--letter-spacing: -0.02em;
+  --text-body: 16px;
+  --text-body--line-height: 24px;
+  --text-small: 14px;
+  --text-small--line-height: 20px;
+  --text-label: 13px;
+  --text-label--line-height: 20px;
+  --text-caption: 12px;
+  --text-caption--line-height: 18px;
+  --text-caption--letter-spacing: 0em;
+
+  --shadow-*: initial;
+  --shadow-overlay: 0 24px 48px -16px rgb(2 8 23 / 0.18), 0 0 0 1px var(--color-line);
+
+  --animate-draw: draw 1100ms cubic-bezier(0.2, 0, 0, 1) backwards;
+
+  @keyframes draw {
+    from {
+      clip-path: inset(0 100% 0 0);
+    }
+    to {
+      clip-path: inset(0);
+    }
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+    scrollbar-gutter: stable;
+    scrollbar-color: color-mix(in oklab, var(--color-muted) 40%, transparent) transparent;
+  }
+
+  * {
+    scrollbar-width: thin;
+  }
+
+  body {
+    background: var(--color-paper);
+    letter-spacing: -0.01em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+
+  button {
+    cursor: pointer;
+  }
+}

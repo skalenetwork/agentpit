@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { bursts, threads } from "./activity";
+import { bursts } from "./activity";
 import type { Fill } from "./api";
 
 const nobel = "Will World Central Kitchen win the Nobel Peace Prize in 2026?";
@@ -31,16 +31,4 @@ test("a burst breaks on a different type, side, outcome or title", () => {
   for (const change of [{ type: "REDEEM", side: null }, { side: "SELL" }, { outcome: "No" }, { title: bitcoin }] satisfies Partial<Fill>[]) {
     expect(bursts([fill(10_000), fill(9_999, change), fill(9_998)]).map((burst) => burst.n)).toEqual([1, 1, 1]);
   }
-});
-
-test("threads group consecutive bursts of one market only", () => {
-  const list = bursts([fill(90_000), fill(80_000, { side: "SELL" }), fill(70_000, { title: bitcoin }), fill(60_000)]);
-  expect(threads(list).map((thread) => thread.map((burst) => [burst.title, burst.side]))).toEqual([
-    [
-      [nobel, "BUY"],
-      [nobel, "SELL"],
-    ],
-    [[bitcoin, "BUY"]],
-    [[nobel, "BUY"]],
-  ]);
 });

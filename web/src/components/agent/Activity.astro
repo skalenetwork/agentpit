@@ -1,84 +1,61 @@
 ---
-import { ArrowLeftRight } from "@lucide/astro";
-import { bursts, threads, type Burst } from "@agentpit/brand/activity";
+import { bursts } from "@agentpit/brand/activity";
+import { cents, dollars, shortDay } from "@agentpit/brand/format";
 import type { Fill } from "../../lib/api";
-import { ago, cents, count, dollars, utcTime } from "@agentpit/brand/format";
-import Card from "../Card.astro";
-import MarketRow from "./MarketRow.astro";
+import Glyph from "./Glyph.astro";
 import Outcome from "./Outcome.astro";
+import ShowAll from "./ShowAll.astro";
 
 interface Props {
   activity: readonly Fill[];
-  trades: number;
   now: number;
+  class: string;
 }
 
-const { activity, trades, now } = Astro.props;
+const SHOWN = 8;
+const DAY = 86_400;
+const { activity, now, class: className } = Astro.props;
 const verbs = { BUY: "Bought", SELL: "Sold", SPLIT: "Split", MERGE: "Merged", REDEEM: "Redeemed" } as const;
-const line = (burst: Burst) => {
-  const date = new Date(burst.at * 1000);
-  return {
-    verb: burst.type === "TRADE" ? verbs[burst.side ?? "BUY"] : verbs[burst.type],
-    price: burst.type === "TRADE" ? `at ${cents(burst.dollars / burst.shares)}` : "",
-    time: { datetime: date.toISOString(), title: `${date.toISOString().slice(0, 10)} ${utcTime(date)}` },
-    ago: ago(burst.at, now),
-  };
+const today = Math.floor(now / DAY);
+const heading = (at: number) => {
+  const back = today - Math.floor(at / DAY);
+  return back === 0 ? "Today" : back === 1 ? "Yesterday" : shortDay(new Date(at * 1000));
 };
-const rows = threads(bursts(activity).slice(0, 5)).map(([head, ...rest]) => ({ head: { ...head, ...line(head) }, rest: rest.map((burst) => ({ ...burst, ...line(burst) })) }));
+const list = bursts(activity).map((burst, i) => ({ ...burst, i, verb: burst.type === "TRADE" ? verbs[burst.side ?? "BUY"] : verbs[burst.type] }));
+const days = [...Map.groupBy(list, (burst) => heading(burst.at))];
 ---
 
-<Card icon={ArrowLeftRight} title="Activity" figure={count(trades)} context={trades === 1 ? "trade" : "trades"}>
-  <ol class="mt-auto pt-6">
-    {
-      rows.map(({ head, rest }) => (
-        <li class="border-t border-line py-4 first:border-t-0 first:pt-0 last:pb-0">
-          <MarketRow title={head.title} icon={head.icon} category={head.category} rail={rest.length > 0}>
-            <Fragment slot="what">
-              <span class="flex items-center gap-2">
-                {head.verb}
-                {head.price && head.outcome && <Outcome outcome={head.outcome} />}
-                {head.price}
-                {head.n > 1 && <span class="font-medium text-ink">×{head.n}</span>}
-              </span>
-              <span class="max-sm:hidden">
-                · <time {...head.time}>{head.ago}</time>
-              </span>
-            </Fragment>
-            <Fragment slot="value">
-              <p class="text-small text-ink">{dollars(head.dollars)}</p>
-              <p class="mt-0.5 text-caption sm:hidden"><time {...head.time}>{head.ago}</time></p>
-            </Fragment>
-          </MarketRow>
-          {
-            rest.length > 0 && (
-              <ol>
-                {rest.map((burst) => (
-                  <li class="relative grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 py-1.5 before:absolute before:inset-y-0 before:left-4 before:w-px before:-translate-x-1/2 before:bg-line first:pt-2.5 last:before:bottom-1/2 sm:gap-x-4">
-                    <span class="relative grid w-8 place-items-center">
-                      <span class="size-2 rounded-control bg-muted" />
-                    </span>
-                    <p class="flex min-w-0 items-center gap-2 overflow-hidden text-caption whitespace-nowrap tabular-nums">
-                      <span class="flex items-center gap-2">
-                        {burst.verb}
-                        {burst.price && burst.outcome && <Outcome outcome={burst.outcome} />}
-                        {burst.price}
-                        {burst.n > 1 && <span class="font-medium text-ink">×{burst.n}</span>}
-                      </span>
-                      <span class="max-sm:hidden">
-                        · <time {...burst.time}>{burst.ago}</time>
-                      </span>
-                    </p>
-                    <div class="text-right whitespace-nowrap tabular-nums">
-                      <p class="text-small text-ink">{dollars(burst.dollars)}</p>
-                      <p class="mt-0.5 text-caption sm:hidden"><time {...burst.time}>{burst.ago}</time></p>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )
-          }
-        </li>
-      ))
-    }
-  </ol>
-</Card>
+<div class:list={["group/more", className]}>
+  {
+    days.map(([label, items], k) => (
+      <section class:list={[items[0].i >= SHOWN && "hidden group-has-checked/more:block"]}>
+        <h3 class:list={["pb-2.5 text-caption font-medium text-muted", k ? "pt-5" : "pt-4"]}>{label}</h3>
+        <ul>
+          {items.map((burst) => (
+            <li
+              class:list={[
+                "grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:min-h-13 md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px] md:items-center md:py-2",
+                burst.i < SHOWN ? "grid" : "hidden group-has-checked/more:grid",
+              ]}
+            >
+              <Glyph title={burst.title} icon={burst.icon} category={burst.category} />
+              <div class="min-w-0 md:contents">
+                <p class="font-medium text-ink max-md:line-clamp-2 md:truncate">{burst.title}</p>
+                <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted max-md:text-caption md:contents">
+                  <span class="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+                    <span class="text-ink">{burst.verb}</span>
+                    {burst.outcome && <Outcome outcome={burst.outcome} />}
+                    {burst.n > 1 && <span>×{burst.n}</span>}
+                  </span>
+                  <span class="whitespace-nowrap max-md:empty:hidden md:text-right">{burst.type === "TRADE" && `at ${cents(burst.dollars / burst.shares)}`}</span>
+                </p>
+              </div>
+              <span class="text-right text-ink">{dollars(burst.dollars)}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ))
+  }
+  {list.length > SHOWN && <ShowAll>Show {list.length - SHOWN} more</ShowAll>}
+</div>

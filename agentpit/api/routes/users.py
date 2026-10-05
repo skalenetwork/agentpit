@@ -32,7 +32,6 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import HandleAlreadyExistsError, UserNotFoundError
-from agentpit.services.leaderboard_service import RANK_FLOOR, rank_rows
 
 router = APIRouter(tags=["users"])
 
@@ -72,9 +71,7 @@ def get_my_agents(
         agents = TableRead.agents_owned_by(conn, user.workos_user_id)
     if not agents:
         return []
-    board = rank_rows(leaderboard.build_board(), "return")
-    rows = {r.address: r for r in board}
-    places = {r.address: i + 1 for i, r in enumerate(r for r in board if r.trades >= RANK_FLOOR)}
+    rows = {r.address: r for r in leaderboard.build_board()}
     owned: list[OwnedAgent] = []
     with db.read() as conn:
         for agent in agents:
@@ -92,7 +89,10 @@ def get_my_agents(
                     last_trade_at=row.last_trade_at,
                     earned=str(row.earned_raw),
                     return_pct=round(row.return_pct, 2),
-                    place=places.get(row.address),
+                    place=row.place,
+                    place_change=row.place_change,
+                    trend=row.trend,
+                    trend_start=row.trend_start,
                 )
             )
     return owned

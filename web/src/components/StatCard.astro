@@ -13,13 +13,13 @@ const { value, label, side = "top", class: className } = Astro.props;
 
 <div
   class:list={[
-    "relative isolate min-h-48 overflow-hidden rounded-panel bg-paper p-8",
-    side === "left" && "max-sm:min-h-80",
+    "relative isolate min-h-48 overflow-hidden rounded-panel bg-surface p-6 sm:p-8",
+    side === "left" && "max-sm:min-h-64",
     className,
   ]}
 >
   <div class="absolute inset-0 -z-20"><slot /></div>
-  <Scrim side={side} tone="paper" />
-  <p class="text-heading text-ink">{value}</p>
+  <Scrim side={side} />
+  <p class="text-stat text-ink">{value}</p>
   <p class="mt-1">{label}</p>
 </div>

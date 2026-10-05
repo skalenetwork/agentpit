@@ -1,32 +1,29 @@
 ---
 import type { AstroComponent } from "@lucide/astro";
-import type { Tone } from "../../lib/leaderboard";
 import Card from "../Card.astro";
-import Readout from "./Readout.astro";
 
 interface Props {
-  icon: AstroComponent;
   title: string;
+  icon: AstroComponent;
   fig: string;
   ctx: string;
-  tone?: Tone;
   label: string;
   ticks: readonly { readonly at: number; readonly label: string; readonly name?: string }[];
 }
 
-const { icon, title, fig, ctx, tone, label, ticks } = Astro.props;
+const { title, icon, fig, ctx, label, ticks } = Astro.props;
 ---
 
-<Card class="relative sm:pb-6" icon={icon} title={title}>
-  <Readout fig={fig} ctx={ctx} tone={tone}><slot name="note" /></Readout>
-  <div class="isolate mt-9 grid h-34 grid-rows-1 *:[grid-area:1/1] sm:h-40" role="img" aria-label={label}>
+<Card class="relative" title={title} icon={icon} figure={fig} unit={ctx}>
+  <slot name="note" slot="note" />
+  <div class="isolate mt-4 grid h-28 grid-rows-1 pt-5 *:[grid-area:1/1] sm:h-32" role="img" aria-label={label}>
     <div class="relative -z-10"><span class="absolute inset-x-0 bottom-0 h-px bg-muted/55"></span></div>
     <slot />
   </div>
-  <svg class="mt-2.5 block h-4.5 w-full overflow-visible fill-current text-caption tabular-nums" aria-hidden="true">
+  <svg class="mt-2 block h-4 w-full overflow-visible fill-current text-caption tabular-nums" aria-hidden="true">
     {
       ticks.map(({ at, label, name }) => (
-        <text x={`${at}%`} y="13" text-anchor={at === 0 ? "start" : at === 100 ? "end" : "middle"}>
+        <text x={`${at}%`} y="12" text-anchor={at === 0 ? "start" : at === 100 ? "end" : "middle"}>
           {label}
           {name && <tspan class="max-sm:hidden">{` ${name}`}</tspan>}
         </text>

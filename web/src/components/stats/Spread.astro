@@ -1,7 +1,7 @@
 ---
 import { RANK_FLOOR, type Agent } from "../../lib/api";
-import { count, signedDollars } from "@agentpit/brand/format";
-import { hues, tone } from "../../lib/leaderboard";
+import { count, signedDollars, tone } from "@agentpit/brand/format";
+import { hues } from "../../lib/leaderboard";
 import Readout from "./Readout.astro";
 
 interface Props {
@@ -16,7 +16,7 @@ const depth = (value: number) => (Math.log10(1 + Math.abs(value) / 100) / Math.l
 const pc = (value: number) => `${+value.toFixed(2)}%`;
 ---
 
-<div class="relative -z-10 text-caption leading-4 tabular-nums">
+<div class="relative -z-10 text-caption tabular-nums">
   <span class="absolute inset-x-0 bottom-full h-px bg-line"><span class="absolute bottom-1 left-0">{format(reach)}</span></span>
   <span class="absolute inset-x-0 bottom-1/2 h-px bg-muted/55"><span class="absolute bottom-1 left-0">{format(0)}</span></span>
   <span class="absolute right-0 bottom-1">{format(-reach)}</span>
@@ -32,9 +32,13 @@ const pc = (value: number) => `${+value.toFixed(2)}%`;
             <line x1="50%" x2="50%" y2="100%" shape-rendering="crispEdges" />
             <rect x="15%" y={pc(mood === "down" ? 50 : mood === "up" ? 50 - height : 49.25)} width="70%" height={pc(height)} />
           </svg>
-          <Readout floating fig={signedDollars(agent.pnl)} ctx={agent.name} tone={mood} avatar={agent.address}>
-            {`${count(agent.trades)} ${agent.trades === 1 ? "trade" : "trades"}, ${mood === "flat" ? "flat" : `${mood} ${move.format(Math.abs(agent.returnPct))}%`} on paper`}
-          </Readout>
+          <Readout
+            fig={signedDollars(agent.pnl)}
+            ctx={agent.name}
+            note={`${count(agent.trades)} ${agent.trades === 1 ? "trade" : "trades"}, ${mood === "flat" ? "flat" : `${mood} ${move.format(Math.abs(agent.returnPct))}%`} on paper`}
+            tone={mood}
+            avatar={agent.address}
+          />
         </div>
       );
     })
@@ -50,10 +54,10 @@ const pc = (value: number) => `${+value.toFixed(2)}%`;
     fill: currentColor;
   }
   .up rect {
-    clip-path: inset(0 round 1.5px 1.5px 0 0) fill-box;
+    clip-path: inset(0 round 2px 2px 0 0) fill-box;
   }
   .down rect {
-    clip-path: inset(0 round 0 0 1.5px 1.5px) fill-box;
+    clip-path: inset(0 round 0 0 2px 2px) fill-box;
   }
   .few rect {
     fill: color-mix(in oklab, currentColor 38%, transparent);

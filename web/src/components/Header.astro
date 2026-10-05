@@ -9,42 +9,48 @@ interface Props {
 }
 
 const { overlay = false } = Astro.props;
+const path = Astro.url.pathname;
 ---
 
 <header
-  class="group fixed inset-x-0 top-0 z-10 h-16 bg-paper/60 px-5 backdrop-blur-xl sm:px-12"
+  class="group fixed inset-x-0 top-0 z-10 h-15 bg-paper/60 px-4 backdrop-blur-xl sm:px-12"
   data-overlay={overlay || undefined}
 >
   <div class="mx-auto flex h-full w-full max-w-page items-center justify-between gap-4">
     <a class="light text-ink" href="/" aria-label={site.name}>
-      <Logo class="h-4.5 w-auto" aria-hidden="true" />
+      <Logo class="h-4 w-auto" aria-hidden="true" />
     </a>
-    <nav class="flex items-center gap-6 text-small font-medium max-sm:gap-1.5" aria-label="Site">
+    <nav class="flex items-center gap-5 text-small font-medium tracking-[-0.01em]" aria-label="Site">
       {
         nav.map((link) => (
           <a
-            class="light text-ink opacity-65 transition-opacity duration-150 hover:opacity-100 max-sm:hidden"
+            class="light text-ink opacity-65 transition-opacity duration-150 hover:opacity-100 aria-[current=page]:opacity-100 max-sm:hidden"
             href={link.href}
+            aria-current={path.startsWith(link.href) ? "page" : undefined}
           >
             {link.label}
           </a>
         ))
       }
-      <Button class="cta" href={cta.href} size="sm">{cta.label}</Button>
-      <button class="light -mr-2.5 grid size-10 cursor-pointer place-items-center rounded-control text-ink sm:hidden" type="button" popovertarget="menu" aria-label="Menu">
+      <span class="flex w-24 justify-end max-sm:hidden"><Button class="cta" href={cta.href} size="sm">{cta.label}</Button></span>
+      <button class="light grid size-8 cursor-pointer place-items-center rounded-control text-ink sm:hidden" type="button" popovertarget="menu" aria-label="Menu">
         <Menu class="size-5 group-has-open:hidden" aria-hidden="true" />
         <X class="hidden size-5 group-has-open:block" aria-hidden="true" />
       </button>
     </nav>
     <nav
       id="menu"
-      class="inset-x-0 top-16 bottom-auto m-0 w-auto border-0 bg-paper/60 px-5 pb-4 text-ink backdrop-blur-xl transition-[opacity,display,overlay] transition-discrete duration-150 not-open:opacity-0 starting:open:opacity-0"
+      class="inset-auto top-13 right-4 m-0 w-60 rounded-card bg-paper p-2.5 text-small tracking-[-0.01em] text-ink shadow-overlay transition-[opacity,display,overlay] transition-discrete duration-150 not-open:opacity-0 starting:open:opacity-0"
       popover
       aria-label="Menu"
     >
       {
         nav.map((link) => (
-          <a class="flex h-12 items-center text-lead font-medium" href={link.href}>
+          <a
+            class="flex h-9 items-center rounded-item px-2.5 transition-colors duration-150 hover:bg-surface"
+            href={link.href}
+            aria-current={path.startsWith(link.href) ? "page" : undefined}
+          >
             {link.label}
           </a>
         ))
@@ -61,7 +67,7 @@ const { overlay = false } = Astro.props;
       animation-timing-function: linear;
       animation-fill-mode: both;
       animation-timeline: scroll();
-      animation-range: 0 64px;
+      animation-range: 0 60px;
     }
 
     header {
@@ -79,15 +85,8 @@ const { overlay = false } = Astro.props;
     }
   }
 
-  header:has(:popover-open),
-  header:has(:popover-open) .light,
-  header:has(:popover-open) :global(.cta) {
-    animation: none;
-  }
-
   @keyframes condense {
     from {
-      height: 82px;
       background-color: transparent;
       backdrop-filter: none;
     }

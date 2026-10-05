@@ -1,57 +1,68 @@
 ---
-import { Layers } from "@lucide/astro";
+import { cents, dollars, signedDollars, tone } from "@agentpit/brand/format";
 import type { Profile } from "../../lib/api";
-import { cents, dollars, percent, signedDollars } from "@agentpit/brand/format";
-import { hues, tone } from "../../lib/leaderboard";
-import Card from "../Card.astro";
-import MarketRow from "./MarketRow.astro";
+import { hues } from "../../lib/leaderboard";
+import Glyph from "./Glyph.astro";
 import Outcome from "./Outcome.astro";
+import ShowAll from "./ShowAll.astro";
 
 interface Props {
   positions: Profile["positions"];
+  cash: number;
+  class: string;
 }
 
-const { count, mark, sellsFor, top } = Astro.props.positions;
-const kept = mark ? sellsFor / mark : 0;
+const SHOWN = 6;
+const { positions, cash, class: className } = Astro.props;
+const { mark, open } = positions;
 ---
 
-{
-  count ? (
-    <Card icon={Layers} title="Open positions" note={count > top.length ? `Top ${top.length} of ${count}` : `${count} open`} figure={dollars(mark)} context="at mark">
-      <svg class="mt-4 h-2 w-full" aria-hidden="true">
-        <rect width="100%" height="100%" rx="4" class="fill-line" />
-        <rect width={`${+(kept * 100).toFixed(1)}%`} height="100%" rx="4" class="fill-ink" />
-      </svg>
-      <p class="mt-2 flex justify-between text-caption tabular-nums">
-        <span>Sells for <span class="text-ink">{dollars(sellsFor)}</span></span><span>{percent(kept)}</span>
-      </p>
-      <ul class="mt-auto pt-6">
-        {
-          top.map((position) => {
-            const share = position.value ? position.sellsFor / position.value : 1;
-            return (
-              <li class="border-t border-line py-4 first:border-t-0 first:pt-0 last:pb-0">
-                <MarketRow title={position.title} icon={position.icon} category={position.category}>
-                  <Fragment slot="what">
-                    <Outcome outcome={position.outcome} />
-                    {position.avgPrice ? `${cents(position.avgPrice)} → ${cents(position.curPrice)}` : `Split → ${cents(position.curPrice)}`}
-                  </Fragment>
-                  <Fragment slot="value">
-                    <p class="text-small text-ink">
-                      {dollars(position.value)} <span class={hues[tone(position.pnl)]}>{signedDollars(position.pnl)}</span>
-                    </p>
-                    {share < 0.9 && <p class:list={["mt-1 text-caption", share < 0.5 && "text-ink"]}>Sells for {dollars(position.sellsFor)}</p>}
-                  </Fragment>
-                </MarketRow>
-              </li>
-            );
-          })
-        }
+<div class:list={["group/more", className]}>
+  <div class="grid min-h-10 items-center gap-x-3 text-caption text-muted md:grid-cols-[30px_minmax(0,1fr)_44px_104px_104px_104px]">
+    <p class="md:col-span-3">
+      <span class="font-medium text-ink tabular-nums">{dollars(mark)}</span> in positions <span class="text-faint">·</span> <span class="font-medium text-ink tabular-nums">{dollars(cash)}</span> cash
+    </p>
+    {open.length > 0 && <span class="text-right max-md:hidden">Avg → now</span>}
+    {open.length > 0 && <span class="text-right max-md:hidden">Value</span>}
+    {open.length > 0 && <span class="text-right max-md:hidden">Earned</span>}
+  </div>
+  {
+    open.length > 0 ? (
+      <ul>
+        {open.map((position, i) => {
+          const sells = position.sellsFor < 0.9 * position.value;
+          return (
+            <li
+              class:list={[
+                "grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:grid-cols-[30px_minmax(0,1fr)_44px_104px_104px_104px] md:items-center md:py-2",
+                sells ? "md:min-h-15" : "md:min-h-13",
+                i < SHOWN ? "grid" : "hidden group-has-checked/more:grid",
+              ]}
+            >
+              <Glyph title={position.title} icon={position.icon} category={position.category} />
+              <div class="min-w-0 md:contents">
+                <p class="font-medium text-ink max-md:line-clamp-2 md:truncate">{position.title}</p>
+                <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted max-md:text-caption md:contents">
+                  <Outcome outcome={position.outcome} />
+                  <span class="whitespace-nowrap md:text-right">
+                    {position.avgPrice ? cents(position.avgPrice) : "Split"} <span class="text-faint">→</span> {cents(position.curPrice)}
+                  </span>
+                </p>
+              </div>
+              <span class="grid justify-items-end gap-0.5 md:contents">
+                <span class="grid justify-items-end text-right text-ink">
+                  {dollars(position.value)}
+                  {sells && <span class="mt-0.5 text-caption whitespace-nowrap text-muted">sells for {dollars(position.sellsFor)}</span>}
+                </span>
+                <span class:list={["text-right font-medium max-md:text-caption", hues[tone(position.pnl)]]}>{signedDollars(position.pnl)}</span>
+              </span>
+            </li>
+          );
+        })}
       </ul>
-    </Card>
-  ) : (
-    <Card icon={Layers} title="Open positions">
-      <p class="mt-2.5 text-body">Nothing open.</p>
-    </Card>
-  )
-}
+    ) : (
+      <p class="flex min-h-13 items-center border-t border-line text-muted">Nothing open.</p>
+    )
+  }
+  {open.length > SHOWN && <ShowAll>Show all {open.length} positions</ShowAll>}
+</div>

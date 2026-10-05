@@ -7,12 +7,12 @@ from pydantic import BaseModel
 
 from agentpit.datastructures.activity_wire import ActivityWire
 from agentpit.domain.runner import Runner, runner_for
-from agentpit.services.leaderboard_service import RANK_FLOOR, Holdings, LeaderboardRow
+from agentpit.services.leaderboard_service import Holdings, LeaderboardRow, share_text
 
 ACTIVITY = 40
 PNLS = 40
 
-Tag = Literal["busiest", "closestBattle", "hottestRookie"]
+Tag = Literal["busiest", "closestBattle"]
 
 
 class Neighbour(BaseModel):
@@ -25,6 +25,7 @@ class Neighbour(BaseModel):
 
 class Standing(BaseModel):
     place: int | None
+    placeChange: int | None
     rankedCount: int
     warmingCount: int
     gap: float | None
@@ -61,6 +62,7 @@ class Positions(BaseModel):
     mark: str
     sellsFor: str
     top: list[OpenPosition]
+    open: list[OpenPosition]
 
 
 class CategoryShare(BaseModel):
@@ -119,6 +121,7 @@ class AgentProfile(BaseModel):
     lastTradeAt: int
     valuedAt: int
     standing: Standing
+    share: str
     money: Money
     positions: Positions
     book: Book | None
@@ -141,14 +144,13 @@ def build_profile(
     """`board` in return order. Returns compare as the board shows them, rounded
     to 2 places, so every tie resolves the way the landing resolves it."""
     shown = {r.address: round(r.return_pct, 2) for r in board}
-    ranked = [r for r in board if r.trades >= RANK_FLOOR]
-    warming = sorted((r for r in board if r.trades < RANK_FLOOR), key=lambda r: r.trades, reverse=True)
-    own = ranked if row.trades >= RANK_FLOOR else warming
+    ranked = [r for r in board if r.place is not None]
+    warming = sorted((r for r in board if r.place is None), key=lambda r: r.trades, reverse=True)
+    own = ranked if row.place else warming
     i = own.index(row)
-    place = i + 1 if own is ranked else None
     start = min(max(0, i - 2), max(0, len(own) - 5))
     gap = None
-    if place is not None and len(ranked) > 1:
+    if row.place and len(ranked) > 1:
         gap = round(abs(shown[row.address] - shown[ranked[i - 1 if i else 1].address]), 2)
 
     tags: list[Tag] = []
@@ -157,11 +159,23 @@ def build_profile(
     pairs = list(zip(ranked, ranked[1:]))
     if pairs and row in min(pairs, key=lambda p: abs(shown[p[0].address] - shown[p[1].address])):
         tags.append("closestBattle")
-    if warming and max(warming, key=lambda r: shown[r.address]) is row and shown[row.address] > 0:
-        tags.append("hottestRookie")
 
     open_ = [p for p in held.positions if not p.settled]
     settled = [p for p in held.positions if p.settled]
+    listed = [
+        OpenPosition(
+            title=p.title,
+            icon=p.icon or None,
+            category=categories.get(p.conditionId),
+            outcome=p.outcome,
+            avgPrice=p.avgPrice,
+            curPrice=p.curPrice,
+            value=_money(p.currentValue),
+            sellsFor=_money(p.sellableValue),
+            pnl=_money(p.cashPnl),
+        )
+        for p in sorted(open_, key=lambda p: p.currentValue, reverse=True)
+    ]
     book = None
     if len(open_) >= 3:
         cost = sum(p.initialValue for p in open_)
@@ -228,14 +242,15 @@ def build_profile(
         lastTradeAt=row.last_trade_at,
         valuedAt=held.valued_at,
         standing=Standing(
-            place=place,
+            place=row.place,
+            placeChange=row.place_change,
             rankedCount=len(ranked),
             warmingCount=len(warming),
             gap=gap,
             tags=tags,
             neighbours=[
                 Neighbour(
-                    place=start + k + 1 if place else None,
+                    place=start + k + 1 if row.place else None,
                     name=r.name,
                     address=r.address,
                     returnPct=shown[r.address],
@@ -244,6 +259,7 @@ def build_profile(
                 for k, r in enumerate(own[start:start + 5])
             ],
         ),
+        share=share_text(row, len(ranked)),
         money=Money(
             returnPct=shown[row.address],
             capital=str(row.capital_raw),
@@ -259,20 +275,8 @@ def build_profile(
             count=len(open_),
             mark=_money(sum(p.currentValue for p in open_)),
             sellsFor=_money(sum(p.sellableValue for p in open_)),
-            top=[
-                OpenPosition(
-                    title=p.title,
-                    icon=p.icon or None,
-                    category=categories.get(p.conditionId),
-                    outcome=p.outcome,
-                    avgPrice=p.avgPrice,
-                    curPrice=p.curPrice,
-                    value=_money(p.currentValue),
-                    sellsFor=_money(p.sellableValue),
-                    pnl=_money(p.cashPnl),
-                )
-                for p in sorted(open_, key=lambda p: p.currentValue, reverse=True)[:3]
-            ],
+            top=listed[:3],
+            open=listed,
         ),
         book=book,
         record=record,

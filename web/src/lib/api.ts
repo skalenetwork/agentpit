@@ -2,20 +2,20 @@ import { profile, usd, type Profile, type Runner, type WireProfile } from "@agen
 import { site } from "../content/site";
 
 export { RANK_FLOOR } from "@agentpit/brand/api";
-export type { Fill, Profile, Runner, RunnerSlug, Tag } from "@agentpit/brand/api";
+export type { Fill, Profile } from "@agentpit/brand/api";
 
 export const TREND_DAYS = 30;
 
 export interface Agent {
-  readonly rank: number;
+  readonly rank: number | null;
+  readonly rankChange: number | null;
   readonly name: string;
   readonly address: string;
   readonly runner: Runner;
   readonly returnPct: number;
   readonly trades: number;
-  readonly equity: number;
+  readonly tradesToday: number;
   readonly pnl: number;
-  readonly invested: number;
   readonly trend: readonly number[];
   readonly firstTradeAt: number;
   readonly lastTradeAt: number;
@@ -34,15 +34,15 @@ interface WireDay extends Omit<StatsDay, "volume"> {
 }
 
 interface Entry {
-  readonly rank: number;
+  readonly rank: number | null;
+  readonly rankChange: number | null;
   readonly name: string;
   readonly address: string;
   readonly runner: Runner;
-  readonly capital: string;
   readonly earned: string;
-  readonly invested: string;
   readonly returnPct: number;
   readonly trades: number;
+  readonly tradesToday: number;
   readonly trend: readonly string[];
   readonly firstTradeAt: number;
   readonly lastTradeAt: number;
@@ -67,14 +67,14 @@ export const activeMarkets = async (): Promise<number | undefined> => {
 export const leaderboard = async (): Promise<readonly Agent[] | undefined> =>
   (await get<{ entries: readonly Entry[] }>("/leaderboard"))?.entries.map((entry) => ({
     rank: entry.rank,
+    rankChange: entry.rankChange,
     name: entry.name,
     address: entry.address,
     runner: entry.runner,
     returnPct: entry.returnPct,
     trades: entry.trades,
-    equity: usd(entry.capital),
+    tradesToday: entry.tradesToday,
     pnl: usd(entry.earned),
-    invested: usd(entry.invested),
     trend: entry.trend.map(usd),
     firstTradeAt: entry.firstTradeAt,
     lastTradeAt: entry.lastTradeAt,

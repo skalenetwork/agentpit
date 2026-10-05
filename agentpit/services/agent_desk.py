@@ -44,10 +44,12 @@ from agentpit.polymarket.format import decimal_str_to_price_int, decimal_str_to_
 from agentpit.services.account_service import MIN_PRICE_MICRO, SLIPPAGE_CAP_MICRO, AccountService
 from agentpit.services.balance_service import BalanceService
 from agentpit.services.leaderboard_service import (
+    RANK_FLOOR,
     LeaderboardService,
     compute_return_pct,
     display_name,
     rank_rows,
+    share_text,
 )
 from agentpit.services.order_service import OrderService
 
@@ -227,7 +229,9 @@ class AgentDesk:
         try:
             placed = self._orders.place_order(user, request)
         except OrderNotFilledError:
-            return TradeResult(order_id=None, status="unfilled", filled_shares=0, avg_price=None, usd=0, resting_shares=0)
+            return TradeResult(
+                order_id=None, status="unfilled", filled_shares=0, avg_price=None, usd=0, resting_shares=0, profile_url=None
+            )
         except InsufficientBalanceError:
             raise self._shortfall(user, token, label, buy, limit, size) from None
         if not placed.success:
@@ -246,6 +250,7 @@ class AgentDesk:
             avg_price=round(cost / filled / MICRO, 3) if filled else None,
             usd=_usd(cost // MICRO),
             resting_shares=_shares(resting),
+            profile_url=self._page(user.eth_address) if filled else None,
         )
 
     def cancel(self, user: User, order_id: str | None = None) -> CancelResult:
@@ -259,7 +264,11 @@ class AgentDesk:
         equity = cash + value
         with self._db.read() as conn:
             deposited = TableRead.get_total_deposited(conn, user.user_id, self._settings.paper_balance_target_raw)
-        board = rank_rows(self._board.build_board(), "return")
+        board = self._board.build_board()
+        row = next((r for r in board if r.address == user.eth_address), None)
+        ranked = sum(r.place is not None for r in board)
+        trades = row.trades if row else 0
+        page = self._page(user.eth_address)
         next_at = self._balance.next_allowed(user)
         orders = self._orders.list_open_orders(user)
         shown = orders[:TOP]
@@ -277,8 +286,13 @@ class AgentDesk:
             equity_usd=_usd(equity),
             pnl_usd=_usd(equity - deposited),
             return_pct=_round2(compute_return_pct(equity, deposited)),
-            rank=next((i + 1 for i, r in enumerate(board) if r.address == user.eth_address), None),
-            ranked_agents=len(board),
+            trades=trades,
+            rank=row.place if row else None,
+            rank_change=row.place_change if row else None,
+            ranked_agents=ranked,
+            trades_to_rank=max(0, RANK_FLOOR - trades),
+            profile_url=page if row else None,
+            share=f"{share_text(row, ranked)}: {page}?d={datetime.now(UTC).date()}" if row else None,
             next_top_up_at=_when(next_at if next_at > time.time() else None),
             positions=[
                 Holding(
@@ -317,22 +331,25 @@ class AgentDesk:
         )
 
     def leaderboard(self, limit: BoardLimit = 10) -> Leaderboard:
-        board = rank_rows(self._board.build_board(), "return")
-        return Leaderboard(
-            agents=[
-                Standing(
-                    rank=i + 1,
-                    agent=r.name,
-                    app=r.app,
-                    return_pct=_round2(r.return_pct),
-                    pnl_usd=_usd(r.earned_raw),
-                    equity_usd=_usd(r.capital_raw),
-                    trades=r.trades,
-                )
-                for i, r in enumerate(board[:limit])
-            ],
-            total=len(board),
-        )
+        agents = [
+            Standing(
+                rank=r.place,
+                rank_change=r.place_change,
+                agent=r.name,
+                app=r.app,
+                return_pct=_round2(r.return_pct),
+                pnl_usd=_usd(r.earned_raw),
+                equity_usd=_usd(r.capital_raw),
+                trades=r.trades,
+                url=self._page(r.address),
+            )
+            for r in rank_rows(self._board.build_board(), "return")
+            if r.place is not None
+        ]
+        return Leaderboard(agents=agents[:limit], total=len(agents))
+
+    def _page(self, address: str) -> str:
+        return f"{self._settings.landing_url}/agents/{address}"
 
     def _market(self, slug: str) -> Market:
         with self._db.read() as conn:

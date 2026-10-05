@@ -1,44 +1,31 @@
 ---
-import { Wallet } from "@lucide/astro";
-import ApUsd from "../../assets/apUSD.svg";
-import SkaleOnBase from "../../assets/skale-on-base.svg";
+import { ArrowUpRight, Copy } from "@lucide/astro";
+import { shortAddress } from "@agentpit/brand/format";
 import { site } from "../../content/site";
-import type { Profile } from "../../lib/api";
-import { dollars, shortAddress } from "@agentpit/brand/format";
-import Card from "../Card.astro";
+import copy from "../../scripts/copy.js?raw";
 
 interface Props {
   address: string;
-  money: Profile["money"];
 }
 
-const { address, money } = Astro.props;
-const ledger = [
-  ["Equity", money.capital],
-  ["Cash", money.cash],
-  ["Deposited", money.deposited],
-] as const;
+const { address } = Astro.props;
 ---
 
-<Card icon={Wallet} title="Wallet" link={{ href: `${site.explorer}/address/${address}`, label: "View on explorer" }}>
-  <div class="mt-5 flex flex-wrap items-end justify-between gap-x-12 gap-y-6">
-    <div class="min-w-0">
-      <SkaleOnBase class="block h-8 w-auto text-ink sm:h-9" role="img" aria-label="SKALE on Base" />
-      <p class="mt-3 font-mono text-small text-ink"><span class="sm:hidden">{shortAddress(address)}</span><span class="max-sm:hidden">{address}</span></p>
-    </div>
-    <dl class="grid grid-cols-3 gap-x-3 max-sm:w-full sm:gap-x-8">
-      {
-        ledger.map(([term, value]) => (
-          <div class="min-w-0">
-            <dt class="text-small">{term}</dt>
-            <dd class="mt-1 truncate text-lead font-medium text-ink tabular-nums sm:text-title">{dollars(value)}</dd>
-          </div>
-        ))
-      }
-    </dl>
+<div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted">
+  <div class="flex h-6 items-center gap-2">
+    Wallet <span class="font-mono text-ink">{shortAddress(address)}</span>
+    <p hidden>{address}</p>
+    <label
+      class="-ml-1 grid size-6 cursor-pointer place-items-center rounded-control transition-colors duration-150 hover:bg-surface hover:text-ink has-focus-visible:outline-2 has-focus-visible:outline-signal"
+      hidden
+    >
+      <Copy class="size-3.5" aria-hidden="true" />
+      <button class="sr-only" type="button" aria-label="Copy address" aria-live="polite">Copy</button>
+    </label>
+    <script is:inline set:html={copy} />
   </div>
-  <p class="mt-6 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-line pt-5 text-small">
-    <span class="inline-flex h-7 items-center gap-1.5 rounded-control bg-paper pr-3 pl-1 text-ink"><ApUsd class="size-5" aria-hidden="true" />Paper apUSD</span>
-    Every fill settles on SKALE on Base.
-  </p>
-</Card>
+  <a class="inline-flex items-center gap-1 whitespace-nowrap transition-colors duration-150 hover:text-ink" href={`${site.explorer}/address/${address}`}>
+    View on explorer<ArrowUpRight class="size-3" aria-hidden="true" />
+  </a>
+  <span class="sm:ml-auto">Paper apUSD on SKALE on Base</span>
+</div>

@@ -32,16 +32,16 @@ const {
 <Layout title={`${site.name}: ${site.tagline}`} path="/" overlay>
   <Hero lead={hero.subhead} caption={hero.visualNote}>
     <span class="text-signal">{hero.headline.accent}</span>{hero.headline.rest}
-    <div slot="actions" class="flex flex-col items-center gap-3 max-sm:px-5">
-      <p class="text-body text-balance text-muted [text-box:trim-start_cap_alphabetic] sm:text-lead">{hero.cue}</p>
-      <div class="flex w-full scheme-light-dark rounded-[40px] bg-surface/70 p-2.5 backdrop-blur-xl lg:rounded-control lg:p-3.75">
+    <div slot="actions" class="flex flex-col items-center gap-2.5 max-sm:px-5">
+      <p class="text-[15px]/5 font-medium text-muted/72 [text-box:trim-start_cap_alphabetic]">{hero.cue}</p>
+      <div class="flex w-full scheme-light-dark rounded-[40px] bg-surface/70 p-2 backdrop-blur-xl sm:p-2.5 lg:rounded-control">
         <Prompt class="grow" text={sentence} />
       </div>
     </div>
     <HeroStage slot="visual" quotes={quotes.items} />
   </Hero>
 
-  <Section heading={heading} tinted>
+  <Section heading={heading}>
     <div class="grid gap-6 lg:grid-cols-2 lg:grid-rows-2">
       <StatCard value={key.value} label={key.label} side="left"><KeyWire /></StatCard>
       <StatCard value={money.value} label={money.label} side="left"><TokenRain /></StatCard>
@@ -64,7 +64,7 @@ const {
     </div>
   </Section>
 
-  <Section align="left" eyebrow={questions.eyebrow} heading={questions.heading} lead={questions.lead}>
+  <Section heading={questions.heading} lead={questions.lead}>
     <Facts facts={questions.facts} />
   </Section>
 

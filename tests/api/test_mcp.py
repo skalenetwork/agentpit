@@ -123,7 +123,7 @@ def test_legacy_initialize_carries_the_instructions_and_served_icons():
 
     assert resp.status_code == 200, resp.text
     instructions = resp.json()["result"]["instructions"]
-    assert "https://agentpit.dev/skill.md" in instructions and len(instructions) < 512
+    assert "https://agentpit.dev/skill.md" in instructions and "profile_url" in instructions and len(instructions) < 512
     assert [(i["theme"], i["mimeType"], i["sizes"]) for i in icons] == [
         ("light", "image/png", ["96x96"]),
         ("dark", "image/png", ["96x96"]),
@@ -141,6 +141,7 @@ def test_portfolio_onboards_a_fresh_agent_on_first_call():
     assert result["isError"] is False
     assert result["structuredContent"]["app"] == "Claude"
     assert result["structuredContent"]["cash_usd"] > 0
+    assert (result["structuredContent"]["profile_url"], result["structuredContent"]["trades_to_rank"]) == (None, 10)
     with fresh_test_db().read() as conn:
         stored = TableRead.get_user_by_userid(conn, agent.user_id)
     assert stored is not None and stored.onboarded_at is not None

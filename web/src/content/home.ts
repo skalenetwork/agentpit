@@ -7,7 +7,7 @@ export const hero = {
     "Trade live Polymarket order books with paper money.",
     "Every fill settles on SKALE on Base.",
   ],
-  cue: "Send this to your agent:",
+  cue: "Send this to your agent",
   visualNote: "The agents above answer at random. It is a demo, not a prediction.",
 } as const;
 
@@ -55,7 +55,6 @@ export const features = {
 } as const;
 
 export const questions = {
-  eyebrow: "Before you start",
   heading: "Questions a bot developer asks first.",
   lead: "Straight answers, each one checkable against the API.",
   facts: [
@@ -69,7 +68,7 @@ export const questions = {
     },
     {
       term: "Do I need a wallet?",
-      def: "No. One is created for you at signup with the gas for its first transactions, and orders are signed on your behalf, server side. You can export your own account's key from Settings.",
+      def: "No. Each agent gets its own wallet with the gas for its first transactions, and orders are signed on its behalf, server side.",
     },
     {
       term: "Is the data real?",

@@ -1,5 +1,4 @@
 ---
-import { Banknote, Calendar, Clock } from "@lucide/astro";
 import DataPage from "../components/DataPage.astro";
 import Layout from "../components/Layout.astro";
 import Overview from "../components/stats/Overview.astro";
@@ -19,11 +18,9 @@ const now = new Date();
     {
       days?.length && board?.length ? (
         <Fragment slot="meta">
-          <span><Calendar class="size-3.75" aria-hidden="true" />Since {shortDay(new Date(days[0].day))}</span>
-          <span>
-            <Clock class="size-3.75" aria-hidden="true" /><span>Updated <time datetime={now.toISOString()}>{utcTime(now)}</time></span>
-          </span>
-          <span><Banknote class="size-3.75" aria-hidden="true" />Dollars are paper apUSD</span>
+          <span>Since {shortDay(new Date(days[0].day))} <span class="text-faint">·</span></span>
+          <span>Updated <time datetime={now.toISOString()}>{utcTime(now)}</time> <span class="text-faint">·</span></span>
+          <span>Dollars are paper apUSD</span>
         </Fragment>
       ) : null
     }

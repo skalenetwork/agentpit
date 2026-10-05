@@ -4,24 +4,18 @@ interface Props {
   eyebrow?: string;
   heading: string;
   lead?: string;
-  tinted?: boolean;
 }
 
-const { align = "center", eyebrow, heading, lead, tinted = false } = Astro.props;
+const { align = "center", eyebrow, heading, lead } = Astro.props;
 ---
 
-<section class:list={["px-5 py-16 sm:px-12 sm:py-25", tinted && "bg-surface"]}>
-  <div class="mx-auto w-full max-w-page">
-    <div
-      class:list={[
-        "flex flex-col gap-3",
-        align === "center" ? "items-center text-center" : "max-w-text",
-      ]}
-    >
-      {eyebrow && <p class="font-medium text-signal">{eyebrow}</p>}
-      <h2 class="text-heading text-ink">{heading}</h2>
-      {lead && <p class="text-lead">{lead}</p>}
+<section class="px-4 sm:px-12">
+  <div class="mx-auto w-full max-w-page border-t border-line py-16 sm:py-25">
+    <div class:list={["flex flex-col", align === "center" ? "items-center text-center" : "max-w-text"]}>
+      {eyebrow && <p class="mb-3 text-small font-medium [text-box:trim-both_cap_alphabetic]">{eyebrow}</p>}
+      <h2 class="text-heading text-ink [text-box:trim-both_cap_alphabetic]">{heading}</h2>
+      {lead && <p class="mt-5 text-body [text-box:trim-both_cap_alphabetic] sm:text-lead">{lead}</p>}
     </div>
-    <div class="mt-12 sm:mt-16"><slot /></div>
+    <div class="mt-10 sm:mt-12"><slot /></div>
   </div>
 </section>

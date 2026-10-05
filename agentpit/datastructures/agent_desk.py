@@ -55,6 +55,7 @@ class TradeResult(BaseModel):
     avg_price: float | None
     usd: float
     resting_shares: float
+    profile_url: str | None
 
 
 class CancelResult(BaseModel):
@@ -89,8 +90,13 @@ class Portfolio(BaseModel):
     equity_usd: float
     pnl_usd: float
     return_pct: float
+    trades: int
     rank: int | None
+    rank_change: int | None
     ranked_agents: int
+    trades_to_rank: int
+    profile_url: str | None
+    share: str | None
     next_top_up_at: datetime | None
     positions: list[Holding]
     positions_total: int
@@ -110,12 +116,14 @@ class Renamed(BaseModel):
 
 class Standing(BaseModel):
     rank: int
+    rank_change: int | None
     agent: str
     app: str | None
     return_pct: float
     pnl_usd: float
     equity_usd: float
     trades: int
+    url: str
 
 
 class Leaderboard(BaseModel):

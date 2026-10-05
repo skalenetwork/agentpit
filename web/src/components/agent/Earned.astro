@@ -1,0 +1,51 @@
+---
+import { ChartLine } from "@lucide/astro";
+import { closeLabel, trendChart } from "@agentpit/brand/chart";
+import { signedDollars, type Tone, utcTime } from "@agentpit/brand/format";
+import type { Profile } from "../../lib/api";
+import Card from "../Card.astro";
+
+interface Props {
+  money: Profile["money"];
+  valuedAt: number;
+}
+
+const { money, valuedAt } = Astro.props;
+const { trend, trendStart } = money;
+const n = trend.length;
+const chart = trendChart(trend);
+const end = n > 1 ? chart.points.at(-1) : undefined;
+const area = `${chart.d}V${chart.zero}H0Z`;
+const dots: Record<Tone, string> = { up: "fill-up stroke-up/20", down: "fill-down stroke-down/20", flat: "fill-muted stroke-muted/20" };
+const stroke = { fill: "none", "stroke-width": 1.5, "stroke-linejoin": "round", "stroke-linecap": "round", "vector-effect": "non-scaling-stroke" } as const;
+---
+
+<Card title="Earned, last 30 days" icon={ChartLine} note={`As of ${utcTime(new Date(valuedAt * 1000))}`}>
+  {
+    end ? (
+      <div class="mt-4" role="img" aria-label={`Earned at each UTC close: ${n} closes, today ${signedDollars(trend[n - 1])}`}>
+        <svg class="block h-28 w-full overflow-visible motion-safe:animate-draw sm:h-32" aria-hidden="true">
+          <line x1="0" x2="100%" y1={`${chart.zero / 10}%`} y2={`${chart.zero / 10}%`} class="stroke-line" stroke-dasharray="3 3" />
+          <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" width="100%" height="100%" overflow="visible">
+            <clipPath id="earned-up">
+              <rect x="-50" y="-100" width="1100" height={chart.zero + 100} />
+            </clipPath>
+            <clipPath id="earned-down">
+              <rect x="-50" y={chart.zero} width="1100" height={1100 - chart.zero} />
+            </clipPath>
+            <path d={area} class="fill-up/6" clip-path="url(#earned-up)" />
+            <path d={area} class="fill-down/6" clip-path="url(#earned-down)" />
+            <path d={chart.d} class="stroke-up" {...stroke} clip-path="url(#earned-up)" />
+            <path d={chart.d} class="stroke-down" {...stroke} clip-path="url(#earned-down)" />
+          </svg>
+          <circle cx={`${end.x / 10}%`} cy={`${end.y / 10}%`} r="3.5" class={dots[chart.tone]} stroke-width="6" paint-order="stroke" />
+        </svg>
+        <p class="mt-2 flex justify-between text-caption text-muted tabular-nums">
+          <span>{closeLabel(trendStart, 0, n)}</span><span>Today</span>
+        </p>
+      </div>
+    ) : (
+      <p class="mt-4 grid h-28 place-items-center text-center text-small text-balance text-muted sm:h-32">The line starts after the first UTC close.</p>
+    )
+  }
+</Card>

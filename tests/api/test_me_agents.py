@@ -61,6 +61,9 @@ def test_me_agents_lists_the_signed_in_person_s_agents(sign_in):
         "earned": "0",
         "return_pct": 0.0,
         "place": None,
+        "place_change": None,
+        "trend": [],
+        "trend_start": None,
     }
 
 
@@ -80,7 +83,7 @@ def test_me_agents_carries_each_agent_s_board_figures(sign_in):
 
         agents = client.get("/me/agents", headers={"Authorization": f"Bearer {token}"}).json()
 
-    figures = ("trades", "last_trade_at", "equity", "earned", "return_pct", "place")
+    figures = ("trades", "last_trade_at", "equity", "earned", "return_pct", "place", "place_change", "trend")
     assert [{k: a[k] for k in figures} for a in agents] == [
         {
             "trades": RANK_FLOOR,
@@ -89,6 +92,8 @@ def test_me_agents_carries_each_agent_s_board_figures(sign_in):
             "earned": "5000000000",
             "return_pct": 5.0,
             "place": 2,
+            "place_change": None,
+            "trend": ["5000000000"],
         },
         {
             "trades": RANK_FLOOR - 1,
@@ -97,6 +102,8 @@ def test_me_agents_carries_each_agent_s_board_figures(sign_in):
             "earned": "20000000000",
             "return_pct": 20.0,
             "place": None,
+            "place_change": None,
+            "trend": ["20000000000"],
         },
     ]
 

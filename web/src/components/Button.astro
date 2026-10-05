@@ -7,8 +7,8 @@ const variants = {
 } as const;
 
 const sizes = {
-  sm: "h-8 px-4 text-small",
-  lg: "h-10 px-5 text-small sm:h-12 sm:px-6 sm:text-body",
+  sm: "h-7.5 px-3.5",
+  lg: "h-10 px-5",
 } as const;
 
 type Props = (
@@ -21,7 +21,7 @@ type Props = (
 
 const { variant = "primary", size = "lg", class: className, ...rest } = Astro.props;
 const classes = [
-  "inline-flex items-center rounded-control font-medium whitespace-nowrap transition-[scale,opacity,color,background-color] duration-150 ease-out motion-safe:active:scale-97",
+  "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-control text-small font-medium whitespace-nowrap transition-[background-color,color,opacity,scale] duration-150 ease-out motion-safe:active:scale-[0.97]",
   variants[variant],
   sizes[size],
   className,

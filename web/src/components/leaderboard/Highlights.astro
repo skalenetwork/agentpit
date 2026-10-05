@@ -1,44 +1,41 @@
 ---
+import { Activity, Swords, TrendingUp } from "@lucide/astro";
 import type { Agent } from "../../lib/api";
 import { highlights, profile } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
-import RunnerMark from "../RunnerMark.astro";
+import Card from "../Card.astro";
 
 interface Props {
   agents: readonly Agent[];
 }
 
-const items = highlights(Astro.props.agents);
+const items = highlights(Astro.props.agents, Date.now() / 1000);
+const icons = { climber: TrendingUp, active: Activity, battle: Swords };
 ---
 
-<ul class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+<div class="grid gap-5 lg:grid-cols-3">
   {
-    items.map(({ title, icon: Icon, agents, figure }) => (
-      <li class="flex items-center gap-4 rounded-panel bg-surface p-5 sm:block sm:p-6">
-        <div class="flex shrink-0 items-center justify-between gap-3">
-          <span class="flex -space-x-3">
-            {agents.map((agent) => (
-              <AgentAvatar address={agent.address} class="size-10 ring-2 ring-surface" />
-            ))}
-          </span>
-          <Icon class="size-5 shrink-0 text-signal max-sm:hidden" aria-hidden="true" />
-        </div>
-        <div class="min-w-0 sm:mt-5">
-          <p class="text-small font-medium text-signal">{title}</p>
-          <p class="mt-1 font-medium text-balance text-ink">
-            {agents.map((agent, k) => (
-              <Fragment>
-                {k > 0 && <span class="font-normal text-muted"> vs </span>}
-                <a class="inline-flex max-w-full items-center gap-1.5 align-top underline-offset-4 hover:underline" href={profile(agent)}>
-                  <span class="truncate">{agent.name}</span>
-                  {agent.runner.slug !== "api" && <RunnerMark slug={agent.runner.slug} label={agent.runner.label} class="size-4 shrink-0" />}
+    items.map(({ kind, title, note, figure, unit, tone, line, agents }) => (
+      <Card title={title} icon={icons[kind]} note={note} figure={figure} unit={unit} tone={tone}>
+        <Fragment slot="sub">
+          {line}
+          {agents.length > 0 && (
+            <span class="mr-1.5 inline-flex gap-0.5 align-[-4px]">
+              {agents.map((agent) => (
+                <a class="flex" href={profile(agent)} tabindex="-1" aria-hidden="true">
+                  <AgentAvatar address={agent.address} class="size-4.5" />
                 </a>
-              </Fragment>
-            ))}
-          </p>
-          <p class="text-small tabular-nums">{figure}</p>
-        </div>
-      </li>
+              ))}
+            </span>
+          )}
+          {agents.map((agent, k) => (
+            <Fragment>
+              {k > 0 && " vs "}
+              <a class="font-medium text-ink underline-offset-2 hover:underline" href={profile(agent)}>{agent.name}</a>
+            </Fragment>
+          ))}
+        </Fragment>
+      </Card>
     ))
   }
-</ul>
+</div>

@@ -1,6 +1,7 @@
 import secrets
 import time
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,7 +21,7 @@ from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.web3_client import Web3Client
 from agentpit.services.agent_desk import AgentDesk, shares_for_usd, snap
-from agentpit.services.leaderboard_service import drain
+from agentpit.services.leaderboard_service import RANK_FLOOR, drain, pct
 from tests.db_helpers import fresh_test_db
 from tests.onchain._helpers import ADMIN_HDR, create_market, fresh_client, hdr, register
 
@@ -128,6 +129,7 @@ def test_trade_now_reports_the_makers_price():
     by_shares = desk.trade(agent, slug, "Yes", "buy", shares=30)
 
     assert by_usd.order_id is not None
+    assert by_usd.profile_url == f"https://agentpit.dev/agents/{agent.eth_address}"
     assert (by_usd.status, by_usd.filled_shares, by_usd.avg_price, by_usd.usd) == ("partial", 50, 0.4, 20)
     assert (by_shares.status, by_shares.filled_shares, by_shares.avg_price, by_shares.usd) == ("filled", 30, 0.45, 13.5)
     assert by_shares.resting_shares == 0
@@ -139,7 +141,9 @@ def test_trade_with_limit_price_rests_and_cancels():
     first = desk.trade(agent, slug, "YES", "buy", usd=10, limit_price=0.2)
     desk.trade(agent, slug, "YES", "buy", shares=5, limit_price=0.1)
 
-    assert (first.status, first.filled_shares, first.avg_price, first.resting_shares) == ("resting", 0, None, 50)
+    assert (first.status, first.filled_shares, first.avg_price, first.resting_shares, first.profile_url) == (
+        "resting", 0, None, 50, None
+    )
     assert desk.cancel(agent, first.order_id).cancelled == 1
     assert desk.cancel(agent).cancelled == 1
     assert desk.cancel(agent).cancelled == 0
@@ -158,7 +162,13 @@ def test_trade_the_book_moved_away_from_is_unfilled(monkeypatch: pytest.MonkeyPa
     result = desk.trade(agent, slug, "YES", "buy", shares=10)
 
     assert result.model_dump() == {
-        "order_id": None, "status": "unfilled", "filled_shares": 0, "avg_price": None, "usd": 0, "resting_shares": 0
+        "order_id": None,
+        "status": "unfilled",
+        "filled_shares": 0,
+        "avg_price": None,
+        "usd": 0,
+        "resting_shares": 0,
+        "profile_url": None,
     }
 
 
@@ -174,19 +184,38 @@ def test_portfolio_matches_the_leaderboard():
     desk.trade(agent, slug, "YES", "buy", usd=30)
     desk.trade(agent, slug, "YES", "buy", shares=10, limit_price=0.1)
     desk._board.take_snapshot(int(time.time()), drain())
+    page = f"https://agentpit.dev/agents/{agent.eth_address}"
+    dated = f"{page}?d={datetime.now(UTC).date()}"
+
+    warming = desk.portfolio(agent)
+
+    assert warming.address == agent.eth_address
+    assert warming.cash_usd == 100_000 - 20
+    assert warming.equity_usd == pytest.approx(warming.cash_usd + warming.positions_value_usd)
+    assert (warming.trades, warming.rank, warming.rank_change, warming.trades_to_rank, warming.ranked_agents) == (
+        1, None, None, RANK_FLOOR - 1, 0
+    )
+    assert warming.profile_url == page
+    assert warming.share == f"{warming.agent} is warming up on AgentPit, 1 of {RANK_FLOOR} trades to rank: {dated}"
+    assert [(h.market, h.outcome, h.shares, h.avg_price) for h in warming.positions] == [(slug, "YES", 50, 0.4)]
+    assert [(o.market, o.side, o.price, o.shares) for o in warming.open_orders] == [(slug, "buy", 0.1, 10)]
+    assert warming.next_top_up_at is None
+    assert desk.leaderboard().agents == []
+
+    for _ in range(RANK_FLOOR - 1):
+        desk.trade(agent, slug, "YES", "buy", shares=1)
+    desk._board.take_snapshot(int(time.time()), drain())
 
     mine = desk.portfolio(agent)
     board = desk.leaderboard()
     standing = next(s for s in board.agents if s.agent == mine.agent)
 
-    assert mine.address == agent.eth_address
-    assert mine.cash_usd == 100_000 - 20
-    assert mine.equity_usd == pytest.approx(mine.cash_usd + mine.positions_value_usd)
     assert (mine.equity_usd, mine.pnl_usd, mine.rank) == (standing.equity_usd, standing.pnl_usd, standing.rank)
-    assert mine.ranked_agents == board.total
-    assert [(h.market, h.outcome, h.shares, h.avg_price) for h in mine.positions] == [(slug, "YES", 50, 0.4)]
-    assert [(o.market, o.side, o.price, o.shares) for o in mine.open_orders] == [(slug, "buy", 0.1, 10)]
-    assert mine.next_top_up_at is None
+    assert (mine.trades, mine.trades_to_rank, mine.rank_change) == (RANK_FLOOR, 0, None)
+    assert mine.ranked_agents == board.total == 2
+    assert mine.share == (
+        f"{mine.agent} is #{mine.rank} of 2 on AgentPit with a {pct(standing.return_pct)} return on paper money: {dated}"
+    )
 
 
 def test_top_up_during_cooldown_adds_nothing():
@@ -203,15 +232,18 @@ def test_top_up_during_cooldown_adds_nothing():
 
 def test_leaderboard_carries_the_agent_app():
     with fresh_test_db().write() as conn:
-        user_id, _, api_key = TableWrite.create_user(
+        user_id, acct, api_key = TableWrite.create_user(
             conn, email=None, password_hash=None, handle="claude_bot", owner_workos_id="user_o", agent_app="Claude"
         )
-        conn.execute(
-            "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) VALUES ('t1', %s, 0, 'CONFIRMED')",
-            (api_key,),
-        )
+        for k in range(RANK_FLOOR):
+            conn.execute(
+                "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) VALUES (%s, %s, 0, 'CONFIRMED')",
+                (f"t{k}", api_key),
+            )
         TableWrite.insert_account_snapshot(conn, user_id, 1, 110_000_000_000, 100_000_000_000)
 
     board = _desk().leaderboard()
 
-    assert [(s.agent, s.app, s.return_pct, s.pnl_usd) for s in board.agents] == [("claude_bot", "Claude", 10, 10_000)]
+    assert [(s.rank, s.rank_change, s.agent, s.app, s.return_pct, s.pnl_usd, s.url) for s in board.agents] == [
+        (1, None, "claude_bot", "Claude", 10, 10_000, f"https://agentpit.dev/agents/{acct.address}")
+    ]

@@ -1,61 +1,60 @@
 ---
-import { CircleDot } from "@lucide/astro";
+import { recordBars } from "@agentpit/brand/chart";
+import { cents, signedDollars, tone } from "@agentpit/brand/format";
+import { recordCalls } from "@agentpit/brand/standing";
 import type { Profile } from "../../lib/api";
-import { cents, signedDollars } from "@agentpit/brand/format";
-import { hues, tone } from "../../lib/leaderboard";
-import Card from "../Card.astro";
+import { hues } from "../../lib/leaderboard";
 import Glyph from "./Glyph.astro";
 import Outcome from "./Outcome.astro";
 
 interface Props {
   record: NonNullable<Profile["record"]>;
+  class: string;
 }
 
-const { wins, losses, pnls, best, worst } = Astro.props.record;
-const decided = wins + losses;
-const up = Math.max(0, ...pnls);
-const scale = 100 / (up + Math.max(0, ...pnls.map((pnl) => -pnl)));
-const zero = up * scale;
-const slot = 100 / Math.max(pnls.length, 16);
-const pc = (value: number) => `${+value.toFixed(2)}%`;
-const bars = pnls.map((pnl, i) => {
-  const height = Math.max(6, Math.abs(pnl) * scale);
-  return { x: pc(i * slot + slot * 0.15), y: pc(pnl > 0 ? zero - height : zero), height: pc(height), fill: pnl > 0 ? "fill-up" : "fill-down" };
-});
-const won = pnls.filter((pnl) => pnl > 0).length;
-const labels = best.pnl < 0 ? ["Smallest loss", "Biggest loss"] : worst.pnl > 0 ? ["Biggest win", "Smallest win"] : ["Best call", "Worst call"];
-const calls = decided === 1 ? [{ label: "Only call", call: best }] : [{ label: labels[0], call: best }, { label: labels[1], call: worst }];
+const { record, class: className } = Astro.props;
+const { wins, losses, pnls } = record;
+const { zero, width, bars } = recordBars(pnls);
+const last = bars.at(-1);
+const won = bars.filter((bar) => bar.tone === "up").length;
 ---
 
-<Card icon={CircleDot} title="Record" figure={`${wins}`} context={`of ${decided} won`}>
+<div class:list={["pt-4", className]}>
+  <p class="font-medium text-ink tabular-nums">{wins} of {wins + losses} won</p>
   {
-    decided >= 3 && (
-      <svg class="mt-5 h-16 w-full overflow-visible" role="img" aria-label={`${won} won, ${pnls.length - won} lost, oldest to newest, bar height is P&L`}>
-        <rect y={pc(zero)} width="100%" height="1" class="fill-line" />
-        {bars.map((bar) => <rect x={bar.x} y={bar.y} width={pc(slot * 0.7)} height={bar.height} rx="2" class={bar.fill} />)}
-      </svg>
+    wins + losses >= 3 && last && (
+      <Fragment>
+        <svg class="mt-3 block h-22 w-full overflow-visible" role="img" aria-label={`${won} won, ${bars.length - won} lost, oldest to newest, bar height is the amount won or lost`}>
+          <line x1="0" x2="100%" y1={`${zero}%`} y2={`${zero}%`} class="stroke-line" stroke-dasharray="3 3" />
+          {bars.map((bar) => <rect x={`${bar.x}%`} y={`${bar.y}%`} width={`${width}%`} height={`${bar.height}%`} rx="2" class={bar.tone === "up" ? "fill-up" : "fill-down"} />)}
+        </svg>
+        <svg class="mt-2 block h-4 w-full overflow-visible fill-current text-caption" aria-hidden="true">
+          <text y="12">Oldest</text>
+          <text x={`${last.x + width}%`} y="12" text-anchor="end">Latest</text>
+        </svg>
+      </Fragment>
     )
   }
-  <div class="mt-auto pt-6">
+  <ul class="mt-3">
     {
-      calls.map(({ label, call }) => (
-        <div class="border-t border-line py-4 first:border-t-0 first:pt-0 last:pb-0">
-          <p class="flex items-baseline justify-between gap-3 text-caption">
-            {label}
-            <span class:list={["text-small font-medium tabular-nums", hues[tone(call.pnl)]]}>{signedDollars(call.pnl)}</span>
-          </p>
-          <div class="mt-2 flex items-start gap-3">
-            <Glyph title={call.title} icon={call.icon} category={call.category} />
-            <div class="min-w-0 flex-1">
-              <p class="line-clamp-2 text-small text-ink">{call.title}</p>
-              <p class="mt-1 flex items-center gap-2 text-caption tabular-nums">
+      recordCalls(record).map(({ label, call }) => (
+        <li class="grid grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:min-h-13 md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px] md:items-center md:py-2">
+          <Glyph title={call.title} icon={call.icon} category={call.category} />
+          <div class="min-w-0 md:contents">
+            <p class="font-medium text-ink max-md:line-clamp-2 md:truncate">{call.title}</p>
+            <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted max-md:text-caption md:contents">
+              <span class="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
+                <span class="text-ink">{label}</span>
                 <Outcome outcome={call.outcome} />
-                {cents(call.entry)} → {cents(call.exit)}
-              </p>
-            </div>
+              </span>
+              <span class="whitespace-nowrap md:text-right">
+                {call.entry ? cents(call.entry) : "Split"} <span class="text-faint">→</span> {cents(call.exit)}
+              </span>
+            </p>
           </div>
-        </div>
+          <span class:list={["text-right font-medium", hues[tone(call.pnl)]]}>{signedDollars(call.pnl)}</span>
+        </li>
       ))
     }
-  </div>
-</Card>
+  </ul>
+</div>

@@ -1,29 +1,42 @@
 ---
 import { Trophy } from "@lucide/astro";
-import { RANK_FLOOR } from "../../lib/api";
+import { rankMove } from "@agentpit/brand/format";
+import { rankLabel } from "@agentpit/brand/standing";
 import { medals } from "../../lib/leaderboard";
 import Segments from "./Segments.astro";
 
 interface Props {
   place: number | null;
+  change: number | null;
   rankedCount: number;
   trades: number;
 }
 
-const { place, rankedCount, trades } = Astro.props;
-const pill = "inline-flex h-7 shrink-0 items-center rounded-control px-3 text-small font-medium tabular-nums";
+const { place, change, rankedCount, trades } = Astro.props;
+const label = rankLabel(place, rankedCount, trades);
+const move = rankMove(change);
+const pill = "inline-flex h-6 shrink-0 items-center rounded-control px-2.5 text-caption font-medium text-ink tabular-nums";
 ---
 
-{
-  place === null ? (
-    <span class:list={[pill, "gap-2 bg-surface text-muted"]}>
-      Warming up<Segments done={trades} class="h-1.5 w-10" />{trades} of {RANK_FLOOR}
-    </span>
-  ) : place <= 3 ? (
-    <span class:list={[pill, "gap-1.5 bg-(--medal) text-ink scheme-light", medals[place - 1]]}>
-      <Trophy class="size-3.5" aria-hidden="true" />#{place} of {rankedCount}
-    </span>
-  ) : (
-    <span class:list={[pill, "gap-1.5 bg-surface text-ink"]}>#{place} of {rankedCount}</span>
-  )
-}
+<span class="inline-flex shrink-0 items-center gap-2">
+  {
+    label.kind === "warming" ? (
+      <span class:list={[pill, "gap-1.5 bg-surface"]}>
+        Warming up<Segments done={trades} class="h-1.5 w-10" />{label.text}
+      </span>
+    ) : label.kind === "medal" ? (
+      <span class:list={[pill, "gap-1 scheme-light", medals[label.place - 1]]}>
+        <Trophy class="size-3" stroke-width={1.75} aria-hidden="true" />{label.text}
+      </span>
+    ) : (
+      <span class:list={[pill, "bg-surface"]}>{label.text}</span>
+    )
+  }
+  {
+    move && (
+      <span class:list={["text-caption font-medium tabular-nums", move.dir === "up" ? "text-up" : "text-down"]} role="img" aria-label={`${move.dir === "up" ? "Up" : "Down"} ${move.by} since yesterday`}>
+        {move.dir === "up" ? "▲" : "▼"}{move.by}
+      </span>
+    )
+  }
+</span>

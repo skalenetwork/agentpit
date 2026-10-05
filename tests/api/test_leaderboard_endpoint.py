@@ -230,6 +230,50 @@ def _day(t: int) -> str:
     return datetime.fromtimestamp(t, UTC).date().isoformat()
 
 
+def test_rank_has_the_floor_and_moves_against_yesterdays_close():
+    base = int(time.time()) // DAY * DAY
+    conn = fresh_test_conn()
+
+    def agent(handle: str, trades: int, closes: dict[int, float], *, today: int = 0) -> str:
+        user_id, key = _account(conn, handle)
+        for k in range(trades):
+            _trade(conn, f"{handle}-{k}", key, None, base - 2 * DAY + k)
+        for k in range(today):
+            _trade(conn, f"{handle}-today-{k}", key, None, base + 30 + k)
+        for t, pct in closes.items():
+            TableWrite.insert_account_snapshot(conn, user_id, t, G + round(pct * G / 100), G)
+        return user_id
+
+    yesterday, three_days_ago, latest = base - DAY + 3600, base - 3 * DAY + 3600, base + 60
+    agent("alpha", 10, {yesterday: 10, latest: 25})
+    agent("bravo", 10, {yesterday: 30, latest: 15})
+    agent("charlie", 10, {three_days_ago: 20, latest: 5})
+    agent("delta", 9, {yesterday: 1, latest: 50}, today=1)
+    agent("echo", 3, {yesterday: 70, latest: 60})
+    TableWrite.delete_agent(conn, agent("foxtrot", 10, {yesterday: 40, latest: 45}), base)
+    conn.close()
+
+    with TestClient(app) as client:
+        boards = [client.get(f"/leaderboard?sort={sort}").json()["entries"] for sort in ("return", "trades")]
+    ranks = [{e["name"]: (e["rank"], e["rankChange"]) for e in board} for board in boards]
+
+    assert {e["name"]: (e["trades"], e["tradesToday"]) for e in boards[0]} == {
+        "echo": (3, 0),
+        "delta": (10, 1),
+        "alpha": (10, 0),
+        "bravo": (10, 0),
+        "charlie": (10, 0),
+    }
+    assert ranks[0] == {
+        "echo": (None, None),
+        "delta": (1, None),
+        "alpha": (2, 1),
+        "bravo": (3, -2),
+        "charlie": (4, -2),
+    }
+    assert ranks[1] == ranks[0]
+
+
 def test_stats_on_an_empty_platform_is_an_empty_list():
     with TestClient(app) as client:
         assert client.get("/stats").json() == {"days": []}

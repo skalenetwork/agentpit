@@ -10,5 +10,5 @@ const { done, class: className } = Astro.props;
 ---
 
 <span class:list={["flex gap-px", className]} aria-hidden="true">
-  {Array.from({ length: RANK_FLOOR }, (_, i) => <span class:list={["flex-1 rounded-control", i < done ? "bg-signal" : "bg-line"]} />)}
+  {Array.from({ length: RANK_FLOOR }, (_, i) => <span class:list={["flex-1 rounded-control", i < done ? "bg-ink" : "bg-line"]} />)}
 </span>

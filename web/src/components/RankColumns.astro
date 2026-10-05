@@ -32,7 +32,7 @@ const h2 = ["[--h2:0]", "[--h2:1]", "[--h2:2]", "[--h2:3]"];
         >
           <img class="w-full" src={avatar.src} width={512} height={512} alt="" />
           <Roll class="mt-2 text-heading font-bold" values={ranks.map((rank) => `${rank + 1}`)} />
-          <span class:list={["mt-1 text-caption", !you && "text-muted"]}>{name}</span>
+          <span class:list={["mt-1 truncate text-caption", !you && "text-muted"]}>{name}</span>
         </div>
       </div>
     ))

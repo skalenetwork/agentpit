@@ -4,7 +4,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { safeRedirect } from "./auth";
 import { Account } from "./pages/account";
-import { AgentPage, isTab } from "./pages/agent";
+import { AgentPage } from "./pages/agent";
 import { Agents } from "./pages/agents";
 import { AuthCallback } from "./pages/auth-callback";
 import { SignIn } from "./pages/sign-in";
@@ -26,12 +26,7 @@ const console = createRoute({
 const routes = root.addChildren([
   console.addChildren([
     createRoute({ getParentRoute: () => console, path: "/", component: Agents }),
-    createRoute({
-      getParentRoute: () => console,
-      path: "/agents/$address",
-      component: AgentPage,
-      validateSearch: (search: Record<string, unknown>) => ({ tab: isTab(search.tab) ? search.tab : undefined }),
-    }),
+    createRoute({ getParentRoute: () => console, path: "/agents/$address", component: AgentPage }),
     createRoute({ getParentRoute: () => console, path: "/account", component: Account }),
   ]),
   createRoute({

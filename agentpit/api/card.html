@@ -90,8 +90,8 @@
   }
 
   .side { height: 32px; }
-  .side:first-child, .chance .title { color: light-dark(#047857, #34d399); }
-  .side:nth-child(2) { color: light-dark(#be123c, #fb7185); }
+  .side:first-child, .chance .title, .up { color: light-dark(#047857, #34d399); }
+  .side:nth-child(2), .down { color: light-dark(#be123c, #fb7185); }
 
   .row {
     display: grid;
@@ -168,14 +168,19 @@
 
   const stat = (term, value) => h("div", "", h("dt", "", term), h("dd", "title", value))
 
-  const profile = ({ agent, address, rank, ranked_agents, return_pct, pnl_usd, equity_usd, cash_usd }) => {
+  const profile = ({ agent, address, rank, rank_change, ranked_agents, trades, trades_to_rank, profile_url, return_pct, pnl_usd, equity_usd, cash_usd }) => {
     const avatar = Object.assign(h("img", "avatar"), { alt: "", width: 56, height: 56, src: `${SITE}/agents/${address.toLowerCase()}/avatar.svg` })
-    const link = rank !== null && Object.assign(h("button", "", "View profile"), { onclick: () => openLink(`${SITE}/agents/${address}`) })
+    const link = profile_url && Object.assign(h("button", "", "View profile"), { onclick: () => openLink(profile_url) })
+    const arrow = rank_change && h("span", rank_change > 0 ? "up" : "down", ` ${rank_change > 0 ? "▲" : "▼"}${Math.abs(rank_change)}`)
+    const standing =
+      rank !== null
+        ? h("p", "", `#${rank} of ${ranked_agents} agents`, arrow)
+        : h("p", "", trades ? `Warming up, ${trades} of ${trades + trades_to_rank} trades` : "No trades yet")
     return h(
       "section",
       "card",
-      h("div", "subject", avatar, h("div", "", h("p", "title", agent), h("p", "", rank === null ? "Not ranked yet" : `#${rank} of ${ranked_agents} agents`))),
-      h("dl", "stats", stat("Return", pct(return_pct)), stat("P&L", usd(pnl_usd, "exceptZero")), stat("Equity", usd(equity_usd)), stat("Cash", usd(cash_usd))),
+      h("div", "subject", avatar, h("div", "", h("p", "title", agent), standing)),
+      h("dl", "stats", stat("Return", pct(return_pct)), stat("Earned", usd(pnl_usd, "exceptZero")), stat("Equity", usd(equity_usd)), stat("Cash", usd(cash_usd))),
       h("div", "foot", h("p", "caption", "Paper money, no cash value"), link),
     )
   }

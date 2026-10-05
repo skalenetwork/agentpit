@@ -1,4 +1,4 @@
-import { categoryIcon as categoryName, type MarketIcon, marketIcon as marketName } from "@agentpit/brand/marketIcon";
+import { type MarketIcon, marketIcon as marketName } from "@agentpit/brand/marketIcon";
 import type { AstroComponent } from "@lucide/astro";
 import {
   Activity,
@@ -81,7 +81,5 @@ const icons: Readonly<Record<MarketIcon, AstroComponent>> = {
   UserMinus,
   Vote,
 };
-
-export const categoryIcon = (category: string | null | undefined): AstroComponent => icons[categoryName(category)];
 
 export const marketIcon = (market: { question: string; category?: string | null }): AstroComponent => icons[marketName(market)];

@@ -1,22 +1,14 @@
 ---
-import { Calendar, Clock } from "@lucide/astro";
-import AgentAvatar from "../../components/AgentAvatar.astro";
 import DataPage from "../../components/DataPage.astro";
 import Layout from "../../components/Layout.astro";
 import PageActions from "../../components/PageActions.astro";
-import RunnerMark from "../../components/RunnerMark.astro";
-import Activity from "../../components/agent/Activity.astro";
-import Book from "../../components/agent/Book.astro";
-import Positions from "../../components/agent/Positions.astro";
-import RankPill from "../../components/agent/RankPill.astro";
-import Record from "../../components/agent/Record.astro";
-import Return from "../../components/agent/Return.astro";
-import Standing from "../../components/agent/Standing.astro";
+import Earned from "../../components/agent/Earned.astro";
+import Heading from "../../components/agent/Heading.astro";
+import Tabs from "../../components/agent/Tabs.astro";
 import Wallet from "../../components/agent/Wallet.astro";
 import { canonical, site } from "../../content/site";
 import { agent, RANK_FLOOR } from "../../lib/api";
-import { ago, shortAddress, shortDay, utcTime } from "@agentpit/brand/format";
-import { pct } from "../../lib/leaderboard";
+import { pct, shortAddress } from "@agentpit/brand/format";
 
 export const prerender = false;
 
@@ -35,7 +27,7 @@ if (!profile) {
 
 const path = `/agents/${address}`;
 const now = Date.now() / 1000;
-const stamp = (date: Date) => ({ datetime: date.toISOString(), title: `${date.toISOString().slice(0, 10)} ${utcTime(date)}` });
+const iso = new Date(now * 1000).toISOString();
 ---
 
 {
@@ -46,74 +38,15 @@ const stamp = (date: Date) => ({ datetime: date.toISOString(), title: `${date.to
       summary={`${profile.name} on ${site.name}: ${
         profile.standing.place ? `#${profile.standing.place} of ${profile.standing.rankedCount} ranked agents` : `Warming up, ${profile.trades} of ${RANK_FLOOR} trades to rank`
       }, ${pct(profile.money.returnPct)} on $100,000 of paper money.`}
-      image={`${path}/og.png`}
+      image={`${path}/og/${iso.slice(0, 13)}.png`}
       noindex={profile.trades < RANK_FLOOR}
     >
       <DataPage trail={[{ href: "/agents", label: "Leaderboard" }]} current={profile.name}>
-        <PageActions
-          slot="actions"
-          url={canonical(path)}
-          text={
-            profile.standing.place
-              ? `${profile.name} is #${profile.standing.place} of ${profile.standing.rankedCount} on ${site.name}`
-              : `${profile.name} is warming up on ${site.name}`
-          }
-        />
-        <AgentAvatar slot="media" address={profile.address} class="size-16 sm:size-24" morph />
-        <Fragment slot="identity">
-          <h1 class="max-w-full truncate text-heading text-ink">{profile.name}</h1>
-          <RankPill place={profile.standing.place} rankedCount={profile.standing.rankedCount} trades={profile.trades} />
-        </Fragment>
-        <Fragment slot="meta">
-          <span class="h-7 rounded-control bg-surface px-2.5 text-ink">
-            <RunnerMark slug={profile.runner.slug} class="size-4 shrink-0" />
-            Runs on {profile.runner.label}
-            {profile.runner.host && <span class="text-muted">· {profile.runner.host}</span>}
-          </span>
-          <span>
-            <Calendar class="size-3.75" aria-hidden="true" />
-            Trading since {shortDay(new Date(profile.firstTradeAt * 1000))}
-          </span>
-          {now - profile.lastTradeAt < 1800 ? (
-            <span class="text-ink">
-              <span class="relative flex size-2">
-                <span class="absolute inset-0 rounded-control bg-up opacity-75 motion-safe:animate-ping" />
-                <span class="relative size-2 rounded-control bg-up" />
-              </span>
-              Active now
-            </span>
-          ) : (
-            <span>
-              <Clock class="size-3.75" aria-hidden="true" />
-              <span>
-                Last trade <time {...stamp(new Date(profile.lastTradeAt * 1000))}>{ago(profile.lastTradeAt, now)}</time>
-              </span>
-            </span>
-          )}
-        </Fragment>
-
-        <div class="grid gap-4 lg:grid-cols-[2fr_1fr] lg:gap-6">
-          <Return money={profile.money} valuedAt={profile.valuedAt} />
-          <Standing standing={profile.standing} address={profile.address} trades={profile.trades} />
-        </div>
-        {profile.book || profile.record ? (
-          <Fragment>
-            <div class:list={["grid gap-4 lg:gap-6", profile.book && "lg:grid-cols-[2fr_1fr]"]}>
-              <Positions positions={profile.positions} />
-              {profile.book && <Book book={profile.book} />}
-            </div>
-            <div class:list={["grid gap-4 lg:gap-6", profile.record && "lg:grid-cols-[2fr_1fr]"]}>
-              <Activity activity={profile.activity} trades={profile.trades} now={now} />
-              {profile.record && <Record record={profile.record} />}
-            </div>
-          </Fragment>
-        ) : (
-          <div class="grid gap-4 lg:grid-cols-2 lg:gap-6">
-            <Positions positions={profile.positions} />
-            <Activity activity={profile.activity} trades={profile.trades} now={now} />
-          </div>
-        )}
-        <Wallet address={profile.address} money={profile.money} />
+        <PageActions slot="actions" url={`${canonical(path)}?d=${iso.slice(0, 10)}`} text={profile.share} />
+        <Heading slot="head" profile={profile} now={now} />
+        <Earned money={profile.money} valuedAt={profile.valuedAt} />
+        <Tabs profile={profile} now={now} />
+        <Wallet address={profile.address} />
       </DataPage>
     </Layout>
   ) : (

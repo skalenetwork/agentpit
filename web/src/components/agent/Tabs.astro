@@ -1,0 +1,36 @@
+---
+import type { Profile } from "../../lib/api";
+import Activity from "./Activity.astro";
+import Positions from "./Positions.astro";
+import Record from "./Record.astro";
+
+interface Props {
+  profile: Profile;
+  now: number;
+}
+
+const { profile, now } = Astro.props;
+const { positions, money, activity, record } = profile;
+const tabs = [
+  { id: "tab-positions", label: "Positions", count: positions.open.length },
+  { id: "tab-activity", label: "Activity" },
+  ...(record ? [{ id: "tab-record", label: "Record", count: record.wins + record.losses }] : []),
+];
+---
+
+<div class="group/tabs min-w-0 rounded-card bg-surface/70 px-5 pb-5 text-small sm:px-6 sm:pb-6">
+  <div class="-mx-5 flex h-11 gap-6 border-b border-line px-5 sm:-mx-6 sm:px-6">
+    {
+      tabs.map(({ id, label, count }, i) => (
+        <label class="relative inline-flex h-11 shrink-0 cursor-pointer items-center rounded-item font-medium whitespace-nowrap text-muted transition-colors duration-150 after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-ink after:opacity-0 hover:text-ink has-checked:text-ink has-checked:after:opacity-100 has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-signal">
+          <input class="sr-only" type="radio" name="tab" id={id} checked={i === 0} />
+          {label}
+          {count !== undefined && <span class="ml-1 font-normal text-muted tabular-nums max-sm:hidden">{count}</span>}
+        </label>
+      ))
+    }
+  </div>
+  <Positions class="hidden group-has-[#tab-positions:checked]/tabs:block" positions={positions} cash={money.cash} />
+  <Activity class="hidden group-has-[#tab-activity:checked]/tabs:block" activity={activity} now={now} />
+  {record && <Record class="hidden group-has-[#tab-record:checked]/tabs:block" record={record} />}
+</div>

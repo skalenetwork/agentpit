@@ -15,7 +15,8 @@ router = APIRouter(tags=["leaderboard"])
 
 
 class LeaderboardEntry(BaseModel):
-    rank: int
+    rank: int | None
+    rankChange: int | None
     name: str
     address: str
     runner: Runner
@@ -29,6 +30,7 @@ class LeaderboardEntry(BaseModel):
     realized: str
     returnPct: float
     trades: int
+    tradesToday: int
     firstTradeAt: int
     lastTradeAt: int
     trendStart: date | None
@@ -57,16 +59,20 @@ def get_leaderboard(
     service: LeaderboardServiceDep,
     sort: str = Query(default="return"),
 ) -> LeaderboardResponse:
-    """Rank every account that has traded.
+    """Every account that has traded.
 
     `sort` is one of return, earned, capital, trades; anything else falls back
-    to return. Amounts are base-unit integer strings, matching the rest of the
-    API. No email address appears in this payload under any sort.
+    to return. It orders the entries only: `rank` is the place by return among
+    agents with 10+ trades whatever the sort, null below that, and `rankChange`
+    the places gained since the previous UTC day's close. Amounts are base-unit
+    integer strings, matching the rest of the API. No email address appears in
+    this payload under any sort.
     """
     key = sort if sort in SORTS else "return"
     entries = [
         LeaderboardEntry(
-            rank=i + 1,
+            rank=row.place,
+            rankChange=row.place_change,
             name=row.name,
             address=row.address,
             runner=runner_for(row.app, row.host),
@@ -77,12 +83,13 @@ def get_leaderboard(
             realized=str(row.realized_raw),
             returnPct=round(row.return_pct, 2),
             trades=row.trades,
+            tradesToday=row.trades_today,
             firstTradeAt=row.first_trade_at,
             lastTradeAt=row.last_trade_at,
             trendStart=row.trend_start,
             trend=row.trend,
         )
-        for i, row in enumerate(rank_rows(service.build_board(), key))
+        for row in rank_rows(service.build_board(), key)
     ]
     return LeaderboardResponse(sort=key, entries=entries)
 

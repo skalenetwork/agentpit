@@ -1,12 +1,10 @@
-import { bursts } from "@agentpit/brand/activity";
-import { type Fill, profile, type Runner, usd, type WireProfile } from "@agentpit/brand/api";
+import { profile, type Runner, usd, type WireProfile } from "@agentpit/brand/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Me, open, request } from "./session";
 
 interface WireAgent {
   readonly handle: string | null;
   readonly eth_address: string;
-  readonly created_at: number;
   readonly runner: Runner;
   readonly equity: string;
   readonly earned: string;
@@ -14,35 +12,15 @@ interface WireAgent {
   readonly trades: number;
   readonly last_trade_at: number | null;
   readonly place: number | null;
+  readonly place_change: number | null;
+  readonly trend: readonly string[];
 }
 
-export interface Agent extends Omit<WireAgent, "handle" | "equity" | "earned"> {
+export interface Agent extends Omit<WireAgent, "handle" | "equity" | "earned" | "trend"> {
   readonly name: string;
   readonly equity: number;
   readonly earned: number;
-}
-
-export interface Position {
-  readonly asset: string;
-  readonly icon: string;
-  readonly title: string;
-  readonly outcome: string;
-  readonly avgPrice: number;
-  readonly curPrice: number;
-  readonly currentValue: number;
-  readonly cashPnl: number;
-  readonly settled: boolean;
-}
-
-interface WireActivity {
-  readonly timestamp: number;
-  readonly type: Fill["type"];
-  readonly side: "BUY" | "SELL" | "";
-  readonly outcome: string;
-  readonly size: number;
-  readonly usdcSize: number;
-  readonly title: string;
-  readonly icon: string;
+  readonly trend: readonly number[];
 }
 
 export interface Order {
@@ -52,23 +30,16 @@ export interface Order {
   readonly outcome: string;
   readonly price: string;
   readonly original_size: string;
-  readonly created_at: number;
 }
 
 const AGENTS = ["agents"];
 
-const agent = ({ handle, equity, earned, ...rest }: WireAgent): Agent => ({ ...rest, name: handle ?? rest.runner.label, equity: usd(equity), earned: usd(earned) });
-
-const fill = (wire: WireActivity): Fill => ({
-  icon: wire.icon || null,
-  at: wire.timestamp,
-  type: wire.type,
-  side: wire.side || null,
-  outcome: wire.outcome || null,
-  shares: wire.size,
-  dollars: wire.usdcSize,
-  title: wire.title,
-  category: null,
+const agent = ({ handle, equity, earned, trend, ...rest }: WireAgent): Agent => ({
+  ...rest,
+  name: handle ?? rest.runner.label,
+  equity: usd(equity),
+  earned: usd(earned),
+  trend: trend.map(usd),
 });
 
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => request<Me>("/me"), staleTime: Number.POSITIVE_INFINITY, refetchInterval: false });
@@ -77,20 +48,6 @@ export const useAgents = () => useQuery({ queryKey: AGENTS, queryFn: async () =>
 
 export const useProfile = ({ eth_address, trades }: Agent) =>
   useQuery({ queryKey: ["profile", eth_address], enabled: trades > 0, queryFn: async () => profile(await open<WireProfile>(`/agents/${eth_address}`)) });
-
-export const usePositions = ({ eth_address, trades }: Agent) =>
-  useQuery({
-    queryKey: ["positions", eth_address],
-    enabled: trades > 0,
-    queryFn: async () => (await open<readonly Position[]>(`/positions?user=${eth_address}`)).filter((p) => !p.settled).sort((a, b) => b.currentValue - a.currentValue),
-  });
-
-export const useActivity = ({ eth_address, trades }: Agent) =>
-  useQuery({
-    queryKey: ["activity", eth_address],
-    enabled: trades > 0,
-    queryFn: async () => bursts((await open<readonly WireActivity[]>(`/activity?user=${eth_address}&limit=80`)).map(fill)),
-  });
 
 export const useOrders = ({ eth_address }: Agent) => useQuery({ queryKey: ["orders", eth_address], queryFn: () => request<readonly Order[]>(`/me/agents/${eth_address}/orders`) });
 

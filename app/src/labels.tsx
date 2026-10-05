@@ -1,20 +1,23 @@
-import { ago, shortDay } from "@agentpit/brand/format";
-import type { Agent } from "./api";
+import { ago, type Tone } from "@agentpit/brand/format";
+import { isActive } from "@agentpit/brand/standing";
+import type { ReactNode } from "react";
 
-export const signedPercent = (value: number) => `${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value).toFixed(2)}%`;
+export const TONE: Readonly<Record<Tone, string>> = { up: "text-up", down: "text-down", flat: "text-ink" };
 
-export const tone = (value: number) => (Math.abs(value) < 0.005 ? "text-ink" : value > 0 ? "text-up" : "text-down");
+export const Sep = () => <span className="text-faint">·</span>;
 
-export const when = (at: number, now: number) => (now - at < 86400 ? ago(at, now) : shortDay(new Date(at * 1000)));
-
-export const LastTrade = ({ agent, now }: { agent: Agent; now: number }) =>
-  agent.last_trade_at === null ? (
-    "No trades yet"
-  ) : now - agent.last_trade_at < 3600 ? (
+export const LastTrade = ({ at, now, prefix }: { at: number; now: number; prefix?: ReactNode }) =>
+  isActive(at, now) ? (
     <span className="inline-flex items-center gap-1.5 text-ink">
-      <span className="size-1.5 rounded-control bg-up" />
-      Trading now
+      <span className="relative flex size-2">
+        <span className="absolute inset-0 rounded-control bg-up opacity-75 motion-safe:animate-ping" />
+        <span className="relative size-2 rounded-control bg-up" />
+      </span>
+      Active now
     </span>
   ) : (
-    `Last trade ${ago(agent.last_trade_at, now)}`
+    <span className="inline-flex items-center gap-1.5">
+      {prefix}
+      {ago(at, now)}
+    </span>
   );

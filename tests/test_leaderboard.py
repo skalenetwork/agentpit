@@ -304,9 +304,11 @@ def test_one_account_write_failure_does_not_cost_the_rest(monkeypatch):
 
 
 from agentpit.services.leaderboard_service import (
+    RANK_FLOOR,
     SORTS,
     LeaderboardRow,
     display_name,
+    places,
     rank_rows,
 )
 
@@ -377,6 +379,14 @@ def test_ties_break_deterministically_by_address():
         first = [r.address for r in rank_rows([a, b], sort)]
         second = [r.address for r in rank_rows([b, a], sort)]
         assert first == second, f"sort={sort} was not deterministic"
+
+
+def test_places_rank_by_return_only_at_the_floor():
+    hot = _row("hot", capital=150, deposited=100, trades=RANK_FLOOR - 1, address="0x" + "99" * 20)
+    first = _row("first", capital=120, deposited=100, trades=RANK_FLOOR, address="0x" + "33" * 20)
+    tied_low = _row("tied_low", capital=110, deposited=100, trades=40, address="0x" + "11" * 20)
+    tied_high = _row("tied_high", capital=110, deposited=100, trades=RANK_FLOOR, address="0x" + "22" * 20)
+    assert places([tied_low, hot, tied_high, first]) == {first.address: 1, tied_high.address: 2, tied_low.address: 3}
 
 
 # ----- take_snapshot: the wipe reset moves here -----------------------------
@@ -543,7 +553,7 @@ def test_a_self_matched_trade_counts_once_not_twice():
         ("t-self", key, key, 1_700_000_000, "PENDING"),
     )
 
-    assert TableRead.count_trades_by_user(conn)[user_id].trades == 1
+    assert TableRead.count_trades_by_user(conn, 1_700_000_050)[user_id].trades == 1
     assert [r.user_id for r in TableRead.list_traded_accounts(conn)] == [user_id]
     conn.close()
 
@@ -567,9 +577,13 @@ def test_counts_cover_both_sides_of_a_trade():
         ("t-taker-only", taker_key, 1_700_000_100, "PENDING"),
     )
 
-    tallies = TableRead.count_trades_by_user(conn)
-    assert tallies[taker_id] == TradeTally(trades=2, first_trade_at=1_700_000_000, last_trade_at=1_700_000_100)
-    assert tallies[maker_id] == TradeTally(trades=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000)
+    tallies = TableRead.count_trades_by_user(conn, 1_700_000_050)
+    assert tallies[taker_id] == TradeTally(
+        trades=2, trades_before=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_100
+    )
+    assert tallies[maker_id] == TradeTally(
+        trades=1, trades_before=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000
+    )
     conn.close()
 
 
@@ -611,9 +625,11 @@ def test_a_failed_trade_does_not_put_an_account_on_the_board():
     assert only_failed_id not in ids
     assert mixed_id in ids
 
-    tallies = TableRead.count_trades_by_user(conn)
+    tallies = TableRead.count_trades_by_user(conn, 1_700_000_050)
     assert only_failed_id not in tallies
-    assert tallies[mixed_id] == TradeTally(trades=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000)
+    assert tallies[mixed_id] == TradeTally(
+        trades=1, trades_before=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000
+    )
     conn.close()
 
 

@@ -1,14 +1,16 @@
 ---
-import { Plus } from "@lucide/astro";
+import { AppWindow, Hourglass, Plus } from "@lucide/astro";
+import { ago, count, pct, rankMove, signedDollars, tone } from "@agentpit/brand/format";
+import { isActive } from "@agentpit/brand/standing";
 import { RANK_FLOOR as floor, type Agent } from "../../lib/api";
-import { ago, count } from "@agentpit/brand/format";
-import { dollars, hues, medals, pct, profile, progress, runners, tags, tone } from "../../lib/leaderboard";
+import { hues, medals, profile, progress, runners, tags, type Ranked } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
+import Card from "../Card.astro";
 import RunnerMark from "../RunnerMark.astro";
 import Sparkline from "./Sparkline.astro";
 
 interface Props {
-  ranked: readonly Agent[];
+  ranked: readonly Ranked[];
   warming: readonly Agent[];
 }
 
@@ -16,90 +18,94 @@ const { ranked, warming } = Astro.props;
 const labels = tags(ranked);
 const keys = runners([...ranked, ...warming]);
 const now = Date.now() / 1000;
-const columns =
-  "grid-cols-[2rem_2.5rem_1fr_auto] gap-x-2.5 px-1 md:grid-cols-[3rem_2.5rem_1fr_6rem_7rem] md:gap-x-4 md:px-4 lg:grid-cols-[3rem_2.5rem_1fr_6rem_5.5rem_5rem_7rem]";
 ---
 
-<div class="rounded-panel bg-surface p-2 sm:p-4">
-  <div class:list={["hidden pt-2 pb-3 text-caption md:grid", columns]} aria-hidden="true">
-    <span class="text-center">Rank</span>
+<div class="overflow-hidden rounded-card bg-surface/70 text-small">
+  <div class="grid min-h-10 grid-cols-[22px_36px_minmax(0,1fr)_auto] items-center gap-x-3 px-5 text-caption sm:px-6 md:grid-cols-[24px_36px_minmax(0,1fr)_104px_104px_104px]" aria-hidden="true">
+    <span class="text-center">#</span>
     <span class="col-span-2">Agent</span>
-    <span class="max-lg:hidden">Trend</span>
-    <span class="text-right max-lg:hidden">In play</span>
-    <span class="text-right">Trades</span>
+    <span class="max-md:hidden">30 days</span>
+    <span class="text-right max-md:hidden">Earned</span>
     <span class="text-right">Return</span>
   </div>
 
-  <ol class="space-y-1">
+  <ol>
     {
-      ranked.map((agent, i) => {
+      ranked.map((agent) => {
         const tag = labels.get(agent);
+        const move = rankMove(agent.rankChange);
         return (
-          <li class:list={["relative grid items-center rounded-panel py-3 transition duration-150 has-[a:focus-visible]:bg-paper has-[a:hover]:bg-paper motion-safe:has-[a:active]:scale-[0.99]", columns]}>
-            <span class="grid place-items-center text-small tabular-nums">
-              {medals[i] ? (
-                <span class:list={["grid size-8 place-items-center rounded-control bg-(--medal) font-medium text-paper", medals[i]]}>{i + 1}</span>
+          <li class="relative grid min-h-15 grid-cols-[22px_36px_minmax(0,1fr)_auto] items-center gap-x-3 border-t border-line px-5 py-2 tabular-nums transition-colors duration-150 has-[a:hover]:bg-paper/50 sm:px-6 md:grid-cols-[24px_36px_minmax(0,1fr)_104px_104px_104px]">
+            <span class="grid justify-items-center text-caption">
+              {agent.rank <= medals.length ? (
+                <span class:list={["grid size-5.5 place-items-center rounded-control font-medium text-ink scheme-light", medals[agent.rank - 1]]}>{agent.rank}</span>
               ) : (
-                i + 1
+                agent.rank
+              )}
+              {move && (
+                <span class:list={["font-medium", move.dir === "up" ? "text-up" : "text-down"]} role="img" aria-label={`${move.dir === "up" ? "Up" : "Down"} ${move.by} since yesterday`}>
+                  {move.dir === "up" ? "▲" : "▼"}{move.by}
+                </span>
               )}
             </span>
-            <AgentAvatar address={agent.address} class="size-10" morph />
+            <AgentAvatar address={agent.address} class="size-9" morph />
             <span class="min-w-0">
-              <span class="flex items-center gap-2">
-                <span class="flex min-w-0 items-center gap-1.5">
-                  <a class="truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={profile(agent)}>{agent.name}</a>
-                  {agent.runner.slug !== "api" && <RunnerMark slug={agent.runner.slug} label={agent.runner.label} class="size-4 shrink-0" />}
-                </span>
-                {tag && <span class="shrink-0 rounded-control bg-surface px-2 text-caption text-ink max-md:hidden">{tag}</span>}
+              <span class="flex min-w-0 items-center gap-1.5">
+                <a class="truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={profile(agent)}>{agent.name}</a>
+                {tag && <span class="ml-0.5 inline-flex h-5 shrink-0 items-center rounded-control bg-paper px-2 text-caption font-medium text-ink max-md:hidden">{tag}</span>}
               </span>
-              <span class="block truncate text-caption tabular-nums md:hidden">
-                {count(agent.trades)} trades · {tag ?? ago(agent.lastTradeAt, now)}
+              <span class="mt-0.5 flex items-center gap-1.5 overflow-hidden text-caption whitespace-nowrap">
+                <span>{count(agent.trades)} trades <span class="text-faint">·</span></span>
+                {isActive(agent.lastTradeAt, now) ? (
+                  <span class="inline-flex items-center gap-1.5 text-ink">
+                    <span class="relative flex size-1.5">
+                      <span class="absolute inset-0 rounded-control bg-up opacity-75 motion-safe:animate-ping" />
+                      <span class="relative size-1.5 rounded-control bg-up" />
+                    </span>
+                    Active now
+                  </span>
+                ) : (
+                  ago(agent.lastTradeAt, now)
+                )}
+                <span class="truncate"><span class="text-faint">·</span> {agent.runner.label}</span>
               </span>
             </span>
-            <span class="max-lg:hidden"><Sparkline values={agent.trend} returnPct={agent.returnPct} /></span>
-            <span class="text-right tabular-nums max-lg:hidden">{dollars(agent.invested)}</span>
-            <span class="text-right tabular-nums max-md:hidden">
-              {count(agent.trades)}
-              <span class="block text-caption">{ago(agent.lastTradeAt, now)}</span>
-            </span>
-            <span class:list={["text-right font-medium tabular-nums md:text-lead", hues[tone(agent.returnPct)]]}>{pct(agent.returnPct)}</span>
+            <span class="max-md:hidden"><Sparkline values={agent.trend} returnPct={agent.returnPct} /></span>
+            <span class="text-right text-ink max-md:hidden">{signedDollars(agent.pnl)}</span>
+            <span class:list={["text-right font-medium", hues[tone(agent.returnPct)]]}>{pct(agent.returnPct)}</span>
           </li>
         );
       })
     }
   </ol>
+</div>
 
-  <div class="flex items-baseline gap-3 px-1 pt-8 pb-4 md:px-4">
-    <h3 class="text-small font-medium text-ink">Warming up</h3>
-    <span class="h-px flex-1 self-center bg-line"></span>
-    <p class="text-caption">Ranks after {floor} trades</p>
-  </div>
-
-  <ul class="grid grid-cols-2 gap-x-4 gap-y-5 px-1 pb-3 md:grid-cols-4 md:px-4">
+<Card title="Warming up" icon={Hourglass} note={`Ranks after ${floor} trades`}>
+  <ul class="mt-4 grid grid-cols-2 gap-x-4 gap-y-5 md:grid-cols-4">
     {
       warming.map((agent) => (
-        <li class="relative -m-2 flex min-w-0 items-center gap-3 rounded-panel p-2 transition duration-150 has-[a:hover]:bg-paper motion-safe:has-[a:active]:scale-[0.98]">
-          <AgentAvatar address={agent.address} class="size-10 shrink-0" />
+        <li class="relative -m-2 flex min-w-0 items-center gap-3 rounded-item p-2 transition-colors duration-150 has-[a:hover]:bg-paper/50">
+          <AgentAvatar address={agent.address} class="size-9 shrink-0" />
           <span class="min-w-0">
             <span class="flex min-w-0 items-center gap-1">
               <a class="truncate text-small font-medium text-ink after:absolute after:inset-0" href={profile(agent)}>{agent.name}</a>
               {agent.runner.slug !== "api" && <RunnerMark slug={agent.runner.slug} label={agent.runner.label} class="size-3.5 shrink-0" />}
             </span>
-            <span class="flex flex-wrap items-center gap-x-2 text-caption tabular-nums">
-              <span class="h-1 w-8 overflow-hidden rounded-control bg-line">
+            <span class="flex items-center gap-x-2 text-caption tabular-nums">
+              <span class="h-1 w-8 shrink-0 overflow-hidden rounded-control bg-line">
                 <span class:list={["block h-full bg-ink/50", progress(agent.trades / floor)]} />
               </span>
               {agent.trades}/{floor}
-              <span>{ago(agent.lastTradeAt, now)}</span>
+              <span class="truncate">{ago(agent.lastTradeAt, now).split(" ").map((word, k) => (k ? <span class="max-sm:hidden"> {word}</span> : word))}</span>
             </span>
           </span>
         </li>
       ))
     }
     <li>
-      <a class="group -m-2 flex min-w-0 items-center gap-3 rounded-panel p-2 text-signal transition duration-150 hover:bg-paper motion-safe:active:scale-[0.98]" href="#join">
-        <span class="grid size-10 shrink-0 place-items-center rounded-[28%] border border-dashed border-signal/60 group-hover:bg-signal/10">
-          <Plus class="size-5" aria-hidden="true" />
+      <a class="group -m-2 flex min-w-0 items-center gap-3 rounded-item p-2 text-signal transition-colors duration-150 hover:bg-paper/50" href="#join">
+        <span class="grid size-9 shrink-0 place-items-center rounded-robot border border-dashed border-signal/60 group-hover:bg-signal/10">
+          <Plus class="size-4" aria-hidden="true" />
         </span>
         <span class="min-w-0">
           <span class="block truncate text-small font-medium">Your agent</span>
@@ -111,25 +117,20 @@ const columns =
       </a>
     </li>
   </ul>
+</Card>
 
-  {
-    keys.length > 0 && (
-      <Fragment>
-        <div class="flex items-baseline gap-3 px-1 pt-8 pb-4 md:px-4">
-          <h3 class="text-small font-medium text-ink">Runs on</h3>
-          <span class="h-px flex-1 self-center bg-line" />
-          <p class="text-caption">Named by the app, not verified</p>
-        </div>
-        <ul class="flex flex-wrap items-center gap-x-5 gap-y-2 px-1 pb-3 text-small md:px-4">
-          {keys.map(({ runner, count: agents }) => (
-            <li class="inline-flex items-center gap-1.5 whitespace-nowrap text-ink">
-              <RunnerMark slug={runner.slug} class="size-4 shrink-0" />
-              {runner.label}
-              <span class="text-muted tabular-nums">{agents}</span>
-            </li>
-          ))}
-        </ul>
-      </Fragment>
-    )
-  }
-</div>
+{
+  keys.length > 0 && (
+    <Card title="Runs on" icon={AppWindow} note="Named by the app, not verified">
+      <ul class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+        {keys.map(({ runner, count: agents }) => (
+          <li class="inline-flex items-center gap-1.5 whitespace-nowrap text-small text-ink">
+            <RunnerMark slug={runner.slug} label={runner.label} class="size-4 shrink-0" />
+            {runner.label}
+            <span class="text-muted tabular-nums">{agents}</span>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}

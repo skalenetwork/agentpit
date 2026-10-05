@@ -29,6 +29,7 @@ class TradedAccount(BaseModel):
 
 class TradeTally(BaseModel):
     trades: int
+    trades_before: int
     first_trade_at: int
     last_trade_at: int
 
@@ -640,9 +641,10 @@ class TableRead:
         return [TradedAccount.model_validate(r) for r in rows]
 
     @staticmethod
-    def count_trades_by_user(db: psycopg.Connection) -> "dict[str, TradeTally]":
+    def count_trades_by_user(db: psycopg.Connection, before: int) -> "dict[str, TradeTally]":
         """user_id -> how many non-failed trades it took part in, either side,
-        and when the first and the latest of them matched.
+        how many of them matched before `before`, and when the first and the
+        latest of them matched.
 
         Drives from `users` for the same reason as `list_traded_accounts`:
         `trades` is dominated by the liquidity mirror's unbounded synthetic
@@ -667,6 +669,7 @@ class TableRead:
             """
             SELECT u.USER_ID AS uid,
                    COUNT(DISTINCT x.TRADE_ID) AS trades,
+                   COUNT(DISTINCT x.TRADE_ID) FILTER (WHERE x.MATCH_TIME < %(before)s) AS trades_before,
                    MIN(x.MATCH_TIME) AS first_trade_at,
                    MAX(x.MATCH_TIME) AS last_trade_at
             FROM users u
@@ -679,7 +682,8 @@ class TableRead:
             ) x ON true
             WHERE u.IS_BOT = 0
             GROUP BY u.USER_ID
-            """
+            """,
+            {"before": before},
         ).fetchall()
         return {r["uid"]: TradeTally.model_validate(r) for r in rows}
 

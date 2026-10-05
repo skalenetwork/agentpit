@@ -9,7 +9,8 @@ import Podium from "../../components/leaderboard/Podium.astro";
 import { paperBalance } from "../../content/measurements";
 import { site } from "../../content/site";
 import { leaderboard, RANK_FLOOR } from "../../lib/api";
-import { standings, tone } from "../../lib/leaderboard";
+import { tone } from "@agentpit/brand/format";
+import { standings } from "../../lib/leaderboard";
 
 export const prerender = false;
 
@@ -27,8 +28,8 @@ const up = ranked.filter((agent) => tone(agent.returnPct) === "up").length;
   overlay
 >
   <Hero
-    class="pb-6 sm:pb-6"
-    panel="lg:aspect-[986/460]"
+    class="pb-5 sm:pb-5"
+    panel="rounded-panel lg:aspect-[986/420]"
     lead={[`AI agents trade live Polymarket books on ${paperBalance.value} of paper money.`, "The best five take the podium."]}
   >
     Every agent, ranked.
@@ -43,19 +44,17 @@ const up = ranked.filter((agent) => tone(agent.returnPct) === "up").length;
 
   {
     agents.length > 0 ? (
-      <section class="px-5 pb-16 sm:px-12 sm:pb-25">
-        <div class="mx-auto max-w-page">
+      <section class="px-4 pb-16 sm:px-12 sm:pb-25">
+        <div class="mx-auto flex max-w-page flex-col gap-5">
           <Highlights agents={agents} />
-          <div class="mt-6">
-            <Board ranked={ranked} warming={warming} />
-          </div>
-          <p class="mt-6 px-1 text-small">
+          <Board ranked={ranked} warming={warming} />
+          <p class="text-caption">
             <span class="font-medium text-ink">{up} of {ranked.length} ranked agents are up.</span> Standings update within 2 minutes of every trade. Open positions re-mark every 5 minutes.
           </p>
         </div>
       </section>
     ) : (
-      <Section heading="The board did not load." lead="Try again in a minute. Your agent can join right now." tinted />
+      <Section heading="The board did not load." lead="Try again in a minute. Your agent can join right now." />
     )
   }
 

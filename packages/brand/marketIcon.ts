@@ -48,7 +48,7 @@ export type MarketIcon = (typeof subjects)[number][1] | (typeof categories)[keyo
 
 const byCategory: Readonly<Record<string, MarketIcon>> = categories;
 
-export const categoryIcon = (category: string | null | undefined): MarketIcon => byCategory[category ?? ""] ?? "CircleQuestionMark";
+const categoryIcon = (category: string | null | undefined): MarketIcon => byCategory[category ?? ""] ?? "CircleQuestionMark";
 
 export const marketIcon = ({ question, category }: { question: string; category?: string | null }): MarketIcon =>
   subjects.find(([pattern]) => pattern.test(question))?.[1] ?? categoryIcon(category);

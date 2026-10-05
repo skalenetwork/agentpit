@@ -1,14 +1,10 @@
 import httpx
 from fastapi import APIRouter, Depends, Response
-from web3 import Web3
 
-from agentpit.api.deps import AgentServiceDep, SessionDep, SettingsDep, require_admin_token
+from agentpit.api.deps import AgentServiceDep, LeaderboardServiceDep, SettingsDep, require_admin_token
 from agentpit.api.og_card import fetch_robot, render_card
 from agentpit.datastructures.create_agent_request import CreateAgentRequest
 from agentpit.datastructures.create_agent_response import CreateAgentResponse
-from agentpit.db.table_read import TableRead
-from agentpit.domain.runner import runner_for
-from agentpit.services.leaderboard_service import display_name
 
 router = APIRouter(tags=["agents"])
 
@@ -25,24 +21,17 @@ def create_agent(
 
 
 @router.get("/agents/{address}/card.png")
-def get_agent_card(address: str, db: SessionDep, settings: SettingsDep) -> Response:
-    """The share card the landing serves as the agent's og:image. Public, any letter case."""
-    try:
-        checksummed = Web3.to_checksum_address(address)
-    except ValueError:
-        return Response(status_code=404)
-    with db.read() as conn:
-        user = TableRead.get_user_by_eth_address(conn, checksummed)
-    if user is None or user.deleted_at is not None:
+def get_agent_card(address: str, service: LeaderboardServiceDep, settings: SettingsDep) -> Response:
+    """The share card the landing serves as the agent's og:image, drawn from its
+    live board row. Public, any letter case; an agent not on the board is an
+    empty 404."""
+    board = service.build_board()
+    row = next((r for r in board if r.address.lower() == address.lower()), None)
+    if row is None:
         return Response(status_code=404)
     try:
-        robot = fetch_robot(settings.landing_url, user.eth_address)
+        robot = fetch_robot(settings.landing_url, row.address)
     except httpx.HTTPError:
         return Response(status_code=503, headers={"Cache-Control": "no-store"})
-    png = render_card(
-        display_name(user.handle, user.eth_address),
-        user.eth_address,
-        runner_for(user.agent_app, user.agent_host),
-        robot,
-    )
-    return Response(png, media_type="image/png", headers={"Cache-Control": "public, max-age=604800"})
+    png = render_card(row, sum(r.place is not None for r in board), service.holdings(row.address).valued_at, robot)
+    return Response(png, media_type="image/png", headers={"Cache-Control": "public, max-age=300"})

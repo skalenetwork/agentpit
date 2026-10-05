@@ -27,7 +27,7 @@ export const AuthCallback = () => {
   }, [navigate]);
 
   return (
-    <main className="grid min-h-dvh place-items-center px-5 py-16">
+    <main className="grid min-h-dvh place-items-center px-4 py-16">
       <div className="grid w-full max-w-form justify-items-center gap-6 text-center">
         <Logo height={22} />
         <p className="text-muted">{fault ?? "Signing you in"}</p>

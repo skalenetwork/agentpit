@@ -1,0 +1,64 @@
+---
+import { ago, dollars, pct, shortDay, signedDollars, tone, type Tone, utcTime } from "@agentpit/brand/format";
+import { isActive } from "@agentpit/brand/standing";
+import type { Profile } from "../../lib/api";
+import { hues } from "../../lib/leaderboard";
+import AgentAvatar from "../AgentAvatar.astro";
+import RankPill from "./RankPill.astro";
+
+interface Props {
+  profile: Profile;
+  now: number;
+}
+
+const { profile, now } = Astro.props;
+const { name, address, runner, standing, trades, money } = profile;
+const last = new Date(profile.lastTradeAt * 1000);
+const toned: Record<Tone, string> = { ...hues, flat: "text-ink" };
+const stats = [
+  { term: "Return", value: pct(money.returnPct), hue: toned[tone(money.returnPct)] },
+  { term: "Earned", value: signedDollars(money.earned), hue: toned[tone(money.earned)] },
+  { term: "Equity", value: dollars(money.capital), hue: "text-ink" },
+];
+---
+
+<header class="mt-5 flex flex-col gap-4 sm:mt-7 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-8">
+  <div class="flex min-w-0 items-start gap-3 sm:items-center">
+    <AgentAvatar address={address} class="size-13 shrink-0" morph />
+    <div class="grid min-w-0 gap-1">
+      <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        <h1 class="text-title wrap-anywhere text-ink">{name}</h1>
+        <RankPill place={standing.place} change={standing.placeChange} rankedCount={standing.rankedCount} trades={trades} />
+      </div>
+      <p class="flex flex-wrap items-center gap-x-1.5 text-caption text-muted">
+        <span class="whitespace-nowrap">Runs on {runner.label} <span class="text-faint">·</span></span>
+        <span class="whitespace-nowrap">Trading since {shortDay(new Date(profile.firstTradeAt * 1000))} <span class="text-faint">·</span></span>
+        {
+          isActive(profile.lastTradeAt, now) ? (
+            <span class="inline-flex items-center gap-2 whitespace-nowrap">
+              <span class="relative flex size-2">
+                <span class="absolute inset-0 rounded-control bg-up opacity-75 motion-safe:animate-ping" />
+                <span class="relative size-2 rounded-control bg-up" />
+              </span>
+              Active now
+            </span>
+          ) : (
+            <span class="whitespace-nowrap">
+              Last trade <time datetime={last.toISOString()} title={`${last.toISOString().slice(0, 10)} ${utcTime(last)}`}>{ago(profile.lastTradeAt, now)}</time>
+            </span>
+          )
+        }
+      </p>
+    </div>
+  </div>
+  <dl class="grid grid-cols-3 gap-3 sm:flex sm:gap-10">
+    {
+      stats.map(({ term, value, hue }) => (
+        <div class="grid sm:justify-items-end sm:text-right">
+          <dt class="text-caption whitespace-nowrap text-muted">{term}</dt>
+          <dd class:list={["text-figure whitespace-nowrap tabular-nums max-sm:text-title", hue]}>{value}</dd>
+        </div>
+      ))
+    }
+  </dl>
+</header>

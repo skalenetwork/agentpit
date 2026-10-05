@@ -1,9 +1,9 @@
 ---
-import { ArrowDown, ArrowLeftRight, ArrowUp, Banknote, Bot, ChartColumn, TrendingUpDown, Users } from "@lucide/astro";
+import { ArrowLeftRight, ArrowUp, Bot, ChartBarBig, ChartColumn, Coins, Users } from "@lucide/astro";
 import { site } from "../../content/site";
 import { RANK_FLOOR, type Agent, type StatsDay } from "../../lib/api";
-import { count, dollars, shortDay, signedDollars } from "@agentpit/brand/format";
-import { dollars as compact, hues, tone } from "../../lib/leaderboard";
+import { compactDollars, count, dollars, shortDay, signedDollars, tone } from "@agentpit/brand/format";
+import { hues, noun } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
 import Card from "../Card.astro";
 import Chart from "./Chart.astro";
@@ -19,7 +19,6 @@ const { days, board } = Astro.props;
 const n = days.length;
 const today = days[n - 1];
 
-const noun = (k: number, word: string) => (k === 1 ? word : `${word}s`);
 const when = (i: number) => (i === n - 1 ? "today so far" : `on ${shortDay(new Date(days[i].day))}`);
 const rise = (i: number) => days[i].agents - (days[i - 1]?.agents ?? 0);
 const nice = (value: number) => {
@@ -28,13 +27,12 @@ const nice = (value: number) => {
 };
 const top = (key: "trades" | "agents" | "volume") => nice(Math.max(...days.map((day) => day[key])));
 const sum = (key: "trades" | "volume", from = days) => from.reduce((total, day) => total + day[key], 0);
-const joins = (back: number) => (days.at(-back)?.agents ?? 0) - (days.at(-back - 7)?.agents ?? 0);
-const [week, prior] = [days.slice(-7), days.slice(-14, -7)];
+const week = days.slice(-7);
 
 const summary = [
-  { icon: Bot, label: "Agents", figure: count(today.agents), recent: joins(1), before: joins(8), shown: (k: number) => `${count(k)} joined` },
-  { icon: ArrowLeftRight, label: "Trades", figure: count(sum("trades")), recent: sum("trades", week), before: sum("trades", prior), shown: count },
-  { icon: Banknote, label: "Paper apUSD traded", figure: dollars(sum("volume")), recent: sum("volume", week), before: sum("volume", prior), shown: dollars },
+  { label: "Agents", icon: Bot, figure: count(today.agents), recent: today.agents - (days.at(-8)?.agents ?? 0), shown: (k: number) => `${count(k)} joined` },
+  { label: "Trades", icon: ArrowLeftRight, figure: count(sum("trades")), recent: sum("trades", week), shown: count },
+  { label: "Paper apUSD traded", icon: Coins, figure: dollars(sum("volume")), recent: sum("volume", week), shown: dollars },
 ];
 
 const gap = Math.ceil(n / 6);
@@ -59,37 +57,32 @@ const scaled = (value: number) => axis.format(value).replace("-", "−").toLower
 const ends = [lineup[0], lineup[lineup.length - 1]].map((agent, k) => ({ at: k * 100, label: scaled(agent.pnl), name: agent.name }));
 ---
 
-<div class="grid gap-4 lg:grid-cols-3 lg:gap-6">
+<div class="grid gap-5 lg:grid-cols-3">
   {
-    summary.map(({ icon, label, figure, recent, before, shown }) => {
-      const trend = tone(recent - before);
-      const Arrow = trend === "up" ? ArrowUp : trend === "down" ? ArrowDown : undefined;
-      return (
-        <Card icon={icon} title={label}>
-          <p class="mt-2.5 text-heading text-ink tabular-nums">{figure}</p>
-          <p class="mt-3 text-small tabular-nums">
-            <span class:list={["font-medium whitespace-nowrap", hues[trend]]}>
-              {Arrow && <Arrow class="mr-0.75 inline size-3.5 align-text-bottom" stroke-width={2.5} aria-hidden="true" />}
-              {shown(recent)}
-            </span>{" "}
-            in the last 7&nbsp;days
-          </p>
-        </Card>
-      );
-    })
+    summary.map(({ label, icon, figure, recent, shown }) => (
+      <Card title={label} icon={icon} figure={figure}>
+        <Fragment slot="sub">
+          <span class="inline-flex items-center gap-0.5 align-top font-medium text-ink">
+            {recent > 0 && <ArrowUp class="size-3.5" stroke-width={2} aria-hidden="true" />}
+            {shown(recent)}
+          </span>{" "}
+          in the last 7&nbsp;days
+        </Fragment>
+      </Card>
+    ))
   }
 </div>
 
-<div class="grid gap-4 lg:grid-cols-2 lg:gap-6">
+<div class="grid gap-5 lg:grid-cols-2">
   <Chart
-    icon={ChartColumn}
     title="Trades per day"
+    icon={ChartColumn}
     fig={count(today.trades)}
     ctx={`${noun(today.trades, "trade")} today so far`}
     label={`Trades per UTC day from ${shortDay(new Date(days[0].day))} to today. Busiest day ${shortDay(new Date(busiest.day))} with ${count(busiest.trades)}; ${count(today.trades)} today so far.`}
     ticks={timeline}
   >
-    <Fragment slot="note">Busiest day {shortDay(new Date(busiest.day))}, with {count(busiest.trades)}</Fragment>
+    <Fragment slot="note">Busiest {shortDay(new Date(busiest.day))}, {count(busiest.trades)}</Fragment>
     <Days
       values={days.map((day) => day.trades)}
       top={top("trades")}
@@ -103,8 +96,8 @@ const ends = [lineup[0], lineup[lineup.length - 1]].map((agent, k) => ({ at: k *
   </Chart>
 
   <Chart
-    icon={Users}
     title="Agents over time"
+    icon={Users}
     fig={count(today.agents)}
     ctx={`${noun(today.agents, "agent")} so far`}
     label={`Agents on ${site.name} from ${shortDay(new Date(days[0].day))} to today, rising from ${days[0].agents} to ${today.agents} over ${days.filter((_, i) => rise(i) > 0).length} join days.`}
@@ -116,8 +109,8 @@ const ends = [lineup[0], lineup[lineup.length - 1]].map((agent, k) => ({ at: k *
           <Fragment>
             {`Latest ${noun(newest.length, "join")} ${shortDay(new Date(latest.day))}`}
             {newest.map((agent) => (
-              <span class="ml-2 inline-flex h-4.5 items-center gap-1.25 align-top text-ink">
-                <AgentAvatar address={agent.address} class="size-3.5" loading="lazy" />
+              <span class="ml-2 inline-flex items-center gap-1 align-top text-ink">
+                <AgentAvatar address={agent.address} class="size-4.5" loading="lazy" />
                 {agent.name}
               </span>
             ))}
@@ -142,11 +135,10 @@ const ends = [lineup[0], lineup[lineup.length - 1]].map((agent, k) => ({ at: k *
   </Chart>
 
   <Chart
-    icon={TrendingUpDown}
     title="Who’s up or down"
+    icon={ChartBarBig}
     fig={count(moods.up?.length ?? 0)}
     ctx={`of ${count(board.length)} up on paper, median ${signedDollars(median)}`}
-    tone="up"
     label={`Paper P&L of each of ${board.length} agents, sorted from biggest loss to biggest gain on a log scale: ${moods.up?.length ?? 0} up, ${moods.down?.length ?? 0} down, ${moods.flat?.length ?? 0} flat. Median ${signedDollars(median)}.`}
     ticks={ends}
   >
@@ -159,8 +151,8 @@ const ends = [lineup[0], lineup[lineup.length - 1]].map((agent, k) => ({ at: k *
   </Chart>
 
   <Chart
-    icon={Banknote}
     title="Paper apUSD traded per day"
+    icon={ChartColumn}
     fig={dollars(today.volume)}
     ctx="paper apUSD today so far"
     label={`Paper apUSD traded per UTC day. Biggest day ${shortDay(new Date(biggest.day))} at ${dollars(biggest.volume)}; ${dollars(today.volume)} today so far.`}
@@ -170,7 +162,7 @@ const ends = [lineup[0], lineup[lineup.length - 1]].map((agent, k) => ({ at: k *
     <Days
       values={days.map((day) => day.volume)}
       top={top("volume")}
-      format={(value) => compact(value).toLowerCase()}
+      format={(value) => compactDollars(value).toLowerCase()}
       readings={days.map((day, i) => ({
         fig: dollars(day.volume),
         ctx: `paper apUSD ${when(i)}`,

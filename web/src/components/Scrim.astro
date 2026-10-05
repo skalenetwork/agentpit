@@ -1,10 +1,9 @@
 ---
 interface Props {
   side?: "top" | "bottom" | "left";
-  tone?: "surface" | "paper";
 }
 
-const { side = "bottom", tone = "surface" } = Astro.props;
+const { side = "bottom" } = Astro.props;
 
 const layers = [
   "backdrop-blur-[1px] [--from:90%] [--to:100%]",
@@ -21,30 +20,25 @@ const placement = {
 };
 ---
 
-<div class:list={["tint pointer-events-none absolute -z-10", placement[side], side, tone]} aria-hidden="true">
+<div class:list={["tint pointer-events-none absolute -z-10", placement[side], side]} aria-hidden="true">
   {layers.map((layer) => <div class:list={["layer absolute inset-0", layer]} />)}
 </div>
 
 <style>
   .tint {
-    --tone: var(--color-surface);
     --direction: to top;
     background: linear-gradient(
       var(--direction),
-      color-mix(in oklab, var(--tone) 90%, transparent) 55%,
-      color-mix(in oklab, var(--tone) 58%, transparent) 68%,
-      color-mix(in oklab, var(--tone) 27%, transparent) 80%,
-      color-mix(in oklab, var(--tone) 9%, transparent) 91%,
+      color-mix(in oklab, var(--color-surface) 90%, transparent) 55%,
+      color-mix(in oklab, var(--color-surface) 58%, transparent) 68%,
+      color-mix(in oklab, var(--color-surface) 27%, transparent) 80%,
+      color-mix(in oklab, var(--color-surface) 9%, transparent) 91%,
       transparent
     );
   }
 
   .layer {
     mask-image: linear-gradient(var(--direction), #000 var(--from), transparent var(--to));
-  }
-
-  .paper {
-    --tone: var(--color-paper);
   }
 
   .top,

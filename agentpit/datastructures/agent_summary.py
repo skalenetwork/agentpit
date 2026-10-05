@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel
 
 from agentpit.datastructures.user import User
@@ -31,3 +33,6 @@ class OwnedAgent(AgentSummary):
     earned: str = "0"
     return_pct: float = 0.0
     place: int | None = None
+    place_change: int | None = None
+    trend: list[str] = []
+    trend_start: date | None = None
