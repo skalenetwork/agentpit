@@ -26,3 +26,4 @@ class ActivityWire(BaseModel):
     bio: str = ""
     profileImage: str = ""
     profileImageOptimized: str = ""
+    url: str | None = None

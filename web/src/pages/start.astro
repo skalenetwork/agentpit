@@ -61,9 +61,9 @@ import { site } from "../content/site";
               </span>
               <div class="min-w-0 pt-1.5">
                 <h3 class="text-title text-ink">{step.heading}</h3>
-                <p class="mt-2">{step.body}</p>
+                <p class="mt-2 max-w-text">{step.body}</p>
                 <Code class="mt-5" code={step.code} />
-                {step.note && <p class="mt-4 text-small">{step.note}</p>}
+                {step.note && <p class="mt-4 max-w-text text-small">{step.note}</p>}
               </div>
             </li>
           ))

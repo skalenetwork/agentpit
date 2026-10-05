@@ -2,6 +2,7 @@
 import { cents, dollars, signedDollars, tone } from "@agentpit/brand/format";
 import type { Profile } from "../../lib/api";
 import { hues } from "../../lib/leaderboard";
+import MarketLink from "../MarketLink.astro";
 import Glyph from "./Glyph.astro";
 import Outcome from "./Outcome.astro";
 import ShowAll from "./ShowAll.astro";
@@ -18,7 +19,7 @@ const { mark, open } = positions;
 ---
 
 <div class:list={["group/more", className]}>
-  <div class="grid min-h-10 items-center gap-x-3 text-caption text-muted md:grid-cols-[30px_minmax(0,1fr)_44px_104px_104px_104px]">
+  <div class="grid min-h-10 items-center gap-x-3 text-caption text-muted md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px]">
     <p class="md:col-span-3">
       <span class="font-medium text-ink tabular-nums">{dollars(mark)}</span> in positions <span class="text-faint">·</span> <span class="font-medium text-ink tabular-nums">{dollars(cash)}</span> cash
     </p>
@@ -34,14 +35,14 @@ const { mark, open } = positions;
           return (
             <li
               class:list={[
-                "grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:grid-cols-[30px_minmax(0,1fr)_44px_104px_104px_104px] md:items-center md:py-2",
+                "grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px] md:items-center md:py-2",
                 sells ? "md:min-h-15" : "md:min-h-13",
                 i < SHOWN ? "grid" : "hidden group-has-checked/more:grid",
               ]}
             >
               <Glyph title={position.title} icon={position.icon} category={position.category} />
               <div class="min-w-0 md:contents">
-                <p class="font-medium text-ink max-md:line-clamp-2 md:truncate">{position.title}</p>
+                <p class="flex min-w-0"><MarketLink title={position.title} url={position.url} /></p>
                 <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted max-md:text-caption md:contents">
                   <Outcome outcome={position.outcome} />
                   <span class="whitespace-nowrap md:text-right">

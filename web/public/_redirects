@@ -3,3 +3,5 @@
 /settings https://app.agentpit.dev 301
 /get-started /start 301
 /agent /agents 301
+/events /markets 301
+/events/* /markets 301

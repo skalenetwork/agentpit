@@ -9,6 +9,8 @@
   --color-signal: light-dark(#2563eb, #60a5fa);
   --color-up: light-dark(#047857, #34d399);
   --color-down: light-dark(#e11d48, #fb7185);
+  --color-yes: light-dark(#1d4ed8, #60a5fa);
+  --color-no: light-dark(#c2410c, #fb923c);
   --color-gold: light-dark(#f2ae00, #ffcc1f);
   --color-silver: light-dark(#8ea3c8, #cfdaf0);
   --color-bronze: light-dark(#e8793a, #f89a5a);
@@ -26,7 +28,7 @@
   --radius-robot: 28%;
 
   --container-*: initial;
-  --container-page: 986px;
+  --container-page: 1080px;
   --container-text: 736px;
 
   --text-*: initial;
@@ -75,11 +77,56 @@
   :root {
     color-scheme: light dark;
     scrollbar-gutter: stable;
-    scrollbar-color: color-mix(in oklab, var(--color-muted) 40%, transparent) transparent;
   }
 
-  * {
-    scrollbar-width: thin;
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in oklab, var(--color-muted) 40%, transparent) transparent;
+    }
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: color-mix(in oklab, var(--color-muted) 40%, transparent);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--color-muted) 64%, transparent);
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  @supports (animation-timeline: scroll()) {
+    :root {
+      scrollbar-width: none;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      z-index: 100;
+      top: 2px;
+      right: 2px;
+      width: 4px;
+      height: 48px;
+      border-radius: 2px;
+      background: color-mix(in oklab, var(--color-muted) 40%, transparent);
+      opacity: 0;
+      pointer-events: none;
+      animation-name: scroll-thumb;
+      animation-timing-function: linear;
+      animation-fill-mode: both;
+      animation-timeline: scroll(root);
+    }
   }
 
   body {
@@ -96,5 +143,16 @@
 
   button {
     cursor: pointer;
+  }
+}
+
+@keyframes scroll-thumb {
+  from {
+    opacity: 1;
+    translate: 0 0;
+  }
+  to {
+    opacity: 1;
+    translate: 0 calc(100dvh - 52px);
   }
 }

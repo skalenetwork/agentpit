@@ -1,0 +1,196 @@
+---
+import { Bot, CalendarClock, CircleCheck, Trophy } from "@lucide/astro";
+import type { Sport, SportItem } from "@agentpit/brand/api";
+import { count } from "@agentpit/brand/format";
+import SportIcon from "./SportIcon.astro";
+
+interface Props {
+  views: readonly SportItem[];
+  sports: readonly Sport[];
+  current: string | null;
+}
+
+const { views, sports, current } = Astro.props;
+const icons: Readonly<Record<string, typeof Bot>> = { upcoming: CalendarClock, agents: Bot, futures: Trophy, settled: CircleCheck };
+const href = (key: string) => (key === "upcoming" ? "/markets/sports" : `/markets/sports/${key}`);
+const state = (key: string) => (key === current ? "page" : current?.startsWith(`${key}/`) ? "true" : undefined);
+---
+
+<nav class="side" aria-label="Sports">
+  {
+    views.map((view) => {
+      const Icon = icons[view.key] ?? Trophy;
+      return (
+        <a class="item" href={href(view.key)} aria-current={state(view.key)}>
+          <span class="ico">
+            <Icon class="size-4" stroke-width={1.75} aria-hidden="true" />
+          </span>
+          <span class="truncate">{view.label}</span>
+          {view.count > 0 && <span class="count tabular-nums">{count(view.count)}</span>}
+        </a>
+      );
+    })
+  }
+  <hr class="rule" />
+  <p class="cap">All sports</p>
+  {
+    sports.map((sport) => (
+      <Fragment>
+        <a class="item" href={href(sport.key)} aria-current={state(sport.key)}>
+          <span class="ico">
+            <SportIcon sport={sport.key} />
+          </span>
+          <span class="truncate">{sport.label}</span>
+          {sport.count > 0 && <span class="count tabular-nums">{count(sport.count)}</span>}
+        </a>
+        {state(sport.key) &&
+          sport.leagues.map((league) => (
+            <a class="item sub" href={href(league.key)} aria-current={state(league.key)}>
+              <span class="truncate">{league.label}</span>
+              {league.count > 0 && <span class="count tabular-nums">{count(league.count)}</span>}
+            </a>
+          ))}
+      </Fragment>
+    ))
+  }
+</nav>
+
+<style>
+  .side {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .item {
+    display: flex;
+    flex: none;
+    height: 32px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px 0 6px;
+    border-radius: var(--radius-control);
+    background: var(--color-surface);
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    color: var(--color-muted);
+    white-space: nowrap;
+    transition:
+      background-color 150ms,
+      color 150ms;
+  }
+
+  .item:hover {
+    color: var(--color-ink);
+  }
+
+  .item[aria-current] {
+    background: var(--color-ink);
+    color: var(--color-paper);
+    scroll-initial-target: nearest;
+  }
+
+  .item:focus-visible {
+    outline-offset: -2px;
+  }
+
+  .sub,
+  .rule,
+  .cap {
+    display: none;
+  }
+
+  .ico {
+    display: grid;
+    width: 20px;
+    height: 20px;
+    flex: none;
+    place-items: center;
+  }
+
+  .count {
+    font-size: 12px;
+    line-height: 18px;
+    font-weight: 400;
+    color: var(--color-faint);
+  }
+
+  .item[aria-current] .count {
+    color: inherit;
+    opacity: 0.6;
+  }
+
+  @container page (width < 640px) {
+    .side {
+      margin-inline: -16px;
+      padding-inline: 16px;
+      scroll-padding-inline: 16px;
+    }
+  }
+
+  @container page (width >= 1024px) {
+    .side {
+      position: sticky;
+      top: 136px;
+      max-height: calc(100dvh - 156px);
+      flex-direction: column;
+      gap: 0;
+      overflow: hidden auto;
+      scrollbar-width: thin;
+    }
+
+    .item {
+      display: grid;
+      height: 36px;
+      grid-template-columns: 20px minmax(0, 1fr) auto;
+      gap: 10px;
+      padding: 0 10px;
+      background: none;
+    }
+
+    .item:hover {
+      background: color-mix(in oklab, var(--color-surface) 70%, transparent);
+    }
+
+    .item[aria-current="page"] {
+      background: var(--color-surface);
+      color: var(--color-ink);
+    }
+
+    .item[aria-current="true"] {
+      background: none;
+      color: var(--color-ink);
+    }
+
+    .item[aria-current] .count {
+      color: var(--color-faint);
+      opacity: 1;
+    }
+
+    .item.sub {
+      display: grid;
+      height: 32px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      padding-left: 40px;
+    }
+
+    .rule {
+      display: block;
+      height: 1px;
+      margin: 12px 0;
+      border: 0;
+      background: var(--color-line);
+    }
+
+    .cap {
+      display: block;
+      padding: 6px 10px;
+      font-size: 12px;
+      line-height: 18px;
+      font-weight: 500;
+      color: var(--color-muted);
+    }
+  }
+</style>

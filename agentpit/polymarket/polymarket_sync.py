@@ -543,6 +543,9 @@ def _event_entry(src: dict) -> dict | None:
         "startDate": src.get("startDate") or src.get("startDateIso"),
         "endDate": src.get("endDate") or src.get("endDateIso"),
         "volume24hr": src.get("volume24hr"),
+        "startTime": src.get("startTime"),
+        "gameId": src.get("gameId"),
+        "seriesSlug": src.get("seriesSlug"),
     }
 
 
@@ -773,6 +776,9 @@ def _extract_event_metadata(pm_market: dict) -> dict | None:
     volume = raw.get("volume")
     liquidity = raw.get("liquidity")
     competitive = raw.get("competitive")
+    start_time = raw.get("startTime") or pm_market.get("gameStartTime")
+    game_id = raw.get("gameId") or pm_market.get("gameId")
+    series_slug = raw.get("seriesSlug")
     return {
         "polymarket_event_id": str(pm_event_id) if pm_event_id is not None else None,
         "slug": str(slug),
@@ -796,6 +802,9 @@ def _extract_event_metadata(pm_market: dict) -> dict | None:
         "volume": _as_float(volume) if volume is not None else None,
         "liquidity": _as_optional_float(liquidity),
         "competitive": _as_optional_float(competitive),
+        "start_time": _iso_to_unix(start_time) if start_time else None,
+        "game_id": str(game_id) if game_id else None,
+        "series_slug": str(series_slug) if series_slug else None,
     }
 
 
@@ -830,21 +839,21 @@ def _sync_event_category(db, event: Event, category: str | None) -> None:
 
 def bind_existing_market_to_upstream_event(
     db, *, polymarket_id: int, pm_market: dict
-) -> bool:
+) -> Market | None:
     """Rebind an already-synced market to its upstream event.
 
     Used on every sync pass so markets created before this feature shipped
     (or markets whose upstream event was renamed/recategorized) get their
-    event grouping refreshed. Returns True if a rebind happened.
+    event grouping refreshed. Returns the market when it is known, else None.
     """
     cid = TableRead.read_condition_id_by_polymarket_id(db, polymarket_id)
     if cid is None:
-        return False
+        return None
     market = TableRead.read_market_by_condition_id(db, cid)
     if market is None:
-        return False
+        return None
     bind_market_to_upstream_event(db, market, pm_market)
-    return True
+    return market
 
 
 def extract_tags(pm_market: dict) -> list[tuple[str, str]] | None:
@@ -911,6 +920,17 @@ def bind_market_to_upstream_event(
             end_date=meta["end_date"],
             polymarket_event_id=meta["polymarket_event_id"],
         )
+    TableWrite.refresh_event(
+        db,
+        event_id=event.event_id,
+        slug=meta["slug"],
+        title=meta["title"],
+        icon_url=meta["icon_url"],
+        end_date=meta["end_date"],
+        start_time=meta["start_time"],
+        game_id=meta["game_id"],
+        series_slug=meta["series_slug"],
+    )
     # Refresh upstream 24h volume on every pass (drives homepage order). No-op
     # when the upstream entry carried no volume, so a good value is never
     # clobbered with null.
@@ -1011,6 +1031,7 @@ def fetch_and_sync_polymarket_markets(
             len(siblings), len(pm_markets),
         )
         pm_markets = pm_markets + siblings
+    TableWrite.clear_price_changes(db)
     created_markets = create_polymarket_markets_if_needed(db, pm_markets, admin)
     return created_markets
 
@@ -1067,10 +1088,11 @@ def create_polygon_market_if_does_not_exist(
 
     # Cheap path first: a market already synced for this polymarket_id needs no
     # on-chain prepare — just keep its event grouping current and return.
-    if TableRead.market_exists_by_polymarket_id(db, request.polymarket_id):
-        bind_existing_market_to_upstream_event(
-            db, polymarket_id=request.polymarket_id, pm_market=pm_market
-        )
+    known = bind_existing_market_to_upstream_event(
+        db, polymarket_id=request.polymarket_id, pm_market=pm_market
+    )
+    if known is not None:
+        _refresh_market(db, known.market_id, request, pm_market)
         # Backfill the upstream token-id cross-reference for markets synced
         # before positional capture existed (Up/Down windows had null ids), so
         # the book mirror can resolve them. No-op once populated.
@@ -1094,8 +1116,22 @@ def create_polygon_market_if_does_not_exist(
 
     market = TableWrite.create_market(db, request, True)
     bind_market_to_upstream_event(db, market, pm_market)
+    _refresh_market(db, market.market_id, request, pm_market)
     logger.info("Added market: %s", request.question)
     return market
+
+
+def _refresh_market(
+    db, market_id: int, request: CreateMarketRequest, pm_market: dict
+) -> None:
+    TableWrite.refresh_market(
+        db,
+        market_id=market_id,
+        slug=request.slug,
+        end_date=request.end_date,
+        icon_url=request.icon_url,
+        price_change_24h=_as_float(pm_market.get("oneDayPriceChange")),
+    )
 
 
 def _default_resolution_fetcher(polymarket_condition_id: str) -> dict | None:
@@ -1186,6 +1222,9 @@ def mirror_polymarket_resolutions(
             continue
         if pm_response is None:
             continue
+        slug = pm_response.get("market_slug")
+        if isinstance(slug, str) and slug and slug != market.slug:
+            TableWrite.update_market_slug(db, market.market_id, slug)
         winner_idx = _winner_index_if_resolved(pm_response)
         if winner_idx is None:
             continue

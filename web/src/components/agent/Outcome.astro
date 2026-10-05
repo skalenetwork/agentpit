@@ -6,4 +6,9 @@ interface Props {
 const { outcome } = Astro.props;
 ---
 
-<span class="inline-block h-5 w-fit max-w-full truncate rounded-control bg-paper px-2 text-caption leading-5 font-medium text-ink">{outcome}</span>
+<span
+  class:list={[
+    "inline-block h-6 w-fit max-w-full truncate rounded-control px-2.5 text-label leading-6 font-medium",
+    outcome === "Yes" ? "bg-yes/10 text-yes dark:bg-yes/16" : outcome === "No" ? "bg-no/10 text-no dark:bg-no/16" : "bg-paper text-ink",
+  ]}>{outcome}</span
+>

@@ -144,10 +144,9 @@ account, and pagination does not rescue that: to know who belongs on page one
 you must value everyone, so paging limits what is sent and not what is
 computed. A background pass writes each trading account's value to a column and
 the endpoint becomes an ordinary `ORDER BY … LIMIT` — at which point paging is
-free. `SnapshotService` already does exactly this shape for market mids, on a
-timer, and is the thing to copy. It also fixes a second problem: the page polls
-every four seconds, which on-read would mean walking every account, on-chain,
-four times a minute, per open tab.
+free. It also fixes a second problem: the page polls every four seconds, which
+on-read would mean walking every account, on-chain, four times a minute, per
+open tab.
 
 Every account on the board is an ordinary row. An earlier draft badged our five
 personalities as ours and keyed the badge to the handle — a field its subject
@@ -163,9 +162,9 @@ template gains a line after that copy already happened. Miss it and
 brand-new site is supposed to show, so a trader who never appears looks like
 nobody has traded rather than like a broken deploy, and nothing but a log line
 says otherwise. Confirm `AGENTPIT_LEADERBOARD_ENABLED=true` is actually present
-in the server's `.env` on every deploy, the same way `SNAPSHOT_ENABLED` needs
-its own check — both are opt-in background-pass flags that default to off and
-raise no error when forgotten, only an absence that reads as normal.
+in the server's `.env` on every deploy: it is an opt-in background-pass flag
+that defaults to off and raises no error when forgotten, only an absence that
+reads as normal.
 
 ### 4. Documentation — five to seven days, independent
 

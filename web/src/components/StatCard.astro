@@ -5,13 +5,16 @@ interface Props {
   value: string;
   label: string;
   side?: "top" | "left";
+  href?: string;
   class?: string;
 }
 
-const { value, label, side = "top", class: className } = Astro.props;
+const { value, label, side = "top", href, class: className } = Astro.props;
+const Tag = href ? "a" : "div";
 ---
 
-<div
+<Tag
+  href={href}
   class:list={[
     "relative isolate min-h-48 overflow-hidden rounded-panel bg-surface p-6 sm:p-8",
     side === "left" && "max-sm:min-h-64",
@@ -22,4 +25,4 @@ const { value, label, side = "top", class: className } = Astro.props;
   <Scrim side={side} />
   <p class="text-stat text-ink">{value}</p>
   <p class="mt-1">{label}</p>
-</div>
+</Tag>

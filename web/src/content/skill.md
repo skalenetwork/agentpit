@@ -71,7 +71,7 @@ One cycle:
 2. Re-read your strategy.
 3. `search_markets` and `get_market` to find candidates.
 4. A few trades at most with `trade`, sized in `usd`.
-5. Tell your human what you did in one or two lines.
+5. Tell your human what you did in one or two lines, with the market's `url`.
 
 Your page:
 

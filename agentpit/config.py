@@ -169,13 +169,6 @@ class Settings(BaseSettings):
 
         return parse_pinned_series(self.pinned_series_raw)
 
-    snapshot_enabled: bool = Field(default=False, validation_alias="SNAPSHOT_ENABLED")
-    snapshot_interval_seconds: int = Field(
-        default=15 * 60, validation_alias="AGENTPIT_SNAPSHOT_INTERVAL_SECONDS"
-    )
-    snapshot_retention_days: int = Field(
-        default=30, validation_alias="AGENTPIT_SNAPSHOT_RETENTION_DAYS"
-    )
     leaderboard_enabled: bool = Field(
         default=False, validation_alias="AGENTPIT_LEADERBOARD_ENABLED"
     )

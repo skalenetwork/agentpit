@@ -1,4 +1,4 @@
-import { profile, type Runner, usd, type WireProfile } from "@agentpit/brand/api";
+import { type MarketContext, profile, type Runner, usd, type WireProfile } from "@agentpit/brand/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Me, open, request } from "./session";
 
@@ -23,13 +23,14 @@ export interface Agent extends Omit<WireAgent, "handle" | "equity" | "earned" | 
   readonly trend: readonly number[];
 }
 
-export interface Order {
+export interface Order extends MarketContext {
   readonly id: string;
   readonly title: string;
   readonly side: "BUY" | "SELL";
   readonly outcome: string;
   readonly price: string;
   readonly original_size: string;
+  readonly url: string | null;
 }
 
 const AGENTS = ["agents"];

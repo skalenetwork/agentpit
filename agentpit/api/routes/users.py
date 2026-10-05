@@ -125,9 +125,14 @@ def list_my_agent_orders(
     address: str, owner: OwnerDep, db: SessionDep, orders: OrderServiceDep
 ) -> list[TitledOpenOrder]:
     open_orders = orders.list_open_orders(_owned_agent(db, owner, address))
+    ids = list({o.market for o in open_orders})
     with db.read() as conn:
-        titles = TableRead.questions_by_condition_id(conn, [o.market for o in open_orders])
-    return [TitledOpenOrder(**o.model_dump(), title=titles.get(o.market, "")) for o in open_orders]
+        markets = {m.condition_id.value: m for m in TableRead.list_markets_filtered(conn, condition_ids=ids, limit=len(ids))}
+        contexts = TableRead.market_contexts(conn, ids)
+    return [
+        TitledOpenOrder(**o.model_dump(), **contexts[o.market].model_dump(), title=markets[o.market].question, url=markets[o.market].url)
+        for o in open_orders
+    ]
 
 
 def _owned_agent(db: DbSession, owner: str, address: str) -> User:

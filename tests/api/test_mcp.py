@@ -6,6 +6,9 @@ from fastapi.testclient import TestClient
 from agentpit.api.app import create_app
 from agentpit.api.mcp_server import CARD
 from agentpit.config import Settings
+from agentpit.datastructures.condition_id import ConditionId
+from agentpit.datastructures.create_market_request import CreateMarketRequest
+from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
@@ -101,6 +104,38 @@ def test_market_and_portfolio_tools_render_the_card():
         "prefersBorder": False,
     }
     assert (read["ttlMs"], read["cacheScope"]) == (3_600_000, "public")
+
+
+def test_search_markets_replies_with_the_polymarket_url_the_card_opens():
+    key = _agent().api_key
+    with fresh_test_db().write() as conn:
+        event = TableWrite.upsert_event(conn, slug="ev-rain", title="Will it rain?", category="Weather")
+        market = TableWrite.create_market(
+            conn,
+            CreateMarketRequest(
+                question="Will it rain?",
+                description="d",
+                erc1155_tokens=[("rain-y", "Yes"), ("rain-n", "No")],
+                slug="will-it-rain",
+                condition_id=ConditionId("0x" + "ef" * 32),
+                state=MarketState.ACTIVE,
+                event_id=event.event_id,
+                polymarket_id=42,
+            ),
+            is_polygon_market=False,
+        )
+        for side, price in (("BUY", 400_000), ("SELL", 600_000)):
+            conn.execute(
+                "INSERT INTO orders (ORDER_ID, TOKEN_ID, SIDE, PRICE, STATUS, REMAINING_AMOUNT, EXPIRATION, CREATED_AT, API_KEY) "
+                "VALUES (%s, %s, %s, %s, 'live', 1000000, 0, 0, 'k')",
+                (f"o-{side}", market.erc1155_tokens[0][0], side, price),
+            )
+    with TestClient(app) as client:
+        found = _call(client, key, "tools/call", {"name": "search_markets", "arguments": {}}, "search_markets")
+        read = _call(client, key, "resources/read", {"uri": CARD}, CARD)
+    [card] = found["structuredContent"]["markets"]
+    assert (card["market"], card["url"]) == ("will-it-rain", "https://polymarket.com/market/will-it-rain")
+    assert "openLink(url)" in read["contents"][0]["text"]
 
 
 def test_legacy_initialize_carries_the_instructions_and_served_icons():

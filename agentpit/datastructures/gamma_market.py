@@ -34,6 +34,8 @@ class GammaMarket(BaseModel):
     bestAsk: float
     lastTradePrice: float
     spread: float
+    winner: str | None = None
+    resolvedAt: int | None = None
 
 
 class GammaEvent(BaseModel):

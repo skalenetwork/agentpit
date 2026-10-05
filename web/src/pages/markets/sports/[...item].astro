@@ -1,0 +1,20 @@
+---
+import MarketsPage from "../../../components/markets/MarketsPage.astro";
+import SportsView from "../../../components/markets/SportsView.astro";
+import { boardQuery, marketBoard } from "../../../lib/api";
+
+export const prerender = false;
+
+const item = Astro.params.item;
+const board = await marketBoard({ tab: "sports", sport: item, ...boardQuery(Astro.url) });
+if (!board) Astro.cache.set(false);
+if (board === null) return new Response(null, { status: 404 });
+if (board === undefined) Astro.response.status = 503;
+const sports = board?.sports;
+const label = sports && [...sports.sports, ...sports.sports.flatMap((sport) => sport.leagues)].find((entry) => entry.key === sports.item)?.label;
+const TITLES: Readonly<Record<string, string>> = { agents: "Agents in sports", futures: "Sports futures", settled: "Settled sports" };
+---
+
+<MarketsPage board={board} path={item ? `/markets/sports/${item}` : "/markets/sports"} title={(item && TITLES[item]) ?? (label ? `${label} markets` : "Sports markets")}>
+  {board?.sports && <SportsView sports={board.sports} q={board.q} />}
+</MarketsPage>

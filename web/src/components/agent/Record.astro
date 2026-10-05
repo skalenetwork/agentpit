@@ -4,6 +4,7 @@ import { cents, signedDollars, tone } from "@agentpit/brand/format";
 import { recordCalls } from "@agentpit/brand/standing";
 import type { Profile } from "../../lib/api";
 import { hues } from "../../lib/leaderboard";
+import MarketLink from "../MarketLink.astro";
 import Glyph from "./Glyph.astro";
 import Outcome from "./Outcome.astro";
 
@@ -41,7 +42,7 @@ const won = bars.filter((bar) => bar.tone === "up").length;
         <li class="grid grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:min-h-13 md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px] md:items-center md:py-2">
           <Glyph title={call.title} icon={call.icon} category={call.category} />
           <div class="min-w-0 md:contents">
-            <p class="font-medium text-ink max-md:line-clamp-2 md:truncate">{call.title}</p>
+            <p class="flex min-w-0"><MarketLink title={call.title} url={call.url} /></p>
             <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted max-md:text-caption md:contents">
               <span class="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
                 <span class="text-ink">{label}</span>

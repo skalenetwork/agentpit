@@ -1,0 +1,51 @@
+---
+import { Bot, CircleCheck, Flame, Hourglass, TrendingUp } from "@lucide/astro";
+import type { BoardTab } from "@agentpit/brand/api";
+
+interface Props {
+  tabs: readonly BoardTab[];
+  current: string;
+}
+
+const { tabs, current } = Astro.props;
+const icons: Readonly<Record<string, typeof Flame>> = { trending: Flame, movers: TrendingUp, agents: Bot, ending: Hourglass, settled: CircleCheck };
+---
+
+<nav
+  class="sticky top-15 z-9 mt-5 flex h-11 gap-6 overflow-x-auto bg-paper/60 pr-6 text-small shadow-[inset_0_-1px_var(--color-line)] backdrop-blur-xl [mask-image:linear-gradient(to_left,transparent,#000_24px)] [scrollbar-width:none] @max-[640px]/page:-mx-4 @max-[640px]/page:pl-4 @min-[640px]/page:mt-7 @min-[1024px]/page:overflow-visible @min-[1024px]/page:[mask-image:none]"
+  aria-label="Market tabs"
+>
+  {
+    tabs.map((tab, k) => {
+      const Icon = icons[tab.key];
+      const here = tab.key === current;
+      return (
+        <Fragment>
+          {tab.category && k > 0 && !tabs[k - 1].category && <span class="h-3.5 w-px shrink-0 self-center bg-line" aria-hidden="true" />}
+          <a
+            class="relative inline-flex shrink-0 items-center gap-1.5 font-medium whitespace-nowrap text-muted transition-colors duration-150 hover:text-ink aria-[current=page]:text-ink focus-visible:outline-none focus-visible:before:absolute focus-visible:before:-inset-x-1.5 focus-visible:before:inset-y-2 focus-visible:before:rounded-item focus-visible:before:outline-2 focus-visible:before:outline-signal"
+            href={tab.key === "trending" ? "/markets" : `/markets/${tab.key}`}
+            aria-current={here ? "page" : undefined}
+          >
+            {Icon && <Icon class="size-4 shrink-0" stroke-width={1.75} aria-hidden="true" />}
+            {tab.label}
+            {here && <span class="absolute inset-x-0 bottom-0 h-0.5 bg-ink [view-transition-name:tabline]" />}
+          </a>
+        </Fragment>
+      );
+    })
+  }
+</nav>
+
+<style is:global>
+  @media (prefers-reduced-motion: no-preference) {
+    ::view-transition-group(root) {
+      animation: none;
+    }
+
+    ::view-transition-group(tabline) {
+      animation-duration: 250ms;
+      animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+  }
+</style>

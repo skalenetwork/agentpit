@@ -1,0 +1,50 @@
+---
+import { BOARD_PAGE } from "@agentpit/brand/api";
+import { count } from "@agentpit/brand/format";
+import Button from "../Button.astro";
+
+interface Props {
+  path: string;
+  q: string | null;
+  page: number;
+  pages: number;
+  total: number;
+  shown: number;
+}
+
+const { path, q, page, pages, total, shown } = Astro.props;
+const from = (page - 1) * BOARD_PAGE + 1;
+const to = from + shown - 1;
+const link = (n: number) => {
+  const query = new URLSearchParams({ ...(q && { q }), ...(n > 1 && { page: String(n) }) }).toString();
+  return query ? `${path}?${query}` : path;
+};
+const steps = [
+  { label: "Previous", to: page - 1, off: page <= 1 },
+  { label: page < pages ? `Next ${Math.min(BOARD_PAGE, total - to)}` : "Next", to: page + 1, off: page >= pages },
+];
+---
+
+{
+  pages > 1 && (
+    <nav class="mt-6 flex min-h-13.5 items-center justify-between gap-3 text-caption tabular-nums" aria-label="Pages">
+      <span>
+        {count(from)} to {count(to)} of {count(total)}
+      </span>
+      <span class="flex gap-2">
+        {steps.map((step) => (
+          <Button
+            class="aria-disabled:pointer-events-none aria-disabled:opacity-40"
+            href={link(step.off ? page : step.to)}
+            variant="secondary"
+            size="sm"
+            aria-disabled={step.off ? "true" : undefined}
+            tabindex={step.off ? -1 : undefined}
+          >
+            {step.label}
+          </Button>
+        ))}
+      </span>
+    </nav>
+  )
+}

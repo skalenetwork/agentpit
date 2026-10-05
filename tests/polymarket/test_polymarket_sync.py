@@ -1,9 +1,12 @@
+import secrets
 from unittest.mock import patch
 
 import pytest
 
 from agentpit.common import check_state
 from agentpit.datastructures.condition_id import ConditionId
+from agentpit.datastructures.event import Event
+from agentpit.datastructures.market import Market
 from agentpit.db.table_read import TableRead
 from agentpit.polymarket.conditional_token_framework import ConditionalTokenFramework
 from agentpit.polymarket import polymarket_sync
@@ -618,6 +621,9 @@ def test_the_sync_entry_point_forwards_the_flag_to_both_passes(monkeypatch):
     )
     monkeypatch.setattr(polymarket_sync, "fetch_event_siblings", fake_siblings)
     monkeypatch.setattr(
+        polymarket_sync.TableWrite, "clear_price_changes", lambda db: None
+    )
+    monkeypatch.setattr(
         polymarket_sync, "create_polymarket_markets_if_needed",
         lambda db, pm_markets, admin: [],
     )
@@ -702,4 +708,166 @@ def test_the_exclusion_is_independent_of_the_churn_flag():
             sportsMarketType="spreads",
         )
         is False
+    )
+
+
+# ----- refresh of known rows, 24 h change, start time ------------------------
+
+
+def _fake_prepare(admin, question, labels):
+    return ConditionId("0x" + secrets.token_hex(32)), [
+        (str(int(secrets.token_hex(8), 16)), label) for label in labels
+    ]
+
+
+def _gamma_market(**over):
+    tag = secrets.token_hex(4)
+    pm = {
+        "id": int(secrets.token_hex(4), 16),
+        "conditionId": "0x" + secrets.token_hex(32),
+        "question": f"Refresh {tag}?",
+        "description": "d",
+        "slug": f"refresh-{tag}",
+        "startDate": "2026-01-01T00:00:00Z",
+        "endDate": "2026-12-01T00:00:00Z",
+        "active": True,
+        "closed": False,
+        "image": "https://img/old.png",
+        "oneDayPriceChange": 0.04,
+        "tokens": [
+            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "Yes"},
+            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "No"},
+        ],
+        "events": [
+            {"id": f"ev-{tag}", "slug": f"event-{tag}", "title": "Old title"}
+        ],
+    }
+    pm.update(over)
+    return pm
+
+
+def _sync(db, monkeypatch, pm_markets):
+    monkeypatch.setattr(polymarket_sync, "prepare_market_on_chain", _fake_prepare)
+    monkeypatch.setattr(
+        polymarket_sync, "fetch_all_polymarket_markets", lambda host, **kw: pm_markets
+    )
+    polymarket_sync.fetch_and_sync_polymarket_markets(db, admin=None)
+
+
+def _market_of(db, pm) -> Market:
+    cid = TableRead.read_condition_id_by_polymarket_id(db, pm["id"])
+    assert cid is not None
+    market = TableRead.read_market_by_condition_id(db, cid)
+    assert market is not None
+    return market
+
+
+def _event_of(db, pm) -> Event:
+    event_id = _market_of(db, pm).event_id
+    assert event_id is not None
+    event = TableRead.get_event_by_id(db, event_id)
+    assert event is not None
+    return event
+
+
+def test_a_known_market_and_event_pick_up_upstream_changes(db, monkeypatch):
+    pm = _gamma_market()
+    _sync(db, monkeypatch, [pm])
+    before = _event_of(db, pm).event_id
+    renamed = dict(
+        pm,
+        question="A reworded question?",
+        slug="renamed-market",
+        endDate="2026-12-31T00:00:00Z",
+        image="https://img/new.png",
+        events=[dict(pm["events"][0], slug="renamed-event", title="New title",
+                     image="https://img/event.png")],
+    )
+    _sync(db, monkeypatch, [renamed])
+
+    market = _market_of(db, pm)
+    assert market.question == pm["question"]
+    assert market.slug == "renamed-market"
+    assert market.end_date == 1798675200
+    assert market.icon_url == "https://img/new.png"
+    assert market.url == "https://polymarket.com/market/renamed-market"
+    event = _event_of(db, pm)
+    assert (event.event_id, event.slug, event.title, event.icon_url) == (
+        before, "renamed-event", "New title", "https://img/event.png"
+    )
+    assert event.url == "https://polymarket.com/event/renamed-event"
+
+
+def test_an_event_slug_held_by_another_event_is_not_taken(db, monkeypatch):
+    first, second = _gamma_market(), _gamma_market()
+    _sync(db, monkeypatch, [first, second])
+    taken = second["events"][0]["slug"]
+    _sync(db, monkeypatch, [
+        dict(first, events=[dict(first["events"][0], slug=taken, title="Moved")])
+    ])
+
+    event = _event_of(db, first)
+    assert (event.slug, event.title) == (first["events"][0]["slug"], "Moved")
+
+
+def test_the_24h_change_is_set_each_pass_and_cleared_when_unseen(db, monkeypatch):
+    moving = _gamma_market(oneDayPriceChange=-0.07)
+    flat = _gamma_market(oneDayPriceChange=None)
+    _sync(db, monkeypatch, [moving, flat])
+    assert _market_of(db, moving).price_change_24h == -0.07
+    assert _market_of(db, flat).price_change_24h == 0.0
+
+    _sync(db, monkeypatch, [dict(moving, oneDayPriceChange=0.02)])
+    assert _market_of(db, moving).price_change_24h == 0.02
+    assert _market_of(db, flat).price_change_24h is None
+
+
+def test_the_event_start_time_wins_over_the_market_game_start_time():
+    meta = polymarket_sync._extract_event_metadata({
+        "gameStartTime": "2026-10-05 13:00:00+00",
+        "gameId": "1711434",
+        "events": [{
+            "id": "1", "slug": "cs2", "title": "CS2",
+            "startTime": "2026-10-05T14:00:00Z", "gameId": 1711434,
+            "seriesSlug": "counter-strike",
+        }],
+    })
+    assert meta is not None
+    assert (meta["start_time"], meta["game_id"], meta["series_slug"]) == (
+        1791208800, "1711434", "counter-strike"
+    )
+
+
+def test_the_start_time_falls_back_to_the_market_game_start_time():
+    meta = polymarket_sync._extract_event_metadata({
+        "gameStartTime": "2026-10-05 14:00:00+00",
+        "gameId": "1711434",
+        "events": [{"id": "1", "slug": "cs2", "title": "CS2"}],
+    })
+    assert meta is not None
+    assert (meta["start_time"], meta["game_id"], meta["series_slug"]) == (
+        1791208800, "1711434", None
+    )
+
+
+def test_a_sibling_event_entry_carries_the_game_fields():
+    entry = polymarket_sync._event_entry({
+        "id": "1", "slug": "cs2", "title": "CS2",
+        "startTime": "2026-10-05T14:00:00Z", "gameId": 1711434,
+        "seriesSlug": "counter-strike",
+    })
+    assert entry is not None
+    assert (entry["startTime"], entry["gameId"], entry["seriesSlug"]) == (
+        "2026-10-05T14:00:00Z", 1711434, "counter-strike"
+    )
+
+
+def test_the_sync_stores_the_game_fields_on_the_event(db, monkeypatch):
+    pm = _gamma_market(gameStartTime="2026-10-05 14:00:00+00")
+    pm["events"][0].update(gameId=19517, seriesSlug="nfl-2026")
+    _sync(db, monkeypatch, [pm])
+
+    event = _event_of(db, pm)
+    assert (event.start_time, event.game_id, event.series_slug) == (
+        1791208800, "19517", "nfl-2026"
     )

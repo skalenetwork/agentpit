@@ -1,0 +1,89 @@
+---
+import { Gamepad2, Trophy } from "@lucide/astro";
+
+interface Props {
+  sport: string;
+}
+
+const { sport } = Astro.props;
+const LAB = new Set(["soccer", "tennis", "football", "basketball", "baseball", "motorsport", "cricket"]);
+---
+
+{
+  sport === "esports" ? (
+    <Gamepad2 class="size-4" stroke-width={1.75} aria-hidden="true" />
+  ) : LAB.has(sport) ? (
+    <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {sport === "soccer" && (
+        <Fragment>
+          <circle cx="12" cy="12" r="10" />
+          <path d="M11.9 6.7s-3 1.3-5 3.6c0 0 0 3.6 1.9 5.9 0 0 3.1.7 6.2 0 0 0 1.9-2.3 1.9-5.9 0 .1-2-2.3-5-3.6" />
+          <path d="M11.9 6.7V2" />
+          <path d="M16.9 10.4s3-1.4 4.5-1.6" />
+          <path d="M15 16.3s1.9 2.7 2.9 3.7" />
+          <path d="M8.8 16.3S6.9 19 6 20" />
+          <path d="M2.6 8.7C4 9 7 10.4 7 10.4" />
+        </Fragment>
+      )}
+      {sport === "tennis" && (
+        <Fragment>
+          <path d="M2 12c5.5 0 10-4.5 10-10" />
+          <circle cx="12" cy="12" r="10" />
+          <path d="M22 12c-5.5 0-10 4.5-10 10" />
+        </Fragment>
+      )}
+      {sport === "football" && (
+        <Fragment>
+          <path d="M21 3c-.8-.8-3-1.2-5.8-.9s-6 1.6-8.8 4.4-4 6-4.4 8.8.1 5 .9 5.8 3 1.2 5.8.9 6-1.6 8.8-4.4 4-6 4.4-8.8-.1-5-.9-5.8" />
+          <path d="M6.4 17.6 9 15" />
+          <path d="M8.7 21.9c-.8-3.3-3.4-5.8-6.7-6.7" />
+          <path d="m8.1 13.9 2 2" />
+          <path d="m11 11 2 2" />
+          <path d="m13.9 8.1 2 2" />
+          <path d="M15.3 2.1c.8 3.3 3.4 5.8 6.6 6.6" />
+          <path d="m15 9 2.6-2.6" />
+        </Fragment>
+      )}
+      {sport === "basketball" && (
+        <Fragment>
+          <circle cx="12" cy="12" r="10" />
+          <path d="M2.1 13.4A10.1 10.1 0 0 0 13.4 2.1" />
+          <path d="m5 4.9 14 14.2" />
+          <path d="M21.9 10.6a10.1 10.1 0 0 0-11.3 11.3" />
+        </Fragment>
+      )}
+      {sport === "baseball" && (
+        <Fragment>
+          <path d="M2 12c5.5 0 10-4.5 10-10" />
+          <circle cx="12" cy="12" r="10" />
+          <path d="M22 12c-5.5 0-10 4.5-10 10" />
+          <path d="m8 11.5-1.5-2" />
+          <path d="m11.5 8-2-1.5" />
+          <path d="m14.5 17.5-2-1.5" />
+          <path d="m17.5 14.5-1.5-2" />
+        </Fragment>
+      )}
+      {sport === "motorsport" && (
+        <Fragment>
+          <path d="M22 12.2a10 10 0 1 0-19.4 3.2c.2.5.8 1.1 1.3 1.3l13.2 5.1c.5.2 1.2 0 1.6-.3l2.6-2.6c.4-.4.7-1.2.7-1.7Z" />
+          <path d="m21.8 18-10.5-4a2 2.06 0 0 1 .7-4h9.8" />
+        </Fragment>
+      )}
+      {sport === "cricket" && (
+        <Fragment>
+          <path d="M5 8 3.6 6.6" />
+          <path d="m8 11 1 1" />
+          <path d="m12 15 1 1" />
+          <path d="m16 19 1.4 1.4" />
+          <circle cx="12" cy="12" r="10" />
+          <path d="M8 5 6.6 3.6" />
+          <path d="m11 8 1 1" />
+          <path d="m15 12 1 1" />
+          <path d="M20.4 17.4 19 16" />
+        </Fragment>
+      )}
+    </svg>
+  ) : (
+    <Trophy class="size-4" stroke-width={1.75} aria-hidden="true" />
+  )
+}

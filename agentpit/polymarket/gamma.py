@@ -93,6 +93,8 @@ def to_gamma_market(
         image=market.icon_url,
         volume="0",
         liquidity="0",
+        winner=None if market.resolved_outcome is None else labels[market.resolved_outcome],
+        resolvedAt=market.resolved_at,
         **_price_fields(prices, labels),
     )
 

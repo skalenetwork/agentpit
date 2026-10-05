@@ -88,6 +88,10 @@ def touch_holders() -> None:
     touch(*(address for address, held in _holdings.items() if held.positions))
 
 
+def all_holdings() -> dict[str, Holdings]:
+    return dict(_holdings)
+
+
 def drain() -> set[str]:
     with _dirty_lock:
         batch = set(_dirty)

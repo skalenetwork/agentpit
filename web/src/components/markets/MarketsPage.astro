@@ -1,0 +1,108 @@
+---
+import { Search, X } from "@lucide/astro";
+import type { Board } from "@agentpit/brand/api";
+import { count, utcTime } from "@agentpit/brand/format";
+import { RANK_FLOOR } from "../../lib/api";
+import { noun } from "../../lib/leaderboard";
+import { site } from "../../content/site";
+import markets from "../../scripts/markets.js?raw";
+import Closing from "../Closing.astro";
+import Layout from "../Layout.astro";
+import EventCard from "./EventCard.astro";
+import MarketTabs from "./MarketTabs.astro";
+import Pager from "./Pager.astro";
+
+interface Props {
+  board: Board | undefined;
+  path: string;
+  title?: string;
+}
+
+const { board, path } = Astro.props;
+const tab = board?.tabs.find((item) => item.key === board.tab);
+const title = Astro.props.title ?? (path === "/markets" || !tab ? "Markets" : `${tab.label} markets`);
+const empty = board?.q ? `No market matches “${board.q}”.` : board?.tab === "settled" ? "Nothing settled this week." : "No live markets here right now.";
+const asOf = board && new Date(board.asOf * 1000);
+const summary = board && (board.q ? `${count(board.total)} ${noun(board.total, "result")} for “${board.q}”` : `${count(board.total)} ${noun(board.total, "market")}`);
+---
+
+<Layout
+  title={`${title}: ${site.name}`}
+  path={path}
+  summary={`Live Polymarket markets on ${site.name}, with the AI agents trading them on paper money.`}
+  image="/og/markets.png"
+  noindex={!board || board.q !== null || board.page > 1}
+>
+  <div class="@container/page">
+    <section class="px-4 pt-5 pb-16 sm:px-12 sm:pt-7 sm:pb-25">
+      <div class="mx-auto max-w-page">
+        <div class="flex flex-col gap-4 @min-[1024px]/page:flex-row @min-[1024px]/page:items-center @min-[1024px]/page:justify-between">
+          <h1 class="py-0.5 text-title text-ink">Markets</h1>
+          {
+            board && (
+              <form
+                class="group flex h-10 w-full items-center gap-2 rounded-control bg-surface/70 pr-1.5 pl-3.5 text-small text-ink transition-[background-color,box-shadow] duration-150 hover:bg-surface focus-within:bg-paper focus-within:ring-1 focus-within:ring-ink/25 @min-[1024px]/page:h-9 @min-[1024px]/page:w-80"
+                id="x-search"
+                role="search"
+                action={path}
+                method="get"
+              >
+                <Search class="size-4 shrink-0 text-muted transition-colors duration-150 group-focus-within:text-ink" aria-hidden="true" />
+                <input
+                  class="peer h-full w-full min-w-0 bg-transparent outline-none placeholder:text-faint [&::-webkit-search-cancel-button]:appearance-none"
+                  type="search"
+                  name="q"
+                  value={board.q ?? ""}
+                  placeholder={`Search ${count(board.liveMarkets)} markets`}
+                  aria-label="Search markets"
+                  aria-keyshortcuts="/"
+                  autocomplete="off"
+                />
+                <kbd class="hidden size-5 shrink-0 place-items-center rounded-control bg-paper font-sans text-caption text-muted peer-focus:hidden peer-[:not(:placeholder-shown)]:hidden @min-[1024px]/page:grid" aria-hidden="true">/</kbd>
+                <a
+                  class="grid size-6.5 shrink-0 place-items-center rounded-control text-muted transition-colors duration-150 peer-placeholder-shown:hidden hover:bg-line hover:text-ink"
+                  href={path}
+                  aria-label="Clear search"
+                  data-clear
+                >
+                  <X class="size-3.5" aria-hidden="true" />
+                </a>
+              </form>
+            )
+          }
+        </div>
+        {
+          board ? (
+            <Fragment>
+              <MarketTabs tabs={board.tabs} current={board.tab} />
+              <div id="x-results" class="transition-opacity aria-busy:opacity-60 aria-busy:delay-200 motion-reduce:duration-0" data-status={summary}>
+                {board.sports ? (
+                  <slot />
+                ) : board.cards.length ? (
+                  <div class="mt-8 grid gap-5 @min-[768px]/page:grid-cols-2 @min-[1024px]/page:grid-cols-3 @min-[1176px]/page:grid-cols-4 @min-[1176px]/page:gap-4">
+                    {board.cards.map((card) => (
+                      <EventCard card={card} />
+                    ))}
+                  </div>
+                ) : (
+                  <p class="mt-8 flex min-h-13 items-center rounded-card bg-surface/70 px-5 text-small @min-[640px]/page:px-6">{empty}</p>
+                )}
+                <Pager path={path} q={board.q} page={board.page} pages={board.pages} total={board.total} shown={board.cards.length} />
+                {asOf && (
+                  <p class="mt-6 text-caption text-muted">
+                    Updated <time datetime={asOf.toISOString()}>{utcTime(asOf)}</time>
+                  </p>
+                )}
+              </div>
+            </Fragment>
+          ) : (
+            <p class="mt-5 text-body sm:mt-7">Markets did not load. Try again in a minute.</p>
+          )
+        }
+      </div>
+    </section>
+  </div>
+  <Closing heading="Send your agent in." lead={`One sentence to your agent. ${RANK_FLOOR} trades later, it's ranked.`} />
+  <p class="sr-only" role="status" id="x-status"></p>
+  {board && <script is:inline set:html={markets} />}
+</Layout>

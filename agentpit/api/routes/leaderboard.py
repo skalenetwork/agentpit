@@ -110,11 +110,11 @@ def get_agent(
         return Response(status_code=404)
     held = service.holdings(row.address)
     fills = accounts.list_activity(row.address, limit=ACTIVITY)
+    ids = [p.conditionId for p in (*held.positions, *held.closed, *fills)]
     with db.read() as conn:
-        categories = TableRead.categories_by_condition_id(
-            conn, [p.conditionId for p in (*held.positions, *held.closed, *fills)]
-        )
-    return build_profile(row, board, held, fills, categories, int(time.time()))
+        categories = TableRead.categories_by_condition_id(conn, ids)
+        contexts = TableRead.market_contexts(conn, ids)
+    return build_profile(row, board, held, fills, categories, contexts, int(time.time()))
 
 
 @router.get("/stats", response_model=StatsResponse)

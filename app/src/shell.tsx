@@ -6,6 +6,7 @@ import { Human, Logo } from "./ui";
 
 const SITE = [
   { href: "https://agentpit.dev/agents", label: "Leaderboard" },
+  { href: "https://agentpit.dev/markets", label: "Markets" },
   { href: "https://agentpit.dev/stats", label: "Stats" },
 ];
 const NAV = "opacity-65 transition-opacity duration-150 hover:opacity-100 aria-[current=page]:opacity-100 max-sm:hidden";

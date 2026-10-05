@@ -2,6 +2,7 @@
 import { bursts } from "@agentpit/brand/activity";
 import { cents, dollars, shortDay } from "@agentpit/brand/format";
 import type { Fill } from "../../lib/api";
+import MarketLink from "../MarketLink.astro";
 import Glyph from "./Glyph.astro";
 import Outcome from "./Outcome.astro";
 import ShowAll from "./ShowAll.astro";
@@ -40,7 +41,7 @@ const days = [...Map.groupBy(list, (burst) => heading(burst.at))];
             >
               <Glyph title={burst.title} icon={burst.icon} category={burst.category} />
               <div class="min-w-0 md:contents">
-                <p class="font-medium text-ink max-md:line-clamp-2 md:truncate">{burst.title}</p>
+                <p class="flex min-w-0"><MarketLink title={burst.title} url={burst.url} /></p>
                 <p class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted max-md:text-caption md:contents">
                   <span class="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
                     <span class="text-ink">{burst.verb}</span>

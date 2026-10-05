@@ -173,6 +173,8 @@ def test_an_owner_reads_the_open_orders_of_only_their_own_agents(sign_in):
                 slug="btc",
                 condition_id=ConditionId(CRYPTO),
                 state=MarketState.ACTIVE,
+                polymarket_id=7,
+                end_date=NOW + 86_400,
             ),
             is_polygon_market=False,
         )
@@ -208,6 +210,11 @@ def test_an_owner_reads_the_open_orders_of_only_their_own_agents(sign_in):
             "expiration": "0",
             "order_type": "GTC",
             "title": "Will Bitcoin dip?",
+            "url": "https://polymarket.com/market/btc",
+            "eventTitle": None,
+            "endDate": NOW + 86_400,
+            "resolvedAt": None,
+            "winner": None,
         }
     ]
     assert foreign.status_code == 404

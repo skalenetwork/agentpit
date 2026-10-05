@@ -37,7 +37,7 @@ def _no_chain():
     app.dependency_overrides[get_onchain_admin] = previous
 
 
-def _market(conn) -> None:
+def _market(conn, polymarket_id: int | None = None) -> None:
     event = TableWrite.upsert_event(conn, slug="btc", title="Bitcoin", category="Crypto")
     TableWrite.create_market(
         conn,
@@ -49,6 +49,7 @@ def _market(conn) -> None:
             condition_id=ConditionId(CRYPTO),
             state=MarketState.ACTIVE,
             event_id=event.event_id,
+            polymarket_id=polymarket_id,
         ),
         is_polygon_market=False,
     )
@@ -100,8 +101,72 @@ def test_a_lowercase_address_answers_with_the_checksummed_one():
             "title": "Will Bitcoin dip?",
             "icon": None,
             "category": "Crypto",
+            "url": None,
+            "eventTitle": None,
+            "endDate": None,
+            "resolvedAt": None,
+            "winner": None,
         }
     ]
+
+
+def test_a_polymarket_fill_links_to_its_market():
+    conn = fresh_test_conn()
+    _market(conn, polymarket_id=7)
+    address = _agent(conn, "Linked", 0.0, 1)
+    conn.close()
+    with TestClient(app) as client:
+        body = _profile(client, address)
+    assert body["activity"][0]["url"] == "https://polymarket.com/market/btc"
+
+
+def test_each_market_carries_its_event_and_status():
+    conn = fresh_test_conn()
+    _market(conn)
+    fed = TableWrite.upsert_event(conn, slug="fed", title="Fed decision in October?", category="Business")
+    cut, hold = (
+        TableWrite.create_market(
+            conn,
+            CreateMarketRequest(
+                question=question,
+                description="d",
+                erc1155_tokens=[(f"{slug}-y", "Yes"), (f"{slug}-n", "No")],
+                slug=slug,
+                condition_id=ConditionId(condition_id),
+                state=MarketState.ACTIVE,
+                event_id=fed.event_id,
+                start_date=NOW - 10 * 86_400,
+                end_date=end,
+            ),
+            is_polygon_market=False,
+        )
+        for question, slug, condition_id, end in (
+            ("Fed cuts 25 bps?", "cut", UNFILED, NOW - 86_400),
+            ("Fed holds?", "hold", "0x" + "ef" * 32, NOW + 86_400),
+        )
+    )
+    TableWrite.resolve_market(conn, cut.market_id, 1)
+    address = _agent(conn, "Contexts", 0.0, 1)
+    conn.close()
+    with TestClient(app) as client:
+        _holdings[address] = Holdings(
+            valued_at=NOW,
+            cash_raw=0,
+            positions=[
+                PositionWire(conditionId=c, title=t, currentValue=v)
+                for c, t, v in ((CRYPTO, "Will Bitcoin dip?", 3.0), (cut.condition_id.value, "Fed cuts 25 bps?", 2.0), (hold.condition_id.value, "Fed holds?", 1.0))
+            ],
+            closed=[],
+        )
+        body = _profile(client, address)
+    contexts = [(p["eventTitle"], p["endDate"], p["winner"]) for p in body["positions"]["open"]]
+    assert contexts == [
+        (None, None, None),
+        ("Fed decision in October?", NOW - 86_400, "No"),
+        ("Fed decision in October?", NOW + 86_400, None),
+    ]
+    resolved = [p["resolvedAt"] for p in body["positions"]["open"]]
+    assert resolved[0] is None and resolved[1] >= NOW and resolved[2] is None
 
 
 def test_an_agent_not_on_the_board_is_an_empty_404():
@@ -225,7 +290,9 @@ def test_the_record_counts_decided_positions_oldest_first():
     _market(conn)
     address = _agent(conn, "Decided", 1.0, 10)
     conn.close()
-    won = PositionWire(conditionId=CRYPTO, title="Won", outcome="Yes", avgPrice=0.4, curPrice=1.0, cashPnl=10.0, endDate="300")
+    won = PositionWire(
+        conditionId=CRYPTO, title="Won", outcome="Yes", avgPrice=0.4, curPrice=1.0, cashPnl=10.0, endDate="300", url="https://polymarket.com/market/won"
+    )
     split = PositionWire(title="Split", avgPrice=0.0, cashPnl=50.0, endDate="50")
     push = PositionWire(title="Push", avgPrice=0.2, cashPnl=0.3, endDate="60")
     lost = PositionWire(title="Lost", outcome="No", avgPrice=0.5, curPrice=0.0, cashPnl=-20.0, endDate="100")
@@ -240,6 +307,7 @@ def test_the_record_counts_decided_positions_oldest_first():
     assert record["pnls"] == ["-20000000", "-5000000", "10000000"]
     assert record["best"] == {
         "title": "Won", "icon": None, "category": "Crypto", "outcome": "Yes", "entry": 0.4, "exit": 1.0, "pnl": "10000000",
+        "url": "https://polymarket.com/market/won", "eventTitle": None, "endDate": None, "resolvedAt": None, "winner": None,
     }
     assert (record["worst"]["title"], record["worst"]["category"], record["worst"]["exit"]) == ("Lost", None, 0.0)
     assert body["positions"]["count"] == 0

@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
-from agentpit.api.deps import MarketServiceDep, require_admin_token
+from agentpit.api.deps import LeaderboardServiceDep, MarketServiceDep, SessionDep, SettingsDep, require_admin_token
+from agentpit.datastructures.board import WireBoard
 from agentpit.datastructures.cancel_market_response import CancelMarketResponse
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.gamma_market import GammaMarket
 from agentpit.datastructures.list_markets_response import MarketStatsResponse
 from agentpit.datastructures.market import Market
 from agentpit.datastructures.resolve_market_request import ResolveMarketRequest
+from agentpit.services.board_service import BoardService
 
 router = APIRouter(tags=["markets"])
 
@@ -52,6 +54,25 @@ def create_market(payload: CreateMarketRequest, service: MarketServiceDep) -> Ma
 @router.get("/markets/stats", response_model=MarketStatsResponse)
 def market_stats(service: MarketServiceDep) -> MarketStatsResponse:
     return service.market_stats()
+
+
+@router.get("/markets/board", response_model=WireBoard)
+def market_board(
+    response: Response,
+    db: SessionDep,
+    leaderboard: LeaderboardServiceDep,
+    settings: SettingsDep,
+    tab: str = "trending",
+    q: str | None = None,
+    page: int = Query(default=1, ge=1),
+    sport: str = "upcoming",
+) -> WireBoard:
+    """The public /markets page in one read: tab counts, one page of event cards, or the Sports section."""
+    found = BoardService(db, leaderboard, settings).board(tab, (q or "").strip() or None, page, sport)
+    if found is None:
+        raise HTTPException(status_code=404, detail="no such tab")
+    response.headers["Cache-Control"] = "public, max-age=30"
+    return found
 
 
 @router.get("/markets/{market_id}", response_model=GammaMarket)

@@ -13,6 +13,7 @@ from agentpit.utils.parse import parse_32b_hex_private_key
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.event_sort import EventSort
 from agentpit.datastructures.market import Market
+from agentpit.datastructures.market_context import MarketContext
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.user import User
 from agentpit.liquidity.tape import MIRROR_API_KEY
@@ -130,7 +131,8 @@ _MARKET_COLS = (
     "RESOLVED_OUTCOME, "
     "EVENT_ID, OUTCOME_LABEL, ICON_URL, "
     "POLYMARKET_YES_TOKEN_ID, POLYMARKET_NO_TOKEN_ID, "
-    "COALESCE(FULLY_REDEEMED, FALSE) as FULLY_REDEEMED"
+    "COALESCE(FULLY_REDEEMED, FALSE) as FULLY_REDEEMED, "
+    "PRICE_CHANGE_24H, RESOLVED_AT"
 )
 
 
@@ -156,6 +158,8 @@ def _row_to_market(row) -> Market:
         outcome_label=row["OUTCOME_LABEL"],
         icon_url=row["ICON_URL"],
         fully_redeemed=row["FULLY_REDEEMED"],
+        price_change_24h=row["PRICE_CHANGE_24H"],
+        resolved_at=row["RESOLVED_AT"],
     )
 
 
@@ -227,24 +231,13 @@ class TableRead:
     @staticmethod
     def read_condition_id_by_polymarket_id(
         db: psycopg.Connection, polymarket_id: int
-    ) -> int | None:
-        """Return MARKET_ID for a Polymarket id, or None if not found."""
+    ) -> ConditionId | None:
+        """Return CONDITION_ID for a Polymarket id, or None if not found."""
         row = db.execute(
             "SELECT CONDITION_ID FROM markets WHERE POLYMARKET_ID = %s LIMIT 1",
             (polymarket_id,),
         ).fetchone()
         return ConditionId(str(row["CONDITION_ID"])) if row is not None else None
-
-    @staticmethod
-    def market_exists_by_polymarket_id(
-        db: psycopg.Connection, polymarket_id: int
-    ) -> bool:
-        """Return True if a market row exists for the given Polymarket id."""
-        row = db.execute(
-            "SELECT 1 FROM markets WHERE POLYMARKET_ID = %s LIMIT 1",
-            (polymarket_id,),
-        ).fetchone()
-        return row is not None
 
     @staticmethod
     def get_market_status_by_condition_id(
@@ -873,7 +866,7 @@ class TableRead:
     _EVENT_COLS = (
         "EVENT_ID, SLUG, TITLE, DESCRIPTION, ICON_URL, CATEGORY, "
         "START_DATE, END_DATE, POLYMARKET_EVENT_ID, VOLUME_24HR, VOLUME, "
-        "LIQUIDITY, COMPETITIVE"
+        "LIQUIDITY, COMPETITIVE, START_TIME, GAME_ID, SERIES_SLUG"
     )
 
     @staticmethod
@@ -892,6 +885,9 @@ class TableRead:
             volume=row["VOLUME"],
             liquidity=row["LIQUIDITY"],
             competitive=row["COMPETITIVE"],
+            start_time=row["START_TIME"],
+            game_id=row["GAME_ID"],
+            series_slug=row["SERIES_SLUG"],
         )
 
     @staticmethod
@@ -930,12 +926,23 @@ class TableRead:
         return {str(r["CONDITION_ID"]): str(r["CATEGORY"]) for r in rows}
 
     @staticmethod
-    def questions_by_condition_id(db: psycopg.Connection, condition_ids: "list[str]") -> "dict[str, str]":
+    def market_contexts(db: psycopg.Connection, condition_ids: "list[str]") -> "dict[str, MarketContext]":
+        """The event title only when the event groups several markets and reads
+        differently; the winner is the resolved outcome's label."""
         rows = db.execute(
-            "SELECT CONDITION_ID, QUESTION FROM markets WHERE CONDITION_ID = ANY(%s)",
+            "SELECT m.CONDITION_ID, m.END_DATE, m.RESOLVED_AT, "
+            "m.ERC1155_TOKENS::jsonb -> m.RESOLVED_OUTCOME ->> 1 AS WINNER, "
+            "CASE WHEN e.TITLE <> m.QUESTION AND (SELECT COUNT(*) FROM markets s WHERE s.EVENT_ID = m.EVENT_ID) > 1 "
+            "THEN e.TITLE END AS EVENT_TITLE "
+            "FROM markets m LEFT JOIN events e ON e.EVENT_ID = m.EVENT_ID WHERE m.CONDITION_ID = ANY(%s)",
             (condition_ids,),
         ).fetchall()
-        return {str(r["CONDITION_ID"]): str(r["QUESTION"]) for r in rows}
+        return {
+            str(r["CONDITION_ID"]): MarketContext(
+                eventTitle=r["EVENT_TITLE"], endDate=r["END_DATE"], resolvedAt=r["RESOLVED_AT"], winner=r["WINNER"]
+            )
+            for r in rows
+        }
 
     @staticmethod
     def get_event_by_slug(db: psycopg.Connection, slug: str) -> "Event | None":
@@ -955,6 +962,58 @@ class TableRead:
             (polymarket_event_id,),
         ).fetchone()
         return TableRead._row_to_event(row) if row else None
+
+    @staticmethod
+    def board_events(
+        db: psycopg.Connection,
+        *,
+        settled_since: int,
+        excluded_categories: "Iterable[str] | None",
+        excluded_tags: "Iterable[str] | None",
+    ) -> "list[tuple[Event, list[Market]]]":
+        excl_sql, excl_params = _event_excluded_clause(
+            _excluded_lower(excluded_categories), _excluded_lower(excluded_tags)
+        )
+        clauses = [
+            "EXISTS (SELECT 1 FROM markets m WHERE m.EVENT_ID = events.EVENT_ID "
+            "AND (m.MARKET_STATE = %s OR (m.MARKET_STATE = %s "
+            "AND COALESCE(m.RESOLVED_AT, m.END_DATE) >= %s)))"
+        ]
+        params: list[object] = [
+            MarketState.ACTIVE.value, MarketState.RESOLVED.value, settled_since
+        ]
+        if excl_sql:
+            clauses.append(excl_sql)
+            params.extend(excl_params)
+        events = [
+            TableRead._row_to_event(r)
+            for r in db.execute(
+                f"SELECT {TableRead._EVENT_COLS} FROM events "
+                f"WHERE {' AND '.join(clauses)} ORDER BY EVENT_ID",
+                tuple(params),
+            ).fetchall()
+        ]
+        markets: dict[int, list[Market]] = {e.event_id: [] for e in events}
+        for row in db.execute(
+            f"SELECT {_MARKET_COLS} FROM markets "
+            "WHERE EVENT_ID = ANY(%s) AND MARKET_STATE <> %s ORDER BY MARKET_ID",
+            (list(markets), MarketState.CANCELLED.value),
+        ).fetchall():
+            markets[int(row["EVENT_ID"])].append(_row_to_market(row))
+        return [(e, markets[e.event_id]) for e in events]
+
+    @staticmethod
+    def tag_slugs_by_event(
+        db: psycopg.Connection, event_ids: "list[int]"
+    ) -> "dict[int, set[str]]":
+        out: dict[int, set[str]] = {}
+        for r in db.execute(
+            "SELECT DISTINCT m.EVENT_ID, t.SLUG FROM market_tags t "
+            "JOIN markets m ON m.MARKET_ID = t.MARKET_ID WHERE m.EVENT_ID = ANY(%s)",
+            (event_ids,),
+        ).fetchall():
+            out.setdefault(int(r["EVENT_ID"]), set()).add(str(r["SLUG"]))
+        return out
 
     @staticmethod
     def list_markets_by_event_id(db: psycopg.Connection, event_id: int) -> "list[Market]":

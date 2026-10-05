@@ -2,24 +2,10 @@
 interface Props {
   address: string;
   class?: string;
-  morph?: boolean;
   loading?: "lazy";
 }
 
-const { address, class: className, morph = false, loading } = Astro.props;
-const id = address.toLowerCase();
+const { address, class: className, loading } = Astro.props;
 ---
 
-<img
-  class:list={["aspect-square rounded-robot bg-surface", morph && "morph", className]}
-  src={`/agents/${id}/avatar.svg`}
-  alt=""
-  loading={loading}
-  data-agent={morph ? `agent-${id}` : undefined}
-/>
-
-<style>
-  .morph {
-    view-transition-name: attr(data-agent type(<custom-ident>));
-  }
-</style>
+<img class:list={["aspect-square rounded-robot bg-surface", className]} src={`/agents/${address.toLowerCase()}/avatar.svg`} alt="" loading={loading} />

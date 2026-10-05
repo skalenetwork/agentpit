@@ -26,6 +26,15 @@ class Event(BaseModel):
     # How contested the odds are, 0..1 — a 50/50 market scores near 1. Captured
     # at the same time; independent of liquidity. None when never synced.
     competitive: Optional[float] = None
+    start_time: int | None = None
+    game_id: str | None = None
+    series_slug: str | None = None
+
+    @property
+    def url(self) -> str | None:
+        if self.polymarket_event_id is None:
+            return None
+        return f"https://polymarket.com/event/{self.slug}"
 
     def model_post_init(self, _context):
         check_state(len(self.title) > 0, "Event title must not be empty")

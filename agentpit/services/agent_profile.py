@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from agentpit.datastructures.activity_wire import ActivityWire
+from agentpit.datastructures.market_context import MarketContext
 from agentpit.domain.runner import Runner, runner_for
 from agentpit.services.leaderboard_service import Holdings, LeaderboardRow, share_text
 
@@ -45,7 +46,7 @@ class Money(BaseModel):
     trend: list[str]
 
 
-class OpenPosition(BaseModel):
+class OpenPosition(MarketContext):
     title: str
     icon: str | None
     category: str | None
@@ -55,6 +56,7 @@ class OpenPosition(BaseModel):
     value: str
     sellsFor: str
     pnl: str
+    url: str | None
 
 
 class Positions(BaseModel):
@@ -82,7 +84,7 @@ class Book(BaseModel):
     horizonDays: int | None
 
 
-class Call(BaseModel):
+class Call(MarketContext):
     title: str
     icon: str | None
     category: str | None
@@ -90,6 +92,7 @@ class Call(BaseModel):
     entry: float
     exit: float
     pnl: str
+    url: str | None
 
 
 class Record(BaseModel):
@@ -100,7 +103,7 @@ class Record(BaseModel):
     worst: Call
 
 
-class Fill(BaseModel):
+class Fill(MarketContext):
     at: int
     type: Literal["TRADE", "SPLIT", "MERGE", "REDEEM"]
     side: Literal["BUY", "SELL"] | None
@@ -110,6 +113,7 @@ class Fill(BaseModel):
     title: str
     icon: str | None
     category: str | None
+    url: str | None
 
 
 class AgentProfile(BaseModel):
@@ -139,6 +143,7 @@ def build_profile(
     held: Holdings,
     fills: list[ActivityWire],
     categories: dict[str, str],
+    contexts: dict[str, MarketContext],
     now: int,
 ) -> AgentProfile:
     """`board` in return order. Returns compare as the board shows them, rounded
@@ -164,6 +169,7 @@ def build_profile(
     settled = [p for p in held.positions if p.settled]
     listed = [
         OpenPosition(
+            **contexts.get(p.conditionId, MarketContext()).model_dump(),
             title=p.title,
             icon=p.icon or None,
             category=categories.get(p.conditionId),
@@ -173,6 +179,7 @@ def build_profile(
             value=_money(p.currentValue),
             sellsFor=_money(p.sellableValue),
             pnl=_money(p.cashPnl),
+            url=p.url,
         )
         for p in sorted(open_, key=lambda p: p.currentValue, reverse=True)
     ]
@@ -215,6 +222,7 @@ def build_profile(
     if decided:
         best, worst = (
             Call(
+                **contexts.get(p.conditionId, MarketContext()).model_dump(),
                 title=p.title,
                 icon=p.icon or None,
                 category=categories.get(p.conditionId),
@@ -222,6 +230,7 @@ def build_profile(
                 entry=p.avgPrice,
                 exit=p.curPrice,
                 pnl=_money(p.cashPnl),
+                url=p.url,
             )
             for p in (max(decided, key=lambda p: p.cashPnl), min(decided, key=lambda p: p.cashPnl))
         )
@@ -282,6 +291,7 @@ def build_profile(
         record=record,
         activity=[
             Fill(
+                **contexts.get(f.conditionId, MarketContext()).model_dump(),
                 at=f.timestamp,
                 type=f.type,
                 side=f.side if f.side in ("BUY", "SELL") else None,
@@ -291,6 +301,7 @@ def build_profile(
                 title=f.title,
                 icon=f.icon or None,
                 category=categories.get(f.conditionId),
+                url=f.url,
             )
             for f in fills
             if f.type in ("TRADE", "SPLIT", "MERGE", "REDEEM")

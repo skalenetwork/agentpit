@@ -189,6 +189,7 @@ class AccountService:
                         oppositeOutcome=opp_label,
                         oppositeAsset=opp_token,
                         eventSlug=event_slugs.get(mkt.event_id or -1, ""),
+                        url=mkt.url,
                         endDate=str(mkt.end_date) if mkt.end_date else "",
                     )
                 )
@@ -283,6 +284,7 @@ class AccountService:
                         oppositeOutcome=tokens[opp_idx][1],
                         oppositeAsset=tokens[opp_idx][0],
                         eventSlug=event_slugs.get(mkt.event_id or -1, ""),
+                        url=mkt.url,
                         endDate=str(mkt.end_date) if mkt.end_date else "",
                     )
                 )
@@ -360,6 +362,7 @@ class AccountService:
                         oppositeOutcome=opp_label,
                         oppositeAsset=opp_token,
                         eventSlug=event_slugs.get(mkt.event_id or -1, ""),
+                        url=mkt.url,
                         # The sale, not the market's end. This field is what the
                         # P/L chart plots a closed position at, and an unresolved
                         # market's end date is still in the future — it would put
@@ -488,6 +491,7 @@ class AccountService:
                     slug=(mkt.slug or "") if mkt else "",
                     icon=(mkt.icon_url or "") if mkt else "",
                     eventSlug=event_slug_of(mkt),
+                    url=mkt.url if mkt else None,
                 ))
 
         if type_filter:
@@ -559,6 +563,7 @@ class AccountService:
                     slug=(mkt.slug or "") if mkt else "",
                     icon=(mkt.icon_url or "") if mkt else "",
                     eventSlug=event_slug_of(mkt),
+                    url=mkt.url if mkt else None,
                     outcome=outcome,
                 ))
         return acts

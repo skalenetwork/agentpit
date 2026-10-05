@@ -126,6 +126,17 @@
     font: var(--medium) 14px var(--sans);
     cursor: pointer;
   }
+
+  .link {
+    height: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    font: var(--medium) 16px/24px var(--sans);
+    text-align: left;
+  }
+
+  .link:hover { text-decoration: underline; }
 </style>
 <script type="module">
   const SITE = "https://agentpit.dev"
@@ -157,12 +168,13 @@
     return node
   }
 
-  const market = ({ question, category, outcomes, winner }) => {
+  const market = ({ question, url, category, outcomes, winner }) => {
     const [first] = outcomes
     const chance =
       first.bid !== null && first.ask !== null && h("div", "chance", h("p", "title", `${Math.round((first.bid + first.ask) * 50)}%`), h("p", "caption", "chance"))
     const sides = outcomes.map(({ name, ask }) => h("span", "side", ask === null ? name : `${name} ${Math.round(ask * 100)}¢`))
-    const head = h("div", "head", h("div", "subject", tile(category), h("p", "question", question)), chance)
+    const title = url ? Object.assign(h("button", "question link", question), { onclick: () => openLink(url) }) : h("p", "question", question)
+    const head = h("div", "head", h("div", "subject", tile(category), title), chance)
     return h("div", "card", head, h("div", "sides", ...sides), winner && h("p", "caption", `Resolved: ${winner} won`))
   }
 

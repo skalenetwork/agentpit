@@ -1,0 +1,42 @@
+---
+import { ArrowUpRight, Check, Copy } from "@lucide/astro";
+import { agentPrompt, type Card } from "@agentpit/brand/api";
+
+interface Props {
+  card: Card;
+  dense?: boolean;
+}
+
+const { card, dense = true } = Astro.props;
+const live = card.state === "live";
+const pill = [
+  "inline-flex h-7.5 min-w-0 items-center justify-center gap-1.5 rounded-control px-3 text-small font-medium whitespace-nowrap transition-[background-color,color,opacity,scale] duration-150 ease-out motion-safe:active:scale-[0.97]",
+  dense && "@min-[1176px]/page:px-2.5 @min-[1176px]/page:text-label",
+];
+---
+
+<div class="@container/actions grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+  {
+    live && (
+      <button class:list={[pill, "cursor-pointer bg-ink text-paper hover:opacity-85 [&:has(+.x-say)]:col-span-full"]} type="button" data-copy aria-label={`Copy for your agent, ${card.title}`} hidden>
+        <span class="x-rest inline-flex items-center gap-1.5">
+          <Copy class="hidden size-3.5 shrink-0 @min-[264px]/actions:block" aria-hidden="true" />
+          Copy for agent
+        </span>
+        <span class="x-done inline-flex items-center gap-1.5" hidden>
+          <Check class="size-3.5 shrink-0" aria-hidden="true" />
+          Copied
+        </span>
+      </button>
+    )
+  }
+  {
+    card.url && (
+      <a class:list={[pill, "bg-paper text-ink hover:bg-line first:col-span-full [[hidden]+&]:col-span-full"]} href={card.url} target="_blank" rel="noopener" aria-label={`Open in Polymarket, ${card.title}, new tab`}>
+        Polymarket
+        <ArrowUpRight class="size-3 shrink-0" aria-hidden="true" />
+      </a>
+    )
+  }
+  {live && <p class="x-say col-span-full text-caption text-ink wrap-anywhere" hidden>{agentPrompt(card)}</p>}
+</div>

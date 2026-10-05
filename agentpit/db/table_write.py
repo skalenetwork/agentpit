@@ -633,6 +633,79 @@ class TableWrite:
         )
 
     @staticmethod
+    def refresh_event(
+        db: psycopg.Connection,
+        *,
+        event_id: int,
+        slug: str,
+        title: str,
+        icon_url: str | None,
+        end_date: int | None,
+        start_time: int | None,
+        game_id: str | None,
+        series_slug: str | None,
+    ) -> None:
+        db.execute(
+            """
+            UPDATE events
+            SET SLUG = CASE WHEN NOT EXISTS (
+                        SELECT 1 FROM events WHERE SLUG = %s AND EVENT_ID <> %s
+                    ) THEN %s ELSE SLUG END,
+                TITLE = %s,
+                ICON_URL = COALESCE(%s, ICON_URL),
+                END_DATE = COALESCE(%s, END_DATE),
+                START_TIME = COALESCE(%s, START_TIME),
+                GAME_ID = COALESCE(%s, GAME_ID),
+                SERIES_SLUG = COALESCE(%s, SERIES_SLUG)
+            WHERE EVENT_ID = %s
+            """,
+            (
+                slug,
+                event_id,
+                slug,
+                title,
+                icon_url,
+                end_date,
+                start_time,
+                game_id,
+                series_slug,
+                event_id,
+            ),
+        )
+
+    @staticmethod
+    def clear_price_changes(db: psycopg.Connection) -> None:
+        db.execute(
+            "UPDATE markets SET PRICE_CHANGE_24H = NULL WHERE PRICE_CHANGE_24H IS NOT NULL"
+        )
+
+    @staticmethod
+    def refresh_market(
+        db: psycopg.Connection,
+        *,
+        market_id: int,
+        slug: str | None,
+        end_date: int | None,
+        icon_url: str | None,
+        price_change_24h: float,
+    ) -> None:
+        db.execute(
+            """
+            UPDATE markets
+            SET SLUG = COALESCE(%s, SLUG),
+                END_DATE = COALESCE(%s, END_DATE),
+                ICON_URL = COALESCE(%s, ICON_URL),
+                PRICE_CHANGE_24H = %s
+            WHERE MARKET_ID = %s
+            """,
+            (slug, end_date, icon_url, price_change_24h, market_id),
+        )
+
+    @staticmethod
+    def update_market_slug(db: psycopg.Connection, market_id: int, slug: str) -> None:
+        db.execute("UPDATE markets SET SLUG = %s WHERE MARKET_ID = %s", (slug, market_id))
+
+    @staticmethod
     def update_market_polymarket_tokens(
         db: psycopg.Connection,
         *,
@@ -1015,14 +1088,17 @@ class TableWrite:
             )
 
         # Update state and outcome
-        db.execute(
-            "UPDATE markets SET MARKET_STATE = %s, RESOLVED_OUTCOME = %s WHERE MARKET_ID = %s",
+        row = db.execute(
+            "UPDATE markets SET MARKET_STATE = %s, RESOLVED_OUTCOME = %s, "
+            "RESOLVED_AT = EXTRACT(EPOCH FROM now())::BIGINT WHERE MARKET_ID = %s "
+            "RETURNING RESOLVED_AT",
             (MarketState.RESOLVED.value, winning_outcome_index, market_id),
-        )
+        ).fetchone()
 
         # Return updated market
         market.market_state = MarketState.RESOLVED
         market.resolved_outcome = winning_outcome_index
+        market.resolved_at = row["RESOLVED_AT"]
         return market
 
     @staticmethod
@@ -1089,17 +1165,20 @@ class TableWrite:
                 f"Market has {len(market.erc1155_tokens)} outcomes"
             )
 
-        db.execute(
-            "UPDATE markets SET MARKET_STATE = %s, RESOLVED_OUTCOME = %s WHERE CONDITION_ID = %s",
+        row = db.execute(
+            "UPDATE markets SET MARKET_STATE = %s, RESOLVED_OUTCOME = %s, "
+            "RESOLVED_AT = EXTRACT(EPOCH FROM now())::BIGINT WHERE CONDITION_ID = %s "
+            "RETURNING RESOLVED_AT",
             (
                 MarketState.RESOLVED.value,
                 winning_outcome_index,
                 market.condition_id.value,
             ),
-        )
+        ).fetchone()
 
         market.market_state = MarketState.RESOLVED
         market.resolved_outcome = winning_outcome_index
+        market.resolved_at = row["RESOLVED_AT"]
         return market
 
     @staticmethod

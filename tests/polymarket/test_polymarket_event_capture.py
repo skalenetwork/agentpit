@@ -265,7 +265,7 @@ def test_bind_existing_market_to_upstream_event_uses_polymarket_id_lookup(db):
     rebound = bind_existing_market_to_upstream_event(
         db, polymarket_id=4242, pm_market=pm
     )
-    assert rebound is True
+    assert rebound is not None and rebound.market_id == market.market_id
 
     re = TableRead.read_market(db, market.market_id)
     event = TableRead.get_event_by_slug(db, "wc")
@@ -274,11 +274,11 @@ def test_bind_existing_market_to_upstream_event_uses_polymarket_id_lookup(db):
     assert re.outcome_label == "France"
 
 
-def test_bind_existing_market_to_upstream_event_returns_false_when_unknown(db):
+def test_bind_existing_market_to_upstream_event_returns_none_when_unknown(db):
     pm = {"events": [{"id": "x", "slug": "x", "title": "X"}]}
     assert (
         bind_existing_market_to_upstream_event(db, polymarket_id=9999, pm_market=pm)
-        is False
+        is None
     )
 
 

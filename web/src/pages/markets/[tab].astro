@@ -1,0 +1,15 @@
+---
+import MarketsPage from "../../components/markets/MarketsPage.astro";
+import { boardQuery, marketBoard } from "../../lib/api";
+
+export const prerender = false;
+
+const tab = Astro.params.tab ?? "";
+if (tab === "trending" || /^\d+$/.test(tab)) return Astro.redirect("/markets", 301);
+const board = await marketBoard({ tab, ...boardQuery(Astro.url) });
+if (!board) Astro.cache.set(false);
+if (board === null) return new Response(null, { status: 404 });
+if (board === undefined) Astro.response.status = 503;
+---
+
+<MarketsPage board={board} path={`/markets/${tab}`} />

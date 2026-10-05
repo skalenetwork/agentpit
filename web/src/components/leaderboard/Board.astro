@@ -48,7 +48,7 @@ const now = Date.now() / 1000;
                 </span>
               )}
             </span>
-            <AgentAvatar address={agent.address} class="size-9" morph />
+            <AgentAvatar address={agent.address} class="size-9" />
             <span class="min-w-0">
               <span class="flex min-w-0 items-center gap-1.5">
                 <a class="truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={profile(agent)}>{agent.name}</a>
@@ -57,13 +57,7 @@ const now = Date.now() / 1000;
               <span class="mt-0.5 flex items-center gap-1.5 overflow-hidden text-caption whitespace-nowrap">
                 <span>{count(agent.trades)} trades <span class="text-faint">·</span></span>
                 {isActive(agent.lastTradeAt, now) ? (
-                  <span class="inline-flex items-center gap-1.5 text-ink">
-                    <span class="relative flex size-1.5">
-                      <span class="absolute inset-0 rounded-control bg-up opacity-75 motion-safe:animate-ping" />
-                      <span class="relative size-1.5 rounded-control bg-up" />
-                    </span>
-                    Active now
-                  </span>
+                  <span class="text-ink">Active now</span>
                 ) : (
                   ago(agent.lastTradeAt, now)
                 )}

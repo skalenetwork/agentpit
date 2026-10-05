@@ -1,0 +1,146 @@
+---
+import { Trophy } from "@lucide/astro";
+import type { Board, Game } from "@agentpit/brand/api";
+import { count, dollars, shortDay } from "@agentpit/brand/format";
+import { noun } from "../../lib/leaderboard";
+import EventCard from "./EventCard.astro";
+import GameCard from "./GameCard.astro";
+import SportIcon from "./SportIcon.astro";
+import SportsSide from "./SportsSide.astro";
+
+interface Props {
+  sports: NonNullable<Board["sports"]>;
+  q: string | null;
+}
+
+const { sports, q } = Astro.props;
+const { item, games, futures } = sports;
+const HEADS: Readonly<Record<string, string>> = { upcoming: "Upcoming games", agents: "Agents in sports", futures: "Futures", settled: "Settled this week" };
+const view = item in HEADS;
+const scope = !q && !view;
+const flat = !q && item === "futures";
+const label = [...sports.sports, ...sports.sports.flatMap((sport) => sport.leagues)].find((entry) => entry.key === item)?.label;
+const title = q ? `Results for “${q}”` : (HEADS[item] ?? label ?? "Sports");
+const people = new Set([...games, ...futures].flatMap((card) => card.agents)).size;
+const withAgents = (list: readonly Game[]) => list.filter((game) => game.agents.length > 0).length;
+const meta = q
+  ? [`${count(games.length + futures.length)} ${noun(games.length + futures.length, "result")}`]
+  : item === "upcoming"
+    ? [`${count(games.length)} ${noun(games.length, "game")}`, `${count(withAgents(games))} with agents`]
+    : item === "agents"
+      ? [
+          `${count(people)} ${noun(people, "agent")}`,
+          `${dollars(games.reduce((sum, game) => sum + game.money, 0))} in open games`,
+          `${dollars(futures.reduce((sum, card) => sum + card.money, 0))} in futures`,
+        ]
+      : item === "settled"
+        ? [`${count(games.length)} ${noun(games.length, "game")}`, `${count(games.reduce((sum, game) => sum + game.bets.length, 0))} bets`]
+        : [
+            games.length > 0 && `${count(games.length)} open ${noun(games.length, "game")}`,
+            futures.length > 0 && `${count(futures.length)} ${noun(futures.length, "future")}`,
+            people > 0 && `${count(people)} ${noun(people, "agent")}`,
+          ].filter((part): part is string => Boolean(part));
+const leaguePath = (game: Game) => {
+  const sport = sports.sports.find((entry) => entry.key === game.sport);
+  const key = `${game.sport}/${game.league}`;
+  return sport && `/markets/sports/${sport.leagues.some((league) => league.key === key) ? key : sport.key}`;
+};
+const groups =
+  !q && item.includes("/")
+    ? [...Map.groupBy(games, (game) => shortDay(new Date((game.startTime ?? game.endDate ?? 0) * 1000)))].map(([day, list]) => ({ day, list, head: list[0], note: 0 }))
+    : [...Map.groupBy(games, (game) => game.league)]
+        .toSorted(([, a], [, b]) => Number(withAgents(b) > 0) - Number(withAgents(a) > 0) || b.length - a.length)
+        .map(([league, list]) => ({ day: null, list, head: list[0], note: !q && (item === "upcoming" || scope) ? (sports.noBook[league] ?? 0) : 0 }));
+---
+
+<div class="mt-4 grid gap-5 @min-[1024px]/page:mt-8 @min-[1024px]/page:grid-cols-[208px_minmax(0,1fr)] @min-[1024px]/page:items-start @min-[1024px]/page:gap-8">
+  <SportsSide views={sports.views} sports={sports.sports} current={q ? null : item} />
+  <div class="min-w-0">
+    <div class="mb-5">
+      <h2 class="text-title text-ink">{title}</h2>
+      <p class="mt-1 flex flex-wrap gap-x-1.5 text-caption text-muted *:whitespace-nowrap">
+        {
+          meta.map((part, k) => (
+            <span>
+              {part}
+              {k < meta.length - 1 && <span class="text-faint"> ·</span>}
+            </span>
+          ))
+        }
+      </p>
+    </div>
+    <div class="flex flex-col gap-8">
+      {
+        flat ? (
+          futures.length > 0 && (
+            <div class="grid gap-5 @min-[768px]/page:grid-cols-2">
+              {futures.map((card) => (
+                <EventCard card={card} />
+              ))}
+            </div>
+          )
+        ) : (
+          !games.length && (
+            <p class="flex min-h-13 flex-wrap items-center gap-x-1.5 rounded-card bg-surface/70 px-5 text-small @min-[640px]/page:px-6">
+              <span>{q ? `No game matches “${q}”.` : scope ? `No open games in ${label}.` : "Nothing here yet."}</span>
+              {scope && sports.settled > 0 && (
+                <a class="text-muted underline underline-offset-2 transition-colors duration-150 hover:text-ink" href="/markets/sports/settled">
+                  {count(sports.settled)} settled this week
+                </a>
+              )}
+            </p>
+          )
+        )
+      }
+      {
+        groups.map(({ day, list, head, note }) => {
+          const path = leaguePath(head);
+          const Head = path ? "a" : "p";
+          return (
+            <section>
+              {day ? (
+                <p class="mb-3 flex h-5 items-center text-caption font-medium text-muted">{day}</p>
+              ) : (
+                <Head class:list={["mb-3 flex h-7 w-fit max-w-full items-center gap-2.5 text-small font-medium text-ink", path && "group"]} href={path}>
+                  <span class="grid size-5 shrink-0 place-items-center">
+                    <SportIcon sport={head.sport} />
+                  </span>
+                  <span class="min-w-0 truncate underline-offset-2 group-hover:underline">{head.leagueLabel}</span>
+                  <span class="text-caption font-normal text-faint tabular-nums">{count(list.length)}</span>
+                </Head>
+              )}
+              <div class="grid gap-5 @min-[768px]/page:grid-cols-2">
+                {list.map((game) => (
+                  <GameCard game={game} />
+                ))}
+              </div>
+              {note > 0 && (
+                <p class="mt-3 text-caption text-muted">
+                  {count(note)} more {noun(note, "game")} with no open book.
+                </p>
+              )}
+            </section>
+          );
+        })
+      }
+      {
+        !flat && futures.length > 0 && (
+          <section>
+            <p class="mb-3 flex h-7 items-center gap-2.5 text-small font-medium text-ink">
+              <span class="grid size-5 shrink-0 place-items-center">
+                <Trophy class="size-4" stroke-width={1.75} aria-hidden="true" />
+              </span>
+              Futures
+              <span class="text-caption font-normal text-faint tabular-nums">{count(futures.length)}</span>
+            </p>
+            <div class="grid gap-5 @min-[768px]/page:grid-cols-2">
+              {futures.map((card) => (
+                <EventCard card={card} />
+              ))}
+            </div>
+          </section>
+        )
+      }
+    </div>
+  </div>
+</div>

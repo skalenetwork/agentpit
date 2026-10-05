@@ -14,6 +14,11 @@ const fill = (at: number, change: Partial<Fill> = {}): Fill => ({
   title: nobel,
   icon: null,
   category: "World",
+  url: null,
+  eventTitle: null,
+  endDate: null,
+  resolvedAt: null,
+  winner: null,
   ...change,
 });
 

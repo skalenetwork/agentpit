@@ -54,6 +54,18 @@ def test_get_market_returns_single_gamma(client_and_market):
     assert g["conditionId"] == market.condition_id.value
 
 
+def test_a_resolved_market_names_its_winner_and_when(client_and_market):
+    client, market = client_and_market
+    before = client.get(f"/markets/{market.market_id}").json()
+    assert (before["winner"], before["resolvedAt"]) == (None, None)
+    session = app.dependency_overrides[get_db_session]()
+    with session.write() as conn:
+        resolved = TableWrite.resolve_market(conn, market.market_id, 1)
+    g = client.get(f"/markets/{market.market_id}").json()
+    assert (g["winner"], g["resolvedAt"]) == ("No", resolved.resolved_at)
+    assert resolved.resolved_at is not None
+
+
 def test_bridge_filter_by_condition_ids(client_and_market):
     client, market = client_and_market
     resp = client.get(f"/markets?condition_ids={market.condition_id.value}")

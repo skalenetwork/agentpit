@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from agentpit.datastructures.market_context import MarketContext
+
 
 class OpenOrder(BaseModel):
     """One element of `GET /data/orders` (CLOB open order, §8.3).
@@ -25,5 +27,6 @@ class OpenOrder(BaseModel):
     order_type: str
 
 
-class TitledOpenOrder(OpenOrder):
+class TitledOpenOrder(OpenOrder, MarketContext):
     title: str
+    url: str | None

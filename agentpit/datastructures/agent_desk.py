@@ -21,6 +21,7 @@ class Quote(BaseModel):
 class MarketCard(BaseModel):
     market: str
     question: str
+    url: str | None
     category: str | None
     closes_at: datetime | None
     outcomes: list[Quote]
@@ -40,6 +41,7 @@ class OutcomeBook(Quote):
 class MarketDetail(BaseModel):
     market: str
     question: str
+    url: str | None
     category: str | None
     rules: str
     status: str
@@ -64,6 +66,7 @@ class CancelResult(BaseModel):
 
 class Holding(BaseModel):
     market: str
+    url: str | None
     outcome: str
     shares: float
     avg_price: float

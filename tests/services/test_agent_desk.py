@@ -79,7 +79,9 @@ def test_shares_for_usd_walks_levels_inside_the_limit():
     assert shares_for_usd(bids, 8_000_000, 540_000, False) == (13_636_363, 7_999_999)
 
 
-def _seed(question: str, *, sides: tuple[str, ...], category: str, volume: float, state: MarketState) -> None:
+def _seed(
+    question: str, *, sides: tuple[str, ...], category: str, volume: float, state: MarketState, polymarket_id: int | None = None
+) -> str:
     seed = uuid.uuid4().hex[:8]
     with fresh_test_db().write() as conn:
         event = TableWrite.upsert_event(conn, slug=f"ev-{seed}", title=question, category=category)
@@ -94,6 +96,7 @@ def _seed(question: str, *, sides: tuple[str, ...], category: str, volume: float
                 condition_id=ConditionId("0x" + secrets.token_hex(32)),
                 state=state,
                 event_id=event.event_id,
+                polymarket_id=polymarket_id,
             ),
             is_polygon_market=False,
         )
@@ -103,12 +106,13 @@ def _seed(question: str, *, sides: tuple[str, ...], category: str, volume: float
                 "CREATED_AT, API_KEY) VALUES (%s, %s, %s, %s, 'live', 1000000, 0, %s, 'k')",
                 (uuid.uuid4().hex, market.erc1155_tokens[0][0], side, 400_000 if side == "BUY" else 600_000, int(time.time())),
             )
+    return seed
 
 
 def test_search_lists_only_live_two_sided_markets_busiest_first():
     live = ("BUY", "SELL")
     _seed("Will bitcoin reach 100k?", sides=live, category="Crypto", volume=10, state=MarketState.ACTIVE)
-    _seed("Will it rain in Paris?", sides=live, category="Weather", volume=50, state=MarketState.ACTIVE)
+    paris = _seed("Will it rain in Paris?", sides=live, category="Weather", volume=50, state=MarketState.ACTIVE, polymarket_id=7)
     _seed("Will ether flip bitcoin?", sides=("BUY",), category="Crypto", volume=90, state=MarketState.ACTIVE)
     _seed("Will the Lakers win?", sides=live, category="Sports", volume=90, state=MarketState.ACTIVE)
     _seed("Will bitcoin halve?", sides=live, category="Crypto", volume=90, state=MarketState.CLOSED)
@@ -119,6 +123,7 @@ def test_search_lists_only_live_two_sided_markets_busiest_first():
     assert [m.question for m in listed] == ["Will it rain in Paris?", "Will bitcoin reach 100k?"]
     assert [(q.name, q.bid, q.ask) for q in listed[0].outcomes] == [("Yes", 0.4, 0.6), ("No", None, None)]
     assert [m.category for m in listed] == ["Weather", "Crypto"]
+    assert [m.url for m in listed] == [f"https://polymarket.com/market/{paris}", None]
     assert [m.question for m in desk.search_markets("bitcoins").markets] == ["Will bitcoin reach 100k?"]
 
 
@@ -197,7 +202,7 @@ def test_portfolio_matches_the_leaderboard():
     )
     assert warming.profile_url == page
     assert warming.share == f"{warming.agent} is warming up on AgentPit, 1 of {RANK_FLOOR} trades to rank: {dated}"
-    assert [(h.market, h.outcome, h.shares, h.avg_price) for h in warming.positions] == [(slug, "YES", 50, 0.4)]
+    assert [(h.market, h.url, h.outcome, h.shares, h.avg_price) for h in warming.positions] == [(slug, None, "YES", 50, 0.4)]
     assert [(o.market, o.side, o.price, o.shares) for o in warming.open_orders] == [(slug, "buy", 0.1, 10)]
     assert warming.next_top_up_at is None
     assert desk.leaderboard().agents == []

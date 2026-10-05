@@ -111,6 +111,7 @@ def test_mirror_resolves_local_market_when_upstream_settled():
     assert row is not None
     assert row.market_state == MarketState.RESOLVED
     assert row.resolved_outcome == 0
+    assert row.resolved_at is not None
 
     cond_bytes = bytes.fromhex(market.condition_id.value[2:])
     ctf = contracts.ctf
@@ -144,6 +145,29 @@ def test_mirror_skips_when_upstream_not_resolved():
     assert row is not None
     assert row.market_state == MarketState.ACTIVE
     assert row.resolved_outcome is None
+
+
+def test_mirror_takes_the_slug_from_the_clob_response():
+    from agentpit.db.table_read import TableRead
+    from agentpit.polymarket.polymarket_sync import (
+        create_polymarket_markets_if_needed,
+        mirror_polymarket_resolutions,
+    )
+
+    admin, db, _ = _build_admin_and_db()
+    pm = _fake_pm_market(secrets.token_hex(4))
+    with db.write() as conn:
+        market = create_polymarket_markets_if_needed(conn, [pm], admin)[0]
+
+    def fetcher(_polymarket_condition_id: str) -> dict:
+        return dict(pm, closed=False, market_slug="renamed-upstream")
+
+    with db.write() as conn:
+        mirror_polymarket_resolutions(conn, admin, fetcher=fetcher, now=9_999_999_999)
+        row = TableRead.read_market(conn, market.market_id)
+    assert row is not None
+    assert row.slug == "renamed-upstream"
+    assert row.resolved_at is None
 
 
 def test_mirror_is_idempotent_on_already_resolved_market():

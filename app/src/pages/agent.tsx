@@ -1,11 +1,11 @@
 import { bursts } from "@agentpit/brand/activity";
-import type { Fill, Profile } from "@agentpit/brand/api";
+import { type Fill, type MarketContext, marketCaption, type Profile } from "@agentpit/brand/api";
 import { closeLabel, recordBars } from "@agentpit/brand/chart";
 import { cents, count, dollars, pct, shortAddress, shortDay, signedDollars, tone, utcTime } from "@agentpit/brand/format";
 import { recordCalls } from "@agentpit/brand/standing";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, ChartLine, Pencil, Share, Trash2 } from "lucide-react";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, Fragment, type ReactNode, useState } from "react";
 import { type Agent, type Order, useAgents, useDeleteAgent, useOrders, useProfile, useRenameAgent } from "../api";
 import { Chart } from "../chart";
 import { LastTrade, Sep, TONE } from "../labels";
@@ -21,12 +21,12 @@ const BURSTS = 8;
 const DAY = 86_400;
 const VERB = { BUY: "Bought", SELL: "Sold", SPLIT: "Split", MERGE: "Merged", REDEEM: "Redeemed" } as const;
 const ICON = "max-sm:w-7.5 max-sm:px-0";
-const POSITION_COLS = "md:grid-cols-[30px_minmax(0,1fr)_44px_104px_104px_104px]";
-const BURST_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px]";
+const POSITION_COLS = "md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px_36px] lg:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px_116px]";
+const BURST_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px_36px] lg:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px_116px]";
 
 const route = getRouteApi("/console/agents/$address");
 
-type Market = Pick<Fill, "title" | "icon" | "category">;
+type Market = Pick<Fill, "title" | "icon" | "category" | "url"> & MarketContext;
 
 interface Tab {
   readonly label: string;
@@ -36,6 +36,7 @@ interface Tab {
 
 interface RowProps {
   readonly market: Market;
+  readonly now: number;
   readonly cols: string;
   readonly what: ReactNode;
   readonly at: ReactNode;
@@ -49,7 +50,11 @@ const day = (at: number, now: number) => {
   return back === 0 ? "Today" : back === 1 ? "Yesterday" : shortDay(new Date(at * 1000));
 };
 
-const Outcome = ({ outcome }: { outcome: string }) => <span className="inline-flex h-5 shrink-0 items-center rounded-control bg-paper px-2 text-caption font-medium text-ink">{outcome}</span>;
+const TINT: Readonly<Record<string, string>> = { Yes: "bg-yes/10 text-yes dark:bg-yes/16", No: "bg-no/10 text-no dark:bg-no/16" };
+
+const Outcome = ({ outcome }: { outcome: string }) => (
+  <span className={`inline-flex h-6 shrink-0 items-center rounded-control px-2.5 text-label font-medium ${TINT[outcome] ?? "bg-paper text-ink"}`}>{outcome}</span>
+);
 
 const Move = ({ from, to }: { from: number; to: number }) => (
   <span>
@@ -65,11 +70,26 @@ const More = ({ onClick, children }: { onClick: () => void; children: ReactNode 
   </div>
 );
 
-const Row = ({ market, cols, what, at, value, note, earned }: RowProps) => (
+const Caption = ({ parts }: { parts: readonly string[] }) =>
+  parts.length > 0 && (
+    <span className="flex min-w-0 items-center gap-1.5 overflow-hidden text-caption whitespace-nowrap text-muted">
+      {parts.map((part, i) => (
+        <Fragment key={part}>
+          {i > 0 && <Sep />}
+          <span className={i ? "shrink-0" : "truncate"}>{part}</span>
+        </Fragment>
+      ))}
+    </span>
+  );
+
+const Row = ({ market, now, cols, what, at, value, note, earned }: RowProps) => (
   <li className={`grid grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:items-center md:py-2 ${note ? "md:min-h-15" : "md:min-h-13"} ${cols}`}>
     <Thumb src={market.icon} title={market.title} category={market.category} />
     <span className="min-w-0 md:contents">
-      <span className="line-clamp-2 font-medium md:line-clamp-1">{market.title}</span>
+      <span className="grid min-w-0">
+        <span className="line-clamp-2 font-medium md:line-clamp-1">{market.title}</span>
+        <Caption parts={marketCaption(market, now)} />
+      </span>
       <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted max-md:text-caption md:contents">
         <span className="flex items-center gap-1.5 whitespace-nowrap">{what}</span>
         <span className="whitespace-nowrap md:text-right">{at}</span>
@@ -83,6 +103,18 @@ const Row = ({ market, cols, what, at, value, note, earned }: RowProps) => (
         </span>
       )}
       {earned !== undefined && <span className={`font-medium max-md:text-caption md:text-right ${TONE[tone(Math.round(earned))]}`}>{signedDollars(earned)}</span>}
+      {market.url && (
+        <a
+          href={market.url}
+          target="_blank"
+          rel="noopener"
+          aria-label={`Open in Polymarket, ${market.title}, new tab`}
+          className="inline-flex h-6 shrink-0 items-center justify-center gap-1 justify-self-end rounded-control bg-paper px-2 text-caption font-medium text-ink transition-colors duration-150 hover:bg-line max-md:mt-1 max-lg:w-6 max-lg:px-0"
+        >
+          <span className="max-lg:hidden">Polymarket</span>
+          <ArrowUpRight size={12} strokeWidth={1.75} />
+        </a>
+      )}
     </span>
   </li>
 );
@@ -193,7 +225,7 @@ const EarnedCard = ({ money, valuedAt }: { money: Profile["money"]; valuedAt: nu
   );
 };
 
-const PositionsPanel = ({ positions, cash }: { positions: Profile["positions"]; cash: number }) => {
+const PositionsPanel = ({ positions, cash, now }: { positions: Profile["positions"]; cash: number; now: number }) => {
   const [all, setAll] = useState(false);
   const { open } = positions;
   if (!open.length) return <p className="pt-4 text-muted">Nothing open.</p>;
@@ -218,6 +250,7 @@ const PositionsPanel = ({ positions, cash }: { positions: Profile["positions"]; 
           <Row
             key={`${position.title}${position.outcome}`}
             market={position}
+            now={now}
             cols={POSITION_COLS}
             what={<Outcome outcome={position.outcome} />}
             at={<Move from={position.avgPrice} to={position.curPrice} />}
@@ -248,6 +281,7 @@ const ActivityPanel = ({ activity, now }: { activity: Profile["activity"]; now: 
                 <Row
                   key={`${burst.at}${burst.title}${burst.outcome}`}
                   market={burst}
+                  now={now}
                   cols={BURST_COLS}
                   what={
                     <>
@@ -268,7 +302,7 @@ const ActivityPanel = ({ activity, now }: { activity: Profile["activity"]; now: 
   );
 };
 
-const RecordPanel = ({ record }: { record: NonNullable<Profile["record"]> }) => {
+const RecordPanel = ({ record, now }: { record: NonNullable<Profile["record"]>; now: number }) => {
   const decided = record.wins + record.losses;
   const { zero, width, bars } = recordBars(record.pnls);
   const won = bars.filter((bar) => bar.tone === "up").length;
@@ -296,6 +330,7 @@ const RecordPanel = ({ record }: { record: NonNullable<Profile["record"]> }) => 
           <Row
             key={label}
             market={call}
+            now={now}
             cols={BURST_COLS}
             what={
               <>
@@ -312,14 +347,15 @@ const RecordPanel = ({ record }: { record: NonNullable<Profile["record"]> }) => 
   );
 };
 
-const OrdersPanel = ({ orders, icons }: { orders: readonly Order[]; icons: ReadonlyMap<string, string | null> }) => (
+const OrdersPanel = ({ orders, icons, now }: { orders: readonly Order[]; icons: ReadonlyMap<string, string | null>; now: number }) => (
   <>
     <p className="flex min-h-10 items-center text-caption text-muted">Resting orders fill when the Polymarket book reaches the price.</p>
     <ul>
       {orders.map((order) => (
         <Row
           key={order.id}
-          market={{ title: order.title, icon: icons.get(order.title) ?? null, category: null }}
+          market={{ ...order, icon: icons.get(order.title) ?? null, category: null }}
+          now={now}
           cols={BURST_COLS}
           what={
             <>
@@ -407,7 +443,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
   const orders = useOrders(agent).data;
   const page = `${SITE}/${agent.eth_address}`;
   const icons = new Map([...(profile?.positions.open ?? []), ...(profile?.activity ?? [])].map((item) => [item.title, item.icon]));
-  const ordersTab: readonly Tab[] = orders?.length ? [{ label: "Orders", count: orders.length, panel: <OrdersPanel orders={orders} icons={icons} /> }] : [];
+  const ordersTab: readonly Tab[] = orders?.length ? [{ label: "Orders", count: orders.length, panel: <OrdersPanel orders={orders} icons={icons} now={now} /> }] : [];
   const close = () => setSheet(undefined);
 
   return (
@@ -448,9 +484,9 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
             <EarnedCard money={profile.money} valuedAt={profile.valuedAt} />
             <Tabs
               tabs={[
-                { label: "Positions", count: profile.positions.count, panel: <PositionsPanel positions={profile.positions} cash={profile.money.cash} /> },
+                { label: "Positions", count: profile.positions.count, panel: <PositionsPanel positions={profile.positions} cash={profile.money.cash} now={now} /> },
                 { label: "Activity", panel: <ActivityPanel activity={profile.activity} now={now} /> },
-                ...(profile.record ? [{ label: "Record", count: profile.record.wins + profile.record.losses, panel: <RecordPanel record={profile.record} /> }] : []),
+                ...(profile.record ? [{ label: "Record", count: profile.record.wins + profile.record.losses, panel: <RecordPanel record={profile.record} now={now} /> }] : []),
                 ...ordersTab,
               ]}
             />

@@ -27,6 +27,14 @@ class Market(BaseModel):
     outcome_label: Optional[str] = None
     icon_url: Optional[str] = None
     fully_redeemed: bool = False
+    price_change_24h: float | None = None
+    resolved_at: int | None = None
+
+    @property
+    def url(self) -> str | None:
+        if self.polymarket_id is None:
+            return None
+        return f"https://polymarket.com/market/{self.slug}"
 
     def model_post_init(self, __context):
         check_state(

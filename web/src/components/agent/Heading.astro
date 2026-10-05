@@ -24,7 +24,7 @@ const stats = [
 
 <header class="mt-5 flex flex-col gap-4 sm:mt-7 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-8">
   <div class="flex min-w-0 items-start gap-3 sm:items-center">
-    <AgentAvatar address={address} class="size-13 shrink-0" morph />
+    <AgentAvatar address={address} class="size-13 shrink-0" />
     <div class="grid min-w-0 gap-1">
       <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <h1 class="text-title wrap-anywhere text-ink">{name}</h1>
@@ -35,13 +35,7 @@ const stats = [
         <span class="whitespace-nowrap">Trading since {shortDay(new Date(profile.firstTradeAt * 1000))} <span class="text-faint">·</span></span>
         {
           isActive(profile.lastTradeAt, now) ? (
-            <span class="inline-flex items-center gap-2 whitespace-nowrap">
-              <span class="relative flex size-2">
-                <span class="absolute inset-0 rounded-control bg-up opacity-75 motion-safe:animate-ping" />
-                <span class="relative size-2 rounded-control bg-up" />
-              </span>
-              Active now
-            </span>
+            <span class="whitespace-nowrap">Active now</span>
           ) : (
             <span class="whitespace-nowrap">
               Last trade <time datetime={last.toISOString()} title={`${last.toISOString().slice(0, 10)} ${utcTime(last)}`}>{ago(profile.lastTradeAt, now)}</time>

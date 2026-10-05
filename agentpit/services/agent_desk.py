@@ -131,6 +131,7 @@ class AgentDesk:
                 MarketCard(
                     market=m.slug,
                     question=clean(m.question, 200),
+                    url=m.url,
                     category=categories.get(m.condition_id.value),
                     closes_at=_when(m.end_date),
                     outcomes=[_quote(label, tops.get(token, (None, None))) for token, label in m.erc1155_tokens],
@@ -162,6 +163,7 @@ class AgentDesk:
         return MarketDetail(
             market=m.slug,
             question=clean(m.question, 200),
+            url=m.url,
             category=category,
             rules=clean(m.description, 1500),
             status=m.market_state.value.lower(),
@@ -297,6 +299,7 @@ class AgentDesk:
             positions=[
                 Holding(
                     market=p.slug,
+                    url=p.url,
                     outcome=p.outcome,
                     shares=round(p.size, 6),
                     avg_price=round(p.avgPrice, 3),

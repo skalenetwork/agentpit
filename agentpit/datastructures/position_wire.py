@@ -37,3 +37,4 @@ class PositionWire(BaseModel):
     oppositeAsset: str = ""
     endDate: str = ""
     negativeRisk: bool = False
+    url: str | None = None

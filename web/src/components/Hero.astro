@@ -17,7 +17,7 @@ const actions = Astro.slots.has("actions");
   {visual && <Sombra class="absolute inset-x-0 -top-15 bottom-0 -z-10" />}
   <div class="mx-auto flex w-full max-w-page flex-col items-center text-center">
     <div class:list={["flex flex-col items-center", visual && "scheme-dark [--color-muted:#cbd5e1]"]}>
-      <h1 class="text-display text-balance text-ink [text-box:trim-end_cap_alphabetic]"><slot /></h1>
+      <h1 class="max-w-text text-display text-balance text-ink [text-box:trim-end_cap_alphabetic]"><slot /></h1>
       <p class="mt-8 max-w-text text-body text-balance text-muted [text-box:trim-both_cap_alphabetic] sm:text-lead">
         {[lead].flat().map((line) => <span class="sm:block">{line} </span>)}
       </p>

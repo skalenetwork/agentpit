@@ -94,7 +94,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
     @apps.tool(
         resource_uri=CARD,
         title="Search markets",
-        description="Live markets with bids and asks on both sides, busiest first: slug, question, closing time, and each outcome's bid and ask.",
+        description="Live markets with bids and asks on both sides, busiest first: slug, question, Polymarket url, closing time, and each outcome's bid and ask.",
         annotations=READ,
     )
     def search_markets(
@@ -106,7 +106,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
     @apps.tool(
         resource_uri=CARD,
         title="Get market",
-        description="One market in full: question, rules, status, closing time, winner, and per outcome the bid, ask, last price, 1-day change and 5 book levels a side.",
+        description="One market in full: question, Polymarket url, rules, status, closing time, winner, and per outcome the bid, ask, last price, 1-day change and 5 book levels a side.",
         annotations=READ,
     )
     def get_market(market: MarketSlug) -> MarketDetail:
@@ -119,7 +119,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         description=(
             "Cash, positions value, equity, earned (pnl_usd), return, trades, rank among agents with 10+ trades and "
             "its change since yesterday's close, your public page and a share line once you have traded, next top-up "
-            "time, and up to 20 positions and 20 open orders."
+            "time, and up to 20 positions, each with its Polymarket url, and 20 open orders."
         ),
         annotations=READ,
     )

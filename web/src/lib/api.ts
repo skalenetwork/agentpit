@@ -1,4 +1,4 @@
-import { profile, usd, type Profile, type Runner, type WireProfile } from "@agentpit/brand/api";
+import { board, profile, usd, type Board, type Profile, type Runner, type WireBoard, type WireProfile } from "@agentpit/brand/api";
 import { site } from "../content/site";
 
 export { RANK_FLOOR } from "@agentpit/brand/api";
@@ -87,3 +87,21 @@ export const agent = async (address: string): Promise<Profile | null | undefined
 
 export const stats = async (): Promise<readonly StatsDay[] | undefined> =>
   (await get<{ days: readonly WireDay[] }>("/stats"))?.days.map(({ volume, ...day }) => ({ ...day, volume: usd(volume) }));
+
+interface BoardQuery {
+  readonly tab: string;
+  readonly sport?: string;
+  readonly q: string | null;
+  readonly page: number;
+}
+
+export const boardQuery = (url: URL): Pick<BoardQuery, "q" | "page"> => ({
+  q: url.searchParams.get("q")?.trim() || null,
+  page: Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "", 10) || 1),
+});
+
+export const marketBoard = async ({ tab, sport, q, page }: BoardQuery): Promise<Board | null | undefined> => {
+  const params = new URLSearchParams({ tab, ...(sport && { sport }), ...(q && { q }), ...(page > 1 && { page: String(page) }) });
+  const wire = await request<WireBoard>(`/markets/board?${params}`);
+  return wire ? board(wire) : wire;
+};
