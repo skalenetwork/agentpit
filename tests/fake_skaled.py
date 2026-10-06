@@ -39,7 +39,7 @@ class FakeSkaled:
         self.lose: set[int] = set()  # nonces accepted with OK but never queued
         self.revert: set[int] = set()  # nonces mined with status 0
         self.estimate_errors: list[Exception] = []
-        self.known_errors: list[Exception] = []  # raised by tx_known
+        self.pending_errors: list[Exception] = []  # raised by pending_hashes
         self.fee = (200_000, 0)
         self.fee_calls = 0
         self.estimate_calls = 0
@@ -87,13 +87,24 @@ class FakeSkaled:
             if self.accept_then_raise:
                 raise self.accept_then_raise.pop(0)
 
-    def tx_known(self, tx_hash: bytes) -> bool:
+    def pending_hashes(self) -> set[bytes]:
+        """skaled's `eth_pendingTransactions`: the CURRENT queue only, i.e.
+        each sender's transactions that are contiguous from its committed
+        nonce (`Client::pending` is `topTransactions(status().current)`). A
+        transaction parked behind a gap is in the future queue: not listed."""
         with self._lock:
-            if self.known_errors:
-                raise self.known_errors.pop(0)
-            return tx_hash in self.mined or any(
-                q["hash"] == tx_hash for q in self.queue
-            )
+            if self.pending_errors:
+                raise self.pending_errors.pop(0)
+            out: set[bytes] = set()
+            by_sender: dict[str, dict[int, bytes]] = defaultdict(dict)
+            for q in self.queue:
+                by_sender[q["sender"]][q["nonce"]] = q["hash"]
+            for sender, nonces in by_sender.items():
+                nonce = self.committed[sender]
+                while nonce in nonces:
+                    out.add(nonces[nonce])
+                    nonce += 1
+            return out
 
     def receipts(self, tx_hashes: list[bytes]) -> list:
         with self._lock:

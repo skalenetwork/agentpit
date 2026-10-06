@@ -321,9 +321,10 @@ class Settings(BaseSettings):
     # How many admin-key transactions may wait for a block at once. Our SKALE
     # chain runs in Multi-Transaction Mode, so they share blocks instead of
     # landing one per block; the sender drops to 1 by itself if the node turns
-    # out to refuse a second one. 1 = strictly serial.
+    # out to refuse a second one. 1 = strictly serial. At most 256: skaled's
+    # queue holds ~1024 transactions, shared by every sender on the chain.
     admin_tx_max_in_flight: int = Field(
-        default=64, ge=1, validation_alias="AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT"
+        default=64, ge=1, le=256, validation_alias="AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT"
     )
 
     # Admin

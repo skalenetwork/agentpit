@@ -71,12 +71,18 @@ def test_read_market_states_batches_slots_and_registry():
     assert states == [(0, 0, 0)] * 3
 
 
-def test_sync_chunk_size_leaves_half_the_capacity_to_user_trades(monkeypatch):
-    # Two transactions per market: a chunk may fill at most half the slots.
-    assert _admin().sync_chunk_size == 16
-
-    monkeypatch.setenv("AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT", "1")
+def _admin_without_env_file() -> OnchainAdmin:
     settings = Settings(_env_file=None)
     d = Deployment.load(settings.deployment_path)
     client = Web3Client(settings, d)
-    assert OnchainAdmin(client, Contracts(client.web3, d)).sync_chunk_size == 1
+    return OnchainAdmin(client, Contracts(client.web3, d))
+
+
+def test_sync_chunk_size_leaves_half_the_capacity_to_user_trades(monkeypatch):
+    # Two transactions per market: a chunk may fill at most half the slots.
+    # The default of 64, whatever a developer's env or .env says.
+    monkeypatch.delenv("AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT", raising=False)
+    assert _admin_without_env_file().sync_chunk_size == 16
+
+    monkeypatch.setenv("AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT", "1")
+    assert _admin_without_env_file().sync_chunk_size == 1

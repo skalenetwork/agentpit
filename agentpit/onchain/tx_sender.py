@@ -16,7 +16,8 @@ skaled behaviour this relies on (tag 5.2.0-beta.1, checked 2026-10-06):
 - With MTM off, a nonce above the committed one is refused.
 - `eth_getTransactionByHash` finds only MINED transactions; a queued one
   answers null (libweb3jsonrpc/Eth.cpp, ClientBase.cpp). The queue is visible
-  in `eth_pendingTransactions`.
+  in `eth_pendingTransactions`, but only its current part: a transaction
+  parked behind a nonce gap is not listed (Client::pending).
 
 Nonce, sign and broadcast happen under the send lock, normally one round trip;
 the retries of a refused send, the resend after a lost answer and healing a
@@ -37,11 +38,12 @@ from typing import Protocol
 import requests
 from eth_account.signers.local import LocalAccount
 from hexbytes import HexBytes
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 from web3 import Web3
 from web3._utils.method_formatters import receipt_formatter
 from web3.contract.contract import ContractFunction
 from web3.datastructures import AttributeDict
-from web3.exceptions import RequestTimedOut, TimeExhausted, TransactionNotFound
+from web3.exceptions import RequestTimedOut, TimeExhausted
 from web3.types import RPCEndpoint, TxReceipt
 
 log = logging.getLogger(__name__)
@@ -128,6 +130,36 @@ def classify_send_error(exc: BaseException) -> SendError:
     return SendError.OTHER
 
 
+def failed_before_connecting(exc: BaseException) -> bool:
+    """Did this failed request provably never reach the node?
+
+    Only a failure to open the connection says so: a refused or timed-out TCP
+    connect, or a host name that did not resolve. requests raises those as
+    `ConnectTimeout`, or as a `ConnectionError` wrapping urllib3's
+    `MaxRetryError` whose reason is a `NewConnectionError` (refused, DNS) or a
+    `ConnectTimeoutError`. A read timeout, or a reset or a hang-up after
+    connecting, may come after the node took the request: not this.
+
+    Only the exception requests wrapped (its first argument, or an explicit
+    `raise ... from`) is looked at, never `__context__` or anything deeper: a
+    reset raised while an earlier refusal was being handled carries that
+    refusal in its context, yet its own request did connect. A wrong True
+    would report a send the node may hold as refused, so every doubt is
+    False.
+    """
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
+        return True
+    if not isinstance(exc, requests.exceptions.ConnectionError):
+        return False
+    wrapped = next((a for a in exc.args if isinstance(a, BaseException)), None)
+    if wrapped is None:
+        wrapped = exc.__cause__
+    if isinstance(wrapped, MaxRetryError):
+        wrapped = wrapped.reason
+    # NewConnectionError (and its NameResolutionError) is a ConnectTimeoutError.
+    return isinstance(wrapped, ConnectTimeoutError)
+
+
 class ChainRpc(Protocol):
     """The node calls the sender makes. `Web3ChainRpc` in production, a fake
     skaled in tests."""
@@ -136,7 +168,7 @@ class ChainRpc(Protocol):
 
     def send_raw(self, raw: bytes) -> None: ...
 
-    def tx_known(self, tx_hash: bytes) -> bool: ...
+    def pending_hashes(self) -> set[bytes]: ...
 
     def receipts(self, tx_hashes: list[bytes]) -> list[TxReceipt | None]: ...
 
@@ -157,54 +189,56 @@ class Web3ChainRpc:
     def send_raw(self, raw: bytes) -> None:
         self._w3.eth.send_raw_transaction(raw)
 
-    def tx_known(self, tx_hash: bytes) -> bool:
-        """Does the node hold this transaction, mined or queued?
+    def pending_hashes(self) -> set[bytes]:
+        """Hashes in the node's queue, in one read of `eth_pendingTransactions`.
 
         skaled's `eth_getTransactionByHash` finds only mined transactions, so
-        a queued one is looked up in `eth_pendingTransactions` too. If that
-        list cannot be read the answer is False; the caller copes with a wrong
-        False (a filler for a queued transaction is refused: same nonce).
+        this list is the only way to see a queued one. It is the CURRENT
+        queue only (`Client::pending` is `topTransactions(status().current)`):
+        a transaction parked behind a nonce gap is not in it. If the list
+        cannot be read the answer is empty; the stall healer copes with a
+        wrong "not queued" (a filler on a nonce the node holds is refused).
         """
-        try:
-            self._w3.eth.get_transaction(HexBytes(tx_hash))
-            return True
-        except TransactionNotFound:
-            pass
-        wanted = Web3.to_hex(tx_hash).lower()
         try:
             response = self._w3.provider.make_request(
                 RPCEndpoint("eth_pendingTransactions"), []
             )
             queued = response.get("result")
-            return isinstance(queued, list) and any(
-                str(tx.get("hash", "")).lower() == wanted
+            if not isinstance(queued, list):
+                return set()
+            return {
+                bytes(HexBytes(tx["hash"]))
                 for tx in queued
-                if isinstance(tx, dict)
-            )
+                if isinstance(tx, dict) and tx.get("hash")
+            }
         except Exception:
-            return False
+            return set()
 
     def receipts(self, tx_hashes: list[bytes]) -> list[TxReceipt | None]:
-        """Receipts for many hashes in one round trip per 100; None = not mined."""
+        """Receipts for many hashes in one round trip per 100; None = not mined.
+
+        Each receipt is matched to the hash it names in `transactionHash`,
+        never by its position: a short answer or a failed item must not shift
+        receipts onto other hashes. A hash whose item is missing, failed or
+        names another hash reads as not mined for this poll, with one warning
+        per call, so one bad item never drops the poll for the others.
+        """
         out: list[TxReceipt | None] = []
+        problems: list[str] = []
         for start in range(0, len(tx_hashes), _RPC_BATCH):
-            chunk = tx_hashes[start : start + _RPC_BATCH]
+            chunk = [bytes(h) for h in tx_hashes[start : start + _RPC_BATCH]]
             responses = self._w3.provider.make_batch_request(
                 [("eth_getTransactionReceipt", [Web3.to_hex(h)]) for h in chunk]  # type: ignore[misc]
             )
             if not isinstance(responses, list):
                 raise RuntimeError(f"receipt batch failed: {responses}")
-            for response in responses:
-                if response.get("error"):
-                    raise RuntimeError(
-                        f"receipt batch item failed: {response['error']}"
-                    )
-                raw = response.get("result")
-                out.append(
-                    None
-                    if raw is None
-                    else AttributeDict.recursive(receipt_formatter(raw))
-                )
+            out.extend(_match_receipts(chunk, responses, problems))
+        if problems:
+            log.warning(
+                "admin receipt batch answered oddly, those hashes read as not "
+                "mined this poll: %s",
+                "; ".join(problems[:5]) + ("; ..." if len(problems) > 5 else ""),
+            )
         return out
 
     def estimate_gas(self, tx: dict) -> int:
@@ -218,6 +252,35 @@ class Web3ChainRpc:
         if not base:
             return self._w3.eth.gas_price, 0
         return 2 * base + priority, priority
+
+
+def _match_receipts(
+    hashes: list[bytes], responses: list, problems: list[str]
+) -> list[TxReceipt | None]:
+    """One receipt or None per hash in `hashes`, from one batch's answers,
+    each placed by the hash it names. What does not fit goes to `problems`."""
+    if len(responses) != len(hashes):
+        problems.append(f"{len(responses)} answers for {len(hashes)} hashes")
+    wanted = set(hashes)
+    found: dict[bytes, TxReceipt] = {}
+    for response in responses:
+        if not isinstance(response, dict) or response.get("error"):
+            error = response.get("error") if isinstance(response, dict) else response
+            problems.append(f"item failed: {error}")
+            continue
+        raw = response.get("result")
+        if raw is None:
+            continue  # not mined yet; nothing says which hash, nothing to place
+        try:
+            tx_hash = bytes(HexBytes(raw["transactionHash"]))
+        except (KeyError, TypeError, ValueError):
+            problems.append("a receipt without a transactionHash")
+            continue
+        if tx_hash not in wanted:
+            problems.append(f"a receipt for {HexBytes(tx_hash).to_0x_hex()}, not asked")
+            continue
+        found[tx_hash] = AttributeDict.recursive(receipt_formatter(raw))
+    return [found.get(h) for h in hashes]
 
 
 @dataclass(frozen=True)
@@ -416,7 +479,9 @@ class AdminTxSender:
         the action is pinned to that nonce and those signed bytes (re-sending
         them on the same nonce is safe, only one transaction per nonce can
         ever execute). Only the answers listed below settle it; anything else
-        leaves it unknowable.
+        leaves it unknowable. The one exception: when every copy failed to
+        even connect (`failed_before_connecting`), the node never saw one, so
+        the send was refused and its nonce stays free.
         """
         skips = 0
         resynced = fee_refreshed = False
@@ -425,6 +490,9 @@ class AdminTxSender:
         # refreshed meanwhile would give a second copy a new hash, and the
         # node would answer "same nonce" about our own first copy.
         pinned: tuple[bytes, bytes, int, Exception] | None = None
+        # True while every delivery of the pinned bytes failed before
+        # connecting; one answer or one possible delivery ends it for good.
+        never_connected = False
         waited = False  # a pinned resend has waited for our lower nonces
         deadline: float | None = None
         while True:
@@ -449,6 +517,7 @@ class AdminTxSender:
             kind = classify_send_error(error)
             if pinned is not None:
                 # The answer to a resend of pinned bytes.
+                never_connected = never_connected and failed_before_connecting(error)
                 if kind is SendError.DUPLICATE:
                     return self._accept(tx_hash, nonce)
                 if (
@@ -499,6 +568,12 @@ class AdminTxSender:
                         if not self._any_in_flight(below):
                             waited = True
                             continue
+                if never_connected:
+                    # No copy ever reached the node (refused or timed-out
+                    # connect, unresolved name): refused, not unknowable. The
+                    # nonce is not counted, so the next send reuses it and no
+                    # gap is left for the stall healer to fill.
+                    raise pinned[3]
                 # FEE_LOW (checked before the nonce and the queue, so the node
                 # may well hold our copy), OTHER, TRANSPORT, a failed lookup,
                 # a nonce used by something we cannot find, a nonce read the
@@ -514,6 +589,7 @@ class AdminTxSender:
                 # hash, so send the identical bytes once more: same hash, same
                 # nonce, the node takes it at most once.
                 pinned = (raw, tx_hash, nonce, error)
+                never_connected = failed_before_connecting(error)
                 continue
             if kind is SendError.DUPLICATE:
                 return self._accept(tx_hash, nonce)
@@ -693,13 +769,16 @@ class AdminTxSender:
         self._heal_stall()
 
     def _heal_stall(self) -> None:
-        """Unblock the queue when the node has lost one of our transactions.
+        """Unblock the queue when the node has lost our transactions.
 
         skaled parks every later nonce behind a gap, so one transaction the
         node dropped (it failed re-validation when a block was proposed) or
         never received would stop every admin send, user trades included,
         until a restart. The fix is a 0-value transfer to ourselves on the
-        missing nonce.
+        missing nonce. An outage leaves a whole run of them (each send whose
+        answers were lost counts its nonce), so one pass fills every gap it
+        can prove, not one per `stall_after`: 16 lost nonces would otherwise
+        hold every admin transaction for four minutes.
         """
         now = self._clock()
         if now - self._last_stall_check < self._stall_after:
@@ -723,18 +802,51 @@ class AdminTxSender:
             if committed > oldest.pending.nonce:
                 self._settle_used_nonce(oldest, now)
                 return
-            if committed == oldest.pending.nonce and self._rpc.tx_known(
-                oldest.pending.tx_hash
-            ):
-                return  # still queued, only slow
-            filler = self._send_filler(committed)
-            if filler is not None and committed == oldest.pending.nonce:
-                with self._state:
-                    oldest.superseded_by = filler.tx_hash
+            self._fill_gaps(committed, now)
         except Exception as exc:
             log.warning("admin stall check failed: %s", exc)
         finally:
             self._send_lock.release()
+
+    def _fill_gaps(self, committed: int, now: float) -> None:
+        """Send a filler on each nonce from `committed` up that is provably a
+        gap, and stop at the first one that is not.
+
+        A nonce below our counter is a gap when nothing of ours is in flight
+        on it, or what is has waited `stall_after` and is not in the node's
+        queue. One read of the queue serves the whole run. That read lists
+        only the current queue, so a transaction of ours parked behind a gap
+        looks lost: its filler is refused (same nonce) and the run ends there.
+        The refusal is the backstop for every wrong "lost": the node never
+        lets a filler take a nonce it holds a transaction on.
+        """
+        queued = self._rpc.pending_hashes()
+        with self._state:
+            by_nonce: dict[int, list[_Entry]] = {}
+            for entry in self._entries.values():
+                by_nonce.setdefault(entry.pending.nonce, []).append(entry)
+        # A fresh fee, once per pass: a transaction the node dropped for its
+        # price would otherwise get an equally doomed filler.
+        self._fees = None
+        nonce = committed
+        while self._next_nonce is not None and nonce < self._next_nonce:
+            with self._state:
+                here = by_nonce.get(nonce, [])
+                if any(e.done for e in here):
+                    return  # used after all: the nonce read was behind
+                live = [e for e in here if e.superseded_by is None]
+                if any(
+                    now - e.sent_at < self._stall_after or e.pending.tx_hash in queued
+                    for e in live
+                ):
+                    return  # too young to call lost, or still queued
+            filler = self._send_filler(nonce)
+            if filler is None:
+                return
+            with self._state:
+                for entry in live:
+                    entry.superseded_by = filler.tx_hash
+            nonce += 1
 
     def _settle_used_nonce(self, entry: _Entry, now: float) -> None:
         """The node's committed nonce is past `entry`'s: its nonce was used,
@@ -765,14 +877,18 @@ class AdminTxSender:
 
     def _send_filler(self, nonce: int) -> PendingTx | None:
         base = {"to": self.address, "data": b"", "value": 0}
-        # A fresh fee: a transaction the node dropped for its price would
-        # otherwise get an equally doomed filler.
-        self._fees = None
         signed = self._sign(base, nonce, _TRANSFER_GAS)
         try:
             self._rpc.send_raw(bytes(signed.raw_transaction))
         except Exception as exc:
-            log.warning("gap filler for admin nonce %d refused: %s", nonce, exc)
+            if classify_send_error(exc) in (SendError.NONCE_TAKEN, SendError.DUPLICATE):
+                # The node holds a transaction on this nonce (ours parked
+                # behind a gap, or another writer's): not a gap after all.
+                log.info(
+                    "admin nonce %d is held by the node, no filler: %s", nonce, exc
+                )
+            else:
+                log.warning("gap filler for admin nonce %d refused: %s", nonce, exc)
             return None
         log.error(
             "admin nonce %d stalled (the node lost the transaction); sent a "
@@ -806,11 +922,14 @@ class AdminTxSender:
                 return
             try:
                 receipts = self._rpc.receipts([e.pending.tx_hash for e in waiting])
+                # One receipt per hash or none of them: a short answer must
+                # never pair a receipt with the wrong entry.
+                pairs = list(zip(waiting, receipts, strict=True))
             except Exception as exc:
                 log.warning("admin receipt poll failed: %s", exc)
                 return
             with self._state:
-                for entry, receipt in zip(waiting, receipts):
+                for entry, receipt in pairs:
                     if receipt is not None:
                         entry.receipt = receipt
                         entry.done_at = now

@@ -1,12 +1,23 @@
 """AdminTxSender recovers from every way skaled can refuse, half-answer or
 lose an admin transaction, without ever sending the same action twice."""
 
+import logging
+import socket
+import threading
+
 import pytest
 import requests
 from eth_account import Account
 from hexbytes import HexBytes
+from urllib3.exceptions import (
+    ConnectTimeoutError,
+    MaxRetryError,
+    NameResolutionError,
+    NewConnectionError,
+    ProtocolError,
+    ReadTimeoutError,
+)
 from web3 import Web3
-from web3.exceptions import TransactionNotFound
 
 from agentpit.onchain.tx_sender import (
     _OWN_RECEIPT_LOOKUPS,
@@ -16,7 +27,9 @@ from agentpit.onchain.tx_sender import (
     TxDropped,
     Web3ChainRpc,
     classify_send_error,
+    failed_before_connecting,
 )
+from agentpit.onchain.web3_client import build_http_provider
 from tests.fake_skaled import (
     CHAIN_ID,
     FakeClock,
@@ -111,6 +124,121 @@ def _http_error(status: int) -> requests.HTTPError:
 )
 def test_classify_http_failures(exc, kind):
     assert classify_send_error(exc) is kind
+
+
+# The shapes requests 2.33 / urllib3 2.6 give a failed POST (checked against
+# real sockets in test_connect_phase_is_told_apart_on_real_sockets).
+def _refused() -> requests.ConnectionError:
+    return requests.exceptions.ConnectionError(
+        MaxRetryError(
+            None, "/", NewConnectionError(None, "Failed to establish a new connection")
+        )
+    )
+
+
+def _connect_timeout() -> requests.ConnectionError:
+    return requests.exceptions.ConnectTimeout(
+        MaxRetryError(None, "/", ConnectTimeoutError(None, "connect timed out"))
+    )
+
+
+def _unresolved() -> requests.ConnectionError:
+    return requests.exceptions.ConnectionError(
+        MaxRetryError(
+            None, "/", NameResolutionError("rpc.invalid", None, "no such host")
+        )
+    )
+
+
+def _reset_after_connecting() -> requests.ConnectionError:
+    return requests.exceptions.ConnectionError(
+        ProtocolError(
+            "Connection aborted.", ConnectionResetError(54, "Connection reset by peer")
+        )
+    )
+
+
+def _reset_while_handling_a_refusal() -> requests.ConnectionError:
+    """A reset raised while an earlier refusal was being handled: the refusal
+    is in its `__context__`, but this request did reach the node."""
+    exc = _reset_after_connecting()
+    exc.__context__ = _refused()
+    return exc
+
+
+def _bare_error_while_handling_a_refusal() -> requests.ConnectionError:
+    exc = requests.ConnectionError("reset by peer")
+    exc.__context__ = _refused()
+    return exc
+
+
+def _raised_from_a_refusal() -> requests.ConnectionError:
+    exc = requests.ConnectionError("could not connect")
+    exc.__cause__ = _refused().args[0]
+    return exc
+
+
+@pytest.mark.parametrize(
+    "exc, before_connecting",
+    [
+        (_refused(), True),
+        (_raised_from_a_refusal(), True),
+        (_bare_error_while_handling_a_refusal(), False),
+        (_connect_timeout(), True),
+        (_unresolved(), True),
+        (_reset_after_connecting(), False),
+        (_reset_while_handling_a_refusal(), False),
+        (
+            requests.exceptions.ReadTimeout(
+                ReadTimeoutError(None, "/", "Read timed out.")
+            ),
+            False,
+        ),
+        (requests.ConnectionError("reset by peer"), False),
+        (ConnectionRefusedError(61, "refused"), False),  # not from requests
+        (TimeoutError(), False),
+    ],
+)
+def test_failed_before_connecting(exc, before_connecting):
+    assert classify_send_error(exc) is SendError.TRANSPORT
+    assert failed_before_connecting(exc) is before_connecting
+
+
+def _send_through_web3(url: str) -> Exception:
+    provider = build_http_provider(url)
+    provider._request_kwargs = {"timeout": 5}  # noqa: SLF001
+    with pytest.raises(Exception) as info:
+        provider.make_request("eth_sendRawTransaction", ["0x00"])
+    return info.value
+
+
+def test_connect_phase_is_told_apart_on_real_sockets():
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    closed_port = closed.getsockname()[1]
+    closed.close()  # nothing listens: the connect is refused
+    assert failed_before_connecting(
+        _send_through_web3(f"http://127.0.0.1:{closed_port}")
+    )
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+
+    def take_then_hang_up():
+        conn, _ = server.accept()
+        conn.recv(65536)  # the request reached "the node"
+        conn.close()
+
+    thread = threading.Thread(target=take_then_hang_up, daemon=True)
+    thread.start()
+    try:
+        exc = _send_through_web3(f"http://127.0.0.1:{server.getsockname()[1]}")
+    finally:
+        thread.join(5)
+        server.close()
+    assert classify_send_error(exc) is SendError.TRANSPORT
+    assert not failed_before_connecting(exc)
 
 
 def test_duplicate_answer_counts_as_accepted():
@@ -249,6 +377,48 @@ def test_both_sends_unanswered_raise_the_first_error_and_count_the_nonce():
         sender.submit(_Fn(), gas=100_000)
     assert info.value is first
     assert sender.submit(_Fn(), gas=100_000).nonce == 1
+
+
+@pytest.mark.parametrize(
+    "make_first, make_second",
+    [
+        (_refused, _refused),
+        (_connect_timeout, _refused),
+        (_unresolved, _connect_timeout),
+    ],
+)
+def test_connect_failures_on_send_and_resend_leave_the_nonce_free(
+    make_first, make_second
+):
+    """Neither copy ever reached the node: refused, not unknowable. The nonce
+    is not counted, so no gap is left for the stall healer to fill."""
+    chain = FakeSkaled()
+    sender, _, _ = _sender(chain)
+    first = make_first()
+    chain.send_errors.extend([first, make_second()])
+    with pytest.raises(requests.ConnectionError) as info:
+        sender.submit(_Fn(), gas=100_000)
+    assert info.value is first
+    assert chain.accepted == []
+    follow = sender.submit(_Fn(), gas=100_000)
+    assert follow.nonce == 0  # the nonce is reused
+    assert sender.wait(follow, timeout=10)["status"] == 1
+    assert len(chain.accepted) == 1  # no filler was needed
+
+
+@pytest.mark.parametrize(
+    "make_first, make_second",
+    [(_refused, _reset_after_connecting), (_reset_after_connecting, _refused)],
+)
+def test_one_copy_possibly_delivered_still_counts_the_nonce(make_first, make_second):
+    chain = FakeSkaled()
+    sender, _, _ = _sender(chain)
+    first = make_first()
+    chain.send_errors.extend([first, make_second()])
+    with pytest.raises(requests.ConnectionError) as info:
+        sender.submit(_Fn(), gas=100_000)
+    assert info.value is first
+    assert sender.submit(_Fn(), gas=100_000).nonce == 1  # nonce 0 counted as used
 
 
 def _answer_lost_after_mining(chain):
@@ -490,6 +660,82 @@ def test_unanswerable_send_is_counted_and_its_gap_is_filled():
     assert Web3.to_checksum_address(filler[0]["tx"]["to"]) == account.address
 
 
+def test_a_run_of_lost_nonces_is_filled_in_one_pass():
+    """An outage that loses 16 answers in a row leaves 16 unknowable nonces.
+    One heal pass fills them all: one gap per `stall_after` would hold every
+    admin transaction (user trades included) for 16 x 15 s."""
+    stall_after = 15
+    chain = FakeSkaled()
+    sender, account, clock = _sender(chain, stall_after=stall_after)
+    for _ in range(16):
+        chain.send_errors.extend(
+            [
+                requests.ConnectionError("reset by peer"),
+                requests.ConnectionError("reset by peer"),
+            ]
+        )
+        with pytest.raises(requests.ConnectionError):
+            sender.submit(_Fn(), gas=100_000)
+    sent_at: dict[int, float] = {}
+    real = chain.send_raw
+
+    def send_raw(raw):
+        real(raw)
+        sent_at[chain.accepted[-1]["nonce"]] = clock()
+
+    chain.send_raw = send_raw
+    start = clock()
+    following = sender.submit(_Fn(), gas=100_000)
+    assert following.nonce == 16
+    assert sender.wait(following, timeout=600)["status"] == 1
+    assert clock() - start <= 2 * stall_after
+    fillers = [a for a in chain.accepted if a["nonce"] < 16]
+    assert [a["nonce"] for a in fillers] == list(range(16))
+    assert all(
+        Web3.to_checksum_address(a["tx"]["to"]) == account.address for a in fillers
+    )
+    assert len({sent_at[n] for n in range(16)}) == 1  # all in one pass
+
+
+def test_the_run_stops_at_a_nonce_the_node_still_holds():
+    """Lost, queued, lost. The queued one is parked behind the gap, where
+    `eth_pendingTransactions` does not list it, so its filler is refused (same
+    nonce) and the run stops there; the next pass fills the second gap."""
+    chain = FakeSkaled()
+    sender, _, clock = _sender(chain, stall_after=5, mine_on_sleep=False)
+    chain.lose.update({0, 2})
+    lost = sender.submit(_Fn(), gas=100_000)
+    queued = sender.submit(_Fn(), gas=100_000)
+    lost_too = sender.submit(_Fn(), gas=100_000)
+    clock.advance(6)
+    sender.poll()
+    assert [a["nonce"] for a in chain.accepted] == [0, 1, 2, 0]  # one filler
+    chain.mine()
+    clock.advance(6)
+    sender.poll()  # nonce 1 mined with the filler; now nonce 2 is the gap
+    assert [a["nonce"] for a in chain.accepted][-1] == 2
+    chain.mine()
+    clock.advance(1)
+    results = sender.wait_all([lost, queued, lost_too], timeout=5)
+    assert isinstance(results[0], TxDropped)
+    assert results[1]["status"] == 1
+    assert isinstance(results[2], TxDropped)
+
+
+def test_a_young_transaction_ends_the_run():
+    """A nonce whose transaction was sent less than `stall_after` ago is not
+    yet provably lost, so the run stops below it."""
+    chain = FakeSkaled()
+    sender, _, clock = _sender(chain, stall_after=5, mine_on_sleep=False)
+    chain.lose.update({0, 1})
+    sender.submit(_Fn(), gas=100_000)
+    clock.advance(4)
+    sender.submit(_Fn(), gas=100_000)  # nonce 1: lost too, but only 2 s old
+    clock.advance(2)
+    sender.poll()
+    assert [a["nonce"] for a in chain.accepted] == [0, 1, 0]
+
+
 def test_dropped_tx_is_filled_and_reported():
     chain = FakeSkaled()
     sender, account, _ = _sender(chain, stall_after=5)
@@ -571,16 +817,6 @@ def test_lost_filler_still_drops_the_original_and_frees_its_slot():
     assert sender.wait(follow, timeout=10)["status"] == 1
 
 
-class _FakeEth:
-    def __init__(self, mined):
-        self.mined = mined
-
-    def get_transaction(self, tx_hash):
-        if bytes(tx_hash) not in self.mined:
-            raise TransactionNotFound("not found")
-        return {"hash": tx_hash}
-
-
 class _FakeProvider:
     def __init__(self, response):
         self.response = response
@@ -594,8 +830,7 @@ class _FakeProvider:
 
 
 class _FakeW3:
-    def __init__(self, mined=(), pending_response=None):
-        self.eth = _FakeEth(set(mined))
+    def __init__(self, pending_response=None):
         self.provider = _FakeProvider(
             pending_response if pending_response is not None else {"result": []}
         )
@@ -604,32 +839,128 @@ class _FakeW3:
 _HASH = bytes(range(32))
 
 
-def test_tx_known_finds_a_mined_transaction():
-    rpc = Web3ChainRpc(_FakeW3(mined=[_HASH]))
-    assert rpc.tx_known(_HASH) is True
-
-
-def test_tx_known_finds_a_queued_transaction_in_the_pending_list():
-    """skaled's eth_getTransactionByHash only finds mined transactions."""
+def test_pending_hashes_lists_the_queue_in_one_read():
+    """skaled's eth_getTransactionByHash only finds mined transactions; the
+    queue is read once per heal pass from eth_pendingTransactions."""
     listed = HexBytes(_HASH).to_0x_hex().upper().replace("0X", "0x")
-    w3 = _FakeW3(pending_response={"result": [{"hash": listed}]})
-    assert Web3ChainRpc(w3).tx_known(_HASH) is True
+    other = "0x" + "ab" * 32
+    w3 = _FakeW3(pending_response={"result": [{"hash": listed}, {"hash": other}]})
+    assert Web3ChainRpc(w3).pending_hashes() == {_HASH, bytes.fromhex("ab" * 32)}
     assert w3.provider.calls == ["eth_pendingTransactions"]
-
-
-def test_tx_known_is_false_when_neither_mined_nor_queued():
-    rpc = Web3ChainRpc(
-        _FakeW3(pending_response={"result": [{"hash": "0x" + "ab" * 32}]})
-    )
-    assert rpc.tx_known(_HASH) is False
 
 
 @pytest.mark.parametrize(
     "response",
     [
         {"error": {"code": -32601, "message": "method not found"}},
+        {"result": None},
         requests.ConnectionError("down"),
     ],
 )
-def test_tx_known_is_false_when_the_pending_list_cannot_be_read(response):
-    assert Web3ChainRpc(_FakeW3(pending_response=response)).tx_known(_HASH) is False
+def test_pending_hashes_is_empty_when_the_queue_cannot_be_read(response):
+    """The healer copes with a wrong "not queued": a filler on a nonce the node
+    holds is refused (same nonce) and the run stops there."""
+    assert Web3ChainRpc(_FakeW3(pending_response=response)).pending_hashes() == set()
+
+
+def _raw_receipt(tx_hash: bytes, block: int = 7) -> dict:
+    return {
+        "transactionHash": Web3.to_hex(tx_hash),
+        "blockNumber": hex(block),
+        "status": "0x1",
+    }
+
+
+class _BatchProvider:
+    """`make_batch_request` answering with whatever the test scripted, as
+    web3 returns it (sorted by id, or a lone error object)."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.batches: list[list] = []
+
+    def make_batch_request(self, requests_):
+        self.batches.append(list(requests_))
+        return self.answer(requests_) if callable(self.answer) else self.answer
+
+
+def _receipts_rpc(answer) -> tuple[Web3ChainRpc, _BatchProvider]:
+    w3 = _FakeW3()
+    w3.provider = _BatchProvider(answer)
+    return Web3ChainRpc(w3), w3.provider
+
+
+_A, _B, _C = b"\xaa" * 32, b"\xbb" * 32, b"\xcc" * 32
+
+
+def _warnings(caplog) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "agentpit.onchain.tx_sender" and r.levelno == logging.WARNING
+    ]
+
+
+def test_receipts_in_order_are_matched_to_their_hashes(caplog):
+    rpc, _ = _receipts_rpc(
+        [
+            {"id": 1, "result": _raw_receipt(_A)},
+            {"id": 2, "result": None},
+            {"id": 3, "result": _raw_receipt(_C)},
+        ]
+    )
+    got = rpc.receipts([_A, _B, _C])
+    assert bytes(got[0]["transactionHash"]) == _A and got[0]["blockNumber"] == 7
+    assert got[1] is None
+    assert bytes(got[2]["transactionHash"]) == _C
+    assert _warnings(caplog) == []
+
+
+def test_a_short_batch_answer_never_shifts_receipts_onto_other_hashes(caplog):
+    """The node answered two of three items: the receipts land on the hashes
+    they belong to, never on their neighbours by position."""
+    rpc, _ = _receipts_rpc(
+        [
+            {"id": 2, "result": _raw_receipt(_B)},
+            {"id": 3, "result": _raw_receipt(_C)},
+        ]
+    )
+    got = rpc.receipts([_A, _B, _C])
+    assert got[0] is None
+    assert bytes(got[1]["transactionHash"]) == _B
+    assert bytes(got[2]["transactionHash"]) == _C
+    assert len(_warnings(caplog)) == 1
+
+
+def test_an_item_error_or_a_foreign_receipt_reads_as_not_mined(caplog):
+    """One bad item must not drop the poll for every other hash."""
+    rpc, _ = _receipts_rpc(
+        [
+            {"id": 1, "error": {"code": -32000, "message": "busy"}},
+            {"id": 2, "result": _raw_receipt(b"\xdd" * 32)},  # not one we asked for
+            {"id": 3, "result": _raw_receipt(_C)},
+        ]
+    )
+    got = rpc.receipts([_A, _B, _C])
+    assert got[0] is None and got[1] is None
+    assert bytes(got[2]["transactionHash"]) == _C
+    assert len(_warnings(caplog)) == 1  # one line per poll, not per item
+
+
+def test_receipts_are_asked_for_in_batches_of_100():
+    hashes = [i.to_bytes(32, "big") for i in range(1, 251)]
+    rpc, provider = _receipts_rpc(
+        lambda reqs: [
+            {"id": n, "result": _raw_receipt(bytes.fromhex(params[0][2:]))}
+            for n, (_, params) in enumerate(reqs)
+        ]
+    )
+    got = rpc.receipts(hashes)
+    assert [len(b) for b in provider.batches] == [100, 100, 50]
+    assert [bytes(r["transactionHash"]) for r in got] == hashes
+
+
+def test_a_failed_batch_still_raises():
+    rpc, _ = _receipts_rpc({"error": {"code": -32005, "message": "rate limited"}})
+    with pytest.raises(RuntimeError, match="receipt batch failed"):
+        rpc.receipts([_A])

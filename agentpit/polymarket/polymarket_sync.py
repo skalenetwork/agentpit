@@ -13,6 +13,7 @@ from agentpit.common import check_state
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
+from agentpit.domain.exceptions import MarketStateError
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.polymarket.category_resolver import category_rank, resolve_category
 from agentpit.polymarket.tag_taxonomy import normalize_slug
@@ -1050,7 +1051,10 @@ def create_polymarket_markets_if_needed(
     Three steps, so a chunk of new markets shares one or two blocks instead of
     two blocks each: classify every candidate (known ones only get refreshed),
     prepare the new ones on chain a chunk at a time with every transaction
-    broadcast before any receipt is awaited, then insert what succeeded.
+    broadcast before any receipt is awaited, then insert what succeeded. A
+    market listed twice counts once. A chunk whose chain step raises as a
+    whole ends the chain work of the pass: the rest count as failed, and the
+    next pass retries them.
 
     Each database step runs in its own SAVEPOINT: the batch shares one
     transaction (the caller's db.write()), and without it a single failed
@@ -1062,8 +1066,21 @@ def create_polymarket_markets_if_needed(
     failed = 0
 
     new: list[tuple[CreateMarketRequest, dict]] = []
+    seen: set[str] = set()
     for pm_market in pm_markets:
         question = pm_market.get("question") or "<no question>"
+        pm_id = pm_market.get("id")
+        if pm_id is not None:
+            if str(pm_id) in seen:
+                # Gamma's pagination over a live volume24hr sort can return a
+                # market twice. Nothing is inserted before the chain step, so
+                # a second copy would be classified new as well and then fail
+                # on the unique polymarket_id; the first copy stands for both.
+                logger.debug(
+                    "Skip %r: polymarket id %s twice in one pass", question, pm_id
+                )
+                continue
+            seen.add(str(pm_id))
         try:
             with db.transaction():
                 request = _refresh_known_or_build_request(db, pm_market)
@@ -1083,10 +1100,23 @@ def create_polymarket_markets_if_needed(
                 [(r.question, [label for _, label in r.erc1155_tokens]) for r, _ in batch],
             )
         except Exception as exc:
-            # The whole step failed (the RPC is down, say): these markets
-            # failed, the next chunk still gets its chance.
-            prepared = [exc] * len(batch)
-        for (request, pm_market), outcome in zip(batch, prepared):
+            # The whole step failed: a chain read raised, the node being out
+            # of reach, say (a market's own trouble comes back as its result,
+            # never raised). The chunks after it would likely fail the same
+            # way, after sending transactions whose answers are lost, each
+            # one a nonce gap. So the chain work of this pass ends here, in
+            # one line; the next pass retries every one of these markets.
+            left = len(new) - start
+            failed += left
+            logger.warning(
+                "Chain step failed (%s: %s); %d new markets left for the next pass",
+                exc.__class__.__name__,
+                _one_line(exc),
+                left,
+            )
+            logger.debug("Chain step failure details", exc_info=exc)
+            break
+        for (request, pm_market), outcome in zip(batch, prepared, strict=True):
             if isinstance(outcome, Exception):
                 failed += 1
                 _log_skip(request.question, outcome)
@@ -1112,9 +1142,20 @@ def create_polymarket_markets_if_needed(
 def _log_skip(question: str, exc: Exception) -> None:
     # One bad market (e.g. an RPC blip) shouldn't kill the whole sync batch.
     # Keep the message single-line; the stack trace lives at debug level for
-    # when you actually want it.
-    logger.warning("Skip %r (%s)", question, exc.__class__.__name__)
+    # when you actually want it. A MarketStateError's text says what is
+    # missing on chain, which is the reason to read the line at all.
+    if isinstance(exc, MarketStateError):
+        logger.warning(
+            "Skip %r (%s: %s)", question, exc.__class__.__name__, _one_line(exc)
+        )
+    else:
+        logger.warning("Skip %r (%s)", question, exc.__class__.__name__)
     logger.debug("Skip %r details", question, exc_info=exc)
+
+
+def _one_line(exc: BaseException, limit: int = 300) -> str:
+    text = " ".join(str(exc).split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def create_polygon_market_if_does_not_exist(

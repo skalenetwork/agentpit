@@ -220,6 +220,9 @@ def prepare_markets_on_chain(
     Returns one result per item, in order: `(condition_id, [(token_id,
     label), ...])`, or the exception that market failed with. Identical
     questions share one condition and get the same ids, as they always did.
+    A submit that raises stops the sending: every market still needing a
+    transaction gets that same exception. A failed state read raises for the
+    whole batch.
     """
     results: list[tuple[ConditionId, list[tuple[str, str]]] | Exception | None] = [
         None
@@ -259,20 +262,34 @@ def prepare_markets_on_chain(
 
 def _run_condition_plans(admin: OnchainAdmin, plans: list[_ConditionPlan]) -> None:
     states = admin.read_market_states([(p.condition_id, p.tokens) for p in plans])
-    for plan, (slots, comp_a, comp_b) in zip(plans, states):
+    # The first submit that raises ends the sending. A submit error is never
+    # about one market (the gas is static, nothing is estimated): the node is
+    # out of reach or the admin nonce stream is in trouble. Sending the rest
+    # would only add sends whose answers are lost, each leaving a nonce gap
+    # behind. Every market that still needs a transaction fails with that same
+    # error and the next sync pass retries it; what was sent is still awaited
+    # and verified below.
+    failure: Exception | None = None
+    for plan, (slots, comp_a, comp_b) in zip(plans, states, strict=True):
         if slots not in (0, 2):
             plan.error = MarketStateError(
                 f"condition already prepared with {slots} slots, expected 2"
             )
             continue
+        needs_prepare = slots == 0
+        needs_register = comp_a == 0 or comp_b == 0
+        if failure is not None:
+            if needs_prepare or needs_register:
+                plan.error = failure
+            continue
         try:
-            if slots == 0:
+            if needs_prepare:
                 plan.pending.append(
                     admin.submit_prepare_condition(
                         admin.oracle_address, plan.question_id, 2
                     )
                 )
-            if comp_a == 0 or comp_b == 0:
+            if needs_register:
                 # registerToken never looks at the CTF, so it may follow its
                 # own prepareCondition into the same block.
                 plan.pending.append(
@@ -281,11 +298,12 @@ def _run_condition_plans(admin: OnchainAdmin, plans: list[_ConditionPlan]) -> No
                     )
                 )
         except Exception as exc:
-            plan.error = exc
+            plan.error = failure = exc
 
     sent = [tx for plan in plans for tx in plan.pending]
     if sent:
-        for tx, outcome in zip(sent, admin.wait_all(sent, timeout=_PREPARE_WAIT_S)):
+        outcomes = admin.wait_all(sent, timeout=_PREPARE_WAIT_S)
+        for tx, outcome in zip(sent, outcomes, strict=True):
             if isinstance(outcome, Exception):
                 log.warning(
                     "market tx 0x%s (nonce %d) not confirmed: %s",
@@ -302,7 +320,9 @@ def _run_condition_plans(admin: OnchainAdmin, plans: list[_ConditionPlan]) -> No
     # pair first, and a transaction that timed out here may still land (the
     # next sync pass then finds the market prepared and skips the sends).
     for plan, (slots, comp_a, comp_b) in zip(
-        todo, admin.read_market_states([(p.condition_id, p.tokens) for p in todo])
+        todo,
+        admin.read_market_states([(p.condition_id, p.tokens) for p in todo]),
+        strict=True,
     ):
         if slots != 2 or comp_a == 0 or comp_b == 0:
             plan.error = MarketStateError(

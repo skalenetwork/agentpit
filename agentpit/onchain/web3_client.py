@@ -28,7 +28,9 @@ def build_http_provider(rpc_url: str) -> Web3.HTTPProvider:
     ("already exists", "invalid nonce") would be read as a refusal of the
     first. `AdminTxSender` resolves a lost answer itself: it resends the
     identical bytes once and, if the node says the nonce is already used, looks
-    for its own receipt. Reads keep their retries.
+    for its own receipt. Reads keep their retries. User-key sends
+    (`send_user_tx`) lose the automatic resend too, deliberately: a resend
+    after a lost answer is how one action runs twice.
 
     An explicit request_cache_validation_threshold avoids web3's unlocked
     first-use probe that can switch the cache off permanently under concurrent

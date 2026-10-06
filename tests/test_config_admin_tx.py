@@ -23,3 +23,11 @@ def test_admin_tx_max_in_flight_is_configurable(monkeypatch):
 def test_admin_tx_max_in_flight_rejects_zero(monkeypatch):
     with pytest.raises(ValidationError):
         _settings(monkeypatch, AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT="0")
+
+
+def test_admin_tx_max_in_flight_is_capped_by_the_node_queue(monkeypatch):
+    """skaled's queue holds ~1024 transactions for the whole chain."""
+    s = _settings(monkeypatch, AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT="256")
+    assert s.admin_tx_max_in_flight == 256
+    with pytest.raises(ValidationError):
+        _settings(monkeypatch, AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT="257")
