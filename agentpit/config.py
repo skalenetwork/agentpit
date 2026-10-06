@@ -318,6 +318,16 @@ class Settings(BaseSettings):
     tx_confirmations_timeout_s: int = Field(
         default=30, validation_alias="AGENTPIT_TX_TIMEOUT_S"
     )
+    # How many admin-key transactions may wait for a block at once. Our SKALE
+    # chain runs in Multi-Transaction Mode, so they share blocks instead of
+    # landing one per block; the sender drops to 1 by itself if the node turns
+    # out to refuse a second one. 1 = strictly serial. At most 256: skaled's
+    # queue holds ~1024 transactions, shared by every sender on the chain.
+    # The sync sends a quarter of it per JSON-RPC batch: 128 = 32 markets, up
+    # to 64 transactions in one batch.
+    admin_tx_max_in_flight: int = Field(
+        default=128, ge=1, le=256, validation_alias="AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT"
+    )
 
     # Admin
     admin_token: str = Field(

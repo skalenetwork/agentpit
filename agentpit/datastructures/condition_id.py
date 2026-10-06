@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from agentpit.common import check_state
 
 
-@dataclass
+@dataclass(frozen=True)
 class ConditionId:
     value: str
 

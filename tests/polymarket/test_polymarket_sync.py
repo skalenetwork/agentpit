@@ -21,6 +21,7 @@ from agentpit.polymarket.polymarket_sync import (
     fetch_all_polymarket_markets,
     fetch_polymarket_market,
 )
+from tests.chain_fakes import as_batch
 from tests.db_helpers import fresh_test_conn
 
 
@@ -747,7 +748,7 @@ def _gamma_market(**over):
 
 
 def _sync(db, monkeypatch, pm_markets):
-    monkeypatch.setattr(polymarket_sync, "prepare_market_on_chain", _fake_prepare)
+    monkeypatch.setattr(polymarket_sync, "prepare_markets_on_chain", as_batch(_fake_prepare))
     monkeypatch.setattr(
         polymarket_sync, "fetch_all_polymarket_markets", lambda host, **kw: pm_markets
     )

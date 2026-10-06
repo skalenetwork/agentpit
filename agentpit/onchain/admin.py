@@ -2,9 +2,11 @@
 
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
+from web3.contract.contract import ContractFunction
 from web3.types import TxReceipt
 
 from agentpit.onchain.contracts import Contracts
+from agentpit.onchain.tx_sender import PendingTx
 from agentpit.onchain.user_wallet import (
     fund_user_with_native,
     send_admin_tx,
@@ -18,6 +20,18 @@ from agentpit.onchain.web3_client import Web3Client
 _BALANCE_BATCH = 200
 
 _MAX_UINT256 = 2**256 - 1
+
+# Static gas limits for the sync's batched sends, about twice the gas measured
+# on SKALE (57,226 and 109,909). An estimate would cost a round trip per
+# market (a batch is signed in one go, so it has none), and a registerToken
+# sent behind its own prepareCondition must not depend on state that is not
+# mined yet. Over-provisioning costs nothing: the unused gas is refunded.
+PREPARE_CONDITION_GAS = 120_000
+REGISTER_TOKEN_GAS = 220_000
+
+# Three eth_calls per market in one JSON-RPC batch: 40 markets = 120 requests,
+# under SKALE's cap of 128.
+_STATE_BATCH = 40
 
 
 class OnchainAdmin:
@@ -86,6 +100,57 @@ class OnchainAdmin:
 
     # --- markets ----------------------------------------------------
 
+    def prepare_condition_call(
+        self, oracle: str, question_id: bytes, outcome_slot_count: int
+    ) -> tuple[ContractFunction, int]:
+        """`prepareCondition` with its static gas limit, for `submit_many`."""
+        fn = self._contracts.ctf.functions.prepareCondition(
+            Web3.to_checksum_address(oracle), question_id, outcome_slot_count
+        )
+        return fn, PREPARE_CONDITION_GAS
+
+    def register_token_call(
+        self, token_a: int, token_b: int, condition_id: bytes
+    ) -> tuple[ContractFunction, int]:
+        """`registerToken` with its static gas limit, for `submit_many`."""
+        fn = self._contracts.exchange.functions.registerToken(
+            token_a, token_b, condition_id
+        )
+        return fn, REGISTER_TOKEN_GAS
+
+    def submit_many(
+        self, calls: list[tuple[ContractFunction, int]]
+    ) -> list[PendingTx | Exception]:
+        """Broadcast every call in JSON-RPC batches without waiting; one
+        result per call, in order (`AdminTxSender.submit_many`)."""
+        return self._client.admin_sender.submit_many(calls)
+
+    def wait_all(
+        self, pendings: list[PendingTx], *, timeout: float
+    ) -> list[TxReceipt | Exception]:
+        return self._client.admin_sender.wait_all(pendings, timeout=timeout)
+
+    def read_market_states(
+        self, markets: list[tuple[bytes, list[int]]]
+    ) -> list[tuple[int, int, int]]:
+        """(outcome slot count, registry complement of token 0, of token 1)
+        for each (condition id, [token 0, token 1]), in JSON-RPC batches."""
+        out: list[tuple[int, int, int]] = []
+        ctf = self._contracts.ctf.functions
+        registry = self._contracts.exchange.functions.registry
+        for start in range(0, len(markets), _STATE_BATCH):
+            chunk = markets[start : start + _STATE_BATCH]
+            with self._client.web3.batch_requests() as batch:
+                for condition_id, tokens in chunk:
+                    batch.add(ctf.getOutcomeSlotCount(condition_id))
+                    batch.add(registry(tokens[0]))
+                    batch.add(registry(tokens[1]))
+                results = batch.execute()
+            for i in range(len(chunk)):
+                slots, comp_a, comp_b = results[3 * i : 3 * i + 3]
+                out.append((int(slots), int(comp_a[0]), int(comp_b[0])))
+        return out
+
     def prepare_condition(
         self,
         oracle: str,
@@ -138,6 +203,23 @@ class OnchainAdmin:
         return send_user_tx(self._client, user_account, fn, timeout=timeout)
 
     # --- read-only --------------------------------------------------
+
+    @property
+    def oracle_address(self) -> str:
+        """The admin, which is the oracle of every locally prepared condition."""
+        return self._client.admin.address
+
+    @property
+    def collateral_address(self) -> str:
+        return self._contracts.usd.address
+
+    @property
+    def sync_chunk_size(self) -> int:
+        """Markets per batched sync step: two transactions each, so a chunk uses
+        at most half the in-flight capacity and user trades keep the other half
+        during a sync burst. With the default 128: 32 markets, up to 64
+        transactions, one JSON-RPC batch."""
+        return max(1, self._client.admin_sender.max_in_flight // 4)
 
     @property
     def deployment_id(self) -> str:

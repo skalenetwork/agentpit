@@ -14,6 +14,7 @@ import secrets
 import agentpit.polymarket.polymarket_sync as sync
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.db.table_read import TableRead
+from tests.chain_fakes import as_batch
 from tests.db_helpers import fresh_test_db
 
 
@@ -52,7 +53,7 @@ def test_duplicate_market_does_not_poison_batch(monkeypatch):
         ]
         return cid, toks
 
-    monkeypatch.setattr(sync, "prepare_market_on_chain", stable_prepare)
+    monkeypatch.setattr(sync, "prepare_markets_on_chain", as_batch(stable_prepare))
 
     with db.write() as conn:
         created = sync.create_polymarket_markets_if_needed(

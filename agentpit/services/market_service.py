@@ -1,7 +1,7 @@
 import logging
 
 from eth_utils import keccak
-from web3 import Web3
+from web3.contract.contract import ContractFunction
 
 from agentpit.datastructures.cancel_market_response import CancelMarketResponse
 from agentpit.datastructures.condition_id import ConditionId
@@ -24,11 +24,11 @@ from agentpit.domain.exceptions import (
     MarketStateError,
 )
 from agentpit.onchain.admin import OnchainAdmin
+from agentpit.onchain.ctf_ids import binary_market_ids
+from agentpit.onchain.tx_sender import PendingTx
 from agentpit.services.event_service import EventService
 
 log = logging.getLogger(__name__)
-
-_ZERO_BYTES32 = b"\x00" * 32
 
 
 class MarketService:
@@ -190,78 +190,172 @@ class MarketService:
                 raise MarketStateError(str(e)) from e
 
 
+# A chunk of up to ~64 transactions; blocks come every 1-2 s under load.
+_PREPARE_WAIT_S = 120
+
+
+class _ConditionPlan:
+    """On-chain work for one condition id, shared by every input that asked
+    for the same question."""
+
+    def __init__(self, question_id: bytes, condition_id: bytes, tokens: list[int]):
+        self.question_id = question_id
+        self.condition_id = condition_id
+        self.tokens = tokens
+        self.indexes: list[int] = []
+        self.pending: list[PendingTx] = []
+        self.error: Exception | None = None
+
+
+def prepare_markets_on_chain(
+    admin: OnchainAdmin, items: list[tuple[str, list[str]]]
+) -> list[tuple[ConditionId, list[tuple[str, str]]] | Exception]:
+    """Prepare many binary markets on the local CTF + Exchange at once.
+
+    For each `(question, outcome_labels)`: `prepareCondition` if the condition
+    is new, `registerToken` if its tokens are not registered, then a check that
+    both persisted. Ids are derived off-chain, chain state is read in JSON-RPC
+    batches, and every transaction is broadcast before any receipt is awaited,
+    so a chunk lands in one or two blocks instead of two blocks per market.
+
+    Returns one result per item, in order: `(condition_id, [(token_id,
+    label), ...])`, or the exception that market failed with. Identical
+    questions share one condition and get the same ids, as they always did.
+    Every transaction goes out in one `submit_many`: if it raises, every
+    market still needing a transaction gets that exception; a failed
+    prepareCondition fails its market. A failed state read raises for the
+    whole batch.
+    """
+    results: list[tuple[ConditionId, list[tuple[str, str]]] | Exception | None] = [
+        None
+    ] * len(items)
+    plans: dict[bytes, _ConditionPlan] = {}
+    oracle = admin.oracle_address
+    collateral = admin.collateral_address
+    for i, (question, labels) in enumerate(items):
+        if len(labels) != 2:
+            results[i] = MarketStateError(
+                "exchange.registerToken only supports binary (YES/NO) markets"
+            )
+            continue
+        question_id = keccak(text=question)
+        condition_id, tokens = binary_market_ids(oracle, collateral, question_id)
+        plan = plans.setdefault(
+            condition_id, _ConditionPlan(question_id, condition_id, tokens)
+        )
+        plan.indexes.append(i)
+
+    if plans:
+        _run_condition_plans(admin, list(plans.values()))
+
+    for plan in plans.values():
+        for i in plan.indexes:
+            if plan.error is not None:
+                results[i] = plan.error
+                continue
+            labels = items[i][1]
+            results[i] = (
+                ConditionId("0x" + plan.condition_id.hex()),
+                list(zip((str(t) for t in plan.tokens), labels)),
+            )
+    assert all(r is not None for r in results)
+    return results  # type: ignore[return-value]
+
+
+def _run_condition_plans(admin: OnchainAdmin, plans: list[_ConditionPlan]) -> None:
+    states = admin.read_market_states([(p.condition_id, p.tokens) for p in plans])
+    calls: list[tuple[ContractFunction, int]] = []
+    owners: list[tuple[_ConditionPlan, bool]] = []  # (plan, is its prepare)
+    for plan, (slots, comp_a, comp_b) in zip(plans, states, strict=True):
+        if slots not in (0, 2):
+            plan.error = MarketStateError(
+                f"condition already prepared with {slots} slots, expected 2"
+            )
+            continue
+        if slots == 0:
+            calls.append(
+                admin.prepare_condition_call(admin.oracle_address, plan.question_id, 2)
+            )
+            owners.append((plan, True))
+        if comp_a == 0 or comp_b == 0:
+            # registerToken never looks at the CTF, so it may follow its own
+            # prepareCondition into the same batch and the same block.
+            calls.append(
+                admin.register_token_call(
+                    plan.tokens[0], plan.tokens[1], plan.condition_id
+                )
+            )
+            owners.append((plan, False))
+
+    if calls:
+        # One JSON-RPC batch for the whole chunk. If it raises, the error is
+        # never about one market (the gas is static, nothing is estimated):
+        # the node is out of reach or the admin nonce stream is in trouble.
+        # Every market that needed a transaction fails with it and the next
+        # sync pass retries.
+        try:
+            submitted = admin.submit_many(calls)
+        except Exception as exc:
+            for plan, _ in owners:
+                plan.error = exc
+        else:
+            for (plan, is_prepare), outcome in zip(owners, submitted, strict=True):
+                if not isinstance(outcome, Exception):
+                    plan.pending.append(outcome)
+                elif is_prepare:
+                    plan.error = outcome
+                # A failed registerToken is left to the verdict read below:
+                # another path may have registered the pair, or the
+                # transaction, its answer lost, may land after all.
+
+    sent = [tx for plan in plans for tx in plan.pending]
+    if sent:
+        outcomes = admin.wait_all(sent, timeout=_PREPARE_WAIT_S)
+        for tx, outcome in zip(sent, outcomes, strict=True):
+            if isinstance(outcome, Exception):
+                log.warning(
+                    "market tx 0x%s (nonce %d) not confirmed: %s",
+                    tx.tx_hash.hex(),
+                    tx.nonce,
+                    outcome,
+                )
+
+    todo = [p for p in plans if p.error is None]
+    if not todo:
+        return
+    # The chain state is the verdict, not the receipts, exactly as before:
+    # registerToken reverts AlreadyRegistered when another path registered the
+    # pair first, and a transaction that timed out here may still land (the
+    # next sync pass then finds the market prepared and skips the sends).
+    for plan, (slots, comp_a, comp_b) in zip(
+        todo,
+        admin.read_market_states([(p.condition_id, p.tokens) for p in todo]),
+        strict=True,
+    ):
+        if slots != 2 or comp_a == 0 or comp_b == 0:
+            plan.error = MarketStateError(
+                f"market not prepared on chain for condition "
+                f"0x{plan.condition_id.hex()}: outcome slots={slots}, "
+                f"registry[{plan.tokens[0]}].complement={comp_a}, "
+                f"registry[{plan.tokens[1]}].complement={comp_b}"
+            )
+            continue
+        log.info(
+            "market prepared on-chain: condition_id=0x%s tokens=%s",
+            plan.condition_id.hex(),
+            plan.tokens,
+        )
+
+
 def prepare_market_on_chain(
     admin: OnchainAdmin, question: str, outcome_labels: list[str]
 ) -> tuple[ConditionId, list[tuple[str, str]]]:
-    """Prepare a binary market on the local CTF + Exchange.
+    """Prepare one binary market on the local CTF + Exchange.
 
-    Runs `prepareCondition` (idempotent), derives the per-outcome ERC-1155
-    token IDs, calls `registerToken`, and verifies via `registry()` that
-    both tokens persisted. Returns the locally-derived condition id and
-    `[(token_id_str, label), ...]` pairs ready to store on the market row.
-
-    Used by both the local-creation flow ([`MarketService.create_market`])
-    and the Polymarket sync mirror flow.
+    `prepare_markets_on_chain` for a single item: used by local market
+    creation (`MarketService.create_market`) and the single-market sync path.
     """
-    outcome_count = len(outcome_labels)
-    if outcome_count != 2:
-        raise MarketStateError(
-            "exchange.registerToken only supports binary (YES/NO) markets"
-        )
-    question_id = keccak(text=question)
-    oracle = admin._client.admin.address  # noqa: SLF001 — intentional
-    ctf = admin._contracts.ctf  # noqa: SLF001
-    usd_address = admin._contracts.usd.address  # noqa: SLF001
-    exch = admin._contracts.exchange  # noqa: SLF001
-
-    condition_id_bytes = ctf.functions.getConditionId(
-        Web3.to_checksum_address(oracle), question_id, outcome_count
-    ).call()
-
-    existing_slots = ctf.functions.getOutcomeSlotCount(condition_id_bytes).call()
-    if existing_slots == 0:
-        admin.prepare_condition(oracle, question_id, outcome_count)
-    elif existing_slots != outcome_count:
-        raise MarketStateError(
-            f"condition already prepared with {existing_slots} slots, "
-            f"expected {outcome_count}"
-        )
-
-    token_ids: list[int] = []
-    for i in range(outcome_count):
-        index_set = 1 << i
-        collection_id = ctf.functions.getCollectionId(
-            _ZERO_BYTES32, condition_id_bytes, index_set
-        ).call()
-        token_id = ctf.functions.getPositionId(
-            Web3.to_checksum_address(usd_address), collection_id
-        ).call()
-        token_ids.append(token_id)
-
-    try:
-        admin.register_token(token_ids[0], token_ids[1], condition_id_bytes)
-    except Exception as exc:
-        log.info(
-            "registerToken raised for %s: %s — verifying registry state",
-            condition_id_bytes.hex(),
-            exc,
-        )
-
-    comp_a, _ = exch.functions.registry(token_ids[0]).call()
-    comp_b, _ = exch.functions.registry(token_ids[1]).call()
-    if comp_a == 0 or comp_b == 0:
-        raise MarketStateError(
-            f"registerToken did not persist for condition "
-            f"0x{condition_id_bytes.hex()}: "
-            f"registry[{token_ids[0]}].complement={comp_a}, "
-            f"registry[{token_ids[1]}].complement={comp_b}"
-        )
-
-    condition_id_hex = "0x" + condition_id_bytes.hex()
-    erc1155_tokens = list(zip((str(t) for t in token_ids), outcome_labels))
-    log.info(
-        "market prepared on-chain: condition_id=%s tokens=%s",
-        condition_id_hex,
-        token_ids,
-    )
-    return ConditionId(condition_id_hex), erc1155_tokens
+    (result,) = prepare_markets_on_chain(admin, [(question, outcome_labels)])
+    if isinstance(result, Exception):
+        raise result
+    return result
