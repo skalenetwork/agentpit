@@ -1,7 +1,8 @@
 import { bursts } from "@agentpit/brand/activity";
 import { type Fill, type MarketContext, marketCaption, type Profile } from "@agentpit/brand/api";
-import { closeLabel, recordBars } from "@agentpit/brand/chart";
+import { closeLabel, earnedToday, recordBars } from "@agentpit/brand/chart";
 import { cents, count, dollars, pct, shortAddress, shortDay, signedDollars, tone, utcTime } from "@agentpit/brand/format";
+import polymarket from "@agentpit/brand/polymarket.svg";
 import { recordCalls } from "@agentpit/brand/standing";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, ChartLine, Pencil, Share, Trash2 } from "lucide-react";
@@ -21,8 +22,9 @@ const BURSTS = 8;
 const DAY = 86_400;
 const VERB = { BUY: "Bought", SELL: "Sold", SPLIT: "Split", MERGE: "Merged", REDEEM: "Redeemed" } as const;
 const ICON = "max-sm:w-7.5 max-sm:px-0";
-const POSITION_COLS = "md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px_36px] lg:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px_116px]";
-const BURST_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px_36px] lg:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px_116px]";
+const LEAD = "flex min-h-10 items-center text-caption text-muted";
+const POSITION_COLS = "md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px]";
+const BURST_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px]";
 
 const route = getRouteApi("/console/agents/$address");
 
@@ -87,7 +89,19 @@ const Row = ({ market, now, cols, what, at, value, note, earned }: RowProps) => 
     <Thumb src={market.icon} title={market.title} category={market.category} />
     <span className="min-w-0 md:contents">
       <span className="grid min-w-0">
-        <span className="line-clamp-2 font-medium md:line-clamp-1">{market.title}</span>
+        {market.url ? (
+          <a href={market.url} target="_blank" rel="noopener" className="group/link flex max-w-full min-w-0 items-end gap-1 justify-self-start font-medium">
+            <span className="min-w-0 underline-offset-2 group-hover/link:underline max-md:line-clamp-2 md:truncate">{market.title}</span>
+            <span
+              aria-hidden="true"
+              className="mb-1 size-3 shrink-0 bg-muted transition-colors duration-150 group-hover/link:bg-ink"
+              style={{ mask: `url("${polymarket}") center / contain no-repeat` }}
+            />
+            <span className="sr-only">, on Polymarket</span>
+          </a>
+        ) : (
+          <span className="line-clamp-2 font-medium md:line-clamp-1">{market.title}</span>
+        )}
         <Caption parts={marketCaption(market, now)} />
       </span>
       <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted max-md:text-caption md:contents">
@@ -103,18 +117,6 @@ const Row = ({ market, now, cols, what, at, value, note, earned }: RowProps) => 
         </span>
       )}
       {earned !== undefined && <span className={`font-medium max-md:text-caption md:text-right ${TONE[tone(Math.round(earned))]}`}>{signedDollars(earned)}</span>}
-      {market.url && (
-        <a
-          href={market.url}
-          target="_blank"
-          rel="noopener"
-          aria-label={`Open in Polymarket, ${market.title}, new tab`}
-          className="inline-flex h-6 shrink-0 items-center justify-center gap-1 justify-self-end rounded-control bg-paper px-2 text-caption font-medium text-ink transition-colors duration-150 hover:bg-line max-md:mt-1 max-lg:w-6 max-lg:px-0"
-        >
-          <span className="max-lg:hidden">Polymarket</span>
-          <ArrowUpRight size={12} strokeWidth={1.75} />
-        </a>
-      )}
     </span>
   </li>
 );
@@ -124,7 +126,7 @@ const Tabs = ({ tabs }: { tabs: readonly Tab[] }) => {
   const current = tabs.find((tab) => tab.label === chosen) ?? tabs[0];
   return (
     <section className={`px-5 pb-5 sm:px-6 sm:pb-6 ${SOFT}`}>
-      <div role="tablist" className="-mx-5 flex gap-6 border-b border-line px-5 sm:-mx-6 sm:px-6">
+      <div role="tablist" className="-mx-5 flex border-b border-line px-2 sm:-mx-6 sm:px-3">
         {tabs.map((tab) => (
           <button
             key={tab.label}
@@ -132,10 +134,12 @@ const Tabs = ({ tabs }: { tabs: readonly Tab[] }) => {
             role="tab"
             aria-selected={tab === current}
             onClick={() => setChosen(tab.label)}
-            className="relative inline-flex h-11 items-center font-medium text-muted transition-colors duration-150 after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-ink after:opacity-0 hover:text-ink aria-selected:text-ink aria-selected:after:opacity-100"
+            className="group relative flex h-12 items-center font-medium text-muted outline-none transition-colors duration-150 after:absolute after:inset-x-3 after:-bottom-px after:h-0.5 after:rounded-full after:bg-ink after:opacity-0 hover:text-ink aria-selected:text-ink aria-selected:after:opacity-100"
           >
-            {tab.label}
-            {tab.count !== undefined && <span className="ml-1 font-normal text-muted tabular-nums max-sm:hidden">{count(tab.count)}</span>}
+            <span className="flex h-8 items-center rounded-control px-3 transition-colors duration-150 group-hover:bg-paper group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-signal">
+              {tab.label}
+              {tab.count !== undefined && <span className="ml-1 font-normal text-muted tabular-nums max-sm:hidden">{count(tab.count)}</span>}
+            </span>
           </button>
         ))}
       </div>
@@ -177,14 +181,19 @@ const Header = ({ agent, profile, now }: { agent: Agent; profile: Profile | unde
       <dl className="grid grid-cols-3 gap-3 sm:flex sm:shrink-0 sm:gap-10">
         {(
           [
-            ["Return", pct(profile.money.returnPct), TONE[tone(profile.money.returnPct)]],
-            ["Earned", signedDollars(profile.money.earned), TONE[tone(Math.round(profile.money.earned))]],
-            ["Equity", dollars(profile.money.capital), "text-ink"],
+            ["Return", pct(profile.money.returnPct), TONE[tone(profile.money.returnPct)], 0],
+            ["Earned", signedDollars(profile.money.earned), TONE[tone(Math.round(profile.money.earned))], Math.round(earnedToday(profile.money.earned, profile.money.trend))],
+            ["Equity", dollars(profile.money.capital), "text-ink", 0],
           ] as const
-        ).map(([term, value, color]) => (
-          <div key={term} className="grid min-w-0 sm:justify-items-end sm:text-right">
+        ).map(([term, value, color, today]) => (
+          <div key={term} className="grid min-w-0 content-start sm:justify-items-end sm:text-right">
             <dt className="text-caption text-muted">{term}</dt>
             <dd className={`truncate text-figure tabular-nums max-sm:text-title ${color}`}>{value}</dd>
+            {today !== 0 && (
+              <dd className="text-caption whitespace-nowrap text-muted tabular-nums">
+                <span className={TONE[tone(today)]}>{signedDollars(today)}</span> today
+              </dd>
+            )}
           </div>
         ))}
       </dl>
@@ -228,10 +237,9 @@ const EarnedCard = ({ money, valuedAt }: { money: Profile["money"]; valuedAt: nu
 const PositionsPanel = ({ positions, cash, now }: { positions: Profile["positions"]; cash: number; now: number }) => {
   const [all, setAll] = useState(false);
   const { open } = positions;
-  if (!open.length) return <p className="pt-4 text-muted">Nothing open.</p>;
   return (
     <>
-      <div className={`flex min-h-10 items-center gap-x-3 text-caption text-muted md:grid ${POSITION_COLS}`}>
+      <div className={`${LEAD} gap-x-3 md:grid ${POSITION_COLS}`}>
         <p className="flex flex-wrap items-center gap-x-1.5 md:col-span-3">
           <span>
             <span className="font-medium text-ink tabular-nums">{dollars(positions.mark)}</span> in positions
@@ -241,25 +249,32 @@ const PositionsPanel = ({ positions, cash, now }: { positions: Profile["position
             <span className="font-medium text-ink tabular-nums">{dollars(cash)}</span> cash
           </span>
         </p>
-        <span className="text-right max-md:hidden">Avg → now</span>
-        <span className="text-right max-md:hidden">Value</span>
-        <span className="text-right max-md:hidden">Earned</span>
+        {open.length > 0 &&
+          ["Avg → now", "Value", "Earned"].map((head) => (
+            <span key={head} className="text-right max-md:hidden">
+              {head}
+            </span>
+          ))}
       </div>
-      <ul>
-        {(all ? open : open.slice(0, POSITIONS)).map((position) => (
-          <Row
-            key={`${position.title}${position.outcome}`}
-            market={position}
-            now={now}
-            cols={POSITION_COLS}
-            what={<Outcome outcome={position.outcome} />}
-            at={<Move from={position.avgPrice} to={position.curPrice} />}
-            value={dollars(position.value)}
-            note={position.sellsFor < 0.9 * position.value && `sells for ${dollars(position.sellsFor)}`}
-            earned={position.pnl}
-          />
-        ))}
-      </ul>
+      {open.length ? (
+        <ul>
+          {(all ? open : open.slice(0, POSITIONS)).map((position) => (
+            <Row
+              key={`${position.title}${position.outcome}`}
+              market={position}
+              now={now}
+              cols={POSITION_COLS}
+              what={<Outcome outcome={position.outcome} />}
+              at={<Move from={position.avgPrice} to={position.curPrice} />}
+              value={dollars(position.value)}
+              note={position.sellsFor < 0.9 * position.value && `sells for ${dollars(position.sellsFor)}`}
+              earned={position.pnl}
+            />
+          ))}
+        </ul>
+      ) : (
+        <p className="flex min-h-13 items-center border-t border-line text-muted">Nothing open.</p>
+      )}
       {!all && open.length > POSITIONS && <More onClick={() => setAll(true)}>Show all {count(open.length)} positions</More>}
     </>
   );
@@ -272,8 +287,8 @@ const ActivityPanel = ({ activity, now }: { activity: Profile["activity"]; now: 
   return (
     <>
       {[...new Set(shown.map((burst) => day(burst.at, now)))].map((label) => (
-        <section key={label} className="pt-5 first:pt-4">
-          <h3 className="pb-2.5 text-caption font-medium text-muted">{label}</h3>
+        <section key={label} className="not-first:mt-3">
+          <h3 className={LEAD}>{label}</h3>
           <ul>
             {shown
               .filter((burst) => day(burst.at, now) === label)
@@ -308,24 +323,26 @@ const RecordPanel = ({ record, now }: { record: NonNullable<Profile["record"]>; 
   const won = bars.filter((bar) => bar.tone === "up").length;
   return (
     <>
-      <p className="pt-4 font-medium">
-        {record.wins} of {decided} won
+      <p className={LEAD}>
+        <span>
+          <span className="font-medium text-ink tabular-nums">{record.wins}</span> of <span className="font-medium text-ink tabular-nums">{decided}</span> won
+        </span>
       </p>
       {decided >= 3 && (
         <>
-          <svg className="mt-3 h-22 w-full overflow-visible" role="img" aria-label={`${won} won, ${bars.length - won} lost, oldest to latest`}>
+          <svg className="mt-1 h-22 w-full overflow-visible" role="img" aria-label={`${won} won, ${bars.length - won} lost, oldest to latest`}>
             <line x2="100%" y1={`${zero}%`} y2={`${zero}%`} className="stroke-line" strokeDasharray="3 3" />
             {bars.map((bar) => (
               <rect key={bar.x} x={`${bar.x}%`} y={`${bar.y}%`} width={`${width}%`} height={`${bar.height}%`} rx="2" className={bar.tone === "up" ? "fill-up" : "fill-down"} />
             ))}
           </svg>
-          <p className="mt-2 flex justify-between text-caption text-muted">
+          <p className="mt-2 mb-3 flex justify-between text-caption leading-4 text-muted">
             <span>Oldest</span>
             <span>Latest</span>
           </p>
         </>
       )}
-      <ul className="mt-3">
+      <ul>
         {recordCalls(record).map(({ label, call }) => (
           <Row
             key={label}
@@ -349,7 +366,7 @@ const RecordPanel = ({ record, now }: { record: NonNullable<Profile["record"]>; 
 
 const OrdersPanel = ({ orders, icons, now }: { orders: readonly Order[]; icons: ReadonlyMap<string, string | null>; now: number }) => (
   <>
-    <p className="flex min-h-10 items-center text-caption text-muted">Resting orders fill when the Polymarket book reaches the price.</p>
+    <p className={LEAD}>Resting orders fill when the Polymarket book reaches the price.</p>
     <ul>
       {orders.map((order) => (
         <Row

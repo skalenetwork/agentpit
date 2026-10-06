@@ -1,6 +1,7 @@
 ---
-import { ArrowUpRight, Check, Copy } from "@lucide/astro";
+import { Check, Copy } from "@lucide/astro";
 import { agentPrompt, type Card } from "@agentpit/brand/api";
+import Polymarket from "@agentpit/brand/polymarket.svg";
 
 interface Props {
   card: Card;
@@ -32,9 +33,20 @@ const pill = [
   }
   {
     card.url && (
-      <a class:list={[pill, "bg-paper text-ink hover:bg-line first:col-span-full [[hidden]+&]:col-span-full"]} href={card.url} target="_blank" rel="noopener" aria-label={`Open in Polymarket, ${card.title}, new tab`}>
-        Polymarket
-        <ArrowUpRight class="size-3 shrink-0" aria-hidden="true" />
+      <a
+        class="group/pm relative col-start-2 grid size-7.5 place-items-center rounded-control bg-paper text-ink transition-[background-color,scale] duration-150 ease-out hover:bg-line motion-safe:active:scale-[0.97]"
+        href={card.url}
+        target="_blank"
+        rel="noopener"
+        aria-label={`Open in Polymarket, ${card.title}, new tab`}
+      >
+        <Polymarket class="size-3.5" aria-hidden="true" />
+        <span
+          class="pointer-events-none absolute right-0 bottom-full mb-2 origin-bottom-right scale-[0.98] rounded-item bg-paper px-2.5 py-1.5 text-caption font-medium whitespace-nowrap text-ink opacity-0 shadow-overlay transition-[opacity,scale] duration-50 ease-out group-hover/pm:scale-100 group-hover/pm:opacity-100 group-hover/pm:delay-80 group-hover/pm:duration-150 group-focus-visible/pm:scale-100 group-focus-visible/pm:opacity-100 motion-reduce:transition-none"
+          aria-hidden="true"
+        >
+          Open in Polymarket
+        </span>
       </a>
     )
   }

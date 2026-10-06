@@ -59,3 +59,5 @@ export const recordBars = (pnls: readonly number[]): { readonly zero: number; re
 
 export const closeLabel = (trendStart: string | null, index: number, length: number) =>
   index === length - 1 ? "Today" : trendStart ? shortDay(new Date(Date.parse(trendStart) + index * 86_400_000)) : "";
+
+export const earnedToday = (earned: number, trend: readonly number[]) => earned - (trend.at(-2) ?? 0);

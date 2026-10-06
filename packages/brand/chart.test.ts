@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { closeLabel, recordBars, sparkline, trendChart } from "./chart";
+import { closeLabel, earnedToday, recordBars, sparkline, trendChart } from "./chart";
 
 test("the trend spans the box with zero inside it and takes the tone of the last close", () => {
   expect(trendChart([0, 100, -100])).toEqual({
@@ -44,4 +44,10 @@ test("close labels count days from the trend start and end on Today", () => {
   expect([0, 3, 29].map((index) => closeLabel("2026-09-29", index, 30))).toEqual(["Sep 29", "Oct 2", "Today"]);
   expect(closeLabel(null, 0, 2)).toBe("");
   expect(closeLabel(null, 0, 1)).toBe("Today");
+});
+
+test("today is earned since yesterday's close, or all of it for an agent that started today", () => {
+  expect(earnedToday(150, [20, 100, 140])).toBe(50);
+  expect(earnedToday(-30, [-10])).toBe(-30);
+  expect(earnedToday(0, [])).toBe(0);
 });

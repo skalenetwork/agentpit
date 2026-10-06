@@ -1,5 +1,6 @@
 import { RANK_FLOOR } from "@agentpit/brand/api";
-import { count, pct, signedDollars, tone } from "@agentpit/brand/format";
+import { earnedToday } from "@agentpit/brand/chart";
+import { count, dollars, pct, signedDollars, tone } from "@agentpit/brand/format";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -10,7 +11,7 @@ import { Button, Fault, MEDALS, RankMove, Robot, Sheet, SOFT, Well } from "../ui
 
 const PROMPT = "Read https://agentpit.dev/skill.md and follow it to join AgentPit.";
 const HOW = "Send this to your agent. It shows up here with $100,000 of paper money.";
-const COLS = "grid grid-cols-[22px_36px_minmax(0,1fr)_auto] items-center gap-x-3 px-5 sm:px-6 md:grid-cols-[24px_36px_minmax(0,1fr)_104px_104px_104px]";
+const COLS = "grid grid-cols-[22px_36px_minmax(0,1fr)_auto] items-center gap-x-3 px-5 sm:px-6 md:grid-cols-[24px_36px_minmax(0,1fr)_104px_104px_104px_104px]";
 
 type Sort = "place" | "earned" | "return_pct";
 
@@ -60,6 +61,7 @@ export const Agents = () => {
   const Arrow = up ? ArrowUp : ArrowDown;
   const { data: agents, isError, refetch, dataUpdatedAt } = useAgents();
   const now = dataUpdatedAt / 1000;
+  const today = (agent: Agent) => Math.round(earnedToday(agent.earned, agent.trend));
   const head = (key: Sort, label: string, className: string) => (
     <button
       type="button"
@@ -91,7 +93,15 @@ export const Agents = () => {
         </div>
       ) : (
         <div className="flex min-h-8 items-center justify-between gap-4">
-          <h1 className="text-title">My agents</h1>
+          <div className="grid gap-0.5">
+            <h1 className="text-title">My agents</h1>
+            {agents && agents.length > 1 && (
+              <p className="text-caption text-muted tabular-nums">
+                <span className="font-medium text-ink">{dollars(agents.reduce((sum, agent) => sum + agent.equity, 0))}</span> equity <Sep />{" "}
+                <span className="font-medium text-ink">{signedDollars(agents.reduce((sum, agent) => sum + today(agent), 0))}</span> today
+              </p>
+            )}
+          </div>
           {agents && (
             <Button variant="primary" size="md" onClick={() => setAdding(true)}>
               <Plus size={14} strokeWidth={1.75} />
@@ -112,6 +122,7 @@ export const Agents = () => {
             {head("place", "#", "justify-center")}
             <span className="col-span-2">Agent</span>
             <span className="max-md:hidden">30 days</span>
+            <span className="text-right max-md:hidden">Today</span>
             {head("earned", "Earned", "justify-end max-md:hidden")}
             {head("return_pct", "Return", "justify-end")}
           </div>
@@ -145,6 +156,7 @@ export const Agents = () => {
                     </span>
                   </span>
                   <span className="max-md:hidden">{agent.trend.length > 1 && <Spark trend={agent.trend} />}</span>
+                  <span className="text-right max-md:hidden">{agent.trades > 0 && signedDollars(today(agent))}</span>
                   <span className="text-right max-md:hidden">{agent.trades > 0 && signedDollars(agent.earned)}</span>
                   <span className={`text-right font-medium ${TONE[tone(agent.return_pct)]}`}>{agent.trades > 0 && pct(agent.return_pct)}</span>
                 </Link>

@@ -44,47 +44,28 @@ export const runners = (agents: readonly Agent[]): readonly { runner: Agent["run
     .toSorted((a, b) => b.count - a.count || a.runner.label.localeCompare(b.runner.label));
 
 export interface Highlight {
-  readonly kind: "climber" | "active" | "battle";
-  readonly title: string;
-  readonly note?: string;
-  readonly figure: string;
-  readonly unit?: string;
-  readonly tone?: Tone;
-  readonly line?: string;
   readonly agents: readonly Agent[];
+  readonly text: string;
 }
 
 const WEEK = 7 * 86400;
 
 const recent = (agent: Agent, now: number): boolean => now - agent.lastTradeAt < WEEK;
 
-const climber = (ranked: readonly Ranked[], now: number): Highlight => {
+const climber = (ranked: readonly Ranked[], now: number): Highlight | undefined => {
   const climbed = (agent: Ranked) => agent.rankChange ?? 0;
   const day = (agent: Ranked) => (agent.trend.at(-1) ?? 0) - (agent.trend.at(-2) ?? 0);
   const top = ranked
     .filter((agent) => climbed(agent) > 0 && recent(agent, now))
     .toSorted((a, b) => climbed(b) - climbed(a) || day(b) - day(a) || a.rank - b.rank)[0];
-  if (top) {
-    const by = climbed(top);
-    return { kind: "climber", title: "Biggest climber today", figure: `+${by}`, unit: noun(by, "place"), tone: "up", agents: [top] };
-  }
+  if (top) return { agents: [top], text: `climbed ${climbed(top)} ${noun(climbed(top), "place")} today` };
   const fresh = ranked.find((agent) => agent.rankChange === null);
-  if (fresh) return { kind: "climber", title: "Newly ranked", figure: `#${fresh.rank}`, agents: [fresh] };
-  return { kind: "climber", title: "Biggest climber today", figure: "0", line: "no places changed today", agents: [] };
+  return fresh && { agents: [fresh], text: `entered the board at #${fresh.rank}` };
 };
 
-const active = (agents: readonly Agent[]): Highlight => {
+const active = (agents: readonly Agent[]): Highlight | undefined => {
   const top = most(agents, (agent) => agent.tradesToday);
-  if (!top?.tradesToday) return { kind: "active", title: "Most active today", figure: "0", line: "no trades yet today", agents: [] };
-  const traded = agents.filter((agent) => agent.tradesToday > 0).length;
-  return {
-    kind: "active",
-    title: "Most active today",
-    note: `${count(traded)} ${noun(traded, "agent")} traded`,
-    figure: count(top.tradesToday),
-    unit: noun(top.tradesToday, "trade"),
-    agents: [top],
-  };
+  return top?.tradesToday ? { agents: [top], text: `led with ${count(top.tradesToday)} ${noun(top.tradesToday, "trade")} today` } : undefined;
 };
 
 const battle = (ranked: readonly Ranked[], now: number): Highlight | undefined => {
@@ -96,9 +77,8 @@ const battle = (ranked: readonly Ranked[], now: number): Highlight | undefined =
     ([a, b]) => -Math.abs(a.returnPct - b.returnPct),
   );
   if (!closest) return undefined;
-  const [a, b] = closest;
-  const gap = Math.abs(a.returnPct - b.returnPct).toFixed(2);
-  return { kind: "battle", title: "Closest battle", note: "points apart", figure: gap === "0.00" ? "<0.01" : gap, agents: closest };
+  const gap = Math.abs(closest[0].returnPct - closest[1].returnPct).toFixed(2);
+  return { agents: closest, text: `are ${gap === "0.00" ? "under 0.01" : gap} points apart` };
 };
 
 export const highlights = (agents: readonly Agent[], now: number): readonly Highlight[] => {

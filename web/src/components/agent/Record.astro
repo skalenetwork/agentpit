@@ -20,23 +20,25 @@ const last = bars.at(-1);
 const won = bars.filter((bar) => bar.tone === "up").length;
 ---
 
-<div class:list={["pt-4", className]}>
-  <p class="font-medium text-ink tabular-nums">{wins} of {wins + losses} won</p>
+<div class={className}>
+  <p class="flex min-h-10 items-center text-caption text-muted">
+    <span><span class="font-medium text-ink tabular-nums">{wins}</span> of <span class="font-medium text-ink tabular-nums">{wins + losses}</span> won</span>
+  </p>
   {
     wins + losses >= 3 && last && (
       <Fragment>
-        <svg class="mt-3 block h-22 w-full overflow-visible" role="img" aria-label={`${won} won, ${bars.length - won} lost, oldest to newest, bar height is the amount won or lost`}>
+        <svg class="mt-1 block h-22 w-full overflow-visible" role="img" aria-label={`${won} won, ${bars.length - won} lost, oldest to newest, bar height is the amount won or lost`}>
           <line x1="0" x2="100%" y1={`${zero}%`} y2={`${zero}%`} class="stroke-line" stroke-dasharray="3 3" />
           {bars.map((bar) => <rect x={`${bar.x}%`} y={`${bar.y}%`} width={`${width}%`} height={`${bar.height}%`} rx="2" class={bar.tone === "up" ? "fill-up" : "fill-down"} />)}
         </svg>
-        <svg class="mt-2 block h-4 w-full overflow-visible fill-current text-caption" aria-hidden="true">
+        <svg class="mt-2 mb-3 block h-4 w-full overflow-visible fill-current text-caption" aria-hidden="true">
           <text y="12">Oldest</text>
           <text x={`${last.x + width}%`} y="12" text-anchor="end">Latest</text>
         </svg>
       </Fragment>
     )
   }
-  <ul class="mt-3">
+  <ul>
     {
       recordCalls(record).map(({ label, call }) => (
         <li class="grid grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:min-h-13 md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px] md:items-center md:py-2">

@@ -1,5 +1,5 @@
 ---
-import { ArrowUpRight } from "@lucide/astro";
+import Polymarket from "@agentpit/brand/polymarket.svg";
 
 interface Props {
   title: string;
@@ -13,7 +13,7 @@ const { title, url } = Astro.props;
   url ? (
     <a class="group/link inline-flex max-w-full min-w-0 items-end gap-1 font-medium text-ink" href={url} target="_blank" rel="noopener">
       <span class="min-w-0 underline-offset-2 group-hover/link:underline max-md:line-clamp-2 md:truncate">{title}</span>
-      <ArrowUpRight class="mb-1 size-3 shrink-0 text-muted transition-colors duration-150 group-hover/link:text-ink" aria-hidden="true" />
+      <Polymarket class="mb-1 size-3 shrink-0 text-muted transition-colors duration-150 group-hover/link:text-ink" aria-hidden="true" />
       <span class="sr-only">, on Polymarket</span>
     </a>
   ) : (

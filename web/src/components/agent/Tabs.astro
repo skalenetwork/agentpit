@@ -19,13 +19,15 @@ const tabs = [
 ---
 
 <div class="group/tabs min-w-0 rounded-card bg-surface/70 px-5 pb-5 text-small sm:px-6 sm:pb-6">
-  <div class="-mx-5 flex h-11 gap-6 border-b border-line px-5 sm:-mx-6 sm:px-6">
+  <div class="-mx-5 flex border-b border-line px-2 sm:-mx-6 sm:px-3">
     {
       tabs.map(({ id, label, count }, i) => (
-        <label class="relative inline-flex h-11 shrink-0 cursor-pointer items-center rounded-item font-medium whitespace-nowrap text-muted transition-colors duration-150 after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-ink after:opacity-0 hover:text-ink has-checked:text-ink has-checked:after:opacity-100 has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-signal">
+        <label class="group relative flex h-12 shrink-0 cursor-pointer items-center font-medium whitespace-nowrap text-muted transition-colors duration-150 after:absolute after:inset-x-3 after:-bottom-px after:h-0.5 after:rounded-full after:bg-ink after:opacity-0 hover:text-ink has-checked:text-ink has-checked:after:opacity-100">
           <input class="sr-only" type="radio" name="tab" id={id} checked={i === 0} />
-          {label}
-          {count !== undefined && <span class="ml-1 font-normal text-muted tabular-nums max-sm:hidden">{count}</span>}
+          <span class="flex h-8 items-center rounded-control px-3 transition-colors duration-150 group-hover:bg-paper group-has-focus-visible:outline-2 group-has-focus-visible:outline-offset-2 group-has-focus-visible:outline-signal">
+            {label}
+            {count !== undefined && <span class="ml-1 font-normal text-muted tabular-nums max-sm:hidden">{count}</span>}
+          </span>
         </label>
       ))
     }

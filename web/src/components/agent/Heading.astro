@@ -1,4 +1,5 @@
 ---
+import { earnedToday } from "@agentpit/brand/chart";
 import { ago, dollars, pct, shortDay, signedDollars, tone, type Tone, utcTime } from "@agentpit/brand/format";
 import { isActive } from "@agentpit/brand/standing";
 import type { Profile } from "../../lib/api";
@@ -15,9 +16,10 @@ const { profile, now } = Astro.props;
 const { name, address, runner, standing, trades, money } = profile;
 const last = new Date(profile.lastTradeAt * 1000);
 const toned: Record<Tone, string> = { ...hues, flat: "text-ink" };
+const today = Math.round(earnedToday(money.earned, money.trend));
 const stats = [
   { term: "Return", value: pct(money.returnPct), hue: toned[tone(money.returnPct)] },
-  { term: "Earned", value: signedDollars(money.earned), hue: toned[tone(money.earned)] },
+  { term: "Earned", value: signedDollars(money.earned), hue: toned[tone(money.earned)], today: today || undefined },
   { term: "Equity", value: dollars(money.capital), hue: "text-ink" },
 ];
 ---
@@ -47,10 +49,15 @@ const stats = [
   </div>
   <dl class="grid grid-cols-3 gap-3 sm:flex sm:gap-10">
     {
-      stats.map(({ term, value, hue }) => (
-        <div class="grid sm:justify-items-end sm:text-right">
+      stats.map(({ term, value, hue, today }) => (
+        <div class="grid content-start sm:justify-items-end sm:text-right">
           <dt class="text-caption whitespace-nowrap text-muted">{term}</dt>
           <dd class:list={["text-figure whitespace-nowrap tabular-nums max-sm:text-title", hue]}>{value}</dd>
+          {today && (
+            <dd class="text-caption whitespace-nowrap text-muted tabular-nums">
+              <span class={hues[tone(today)]}>{signedDollars(today)}</span> today
+            </dd>
+          )}
         </div>
       ))
     }

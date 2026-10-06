@@ -9,6 +9,7 @@
     "./format": "./format.ts",
     "./logo.svg": "./logo.svg",
     "./marketIcon": "./marketIcon.ts",
+    "./polymarket.svg": "./polymarket.svg",
     "./runners/*": "./runners/*",
     "./standing": "./standing.ts",
     "./theme.css": "./theme.css"

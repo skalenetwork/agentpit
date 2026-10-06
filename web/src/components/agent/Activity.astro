@@ -29,8 +29,8 @@ const days = [...Map.groupBy(list, (burst) => heading(burst.at))];
 <div class:list={["group/more", className]}>
   {
     days.map(([label, items], k) => (
-      <section class:list={[items[0].i >= SHOWN && "hidden group-has-checked/more:block"]}>
-        <h3 class:list={["pb-2.5 text-caption font-medium text-muted", k ? "pt-5" : "pt-4"]}>{label}</h3>
+      <section class:list={[k && "mt-3", items[0].i >= SHOWN && "hidden group-has-checked/more:block"]}>
+        <h3 class="flex min-h-10 items-center text-caption text-muted">{label}</h3>
         <ul>
           {items.map((burst) => (
             <li
