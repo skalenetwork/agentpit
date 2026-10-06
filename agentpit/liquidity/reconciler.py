@@ -248,8 +248,8 @@ def _ensure_inventory(
     Takes the holdings the caller already read rather than reading them again:
     they were two of the five remote round trips a pass used to spend, and the
     caller needs them regardless. Returns the number of split txs performed
-    (0 or 1 per call — splits are admin txs behind the global send_lock,
-    budgeted by the caller); a non-zero return means `held` is now stale.
+    (0 or 1 per call — the split is a house-key transaction, budgeted by the
+    caller); a non-zero return means `held` is now stale.
     """
     need = int(Decimal(str(cfg.mirror_inventory_buffer)) * split_target_micro(snap))
     if need <= 0:

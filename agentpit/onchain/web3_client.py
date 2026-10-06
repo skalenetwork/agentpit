@@ -1,4 +1,3 @@
-import threading
 from functools import lru_cache
 
 import requests
@@ -14,6 +13,7 @@ from web3.types import RPCEndpoint
 
 from agentpit.config import Settings
 from agentpit.onchain.deployment import Deployment
+from agentpit.onchain.tx_sender import AdminTxSender, Web3ChainRpc
 
 
 def build_http_provider(rpc_url: str) -> Web3.HTTPProvider:
@@ -51,12 +51,12 @@ def build_http_provider(rpc_url: str) -> Web3.HTTPProvider:
 
 
 class Web3Client:
-    """Holds the singleton web3 + admin/operator account, and a tx-send lock.
+    """Holds the web3 client, the admin/operator account and its sender.
 
-    The lock serializes admin-key sends so we don't pick the same nonce twice
-    when concurrent requests both try to use the admin (faucet drip, fund-gas,
-    matchOrders). For first cut this is enough; later we can replace it with a
-    dispatcher that tracks pending nonces explicitly.
+    Every admin-key transaction goes through `admin_sender`, which counts the
+    nonce locally and keeps many transactions in flight, so concurrent admin
+    sends (sync, settlement, faucet, gas grants) share blocks. One instance
+    per process: two senders for one key would race on the nonce.
     """
 
     def __init__(self, settings: Settings, deployment: Deployment):
@@ -70,7 +70,6 @@ class Web3Client:
         # on-chain op until the chain happens to advance.
         self.web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         self.deployment = deployment
-        self._send_lock = threading.Lock()
 
         if not settings.operator_private_key:
             raise RuntimeError(
@@ -83,6 +82,12 @@ class Web3Client:
                 f"PK address {self.admin.address} does not match deployment.admin "
                 f"{deployment.admin} from {settings.deployment_path}"
             )
+        self.admin_sender = AdminTxSender(
+            Web3ChainRpc(self.web3),
+            self.admin,
+            deployment.chain_id,
+            max_in_flight=settings.admin_tx_max_in_flight,
+        )
 
     def verify_chain(self) -> None:
         chain_id = self.web3.eth.chain_id
@@ -91,10 +96,6 @@ class Web3Client:
                 f"Connected chain_id {chain_id} != deployment chain_id "
                 f"{self.deployment.chain_id}"
             )
-
-    @property
-    def send_lock(self) -> threading.Lock:
-        return self._send_lock
 
 
 @lru_cache(maxsize=1)
