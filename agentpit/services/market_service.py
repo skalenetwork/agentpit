@@ -25,7 +25,7 @@ from agentpit.domain.exceptions import (
 )
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.ctf_ids import binary_market_ids
-from agentpit.onchain.tx_sender import PendingTx
+from agentpit.onchain.tx_sender import PendingTx, stops_sending
 from agentpit.services.event_service import EventService
 
 log = logging.getLogger(__name__)
@@ -194,6 +194,17 @@ class MarketService:
 _PREPARE_WAIT_S = 120
 
 
+class PreparedMarkets(list[tuple[ConditionId, list[tuple[str, str]]] | Exception]):
+    """What `prepare_markets_on_chain` returns: one result per item, as a
+    plain list, plus `stop`. `stop` is the first error of this chunk's sends
+    that said the node is out of reach or no admin slot freed up
+    (`stops_sending`), or what `submit_many` raised. It is set even when the
+    market it hit shows another error (a failed registerToken is judged by
+    the chain read), so the sync can end its chain work for the pass."""
+
+    stop: Exception | None = None
+
+
 class _ConditionPlan:
     """On-chain work for one condition id, shared by every input that asked
     for the same question."""
@@ -209,7 +220,7 @@ class _ConditionPlan:
 
 def prepare_markets_on_chain(
     admin: OnchainAdmin, items: list[tuple[str, list[str]]]
-) -> list[tuple[ConditionId, list[tuple[str, str]]] | Exception]:
+) -> PreparedMarkets:
     """Prepare many binary markets on the local CTF + Exchange at once.
 
     For each `(question, outcome_labels)`: `prepareCondition` if the condition
@@ -224,7 +235,8 @@ def prepare_markets_on_chain(
     Every transaction goes out in one `submit_many`: if it raises, every
     market still needing a transaction gets that exception; a failed
     prepareCondition fails its market. A failed state read raises for the
-    whole batch.
+    whole batch. The result's `stop` says whether the sends met an outage
+    (`PreparedMarkets`).
     """
     results: list[tuple[ConditionId, list[tuple[str, str]]] | Exception | None] = [
         None
@@ -245,8 +257,7 @@ def prepare_markets_on_chain(
         )
         plan.indexes.append(i)
 
-    if plans:
-        _run_condition_plans(admin, list(plans.values()))
+    stop = _run_condition_plans(admin, list(plans.values())) if plans else None
 
     for plan in plans.values():
         for i in plan.indexes:
@@ -259,10 +270,18 @@ def prepare_markets_on_chain(
                 list(zip((str(t) for t in plan.tokens), labels)),
             )
     assert all(r is not None for r in results)
-    return results  # type: ignore[return-value]
+    prepared = PreparedMarkets(results)  # type: ignore[arg-type]
+    prepared.stop = stop
+    return prepared
 
 
-def _run_condition_plans(admin: OnchainAdmin, plans: list[_ConditionPlan]) -> None:
+def _run_condition_plans(
+    admin: OnchainAdmin, plans: list[_ConditionPlan]
+) -> Exception | None:
+    """Send, await and check every plan's transactions; each plan's error is
+    set on it. Returns the first send error that `stops_sending` (or what
+    `submit_many` raised), else None."""
+    stop: Exception | None = None
     states = admin.read_market_states([(p.condition_id, p.tokens) for p in plans])
     calls: list[tuple[ContractFunction, int]] = []
     owners: list[tuple[_ConditionPlan, bool]] = []  # (plan, is its prepare)
@@ -298,11 +317,15 @@ def _run_condition_plans(admin: OnchainAdmin, plans: list[_ConditionPlan]) -> No
         except Exception as exc:
             for plan, _ in owners:
                 plan.error = exc
+            stop = exc
         else:
             for (plan, is_prepare), outcome in zip(owners, submitted, strict=True):
                 if not isinstance(outcome, Exception):
                     plan.pending.append(outcome)
-                elif is_prepare:
+                    continue
+                if stop is None and stops_sending(outcome):
+                    stop = outcome
+                if is_prepare:
                     plan.error = outcome
                 # A failed registerToken is left to the verdict read below:
                 # another path may have registered the pair, or the
@@ -322,7 +345,7 @@ def _run_condition_plans(admin: OnchainAdmin, plans: list[_ConditionPlan]) -> No
 
     todo = [p for p in plans if p.error is None]
     if not todo:
-        return
+        return stop
     # The chain state is the verdict, not the receipts, exactly as before:
     # registerToken reverts AlreadyRegistered when another path registered the
     # pair first, and a transaction that timed out here may still land (the
@@ -345,6 +368,7 @@ def _run_condition_plans(admin: OnchainAdmin, plans: list[_ConditionPlan]) -> No
             plan.condition_id.hex(),
             plan.tokens,
         )
+    return stop
 
 
 def prepare_market_on_chain(

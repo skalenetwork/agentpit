@@ -10,11 +10,8 @@ from agentpit.config import Settings
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
-from agentpit.onchain.tx_sender import (
-    PendingTx,
-    SendError,
-    classify_send_error,
-)
+from agentpit.onchain.chain_rpc import SendError, classify_send_error
+from agentpit.onchain.tx_sender import PendingTx
 from agentpit.onchain.web3_client import Web3Client
 
 

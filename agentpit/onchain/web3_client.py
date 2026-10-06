@@ -13,7 +13,8 @@ from web3.types import RPCEndpoint
 
 from agentpit.config import Settings
 from agentpit.onchain.deployment import Deployment
-from agentpit.onchain.tx_sender import AdminTxSender, Web3ChainRpc
+from agentpit.onchain.chain_rpc import Web3ChainRpc
+from agentpit.onchain.tx_sender import AdminTxSender
 
 
 def build_http_provider(rpc_url: str) -> Web3.HTTPProvider:

@@ -35,26 +35,24 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
-from typing import Protocol
 
-import requests
 from eth_account.signers.local import LocalAccount
-from eth_utils import keccak
 from hexbytes import HexBytes
-from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 from web3 import Web3
-from web3._utils.method_formatters import receipt_formatter
-from web3._utils.validation import KNOWN_REQUEST_TIMEOUT_MESSAGING
 from web3.contract.contract import ContractFunction
-from web3.datastructures import AttributeDict
-from web3.exceptions import RequestTimedOut, TimeExhausted, Web3RPCError
-from web3.types import RPCEndpoint, TxReceipt
+from web3.exceptions import TimeExhausted
+from web3.types import TxReceipt
+
+from agentpit.onchain.chain_rpc import (
+    BatchUnanswered,
+    ChainRpc,
+    SendError,
+    classify_send_error,
+    failed_before_connecting,
+)
 
 log = logging.getLogger(__name__)
 
-# SKALE refuses a JSON-RPC batch above 128 requests.
-_RPC_BATCH = 100
 # Transactions per broadcast batch. `submit_many` also keeps a batch within
 # `max_in_flight`, since every one of them takes a slot.
 _SEND_BATCH = 100
@@ -69,322 +67,18 @@ _STALL_AFTER_S = 15.0
 # Receipt lookups, `poll_interval` apart, for a transaction whose resend was
 # answered "invalid nonce" (it may have mined, with its receipt not yet served).
 _OWN_RECEIPT_LOOKUPS = 3
-
-
-class SendError(Enum):
-    DUPLICATE = "duplicate"  # the node already holds this very transaction
-    NONCE_TAKEN = "nonce_taken"  # another transaction holds the nonce
-    NONCE_INVALID = "nonce_invalid"  # below committed, or above it with MTM off
-    FEE_LOW = "fee_low"
-    TRANSPORT = "transport"  # no answer: the node may or may not hold it
-    OTHER = "other"  # any other answer: refused
-
-
-# Lowercase substrings of skaled's answers, plus geth/anvil wording. Checked in
-# this order, so "replacement transaction underpriced" is NONCE_TAKEN, not
-# FEE_LOW.
-_ANSWERS = (
-    (
-        SendError.DUPLICATE,
-        (
-            "same transaction already exists",
-            "already in the blockchain",
-            "already known",
-            "known transaction",
-            "transaction already imported",
-        ),
-    ),
-    (
-        SendError.NONCE_TAKEN,
-        ("same nonce already exists", "replacement transaction underpriced"),
-    ),
-    (SendError.NONCE_INVALID, ("invalid transaction nonce", "nonce too low")),
-    (
+# Batch answers that say the node refused the item before importing it. Only
+# an item refused like this is sent again (on another nonce); any other
+# answer is that item's result.
+_RESEND_AFTER = frozenset(
+    {
         SendError.FEE_LOW,
-        (
-            "lower than current eth_gasprice",
-            "less than block base fee",
-            "transaction underpriced",
-        ),
-    ),
+        SendError.NONCE_TAKEN,
+        SendError.NONCE_INVALID,
+        SendError.QUEUE_FULL,
+        SendError.BALANCE_LOW,
+    }
 )
-
-
-def classify_send_error(exc: BaseException) -> SendError:
-    """What a failed `eth_sendRawTransaction` says about the transaction."""
-    if isinstance(
-        exc,
-        (
-            requests.ConnectionError,
-            requests.Timeout,
-            requests.exceptions.ChunkedEncodingError,  # the body was cut
-            ConnectionError,
-            TimeoutError,
-            RequestTimedOut,
-        ),
-    ):
-        return SendError.TRANSPORT
-    if isinstance(exc, requests.HTTPError):
-        # A proxy's 502/503/504 says nothing about the node: the request may
-        # have reached it. Any other status (429, 4xx) means it was not taken.
-        # `is not None`: a Response is falsy for exactly these statuses.
-        response = exc.response
-        if response is not None and response.status_code >= 500:
-            return SendError.TRANSPORT
-    text = str(exc).lower()
-    for kind, markers in _ANSWERS:
-        if any(marker in text for marker in markers):
-            return kind
-    return SendError.OTHER
-
-
-def failed_before_connecting(exc: BaseException) -> bool:
-    """Did this failed request provably never reach the node?
-
-    Only a failure to open the connection says so: a refused or timed-out TCP
-    connect, or a host name that did not resolve. requests raises those as
-    `ConnectTimeout`, or as a `ConnectionError` wrapping urllib3's
-    `MaxRetryError` whose reason is a `NewConnectionError` (refused, DNS) or a
-    `ConnectTimeoutError`. A read timeout, or a reset or a hang-up after
-    connecting, may come after the node took the request: not this.
-
-    Only the exception requests wrapped (its first argument, or an explicit
-    `raise ... from`) is looked at, never `__context__` or anything deeper: a
-    reset raised while an earlier refusal was being handled carries that
-    refusal in its context, yet its own request did connect. A wrong True
-    would report a send the node may hold as refused, so every doubt is
-    False.
-    """
-    if isinstance(exc, requests.exceptions.ConnectTimeout):
-        return True
-    if not isinstance(exc, requests.exceptions.ConnectionError):
-        return False
-    wrapped = next((a for a in exc.args if isinstance(a, BaseException)), None)
-    if wrapped is None:
-        wrapped = exc.__cause__
-    if isinstance(wrapped, MaxRetryError):
-        wrapped = wrapped.reason
-    # NewConnectionError (and its NameResolutionError) is a ConnectTimeoutError.
-    return isinstance(wrapped, ConnectTimeoutError)
-
-
-class BatchUnanswered(ConnectionError):
-    """A batch of sends whose answer cannot be placed item by item: cut
-    short, unreadable, or not pairing one to one with the requests. The node
-    may hold any of them, so it counts as no answer at all (TRANSPORT): the
-    identical batch goes out once more."""
-
-
-class BatchRefused(Exception):
-    """The node answered a whole batch with one error object, without looking
-    at any item: skaled does this to a batch above 128 requests."""
-
-
-class ChainRpc(Protocol):
-    """The node calls the sender makes. `Web3ChainRpc` in production, a fake
-    skaled in tests."""
-
-    def nonce(self, address: str, block: str) -> int: ...
-
-    def send_raw(self, raw: bytes) -> None: ...
-
-    def send_raw_batch(self, raws: list[bytes]) -> list[Exception | None]: ...
-
-    def pending_hashes(self) -> set[bytes]: ...
-
-    def receipts(self, tx_hashes: list[bytes]) -> list[TxReceipt | None]: ...
-
-    def estimate_gas(self, tx: dict) -> int: ...
-
-    def fee_params(self) -> tuple[int, int]: ...
-
-
-class Web3ChainRpc:
-    """`ChainRpc` over a web3 HTTP provider."""
-
-    def __init__(self, web3: Web3):
-        self._w3 = web3
-
-    def nonce(self, address: str, block: str) -> int:
-        return self._w3.eth.get_transaction_count(address, block)  # type: ignore[arg-type]
-
-    def send_raw(self, raw: bytes) -> None:
-        self._w3.eth.send_raw_transaction(raw)
-
-    def send_raw_batch(self, raws: list[bytes]) -> list[Exception | None]:
-        """Broadcast many signed transactions in one JSON-RPC batch. One answer
-        per transaction, in order: None if the node took it, else the error
-        web3 would have raised for a single send of it.
-
-        Through the provider: web3's `batch_requests()` refuses
-        eth_sendRawTransaction, the provider call does not, and the provider
-        never retries a batch. Raises for the whole batch when no answer can be
-        placed on its own transaction: the transport's exception as it stands
-        (so a failed connect still reads as one), `BatchUnanswered` for an
-        answer that cannot be read or paired one to one, `BatchRefused` for
-        one error object in place of the list.
-        """
-        hashes = [keccak(raw) for raw in raws]
-        try:
-            responses = self._w3.provider.make_batch_request(
-                [  # type: ignore[misc]
-                    (RPCEndpoint("eth_sendRawTransaction"), [Web3.to_hex(raw)])
-                    for raw in raws
-                ]
-            )
-        except Exception as exc:
-            if (
-                isinstance(exc, requests.RequestException)
-                or classify_send_error(exc) is SendError.TRANSPORT
-            ):
-                raise
-            # Raised after the post: the body was not JSON, or its answers
-            # could not be sorted by id. The node may have taken any of them.
-            raise BatchUnanswered(f"batch answer unreadable: {exc!r}") from exc
-        if isinstance(responses, list):
-            return _match_send_answers(hashes, responses)
-        if isinstance(responses, dict) and responses.get("error") is not None:
-            raise BatchRefused(f"node refused the whole batch: {responses['error']!r}")
-        raise BatchUnanswered(f"batch answer is not a list: {responses!r:.200}")
-
-    def pending_hashes(self) -> set[bytes]:
-        """Hashes in the node's queue, in one read of `eth_pendingTransactions`.
-
-        skaled's `eth_getTransactionByHash` finds only mined transactions, so
-        this list is the only way to see a queued one. It is the CURRENT
-        queue only (`Client::pending` is `topTransactions(status().current)`):
-        a transaction parked behind a nonce gap is not in it. If the list
-        cannot be read the answer is empty; the stall healer copes with a
-        wrong "not queued" (a filler on a nonce the node holds is refused).
-        """
-        try:
-            response = self._w3.provider.make_request(
-                RPCEndpoint("eth_pendingTransactions"), []
-            )
-            queued = response.get("result")
-            if not isinstance(queued, list):
-                return set()
-            return {
-                bytes(HexBytes(tx["hash"]))
-                for tx in queued
-                if isinstance(tx, dict) and tx.get("hash")
-            }
-        except Exception:
-            return set()
-
-    def receipts(self, tx_hashes: list[bytes]) -> list[TxReceipt | None]:
-        """Receipts for many hashes in one round trip per 100; None = not mined.
-
-        Each receipt is matched to the hash it names in `transactionHash`,
-        never by its position: a short answer or a failed item must not shift
-        receipts onto other hashes. A hash whose item is missing, failed or
-        names another hash reads as not mined for this poll, with one warning
-        per call, so one bad item never drops the poll for the others.
-        """
-        out: list[TxReceipt | None] = []
-        problems: list[str] = []
-        for start in range(0, len(tx_hashes), _RPC_BATCH):
-            chunk = [bytes(h) for h in tx_hashes[start : start + _RPC_BATCH]]
-            responses = self._w3.provider.make_batch_request(
-                [("eth_getTransactionReceipt", [Web3.to_hex(h)]) for h in chunk]  # type: ignore[misc]
-            )
-            if not isinstance(responses, list):
-                raise RuntimeError(f"receipt batch failed: {responses}")
-            out.extend(_match_receipts(chunk, responses, problems))
-        if problems:
-            log.warning(
-                "admin receipt batch answered oddly, those hashes read as not "
-                "mined this poll: %s",
-                "; ".join(problems[:5]) + ("; ..." if len(problems) > 5 else ""),
-            )
-        return out
-
-    def estimate_gas(self, tx: dict) -> int:
-        return self._w3.eth.estimate_gas(tx)  # type: ignore[arg-type]
-
-    def fee_params(self) -> tuple[int, int]:
-        """(maxFeePerGas, maxPriorityFeePerGas) as web3's own defaults compute
-        them: twice the latest base fee plus the node's suggested tip."""
-        priority = self._w3.eth.max_priority_fee
-        base = self._w3.eth.get_block("latest").get("baseFeePerGas") or 0
-        if not base:
-            return self._w3.eth.gas_price, 0
-        return 2 * base + priority, priority
-
-
-def _match_receipts(
-    hashes: list[bytes], responses: list, problems: list[str]
-) -> list[TxReceipt | None]:
-    """One receipt or None per hash in `hashes`, from one batch's answers,
-    each placed by the hash it names. What does not fit goes to `problems`."""
-    if len(responses) != len(hashes):
-        problems.append(f"{len(responses)} answers for {len(hashes)} hashes")
-    wanted = set(hashes)
-    found: dict[bytes, TxReceipt] = {}
-    for response in responses:
-        if not isinstance(response, dict) or response.get("error"):
-            error = response.get("error") if isinstance(response, dict) else response
-            problems.append(f"item failed: {error}")
-            continue
-        raw = response.get("result")
-        if raw is None:
-            continue  # not mined yet; nothing says which hash, nothing to place
-        try:
-            tx_hash = bytes(HexBytes(raw["transactionHash"]))
-        except (KeyError, TypeError, ValueError):
-            problems.append("a receipt without a transactionHash")
-            continue
-        if tx_hash not in wanted:
-            problems.append(f"a receipt for {HexBytes(tx_hash).to_0x_hex()}, not asked")
-            continue
-        found[tx_hash] = AttributeDict.recursive(receipt_formatter(raw))
-    return [found.get(h) for h in hashes]
-
-
-def _match_send_answers(hashes: list[bytes], responses: list) -> list[Exception | None]:
-    """One answer per transaction from one batch's answers, in order.
-
-    web3 sorts the answers by id and handed the ids out in request order, so
-    with exactly one answer per request, position i answers transaction i. A
-    refusal does not name its transaction (a receipt does), so nothing short
-    of that one-to-one fit can be placed: a missing, extra or repeated id
-    makes the whole answer unusable. An accepted item names its hash, and
-    that is checked too.
-    """
-    if len(responses) != len(hashes):
-        raise BatchUnanswered(f"{len(responses)} answers for {len(hashes)} sends")
-    ids = [r.get("id") if isinstance(r, dict) else None for r in responses]
-    if not all(isinstance(i, (int, str)) for i in ids) or len(set(ids)) != len(ids):
-        raise BatchUnanswered(f"batch answers without distinct ids: {ids!r:.200}")
-    out: list[Exception | None] = []
-    for tx_hash, response in zip(hashes, responses):
-        error = response.get("error")
-        if error is not None:
-            out.append(_send_error(error, response))
-            continue
-        result = response.get("result")
-        try:
-            named = bytes(HexBytes(result)) if isinstance(result, str) else None
-        except ValueError:
-            named = None
-        if named != tx_hash:
-            raise BatchUnanswered(
-                f"answer {result!r:.80} does not name the transaction at its place"
-            )
-        out.append(None)
-    return out
-
-
-def _send_error(error, response: dict) -> Exception:
-    """What web3 raises for this answer to a single send: `RequestTimedOut`
-    for a timeout message (TRANSPORT: the node may hold the transaction),
-    otherwise a `Web3RPCError` carrying the node's message."""
-    message = error.get("message") if isinstance(error, dict) else error
-    if isinstance(message, str) and any(
-        marker in message.lower() for marker in KNOWN_REQUEST_TIMEOUT_MESSAGING
-    ):
-        return RequestTimedOut(repr(error), rpc_response=response)  # type: ignore[arg-type]
-    return Web3RPCError(repr(error), rpc_response=response)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -473,6 +167,10 @@ class AdminTxSender:
         self._entries: dict[bytes, _Entry] = {}
         self._next_nonce: int | None = None
         self._fees: tuple[int, int, float] | None = None
+        # Set while a batch refused as a whole goes out one at a time: the
+        # batch's own fees, so each single send signs the batch's very bytes.
+        # Only `_sign_and_send` reads it; a fee refusal clears it.
+        self._pinned_fees: tuple[int, int] | None = None
         self._last_reap = float("-inf")
         # A restart or a second writer can leave this many of our nonces taken.
         self._max_skips = 2 * max_in_flight + 16
@@ -702,7 +400,7 @@ class AdminTxSender:
                     # the pool.
                     self._next_nonce = self._rpc.nonce(self.address, "pending")
                 nonce = self._next_nonce
-                signed = self._sign(base, nonce, gas)
+                signed = self._sign(base, nonce, gas, self._pinned_fees)
                 raw = bytes(signed.raw_transaction)
                 tx_hash = bytes(signed.hash)
             else:
@@ -824,6 +522,7 @@ class AdminTxSender:
             if kind is SendError.FEE_LOW and not fee_refreshed:
                 fee_refreshed = True
                 self._fees = None
+                self._pinned_fees = None  # the batch's fee is too low now
                 continue
             raise error
 
@@ -863,8 +562,13 @@ class AdminTxSender:
                     found.add(tx_hash)
         return found
 
-    def _sign(self, base: dict, nonce: int, gas: int):
-        max_fee, priority = self._fee_params()
+    def _sign(
+        self, base: dict, nonce: int, gas: int, fees: tuple[int, int] | None = None
+    ):
+        """Sign at `fees` (maxFeePerGas, maxPriorityFeePerGas), or at the
+        current ones. Signatures are deterministic (RFC 6979): the same
+        fields give the same bytes."""
+        max_fee, priority = fees if fees is not None else self._fee_params()
         return self._account.sign_transaction(
             {
                 **base,
@@ -881,7 +585,12 @@ class AdminTxSender:
         pending = PendingTx(tx_hash=tx_hash, nonce=nonce)
         with self._state:
             self._entries[tx_hash] = _Entry(pending, self._clock())
-        self._next_nonce = nonce + 1
+        # Never back: a batch may settle an early nonce after later ones (a
+        # receipt lookup comes last), and every nonce up to the highest one
+        # accepted is used. The single path moves the counter back on its
+        # own when it must (a resync), not through here.
+        if self._next_nonce is None or self._next_nonce <= nonce:
+            self._next_nonce = nonce + 1
         return pending
 
     def _fee_params(self) -> tuple[int, int]:
@@ -1024,15 +733,18 @@ class AdminTxSender:
 
     def _fill_gaps(self, committed: int, now: float) -> None:
         """Send a filler on each nonce from `committed` up that is provably a
-        gap, and stop at the first one that is not.
+        gap, up to the first one that is not.
 
         A nonce below our counter is a gap when nothing of ours is in flight
         on it, or what is has waited `stall_after` and is not in the node's
-        queue. One read of the queue serves the whole run. That read lists
-        only the current queue, so a transaction of ours parked behind a gap
-        looks lost: its filler is refused (same nonce) and the run ends there.
-        The refusal is the backstop for every wrong "lost": the node never
-        lets a filler take a nonce it holds a transaction on.
+        queue. One read of the queue serves the whole run, and the run's
+        fillers go out in one JSON-RPC batch (`_SEND_BATCH` at most per
+        batch). That read lists only the current queue, so a transaction of
+        ours parked behind a gap looks lost: its filler is refused (same
+        nonce). The refusal is the backstop for every wrong "lost": the node
+        never lets a filler take a nonce it holds a transaction on. Each
+        filler is judged by its own answer, and a refused one ends the run:
+        no later batch of fillers goes out in this pass.
         """
         queued = self._rpc.pending_hashes()
         with self._state:
@@ -1042,25 +754,31 @@ class AdminTxSender:
         # A fresh fee, once per pass: a transaction the node dropped for its
         # price would otherwise get an equally doomed filler.
         self._fees = None
+        run: list[tuple[int, list[_Entry]]] = []  # (gap nonce, ours on it)
         nonce = committed
         while self._next_nonce is not None and nonce < self._next_nonce:
             with self._state:
                 here = by_nonce.get(nonce, [])
                 if any(e.done for e in here):
-                    return  # used after all: the nonce read was behind
+                    break  # used after all: the nonce read was behind
                 live = [e for e in here if e.superseded_by is None]
                 if any(
                     now - e.sent_at < self._stall_after or e.pending.tx_hash in queued
                     for e in live
                 ):
-                    return  # too young to call lost, or still queued
-            filler = self._send_filler(nonce)
-            if filler is None:
-                return
-            with self._state:
-                for entry in live:
-                    entry.superseded_by = filler.tx_hash
+                    break  # too young to call lost, or still queued
+            run.append((nonce, live))
             nonce += 1
+        for start in range(0, len(run), _SEND_BATCH):
+            part = run[start : start + _SEND_BATCH]
+            fillers = self._send_fillers([n for n, _ in part])
+            with self._state:
+                for (_, live), filler in zip(part, fillers, strict=True):
+                    if filler is not None:
+                        for entry in live:
+                            entry.superseded_by = filler.tx_hash
+            if any(filler is None for filler in fillers):
+                return
 
     def _settle_used_nonce(self, entry: _Entry, now: float) -> None:
         """The node's committed nonce is past `entry`'s: its nonce was used,
@@ -1095,19 +813,11 @@ class AdminTxSender:
         why: str = "stalled (the node lost the transaction)",
         level: int = logging.ERROR,
     ) -> PendingTx | None:
-        base = {"to": self.address, "data": b"", "value": 0}
-        signed = self._sign(base, nonce, _TRANSFER_GAS)
+        signed = self._sign(_filler_base(self.address), nonce, _TRANSFER_GAS)
         try:
             self._rpc.send_raw(bytes(signed.raw_transaction))
         except Exception as exc:
-            if classify_send_error(exc) in (SendError.NONCE_TAKEN, SendError.DUPLICATE):
-                # The node holds a transaction on this nonce (ours parked
-                # behind a gap, or another writer's): not a gap after all.
-                log.info(
-                    "admin nonce %d is held by the node, no filler: %s", nonce, exc
-                )
-            else:
-                log.warning("gap filler for admin nonce %d refused: %s", nonce, exc)
+            _log_refused_filler(nonce, exc)
             return None
         log.log(
             level,
@@ -1117,9 +827,54 @@ class AdminTxSender:
             why,
             HexBytes(signed.hash).to_0x_hex(),
         )
-        pending = PendingTx(tx_hash=bytes(signed.hash), nonce=nonce)
+        return self._track_filler(bytes(signed.hash), nonce)
+
+    def _send_fillers(self, nonces: list[int]) -> list[PendingTx | None]:
+        """`_send_filler` for each of `nonces`, in one JSON-RPC batch when
+        there is more than one: one result per nonce, None where the node
+        refused the filler or its answer was lost."""
+        if len(nonces) == 1:
+            return [self._send_filler(nonces[0])]
+        fees = self._fee_params()
+        base = _filler_base(self.address)
+        signed = [self._sign(base, n, _TRANSFER_GAS, fees) for n in nonces]
+        try:
+            answers = self._rpc.send_raw_batch(
+                [bytes(s.raw_transaction) for s in signed]
+            )
+            if len(answers) != len(nonces):
+                raise BatchUnanswered(f"{len(answers)} answers for {len(nonces)}")
+        except Exception as exc:
+            # A filler whose answer is lost is not tracked, as on the single
+            # path: if the node took it, it mines and the healer settles our
+            # transaction on that nonce as used by another.
+            log.warning(
+                "gap fillers for admin nonces %d-%d failed: %s",
+                nonces[0],
+                nonces[-1],
+                exc,
+            )
+            return [None] * len(nonces)
+        out: list[PendingTx | None] = []
+        for nonce, tx, answer in zip(nonces, signed, answers, strict=True):
+            if answer is not None:
+                _log_refused_filler(nonce, answer)
+                out.append(None)
+            else:
+                out.append(self._track_filler(bytes(tx.hash), nonce))
+        sent = [n for n, f in zip(nonces, out) if f is not None]
+        if sent:
+            log.error(
+                "admin nonces %s stalled (the node lost the transactions); sent "
+                "0-value fillers so the queue behind them can move",
+                sent,
+            )
+        return out
+
+    def _track_filler(self, tx_hash: bytes, nonce: int) -> PendingTx:
+        pending = PendingTx(tx_hash=tx_hash, nonce=nonce)
         with self._state:
-            self._entries[pending.tx_hash] = _Entry(pending, self._clock())
+            self._entries[tx_hash] = _Entry(pending, self._clock())
         # The counter is not touched: a filler only ever takes a nonce below it.
         return pending
 
@@ -1179,13 +934,39 @@ def _value_base(to: str, value_wei: int) -> dict:
     return {"to": Web3.to_checksum_address(to), "data": b"", "value": value_wei}
 
 
+def _filler_base(address: str) -> dict:
+    return {"to": address, "data": b"", "value": 0}
+
+
+def _log_refused_filler(nonce: int, exc: Exception) -> None:
+    if classify_send_error(exc) in (SendError.NONCE_TAKEN, SendError.DUPLICATE):
+        # The node holds a transaction on this nonce (ours parked behind a
+        # gap, or another writer's): not a gap after all.
+        log.info("admin nonce %d is held by the node, no filler: %s", nonce, exc)
+    else:
+        log.warning("gap filler for admin nonce %d refused: %s", nonce, exc)
+
+
+def stops_sending(exc: BaseException) -> bool:
+    """Does this error from a submit say the node is out of reach or no admin
+    slot frees up? Then more sends would only add nonces whose answers are
+    lost (each one for the stall healer to fill) or wait out the same timeout.
+
+    Out of reach: no answer (TRANSPORT), a connect that failed included
+    (`failed_before_connecting` errors are TRANSPORT too). No slot: the
+    `TimeExhausted` of a slot wait; a submit never waits for a receipt, so
+    its `TimeExhausted` is always that one.
+    """
+    return (
+        isinstance(exc, TimeExhausted)
+        or classify_send_error(exc) is SendError.TRANSPORT
+    )
+
+
 def _stops_sending(result: PendingTx | Exception) -> Exception | None:
-    """The error, when `result` says the node is out of reach (no answer) or
-    no slot frees up: the rest of a `submit_many` is then not sent."""
-    if isinstance(result, Exception) and (
-        isinstance(result, TimeExhausted)
-        or classify_send_error(result) is SendError.TRANSPORT
-    ):
+    """The error, when `result` is one that `stops_sending`: the rest of a
+    `submit_many` is then not sent."""
+    if isinstance(result, Exception) and stops_sending(result):
         return result
     return None
 
@@ -1200,20 +981,26 @@ class _BatchSend:
       answered it, so the node holds nothing of ours on that nonce. If a later
       nonce of the batch is ours, a 0-value filler takes this one (a gap would
       park every later nonce); if none is, the nonce is simply free again, as
-      after a refused single send. The action then goes out once more through
-      the single path, on a fresh nonce: safe, because the node provably
-      never took its first signature.
+      after a refused single send. A refusal that says the node never
+      imported the item (`_RESEND_AFTER`: fee, nonce, full queue, balance)
+      then goes out once more through the single path, on a fresh nonce:
+      safe, because the node provably never took its first signature. Any
+      other answer proves nothing about that, so it is the item's result.
+      Once one such re-send is refused as well, the refusal is about the
+      node or the key, not the item: the rest are not sent again.
     - No answer (the whole batch, or one item's timeout). The node may hold
-      it, so the identical bytes go out once more and only the single path's
-      resend rules settle it: OK or "already known" = accepted; "invalid
-      nonce" with our receipt found = accepted (it mined); anything else =
-      unknowable: the nonce is counted, the hash tracked for the stall healer,
-      and the result is the FIRST error. Its action is never signed again.
-      When every delivery of the whole batch failed before connecting,
-      nothing left the host: no nonce is used and every item gets the first
-      error.
+      it, so the identical bytes go out once more (after a short pause when
+      the whole batch was lost) and only the single path's resend rules
+      settle it: OK or "already known" = accepted; "invalid nonce" with our
+      receipt found = accepted (it mined); anything else = unknowable: the
+      nonce is counted, the hash tracked for the stall healer, and the
+      result is the FIRST error. Its action is never signed again. When
+      every delivery of the whole batch failed before connecting, nothing
+      left the host: no nonce is used and every item gets the first error.
     - One error for the whole batch (skaled, above 128 requests): no item was
-      looked at, so they go out one at a time from the same first nonce.
+      looked at, so they go out one at a time from the same first nonce,
+      signed at the batch's fees so that each copy is the batch's very bytes.
+      Once one of them is refused, the rest are not sent.
     """
 
     def __init__(
@@ -1228,6 +1015,7 @@ class _BatchSend:
         self._results: list[PendingTx | Exception | None] = [None] * len(items)
         self._counted = [False] * len(items)  # the nonce is used by our tx
         self._stop: Exception | None = None
+        self._fees: tuple[int, int] | None = None  # every item is signed at these
 
     def run(self) -> tuple[list[PendingTx | Exception], Exception | None]:
         s = self._s
@@ -1237,8 +1025,9 @@ class _BatchSend:
             if s._next_nonce is None:
                 s._next_nonce = s._rpc.nonce(s.address, "pending")
             self._first = s._next_nonce
+            self._fees = s._fee_params()
             signed = [
-                s._sign(base, self._first + i, gas)
+                s._sign(base, self._first + i, gas, self._fees)
                 for i, (base, gas) in enumerate(self._items)
             ]
         except Exception as exc:
@@ -1292,6 +1081,10 @@ class _BatchSend:
         """The node may hold these: the identical bytes once more, each item
         then settled by the single path's resend rules."""
         s = self._s
+        if whole is not None:
+            # The whole batch went unanswered: give a blip a moment to pass
+            # before the identical batch goes out again.
+            s._sleep(s._poll_interval * 2)
         try:
             again = s._rpc.send_raw_batch([self._raws[i] for i in indexes])
             if len(again) != len(indexes):
@@ -1350,21 +1143,23 @@ class _BatchSend:
             )
 
     def _settle_refused(self, refused: list[int], first: list) -> None:
-        s = self._s
-        last = max((i for i, c in enumerate(self._counted) if c), default=-1)
-        # Every nonce up to our last one is ours, unknowable or filled below;
-        # the refused ones above it are free again.
-        s._next_nonce = self._first + last + 1
         if not refused:
             return
+        s = self._s
+        # `_accept` left the counter just past our last nonce of the batch:
+        # every nonce up to it is ours, unknowable or filled below; the
+        # refused ones above it are free again.
+        last = max((i for i, c in enumerate(self._counted) if c), default=-1)
         gaps = [i for i in refused if i < last]
+        again = {i for i in refused if classify_send_error(first[i]) in _RESEND_AFTER}
         log.warning(
             "admin batch: node refused %d of %d sends (first: %s); %d gap "
-            "filler(s), the actions go out again one by one",
+            "filler(s), %d action(s) go out again one by one",
             len(refused),
             len(self._items),
             first[refused[0]],
             len(gaps),
+            len(again),
         )
         # A fresh fee for the fillers and the resends: a fee refusal would
         # otherwise meet an equally doomed copy.
@@ -1382,13 +1177,24 @@ class _BatchSend:
             log.warning(
                 "admin batch gap fillers failed, the stall healer will: %s", exc
             )
+        refused_again: Exception | None = None
         for i in refused:
-            if self._stop is not None:
+            if i not in again or self._stop is not None or refused_again is not None:
                 self._results[i] = first[i]  # its own refusal: never sent again
                 continue
             result = s._send_one(self._items[i], self._deadline)
             self._results[i] = result
             self._stop = _stops_sending(result)
+            if isinstance(result, Exception) and self._stop is None:
+                # Refused twice: a full queue, a dry key, a rate limit. One
+                # more round trip per item would meet the same answer.
+                refused_again = result
+        if refused_again is not None:
+            log.warning(
+                "admin batch: a re-sent action was refused too (%s); the other "
+                "refused actions are not sent again",
+                refused_again,
+            )
 
     def _one_at_a_time(
         self, refusal: Exception
@@ -1399,11 +1205,33 @@ class _BatchSend:
             len(self._items),
             refusal,
         )
-        for i, item in enumerate(self._items):
-            if self._stop is not None:
-                self._results[i] = self._stop
-                continue
-            result = self._s._send_one(item, self._deadline)
-            self._results[i] = result
-            self._stop = _stops_sending(result)
+        s = self._s
+        # Re-signed at the batch's own fees, an item on its batch nonce is the
+        # batch's very bytes (signatures are deterministic): were the batch
+        # taken after all, the node answers "already known" rather than
+        # meeting a second copy of the action on a later nonce. A fee refusal
+        # clears the pin (`_sign_and_send`).
+        s._pinned_fees = self._fees
+        refused_too: Exception | None = None
+        try:
+            for i, item in enumerate(self._items):
+                if self._stop is not None:
+                    self._results[i] = self._stop
+                    continue
+                if refused_too is not None:
+                    self._results[i] = refusal  # not sent
+                    continue
+                result = s._send_one(item, self._deadline)
+                self._results[i] = result
+                self._stop = _stops_sending(result)
+                if isinstance(result, Exception) and self._stop is None:
+                    refused_too = result
+        finally:
+            s._pinned_fees = None
+        if refused_too is not None:
+            log.warning(
+                "the first single send was refused too (%s); the rest of the "
+                "batch is not sent",
+                refused_too,
+            )
         return self._results, self._stop  # type: ignore[return-value]

@@ -8,23 +8,26 @@ import time
 import pytest
 import requests
 from eth_account import Account
+from eth_account.typed_transactions import TypedTransaction
 from eth_utils import keccak
 from hexbytes import HexBytes
 from web3 import Web3
 from web3.exceptions import RequestTimedOut, TimeExhausted
 
-from agentpit.onchain.tx_sender import (
-    _SEND_BATCH,
-    AdminTxSender,
+from agentpit.onchain.chain_rpc import (
     BatchRefused,
     BatchUnanswered,
-    PendingTx,
     SendError,
     Web3ChainRpc,
     classify_send_error,
     failed_before_connecting,
 )
-from tests.fake_skaled import CHAIN_ID, FakeFn, FakeRpcError, FakeSkaled
+from agentpit.onchain.tx_sender import (
+    _SEND_BATCH,
+    AdminTxSender,
+    PendingTx,
+)
+from tests.fake_skaled import CHAIN_ID, FakeClock, FakeFn, FakeRpcError, FakeSkaled
 from tests.fake_skaled import make_sender as _sender
 from tests.test_tx_sender_recovery import (
     _http_error,
@@ -36,6 +39,9 @@ _FEE_LOW = "Transaction gas price lower than current eth_gasPrice."
 _SAME_NONCE = (
     "Pending transaction with same nonce already exists (skale: we ignore gas price)."
 )
+# skaled's own wording (libweb3jsonrpc/Eth.cpp, exceptionToErrorMessage).
+_QUEUE_FULL = "Transaction queue is full."
+_BALANCE_LOW = "Account balance is too low (balance < value + gas * gas price)."
 
 
 class _Call:
@@ -75,6 +81,23 @@ def _executions(chain: FakeSkaled) -> list[int]:
 def _tag_of(chain: FakeSkaled, pending: PendingTx) -> int | None:
     (item,) = [a for a in chain.accepted if a["hash"] == pending.tx_hash]
     return _tag(item)
+
+
+def _nonce_of(raw: bytes) -> int:
+    return TypedTransaction.from_bytes(HexBytes(raw)).as_dict()["nonce"]
+
+
+def _record_singles(chain: FakeSkaled) -> list[bytes]:
+    """Every raw `send_raw` is called with from now on, refused ones included."""
+    sent: list[bytes] = []
+    real = chain.send_raw
+
+    def send_raw(raw):
+        sent.append(bytes(raw))
+        real(raw)
+
+    chain.send_raw = send_raw
+    return sent
 
 
 def _fillers(chain: FakeSkaled, account) -> list[dict]:
@@ -286,13 +309,12 @@ def test_refused_items_at_the_end_of_a_batch_need_no_filler():
 def test_an_item_refused_for_good_returns_its_error():
     chain = FakeSkaled()
     sender, account, _ = _sender(chain)
-    broke = FakeRpcError("insufficient funds for gas * price + value")
-    chain.refuse[1] = broke
-    chain.refuse[3] = broke  # its single resend, after the batch, too
+    chain.refuse[1] = FakeRpcError(_BALANCE_LOW)
+    chain.refuse[3] = broke = FakeRpcError(_BALANCE_LOW)  # its single resend
 
     results = sender.submit_many(_calls(3))
 
-    assert results[1] is broke
+    assert results[1] is broke  # what the re-send yielded
     assert [results[0].nonce, results[2].nonce] == [0, 2]
     assert [f["nonce"] for f in _fillers(chain, account)] == [1]
     sender.wait_all([results[0], results[2]], timeout=10)
@@ -330,14 +352,15 @@ def test_mtm_off_inside_a_batch_falls_back_to_one_at_a_time():
 )
 def test_a_lost_batch_answer_is_settled_by_resending_the_identical_batch(lost):
     chain = FakeSkaled()
-    sender, _, _ = _sender(chain)
+    sender, _, _ = _sender(chain, mine_on_sleep=False)
     chain.batch_accept_then_raise.append(lost)
 
     results = sender.submit_many(_calls(8))
 
     assert len(chain.batches) == 2 and chain.batches[0] == chain.batches[1]
     assert [r.nonce for r in results] == list(range(8))
-    assert len(chain.accepted) == 8  # one copy each
+    assert len(chain.accepted) == 8  # one copy each: the resend was "already known"
+    chain.mine()
     sender.wait_all(results, timeout=10)
     assert _executions(chain) == list(range(8))
 
@@ -360,7 +383,7 @@ def test_a_batch_cut_off_halfway_is_completed_by_the_resend():
     """The node took the first three items, then the connection broke: the
     resend finds those three already queued and takes the rest."""
     chain = FakeSkaled()
-    sender, _, _ = _sender(chain)
+    sender, _, _ = _sender(chain, mine_on_sleep=False)
     real = chain.send_raw_batch
     sent: list[list[bytes]] = []
 
@@ -378,6 +401,7 @@ def test_a_batch_cut_off_halfway_is_completed_by_the_resend():
     assert sent[0] == sent[1]
     assert [r.nonce for r in results] == list(range(6))
     assert len(chain.accepted) == 6
+    chain.mine()
     sender.wait_all(results, timeout=10)
     assert _executions(chain) == list(range(6))
 
@@ -581,6 +605,224 @@ def test_a_batch_refused_as_a_whole_is_sent_one_at_a_time():
     assert _executions(chain) == list(range(6))
 
 
+# --- which refusals are sent again (review follow-ups) -----------------------
+
+
+@pytest.mark.parametrize(
+    "message",
+    [_FEE_LOW, _SAME_NONCE, "Invalid transaction nonce.", _QUEUE_FULL, _BALANCE_LOW],
+)
+def test_a_recognised_refusal_is_filled_and_sent_again(message):
+    """Answers that prove the node did not import the item: its nonce gets a
+    filler and the action goes out once more on a fresh nonce."""
+    chain = FakeSkaled()
+    sender, account, _ = _sender(chain)
+    chain.refuse[1] = FakeRpcError(message)
+
+    results = sender.submit_many(_calls(3))
+
+    assert [r.nonce for r in results] == [0, 3, 2]
+    assert [f["nonce"] for f in _fillers(chain, account)] == [1]
+    sender.wait_all(results, timeout=10)
+    assert _executions(chain) == [0, 1, 2]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Invalid RPC parameters.",
+        "insufficient funds for gas * price + value",
+        "Block gas limit reached.",
+    ],
+)
+def test_an_unrecognised_refusal_is_returned_not_sent_again(message):
+    """An answer the sender does not know proves nothing: the action is not
+    signed again on another nonce. Its nonce is still filled, since a later
+    item of the batch went through."""
+    chain = FakeSkaled()
+    sender, account, _ = _sender(chain)
+    chain.refuse[1] = refusal = FakeRpcError(message)
+    singles = _record_singles(chain)
+
+    results = sender.submit_many(_calls(3))
+
+    assert results[1] is refusal
+    assert [results[0].nonce, results[2].nonce] == [0, 2]
+    assert [_nonce_of(raw) for raw in singles] == [1]  # the filler, nothing else
+    assert [f["nonce"] for f in _fillers(chain, account)] == [1]
+    sender.wait_all([results[0], results[2]], timeout=10)
+    assert _executions(chain) == [0, 2]
+    assert sender.submit(FakeFn(), gas=100_000).nonce == 3
+
+
+@pytest.mark.parametrize("message", [_QUEUE_FULL, _BALANCE_LOW])
+def test_a_refusal_storm_costs_one_extra_send_not_one_per_item(message):
+    """The node refuses most of a batch for a reason that is not about one
+    item (its queue is full, the key ran dry). The first re-send is refused
+    too, so the others are not tried: each returns its own refusal."""
+    chain = FakeSkaled()
+    sender, account, _ = _sender(chain)
+    refusals = {nonce: FakeRpcError(message) for nonce in range(1, 9)}
+    chain.refuse.update(refusals)
+    chain.refuse[10] = again = FakeRpcError(message)  # the first re-send
+    singles = _record_singles(chain)
+
+    results = sender.submit_many(_calls(10))
+
+    assert [results[0].nonce, results[9].nonce] == [0, 9]
+    assert results[1] is again
+    assert all(results[i] is refusals[i] for i in range(2, 9))
+    # Fillers for the gaps 1-8, then ONE re-send.
+    assert [_nonce_of(raw) for raw in singles] == [*range(1, 9), 10]
+    assert sorted(f["nonce"] for f in _fillers(chain, account)) == list(range(1, 9))
+    assert sender.submit(FakeFn(), gas=100_000).nonce == 10
+
+
+def test_a_whole_batch_refusal_storm_costs_one_single_send():
+    """A batch refused as a whole (a 429, say) falls back to single sends; when
+    the first of those is refused too, the rest are not tried."""
+    chain = FakeSkaled()
+    sender, _, _ = _sender(chain)
+    whole = _http_error(429)
+    chain.batch_errors.append(whole)
+    chain.send_errors.append(single := _http_error(429))
+    singles = _record_singles(chain)
+
+    results = sender.submit_many(_calls(6))
+
+    assert len(singles) == 1
+    assert results[0] is single
+    assert all(r is whole for r in results[1:])
+    assert chain.accepted == []
+    assert sender.submit(FakeFn(), gas=100_000).nonce == 0  # no nonce used
+
+
+# --- the one-at-a-time fallback re-signs the batch's very bytes -------------
+
+
+def test_a_whole_batch_refusal_resigns_the_same_bytes_on_the_same_nonces():
+    """Rule 5 trusts that a batch refused as a whole was never looked at.
+    Should a proxy have passed it on anyway, the one-at-a-time copies are
+    the very same bytes (same nonce, same fees, deterministic signatures),
+    which the node answers "already known": nothing runs twice, even when
+    the cached fee went stale in between."""
+    chain = FakeSkaled()
+    sender, _, clock = _sender(chain, mine_on_sleep=False)
+    real = chain.send_raw_batch
+
+    def batch(raws):
+        real(raws)  # the node took every item...
+        clock.advance(31)  # ...and the cached fee is past its TTL now
+        chain.fee = (400_000, 0)
+        raise BatchRefused("{'code': -32600, 'message': 'refused by a proxy'}")
+
+    chain.send_raw_batch = batch
+    singles = _record_singles(chain)
+
+    results = sender.submit_many(_calls(4))
+
+    assert singles == chain.batches[0]
+    assert [r.nonce for r in results] == [0, 1, 2, 3]
+    assert len(chain.accepted) == 4
+    chain.mine()
+    sender.wait_all(results, timeout=10)
+    assert _executions(chain) == [0, 1, 2, 3]
+
+
+def test_a_fee_refusal_in_the_fallback_still_refreshes_the_fee():
+    chain = FakeSkaled()
+    sender, _, _ = _sender(chain)
+    real = chain.send_raw_batch
+
+    def batch(raws):
+        chain.fee = (400_000, 0)  # the price moved after the batch was signed
+        return real(raws)
+
+    chain.send_raw_batch = batch
+    chain.batch_errors.append(BatchRefused("{'code': -32600, 'message': 'no'}"))
+    chain.refuse[0] = FakeRpcError(_FEE_LOW)
+
+    results = sender.submit_many(_calls(3))
+
+    assert [r.nonce for r in results] == [0, 1, 2]
+    # Re-signed at the fresh fee, and the rest of the fallback kept it.
+    assert [a["tx"]["maxFeePerGas"] for a in chain.accepted] == [400_000] * 3
+    sender.wait_all(results, timeout=10)
+    assert _executions(chain) == [0, 1, 2]
+
+
+# --- a lost batch ------------------------------------------------------------
+
+
+def test_a_lost_batch_waits_a_moment_before_its_resend():
+    """A blip that lost the whole batch gets two poll intervals to pass before
+    the identical batch goes out again."""
+    chain = FakeSkaled()
+    clock = FakeClock()
+    sleeps: list[tuple[int, float]] = []
+
+    def sleep(seconds):
+        sleeps.append((len(chain.batches), seconds))
+        clock.advance(seconds)
+
+    sender = AdminTxSender(
+        chain, Account.create(), CHAIN_ID, clock=clock, sleep=sleep, poll_interval=0.25
+    )
+    chain.batch_errors.append(requests.ConnectionError("reset by peer"))
+
+    results = sender.submit_many(_calls(3))
+
+    assert len(chain.batches) == 2
+    assert sleeps == [(1, 0.5)]  # one pause, between the batch and its resend
+    assert [r.nonce for r in results] == [0, 1, 2]
+
+
+def test_one_lost_item_is_resent_without_a_pause():
+    chain = FakeSkaled()
+    clock = FakeClock()
+    sleeps: list[float] = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock.advance(seconds)
+
+    sender = AdminTxSender(chain, Account.create(), CHAIN_ID, clock=clock, sleep=sleep)
+    chain.answer_lost[1] = RequestTimedOut("request timed out")
+
+    results = sender.submit_many(_calls(3))
+
+    assert [r.nonce for r in results] == [0, 1, 2]
+    assert sleeps == []
+
+
+def test_a_receipt_found_after_the_resend_never_moves_the_counter_back():
+    """Lost batch; meanwhile nonce 0 mined while 1-3 still queue. The resend
+    answers item 0 "invalid nonce" (found by its receipt, so accepted LAST)
+    and 1-3 "already known": the counter must end past nonce 3."""
+    chain = FakeSkaled()
+    sender, _, _ = _sender(chain, mine_on_sleep=False)
+    real = chain.send_raw_batch
+
+    def batch(raws):
+        answers = real(raws)
+        if len(chain.batches) == 1:
+            chain.mine(limit=1)
+            raise requests.ConnectionError("reset by peer")
+        return answers
+
+    chain.send_raw_batch = batch
+
+    results = sender.submit_many(_calls(4))
+
+    assert [r.nonce for r in results] == [0, 1, 2, 3]
+    assert sender._next_nonce == 4  # noqa: SLF001
+    follow = sender.submit(_Call(99), gas=100_000)
+    assert follow.nonce == 4
+    chain.mine()
+    sender.wait_all([*results, follow], timeout=10)
+    assert _executions(chain) == [0, 1, 2, 3, 99]
+
+
 # --- Web3ChainRpc.send_raw_batch ---------------------------------------------
 
 
@@ -691,3 +933,79 @@ def test_send_raw_batch_passes_http_failures_through(status, kind):
         Web3ChainRpc(_W3(error)).send_raw_batch(_RAWS)
     assert info.value is error
     assert classify_send_error(info.value) is kind
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [["1", "2", "3"], [True, 2, 3]],
+    ids=["string ids", "bool id"],
+)
+def test_send_raw_batch_needs_int_ids(ids):
+    """web3 sorts a batch's answers by id, and string ids sort as text ("10"
+    before "9"): position would no longer say which send an answer is for.
+    Only int ids are placed; anything else reads as no answer."""
+    answer = [
+        {"jsonrpc": "2.0", "id": i, "result": Web3.to_hex(h)}
+        for i, h in zip(ids, _HASHES)
+    ]
+    with pytest.raises(BatchUnanswered) as info:
+        Web3ChainRpc(_W3(answer)).send_raw_batch(_RAWS)
+    assert classify_send_error(info.value) is SendError.TRANSPORT
+
+
+class _JsonSkaled(FakeSkaled):
+    """A FakeSkaled whose batches are answered as JSON-RPC and read back
+    through `Web3ChainRpc.send_raw_batch`, the n-th answer carrying id
+    `make_id(n)`."""
+
+    def __init__(self, make_id):
+        super().__init__()
+        self._make_id = make_id
+
+    def send_raw_batch(self, raws):
+        node = super().send_raw_batch
+        make_id = self._make_id
+
+        class _Provider:
+            def make_batch_request(self, requests_):
+                answers = node(raws)
+                return [
+                    {"jsonrpc": "2.0", "id": make_id(n)}
+                    | (
+                        {"result": Web3.to_hex(keccak(raw))}
+                        if a is None
+                        else {"error": {"code": -32000, "message": str(a)}}
+                    )
+                    for n, (raw, a) in enumerate(zip(raws, answers))
+                ]
+
+        class _W3Over:
+            provider = _Provider()
+
+        return Web3ChainRpc(_W3Over()).send_raw_batch(raws)  # type: ignore[arg-type]
+
+
+def test_a_batch_answered_with_int_ids_goes_through():
+    chain = _JsonSkaled(lambda n: n + 1)
+    sender, _, _ = _sender(chain)
+    results = sender.submit_many(_calls(4))
+    assert [r.nonce for r in results] == [0, 1, 2, 3]
+    assert len(chain.batches) == 1
+
+
+def test_a_batch_answered_with_string_ids_is_unanswered_and_never_resigned():
+    """The node took the batch, but its answers carry string ids: nothing can
+    be placed, so the identical bytes go out again and, unplaceable again,
+    every item is unknowable. Each action still runs exactly once."""
+    chain = _JsonSkaled(str)
+    sender, _, _ = _sender(chain)
+
+    results = sender.submit_many(_calls(4))
+
+    assert len(chain.batches) == 2 and chain.batches[0] == chain.batches[1]
+    assert all(isinstance(r, BatchUnanswered) for r in results)
+    assert len(chain.accepted) == 4  # one copy each
+    follow = sender.submit(_Call(99), gas=100_000)
+    assert follow.nonce == 4  # nonces 0-3 counted
+    assert sender.wait(follow, timeout=10)["status"] == 1
+    assert _executions(chain) == [0, 1, 2, 3, 99]
