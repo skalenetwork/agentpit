@@ -18,7 +18,7 @@ from agentpit.polymarket.category_resolver import category_rank, resolve_categor
 from agentpit.polymarket.tag_taxonomy import normalize_slug
 from agentpit.datastructures.event import Event
 from agentpit.polymarket.conditional_token_framework import ConditionalTokenFramework
-from agentpit.services.market_service import prepare_market_on_chain
+from agentpit.services.market_service import prepare_market_on_chain, prepare_markets_on_chain
 from agentpit.utils.parse import _iso_to_unix
 from py_clob_client.http_helpers.helpers import get
 
@@ -1036,36 +1036,68 @@ def fetch_and_sync_polymarket_markets(
     return created_markets
 
 
+# Markets per chain step when no admin says otherwise (offline tests).
+_DEFAULT_CHAIN_CHUNK = 32
+
+
 def create_polymarket_markets_if_needed(
     db,
     pm_markets: list[dict],
     admin: OnchainAdmin,
 ) -> list[Any]:
+    """Mirror every not-yet-synced market onto the local chain and database.
 
+    Three steps, so a chunk of new markets shares one or two blocks instead of
+    two blocks each: classify every candidate (known ones only get refreshed),
+    prepare the new ones on chain a chunk at a time with every transaction
+    broadcast before any receipt is awaited, then insert what succeeded.
+
+    Each database step runs in its own SAVEPOINT: the batch shares one
+    transaction (the caller's db.write()), and without it a single failed
+    INSERT (e.g. duplicate question -> same derived CONDITION_ID) aborts the
+    transaction — every later market dies with InFailedSqlTransaction and the
+    closing COMMIT silently becomes a ROLLBACK, losing the entire batch.
+    """
     created_markets: list[Market] = []
     failed = 0
+
+    new: list[tuple[CreateMarketRequest, dict]] = []
     for pm_market in pm_markets:
         question = pm_market.get("question") or "<no question>"
         try:
-            # SAVEPOINT per market: the batch shares one transaction (the
-            # caller's db.write()), and without it a single failed INSERT
-            # (e.g. duplicate question -> same derived CONDITION_ID) aborts
-            # the transaction — every later market dies with
-            # InFailedSqlTransaction and the closing COMMIT silently becomes
-            # a ROLLBACK, losing the entire batch.
             with db.transaction():
-                market = create_polygon_market_if_does_not_exist(
-                    db, pm_market, admin
-                )
+                request = _refresh_known_or_build_request(db, pm_market)
         except Exception as exc:
-            # One bad market (e.g. RPC blip on getOutcomeSlotCount) shouldn't
-            # kill the whole sync batch. Keep the message single-line; the
-            # stack trace lives at debug level for when you actually want it.
             failed += 1
-            logger.warning("Skip %r (%s)", question, exc.__class__.__name__)
-            logger.debug("Skip %r details", question, exc_info=True)
+            _log_skip(question, exc)
             continue
-        if market is not None:
+        if request is not None:
+            new.append((request, pm_market))
+
+    chunk = admin.sync_chunk_size if admin is not None else _DEFAULT_CHAIN_CHUNK
+    for start in range(0, len(new), chunk):
+        batch = new[start : start + chunk]
+        try:
+            prepared = prepare_markets_on_chain(
+                admin,
+                [(r.question, [label for _, label in r.erc1155_tokens]) for r, _ in batch],
+            )
+        except Exception as exc:
+            # The whole step failed (the RPC is down, say): these markets
+            # failed, the next chunk still gets its chance.
+            prepared = [exc] * len(batch)
+        for (request, pm_market), outcome in zip(batch, prepared):
+            if isinstance(outcome, Exception):
+                failed += 1
+                _log_skip(request.question, outcome)
+                continue
+            try:
+                with db.transaction():
+                    market = _insert_prepared_market(db, request, pm_market, outcome)
+            except Exception as exc:
+                failed += 1
+                _log_skip(request.question, exc)
+                continue
             created_markets.append(market)
 
     logger.info(
@@ -1077,11 +1109,31 @@ def create_polymarket_markets_if_needed(
     return created_markets
 
 
+def _log_skip(question: str, exc: Exception) -> None:
+    # One bad market (e.g. an RPC blip) shouldn't kill the whole sync batch.
+    # Keep the message single-line; the stack trace lives at debug level for
+    # when you actually want it.
+    logger.warning("Skip %r (%s)", question, exc.__class__.__name__)
+    logger.debug("Skip %r details", question, exc_info=exc)
+
+
 def create_polygon_market_if_does_not_exist(
     db,
     pm_market: dict,
     admin: OnchainAdmin,
 ) -> Market | None:
+    """The single-market form of the sync: None when already synced."""
+    request = _refresh_known_or_build_request(db, pm_market)
+    if request is None:
+        return None
+    outcome_labels = [label for _, label in request.erc1155_tokens]
+    prepared = prepare_market_on_chain(admin, request.question, outcome_labels)
+    return _insert_prepared_market(db, request, pm_market, prepared)
+
+
+def _refresh_known_or_build_request(db, pm_market: dict) -> CreateMarketRequest | None:
+    """None for a market already synced (after refreshing it), else the request
+    to create it with."""
     request = build_create_market_request_from_json(pm_market)
     check_state(bool(request.polymarket_id))
     assert request.polymarket_id is not None  # narrowed by check_state above
@@ -1091,29 +1143,30 @@ def create_polygon_market_if_does_not_exist(
     known = bind_existing_market_to_upstream_event(
         db, polymarket_id=request.polymarket_id, pm_market=pm_market
     )
-    if known is not None:
-        _refresh_market(db, known.market_id, request, pm_market)
-        # Backfill the upstream token-id cross-reference for markets synced
-        # before positional capture existed (Up/Down windows had null ids), so
-        # the book mirror can resolve them. No-op once populated.
-        TableWrite.update_market_polymarket_tokens(
-            db,
-            polymarket_id=request.polymarket_id,
-            yes_token_id=request.polymarket_yes_token_id,
-            no_token_id=request.polymarket_no_token_id,
-        )
-        return None
-
-    # New market: mirror onto the local CTF + Exchange so it's tradeable. This
-    # overrides the upstream conditionId/tokenIds with locally-derived ones;
-    # polymarket_id stays as the cross-reference.
-    outcome_labels = [label for _, label in request.erc1155_tokens]
-    local_condition_id, local_tokens = prepare_market_on_chain(
-        admin, request.question, outcome_labels
+    if known is None:
+        return request
+    _refresh_market(db, known.market_id, request, pm_market)
+    # Backfill the upstream token-id cross-reference for markets synced
+    # before positional capture existed (Up/Down windows had null ids), so
+    # the book mirror can resolve them. No-op once populated.
+    TableWrite.update_market_polymarket_tokens(
+        db,
+        polymarket_id=request.polymarket_id,
+        yes_token_id=request.polymarket_yes_token_id,
+        no_token_id=request.polymarket_no_token_id,
     )
-    request.condition_id = local_condition_id
-    request.erc1155_tokens = local_tokens
+    return None
 
+
+def _insert_prepared_market(
+    db,
+    request: CreateMarketRequest,
+    pm_market: dict,
+    prepared: tuple[ConditionId, list[tuple[str, str]]],
+) -> Market:
+    # The upstream conditionId/tokenIds are replaced by the locally derived
+    # ones; polymarket_id stays as the cross-reference.
+    request.condition_id, request.erc1155_tokens = prepared
     market = TableWrite.create_market(db, request, True)
     bind_market_to_upstream_event(db, market, pm_market)
     _refresh_market(db, market.market_id, request, pm_market)

@@ -15,6 +15,7 @@ from agentpit.polymarket.pinned import (
     current_window_market_ids,
     current_window_slug,
 )
+from tests.chain_fakes import as_batch
 from tests.db_helpers import fresh_test_conn
 
 
@@ -115,7 +116,7 @@ def test_two_windows_of_one_series_share_event(monkeypatch):
         ]
         return cid, toks
 
-    monkeypatch.setattr(sync, "prepare_market_on_chain", fake_prepare)
+    monkeypatch.setattr(sync, "prepare_markets_on_chain", as_batch(fake_prepare))
 
     events = iter([_window_event(1781193600), _window_event(1781193900)])
     monkeypatch.setattr(pinned, "fetch_event_by_slug", lambda slug: next(events))
@@ -160,7 +161,7 @@ def test_resyncing_same_window_dedups_and_keeps_grouping(monkeypatch):
         ]
         return cid, toks
 
-    monkeypatch.setattr(sync, "prepare_market_on_chain", fake_prepare)
+    monkeypatch.setattr(sync, "prepare_markets_on_chain", as_batch(fake_prepare))
 
     # Same window event returned on every fetch (same polymarket_id).
     event = _window_event(1781193600)
