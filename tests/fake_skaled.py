@@ -7,6 +7,8 @@ Models the rules the sender depends on (skaled 5.2.0-beta.1):
   below it is filled; with MTM off only nonce == committed is accepted.
 - A taken nonce is refused (no replace-by-fee); a duplicate hash is refused.
 - `mine()` cuts one block holding every contiguous nonce per sender.
+- A JSON-RPC batch of `eth_sendRawTransaction` is imported one item after
+  another, each item answered on its own.
 Knobs let a test make the node refuse, lose, revert or half-answer a send.
 """
 
@@ -37,6 +39,16 @@ class FakeSkaled:
         # Raised by the next send_raw calls AFTER the tx was accepted (lost answer).
         self.accept_then_raise: list[Exception] = []
         self.lose: set[int] = set()  # nonces accepted with OK but never queued
+        # nonce -> refused with this answer before anything else is checked
+        # (as skaled checks the fee first), once.
+        self.refuse: dict[int, Exception] = {}
+        # nonce -> imported, but answered with this error instead of OK, once.
+        self.answer_lost: dict[int, Exception] = {}
+        # Raised by the next send_raw_batch calls BEFORE any item is imported.
+        self.batch_errors: list[Exception] = []
+        # Raised by the next send_raw_batch calls AFTER every item was imported.
+        self.batch_accept_then_raise: list[Exception] = []
+        self.batches: list[list[bytes]] = []  # the raws of every batch call
         self.revert: set[int] = set()  # nonces mined with status 0
         self.estimate_errors: list[Exception] = []
         self.pending_errors: list[Exception] = []  # raised by pending_hashes
@@ -57,35 +69,61 @@ class FakeSkaled:
         with self._lock:
             if self.send_errors:
                 raise self.send_errors.pop(0)
-            tx = TypedTransaction.from_bytes(HexBytes(raw)).as_dict()
-            sender = Account.recover_transaction(raw)
-            nonce = tx["nonce"]
-            tx_hash = keccak(raw)
-            # skaled verifies the nonce BEFORE it looks at its queue
-            # (Client::importTransaction), so a mined transaction sent again
-            # is "Invalid transaction nonce", not "already in the blockchain".
-            base = self.committed[sender]
-            if nonce < base or (not self.mtm and nonce != base):
-                raise FakeRpcError("Invalid transaction nonce.")
-            if tx_hash in self.mined:
-                raise FakeRpcError("Transaction is already in the blockchain.")
-            if any(q["hash"] == tx_hash for q in self.queue):
-                raise FakeRpcError(
-                    "Same transaction already exists in the pending transaction queue."
-                )
-            if any(q["sender"] == sender and q["nonce"] == nonce for q in self.queue):
-                raise FakeRpcError(
-                    "Pending transaction with same nonce already exists "
-                    "(skale: we ignore gas price)."
-                )
-            item = {"sender": sender, "nonce": nonce, "hash": tx_hash, "tx": tx}
-            self.accepted.append(item)
-            if nonce in self.lose:
-                self.lose.discard(nonce)
-            else:
-                self.queue.append(item)
+            self._import(raw)
             if self.accept_then_raise:
                 raise self.accept_then_raise.pop(0)
+
+    def send_raw_batch(self, raws: list[bytes]) -> list[Exception | None]:
+        """skaled imports a batch's items one after another; each gets its own
+        answer, None for OK."""
+        with self._lock:
+            self.batches.append([bytes(r) for r in raws])
+            if self.batch_errors:
+                raise self.batch_errors.pop(0)
+            answers: list[Exception | None] = []
+            for raw in raws:
+                try:
+                    self._import(raw)
+                except Exception as exc:  # noqa: BLE001 - the item's answer
+                    answers.append(exc)
+                else:
+                    answers.append(None)
+            if self.batch_accept_then_raise:
+                raise self.batch_accept_then_raise.pop(0)
+            return answers
+
+    def _import(self, raw: bytes) -> None:
+        tx = TypedTransaction.from_bytes(HexBytes(raw)).as_dict()
+        sender = Account.recover_transaction(raw)
+        nonce = tx["nonce"]
+        tx_hash = keccak(raw)
+        if nonce in self.refuse:
+            raise self.refuse.pop(nonce)
+        # skaled verifies the nonce BEFORE it looks at its queue
+        # (Client::importTransaction), so a mined transaction sent again
+        # is "Invalid transaction nonce", not "already in the blockchain".
+        base = self.committed[sender]
+        if nonce < base or (not self.mtm and nonce != base):
+            raise FakeRpcError("Invalid transaction nonce.")
+        if tx_hash in self.mined:
+            raise FakeRpcError("Transaction is already in the blockchain.")
+        if any(q["hash"] == tx_hash for q in self.queue):
+            raise FakeRpcError(
+                "Same transaction already exists in the pending transaction queue."
+            )
+        if any(q["sender"] == sender and q["nonce"] == nonce for q in self.queue):
+            raise FakeRpcError(
+                "Pending transaction with same nonce already exists "
+                "(skale: we ignore gas price)."
+            )
+        item = {"sender": sender, "nonce": nonce, "hash": tx_hash, "tx": tx}
+        self.accepted.append(item)
+        if nonce in self.lose:
+            self.lose.discard(nonce)
+        else:
+            self.queue.append(item)
+        if nonce in self.answer_lost:
+            raise self.answer_lost.pop(nonce)
 
     def pending_hashes(self) -> set[bytes]:
         """skaled's `eth_pendingTransactions`: the CURRENT queue only, i.e.

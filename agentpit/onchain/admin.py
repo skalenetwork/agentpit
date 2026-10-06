@@ -2,6 +2,7 @@
 
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
+from web3.contract.contract import ContractFunction
 from web3.types import TxReceipt
 
 from agentpit.onchain.contracts import Contracts
@@ -22,9 +23,9 @@ _MAX_UINT256 = 2**256 - 1
 
 # Static gas limits for the sync's batched sends, about twice the gas measured
 # on SKALE (57,226 and 109,909). An estimate would cost a round trip per
-# market, and a registerToken sent behind its own prepareCondition must not
-# depend on state that is not mined yet. Over-provisioning costs nothing: the
-# unused gas is refunded.
+# market (a batch is signed in one go, so it has none), and a registerToken
+# sent behind its own prepareCondition must not depend on state that is not
+# mined yet. Over-provisioning costs nothing: the unused gas is refunded.
 PREPARE_CONDITION_GAS = 120_000
 REGISTER_TOKEN_GAS = 220_000
 
@@ -99,21 +100,30 @@ class OnchainAdmin:
 
     # --- markets ----------------------------------------------------
 
-    def submit_prepare_condition(
+    def prepare_condition_call(
         self, oracle: str, question_id: bytes, outcome_slot_count: int
-    ) -> PendingTx:
+    ) -> tuple[ContractFunction, int]:
+        """`prepareCondition` with its static gas limit, for `submit_many`."""
         fn = self._contracts.ctf.functions.prepareCondition(
             Web3.to_checksum_address(oracle), question_id, outcome_slot_count
         )
-        return self._client.admin_sender.submit(fn, gas=PREPARE_CONDITION_GAS)
+        return fn, PREPARE_CONDITION_GAS
 
-    def submit_register_token(
+    def register_token_call(
         self, token_a: int, token_b: int, condition_id: bytes
-    ) -> PendingTx:
+    ) -> tuple[ContractFunction, int]:
+        """`registerToken` with its static gas limit, for `submit_many`."""
         fn = self._contracts.exchange.functions.registerToken(
             token_a, token_b, condition_id
         )
-        return self._client.admin_sender.submit(fn, gas=REGISTER_TOKEN_GAS)
+        return fn, REGISTER_TOKEN_GAS
+
+    def submit_many(
+        self, calls: list[tuple[ContractFunction, int]]
+    ) -> list[PendingTx | Exception]:
+        """Broadcast every call in JSON-RPC batches without waiting; one
+        result per call, in order (`AdminTxSender.submit_many`)."""
+        return self._client.admin_sender.submit_many(calls)
 
     def wait_all(
         self, pendings: list[PendingTx], *, timeout: float
@@ -207,7 +217,8 @@ class OnchainAdmin:
     def sync_chunk_size(self) -> int:
         """Markets per batched sync step: two transactions each, so a chunk uses
         at most half the in-flight capacity and user trades keep the other half
-        during a sync burst."""
+        during a sync burst. With the default 128: 32 markets, up to 64
+        transactions, one JSON-RPC batch."""
         return max(1, self._client.admin_sender.max_in_flight // 4)
 
     @property

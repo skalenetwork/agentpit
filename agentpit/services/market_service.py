@@ -1,6 +1,7 @@
 import logging
 
 from eth_utils import keccak
+from web3.contract.contract import ContractFunction
 
 from agentpit.datastructures.cancel_market_response import CancelMarketResponse
 from agentpit.datastructures.condition_id import ConditionId
@@ -220,8 +221,9 @@ def prepare_markets_on_chain(
     Returns one result per item, in order: `(condition_id, [(token_id,
     label), ...])`, or the exception that market failed with. Identical
     questions share one condition and get the same ids, as they always did.
-    A submit that raises stops the sending: every market still needing a
-    transaction gets that same exception. A failed state read raises for the
+    Every transaction goes out in one `submit_many`: if it raises, every
+    market still needing a transaction gets that exception; a failed
+    prepareCondition fails its market. A failed state read raises for the
     whole batch.
     """
     results: list[tuple[ConditionId, list[tuple[str, str]]] | Exception | None] = [
@@ -262,43 +264,49 @@ def prepare_markets_on_chain(
 
 def _run_condition_plans(admin: OnchainAdmin, plans: list[_ConditionPlan]) -> None:
     states = admin.read_market_states([(p.condition_id, p.tokens) for p in plans])
-    # The first submit that raises ends the sending. A submit error is never
-    # about one market (the gas is static, nothing is estimated): the node is
-    # out of reach or the admin nonce stream is in trouble. Sending the rest
-    # would only add sends whose answers are lost, each leaving a nonce gap
-    # behind. Every market that still needs a transaction fails with that same
-    # error and the next sync pass retries it; what was sent is still awaited
-    # and verified below.
-    failure: Exception | None = None
+    calls: list[tuple[ContractFunction, int]] = []
+    owners: list[tuple[_ConditionPlan, bool]] = []  # (plan, is its prepare)
     for plan, (slots, comp_a, comp_b) in zip(plans, states, strict=True):
         if slots not in (0, 2):
             plan.error = MarketStateError(
                 f"condition already prepared with {slots} slots, expected 2"
             )
             continue
-        needs_prepare = slots == 0
-        needs_register = comp_a == 0 or comp_b == 0
-        if failure is not None:
-            if needs_prepare or needs_register:
-                plan.error = failure
-            continue
+        if slots == 0:
+            calls.append(
+                admin.prepare_condition_call(admin.oracle_address, plan.question_id, 2)
+            )
+            owners.append((plan, True))
+        if comp_a == 0 or comp_b == 0:
+            # registerToken never looks at the CTF, so it may follow its own
+            # prepareCondition into the same batch and the same block.
+            calls.append(
+                admin.register_token_call(
+                    plan.tokens[0], plan.tokens[1], plan.condition_id
+                )
+            )
+            owners.append((plan, False))
+
+    if calls:
+        # One JSON-RPC batch for the whole chunk. If it raises, the error is
+        # never about one market (the gas is static, nothing is estimated):
+        # the node is out of reach or the admin nonce stream is in trouble.
+        # Every market that needed a transaction fails with it and the next
+        # sync pass retries.
         try:
-            if needs_prepare:
-                plan.pending.append(
-                    admin.submit_prepare_condition(
-                        admin.oracle_address, plan.question_id, 2
-                    )
-                )
-            if needs_register:
-                # registerToken never looks at the CTF, so it may follow its
-                # own prepareCondition into the same block.
-                plan.pending.append(
-                    admin.submit_register_token(
-                        plan.tokens[0], plan.tokens[1], plan.condition_id
-                    )
-                )
+            submitted = admin.submit_many(calls)
         except Exception as exc:
-            plan.error = failure = exc
+            for plan, _ in owners:
+                plan.error = exc
+        else:
+            for (plan, is_prepare), outcome in zip(owners, submitted, strict=True):
+                if not isinstance(outcome, Exception):
+                    plan.pending.append(outcome)
+                elif is_prepare:
+                    plan.error = outcome
+                # A failed registerToken is left to the verdict read below:
+                # another path may have registered the pair, or the
+                # transaction, its answer lost, may land after all.
 
     sent = [tx for plan in plans for tx in plan.pending]
     if sent:

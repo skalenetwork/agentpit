@@ -6,7 +6,6 @@ import secrets
 from eth_utils import keccak
 
 from agentpit.config import Settings
-from agentpit.datastructures.condition_id import ConditionId
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.ctf_ids import binary_market_ids, condition_id
@@ -84,6 +83,24 @@ def test_non_binary_market_fails_alone():
     assert not isinstance(results[1], Exception)
 
 
+def test_twenty_new_markets_take_one_submit_many_on_chain(monkeypatch):
+    admin = _admin()
+    sizes = []
+    real = admin.submit_many
+
+    def spy(calls):
+        sizes.append(len(calls))
+        return real(calls)
+
+    monkeypatch.setattr(admin, "submit_many", spy)
+    items = [(_q(f"twenty {i}"), ["Yes", "No"]) for i in range(20)]
+    results = prepare_markets_on_chain(admin, items)
+    assert sizes == [40]
+    assert not any(isinstance(r, Exception) for r in results)
+    for _, tokens in results:
+        assert _registered(admin, tokens)
+
+
 def test_single_wrapper_raises_the_items_error():
     admin = _admin()
     try:
@@ -96,15 +113,20 @@ def test_single_wrapper_raises_the_items_error():
 
 class _FakeAdmin:
     """Just enough OnchainAdmin for prepare_markets_on_chain, without a chain:
-    the `fail_at`-th submit raises, every other one lands at once."""
+    `submit_many` lands every call at once, except the ones `item_errors`
+    names by their place in the batch; with `error` it raises as a whole."""
 
     oracle_address = "0x00000000000000000000000000000000000000a1"
     collateral_address = "0x00000000000000000000000000000000000000c0"
 
-    def __init__(self, fail_at: int = 0, error: Exception | None = None):
-        self.fail_at = fail_at
+    def __init__(
+        self,
+        item_errors: dict[int, Exception] | None = None,
+        error: Exception | None = None,
+    ):
+        self.item_errors = item_errors or {}
         self.error = error
-        self.submits: list[tuple[str, bytes]] = []
+        self.batches: list[list[tuple]] = []
         self.waited: list[PendingTx] = []
         self.prepared: set[bytes] = set()  # condition ids
         self.registered: set[int] = set()  # token ids
@@ -121,62 +143,78 @@ class _FakeAdmin:
             for cid, tokens in markets
         ]
 
-    def _submit(self, kind: str, key: bytes) -> PendingTx:
-        self.submits.append((kind, key))
-        if len(self.submits) == self.fail_at:
+    def prepare_condition_call(self, oracle, question_id, slots):
+        return ("prepare", oracle, question_id, slots), 120_000
+
+    def register_token_call(self, token_a, token_b, condition_id_):
+        return ("register", token_a, token_b, condition_id_), 220_000
+
+    def submit_many(self, calls):
+        self.batches.append([call for call, _ in calls])
+        if self.error is not None:
             raise self.error
-        return PendingTx(tx_hash=secrets.token_bytes(32), nonce=len(self.submits))
-
-    def submit_prepare_condition(self, oracle, question_id, slots):
-        pending = self._submit("prepare", question_id)
-        self.prepared.add(condition_id(oracle, question_id, slots))
-        return pending
-
-    def submit_register_token(self, token_a, token_b, condition_id_):
-        pending = self._submit("register", condition_id_)
-        self.registered.update({token_a, token_b})
-        return pending
+        out: list[PendingTx | Exception] = []
+        for i, (call, _gas) in enumerate(calls):
+            if i in self.item_errors:
+                out.append(self.item_errors[i])
+                continue
+            if call[0] == "prepare":
+                self.prepared.add(condition_id(*call[1:]))
+            else:
+                self.registered.update(call[1:3])
+            out.append(PendingTx(tx_hash=secrets.token_bytes(32), nonce=i))
+        return out
 
     def wait_all(self, pendings, *, timeout):
         self.waited.extend(pendings)
         return [{"status": 1} for _ in pendings]
 
 
-def test_a_failed_submit_stops_the_sends_for_the_rest_of_the_batch():
-    """A submit error is never about one market (static gas, no estimate):
-    the node is unreachable or our nonce stream is in trouble. Sending the
-    rest anyway could leave a nonce gap per remaining market."""
-    boom = ConnectionError("read timed out")
-    admin = _FakeAdmin(fail_at=3, error=boom)  # plan 2's prepareCondition
-    items = [(_q(f"stop {i}"), ["Yes", "No"]) for i in range(5)]
+def test_a_chunk_goes_out_as_one_submit_many():
+    admin = _FakeAdmin()
+    items = [(_q(f"chunk {i}"), ["Yes", "No"]) for i in range(20)]
     results = prepare_markets_on_chain(admin, items)
+    assert len(admin.batches) == 1
+    # A market's prepareCondition and registerToken go into the same batch.
+    assert [call[0] for call in admin.batches[0]] == ["prepare", "register"] * 20
+    assert len(admin.waited) == 40
+    assert not any(isinstance(r, Exception) for r in results)
 
-    first_qid = keccak(text=items[0][0])
-    first_cid, _ = binary_market_ids(
-        admin.oracle_address, admin.collateral_address, first_qid
-    )
-    assert [kind for kind, _ in admin.submits] == ["prepare", "register", "prepare"]
-    assert admin.submits[2][1] == keccak(text=items[1][0])
-    assert len(admin.waited) == 2  # plan 1's transactions are still awaited
-    assert admin.state_reads == 2  # and still go through the verdict read
+
+def test_a_failed_prepare_item_fails_only_its_market():
+    boom = RuntimeError("insufficient funds for gas * price + value")
+    admin = _FakeAdmin(item_errors={2: boom})  # market 1's prepareCondition
+    items = [(_q(f"item {i}"), ["Yes", "No"]) for i in range(3)]
+    results = prepare_markets_on_chain(admin, items)
+    assert results[1] is boom
     assert not isinstance(results[0], Exception)
-    assert results[0][0] == ConditionId("0x" + first_cid.hex())
-    assert all(r is boom for r in results[1:])
+    assert not isinstance(results[2], Exception)
+    assert len(admin.waited) == 5  # every call that went out is still awaited
 
 
-def test_a_ready_market_after_a_failed_submit_still_passes():
-    """Only markets that still need a transaction inherit the submit error."""
+def test_a_failed_register_item_is_left_to_the_verdict_read():
+    admin = _FakeAdmin(item_errors={1: RuntimeError("answer lost")})
+    (result,) = prepare_markets_on_chain(admin, [(_q("register"), ["Yes", "No"])])
+    assert isinstance(result, MarketStateError)  # the chain says: not registered
+    assert admin.state_reads == 2
+
+
+def test_submit_many_raising_fails_every_market_that_needed_a_transaction():
+    """A whole-batch error is never about one market: every market still
+    needing a transaction fails with it and the next sync pass retries."""
+    boom = ConnectionError("read timed out")
+    admin = _FakeAdmin(error=boom)
     ready_q = _q("ready")
-    admin = _FakeAdmin(fail_at=1, error=ConnectionError("down"))
-    ready_qid = keccak(text=ready_q)
     ready_cid, ready_tokens = binary_market_ids(
-        admin.oracle_address, admin.collateral_address, ready_qid
+        admin.oracle_address, admin.collateral_address, keccak(text=ready_q)
     )
     admin.prepared.add(ready_cid)
     admin.registered.update(ready_tokens)
     results = prepare_markets_on_chain(
-        admin, [(_q("fails"), ["Yes", "No"]), (ready_q, ["Yes", "No"])]
+        admin,
+        [(_q("fails"), ["Yes", "No"]), (ready_q, ["Yes", "No"]), (_q("too"), ["Yes", "No"])],
     )
-    assert isinstance(results[0], ConnectionError)
+    assert results[0] is boom and results[2] is boom
     assert not isinstance(results[1], Exception)
-    assert len(admin.submits) == 1
+    assert len(admin.batches) == 1
+    assert admin.waited == []

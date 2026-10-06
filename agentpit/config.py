@@ -323,8 +323,10 @@ class Settings(BaseSettings):
     # landing one per block; the sender drops to 1 by itself if the node turns
     # out to refuse a second one. 1 = strictly serial. At most 256: skaled's
     # queue holds ~1024 transactions, shared by every sender on the chain.
+    # The sync sends a quarter of it per JSON-RPC batch: 128 = 32 markets, up
+    # to 64 transactions in one batch.
     admin_tx_max_in_flight: int = Field(
-        default=64, ge=1, le=256, validation_alias="AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT"
+        default=128, ge=1, le=256, validation_alias="AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT"
     )
 
     # Admin

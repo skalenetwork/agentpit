@@ -11,8 +11,10 @@ def _settings(monkeypatch, **env):
     return Settings(_env_file=None)
 
 
-def test_admin_tx_max_in_flight_defaults_to_64(monkeypatch):
-    assert _settings(monkeypatch).admin_tx_max_in_flight == 64
+def test_admin_tx_max_in_flight_defaults_to_128(monkeypatch):
+    """A sync chunk is a quarter of it: 32 markets, up to 64 transactions in
+    one JSON-RPC batch."""
+    assert _settings(monkeypatch).admin_tx_max_in_flight == 128
 
 
 def test_admin_tx_max_in_flight_is_configurable(monkeypatch):
