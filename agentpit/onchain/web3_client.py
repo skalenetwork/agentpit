@@ -26,8 +26,9 @@ def build_http_provider(rpc_url: str) -> Web3.HTTPProvider:
     `eth_sendRawTransaction` is never retried. After a timeout web3 would send
     the same transaction again, and the node's answer to that second copy
     ("already exists", "invalid nonce") would be read as a refusal of the
-    first. `AdminTxSender` resolves a lost answer itself by asking the node
-    for the hash. Reads keep their retries.
+    first. `AdminTxSender` resolves a lost answer itself: it resends the
+    identical bytes once and, if the node says the nonce is already used, looks
+    for its own receipt. Reads keep their retries.
 
     An explicit request_cache_validation_threshold avoids web3's unlocked
     first-use probe that can switch the cache off permanently under concurrent

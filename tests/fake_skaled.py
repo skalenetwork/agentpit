@@ -61,15 +61,18 @@ class FakeSkaled:
             sender = Account.recover_transaction(raw)
             nonce = tx["nonce"]
             tx_hash = keccak(raw)
+            # skaled verifies the nonce BEFORE it looks at its queue
+            # (Client::importTransaction), so a mined transaction sent again
+            # is "Invalid transaction nonce", not "already in the blockchain".
+            base = self.committed[sender]
+            if nonce < base or (not self.mtm and nonce != base):
+                raise FakeRpcError("Invalid transaction nonce.")
             if tx_hash in self.mined:
                 raise FakeRpcError("Transaction is already in the blockchain.")
             if any(q["hash"] == tx_hash for q in self.queue):
                 raise FakeRpcError(
                     "Same transaction already exists in the pending transaction queue."
                 )
-            base = self.committed[sender]
-            if nonce < base or (not self.mtm and nonce != base):
-                raise FakeRpcError("Invalid transaction nonce.")
             if any(q["sender"] == sender and q["nonce"] == nonce for q in self.queue):
                 raise FakeRpcError(
                     "Pending transaction with same nonce already exists "
