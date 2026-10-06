@@ -6,10 +6,14 @@ import logging
 import secrets
 from types import SimpleNamespace
 
+import requests
+
 import agentpit.polymarket.polymarket_sync as sync
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.domain.exceptions import MarketStateError
+from tests.chain_fakes import SkaledAdmin
 from tests.db_helpers import fresh_test_db
+from tests.fake_skaled import FakeSkaled, make_sender
 
 
 def _pm(question: str) -> dict:
@@ -113,6 +117,59 @@ def test_a_chunk_that_raises_stops_chain_work_for_the_rest_of_the_pass(
     warnings, summary = _sync_lines(caplog)
     assert len(warnings) == 1
     assert "RPC down" in warnings[0] and "5" in warnings[0]
+    assert summary.endswith("(5 failed)")
+
+
+def test_a_chunk_whose_sends_met_an_outage_stops_chain_work(monkeypatch, caplog):
+    """The chunk came back, but its sends found the node out of reach (or no
+    admin slot free): the next chunks would only add unknowable nonces. What
+    the chunk did prepare is inserted; the rest of the pass is one line."""
+    from agentpit.services.market_service import PreparedMarkets
+
+    caplog.set_level(logging.INFO)
+    db = fresh_test_db()
+    markets = [_pm(f"Outage {i} {secrets.token_hex(4)}?") for i in range(5)]
+    down = requests.ConnectionError("node out of reach")
+    calls = {"n": 0}
+
+    def fake_batch(admin, items):
+        calls["n"] += 1
+        out = PreparedMarkets([_ids(items[0][1])] + [down] * (len(items) - 1))
+        out.stop = down
+        return out
+
+    monkeypatch.setattr(sync, "prepare_markets_on_chain", fake_batch)
+    with db.write() as conn:
+        created = sync.create_polymarket_markets_if_needed(
+            conn, markets, SimpleNamespace(sync_chunk_size=2)
+        )
+    assert [m.question for m in created] == [markets[0]["question"]]
+    assert calls["n"] == 1  # the later chunks never reached the chain
+    warnings, summary = _sync_lines(caplog)
+    assert len(warnings) == 1
+    assert "node out of reach" in warnings[0] and "4 new markets" in warnings[0]
+    assert summary.endswith("(4 failed)")
+
+
+def test_an_outage_ends_the_chain_work_of_the_pass_on_a_fake_skaled(caplog):
+    """End to end through a real AdminTxSender: the first chunk's batch and
+    its resend go unanswered, and no later chunk is sent."""
+    caplog.set_level(logging.INFO)
+    db = fresh_test_db()
+    chain = FakeSkaled()
+    sender, _, _ = make_sender(chain)
+    admin = SkaledAdmin(chain, sender, sync_chunk_size=2)
+    chain.batch_errors.extend(
+        [requests.ConnectionError("reset by peer"), requests.ConnectionError("again")]
+    )
+    markets = [_pm(f"Down {i} {secrets.token_hex(4)}?") for i in range(5)]
+    with db.write() as conn:
+        created = sync.create_polymarket_markets_if_needed(conn, markets, admin)
+    assert created == []
+    assert len(chain.batches) == 2  # the first chunk's batch and its resend
+    warnings, summary = _sync_lines(caplog)
+    assert len(warnings) == 1
+    assert "reset by peer" in warnings[0] and "5 new markets" in warnings[0]
     assert summary.endswith("(5 failed)")
 
 

@@ -8,6 +8,7 @@ import threading
 import pytest
 import requests
 from eth_account import Account
+from eth_utils import keccak
 from hexbytes import HexBytes
 from urllib3.exceptions import (
     ConnectTimeoutError,
@@ -19,15 +20,17 @@ from urllib3.exceptions import (
 )
 from web3 import Web3
 
+from agentpit.onchain.chain_rpc import (
+    SendError,
+    Web3ChainRpc,
+    classify_send_error,
+    failed_before_connecting,
+)
 from agentpit.onchain.tx_sender import (
     _OWN_RECEIPT_LOOKUPS,
     AdminTxSender,
     PendingTx,
-    SendError,
     TxDropped,
-    Web3ChainRpc,
-    classify_send_error,
-    failed_before_connecting,
 )
 from agentpit.onchain.web3_client import build_http_provider
 from tests.fake_skaled import (
@@ -97,6 +100,52 @@ class _StaleSkaled(_LaggingSkaled):
 )
 def test_classify_node_answers(message, kind):
     assert classify_send_error(FakeRpcError(message)) is kind
+
+
+def test_classify_skaled_queue_full_and_balance_low():
+    """skaled's own wording for two refusals that say nothing is wrong with
+    the transaction itself (libweb3jsonrpc/Eth.cpp)."""
+    assert (
+        classify_send_error(FakeRpcError("Transaction queue is full."))
+        is SendError.QUEUE_FULL
+    )
+    assert (
+        classify_send_error(
+            FakeRpcError(
+                "Account balance is too low (balance < value + gas * gas price)."
+            )
+        )
+        is SendError.BALANCE_LOW
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Transaction queue is full.",
+        "Account balance is too low (balance < value + gas * gas price).",
+    ],
+)
+def test_a_single_send_refused_queue_full_or_balance_low_just_raises(message):
+    """The single path treats these as before: refused, raised, nonce free."""
+    chain = FakeSkaled()
+    sender, _, _ = _sender(chain)
+    chain.send_errors.append(refusal := FakeRpcError(message))
+    with pytest.raises(FakeRpcError) as info:
+        sender.submit(_Fn(), gas=100_000)
+    assert info.value is refusal
+    assert chain.accepted == []
+    assert sender.submit(_Fn(), gas=100_000).nonce == 0
+
+
+def test_accept_never_moves_the_next_nonce_back():
+    """A batch can accept its items out of nonce order (a receipt lookup
+    settles an early nonce last): the counter only ever moves up."""
+    chain = FakeSkaled()
+    sender, _, _ = _sender(chain)
+    sender._accept(b"\x01" * 32, 5)  # noqa: SLF001
+    sender._accept(b"\x02" * 32, 2)  # noqa: SLF001
+    assert sender._next_nonce == 6  # noqa: SLF001
 
 
 def test_classify_transport_errors():
@@ -676,12 +725,12 @@ def test_a_run_of_lost_nonces_is_filled_in_one_pass():
         )
         with pytest.raises(requests.ConnectionError):
             sender.submit(_Fn(), gas=100_000)
-    sent_at: dict[int, float] = {}
+    singles = []
     real = chain.send_raw
 
     def send_raw(raw):
+        singles.append(raw)
         real(raw)
-        sent_at[chain.accepted[-1]["nonce"]] = clock()
 
     chain.send_raw = send_raw
     start = clock()
@@ -694,13 +743,21 @@ def test_a_run_of_lost_nonces_is_filled_in_one_pass():
     assert all(
         Web3.to_checksum_address(a["tx"]["to"]) == account.address for a in fillers
     )
-    assert len({sent_at[n] for n in range(16)}) == 1  # all in one pass
+    # All in one pass, in one JSON-RPC batch; only `following` went alone.
+    # The batch also held a filler for `following`'s own nonce, which the
+    # node refused: parked behind the gaps, `following` was not listed.
+    (batch,) = chain.batches
+    assert batch[:16] == [_raw_of(chain, a) for a in fillers]
+    assert len(batch) == 17
+    assert len(singles) == 1
 
 
-def test_the_run_stops_at_a_nonce_the_node_still_holds():
+def test_the_node_refuses_the_filler_of_a_nonce_it_still_holds():
     """Lost, queued, lost. The queued one is parked behind the gap, where
-    `eth_pendingTransactions` does not list it, so its filler is refused (same
-    nonce) and the run stops there; the next pass fills the second gap."""
+    `eth_pendingTransactions` does not list it, so the run covers all three.
+    The fillers go out in one batch and each is judged by its own answer: the
+    node refuses the one on the nonce it holds (same nonce) and takes the
+    two on the nonces it lost."""
     chain = FakeSkaled()
     sender, _, clock = _sender(chain, stall_after=5, mine_on_sleep=False)
     chain.lose.update({0, 2})
@@ -709,17 +766,61 @@ def test_the_run_stops_at_a_nonce_the_node_still_holds():
     lost_too = sender.submit(_Fn(), gas=100_000)
     clock.advance(6)
     sender.poll()
-    assert [a["nonce"] for a in chain.accepted] == [0, 1, 2, 0]  # one filler
-    chain.mine()
-    clock.advance(6)
-    sender.poll()  # nonce 1 mined with the filler; now nonce 2 is the gap
-    assert [a["nonce"] for a in chain.accepted][-1] == 2
+    assert len(chain.batches) == 1 and len(chain.batches[0]) == 3
+    assert [a["nonce"] for a in chain.accepted] == [0, 1, 2, 0, 2]  # two fillers
     chain.mine()
     clock.advance(1)
     results = sender.wait_all([lost, queued, lost_too], timeout=5)
     assert isinstance(results[0], TxDropped)
     assert results[1]["status"] == 1
     assert isinstance(results[2], TxDropped)
+
+
+def _lose_answers(sender, chain, count: int) -> None:
+    """`count` sends whose answer is lost twice: unknowable, nonces counted."""
+    for _ in range(count):
+        chain.send_errors.extend(
+            [requests.ConnectionError("reset"), requests.ConnectionError("again")]
+        )
+        with pytest.raises(requests.ConnectionError):
+            sender.submit(_Fn(), gas=100_000)
+
+
+def test_a_long_run_of_fillers_goes_out_in_batches_of_100():
+    chain = FakeSkaled()
+    sender, _, clock = _sender(
+        chain, stall_after=5, max_in_flight=256, mine_on_sleep=False
+    )
+    _lose_answers(sender, chain, 120)
+    clock.advance(6)
+    sender.poll()
+    assert [len(b) for b in chain.batches] == [100, 20]
+    assert sorted(a["nonce"] for a in chain.accepted) == list(range(120))
+
+
+def test_a_refused_filler_ends_the_run():
+    """A filler the node refuses means its nonce is held after all (or the
+    nonce read is behind): no batch of fillers above it goes out in that
+    pass. The fillers of its own batch the node took are tracked."""
+    chain = FakeSkaled()
+    sender, _, clock = _sender(
+        chain, stall_after=5, max_in_flight=256, mine_on_sleep=False
+    )
+    _lose_answers(sender, chain, 120)
+    chain.refuse[0] = FakeRpcError(
+        "Pending transaction with same nonce already exists (skale: we ignore gas price)."
+    )
+    clock.advance(6)
+    sender.poll()
+    assert [len(b) for b in chain.batches] == [100]  # no second batch
+    assert sorted(a["nonce"] for a in chain.accepted) == list(range(1, 100))
+    with sender._state:  # noqa: SLF001
+        superseded = sorted(
+            e.pending.nonce
+            for e in sender._entries.values()  # noqa: SLF001
+            if e.superseded_by is not None
+        )
+    assert superseded == list(range(1, 100))
 
 
 def test_a_young_transaction_ends_the_run():
@@ -817,6 +918,15 @@ def test_lost_filler_still_drops_the_original_and_frees_its_slot():
     assert sender.wait(follow, timeout=10)["status"] == 1
 
 
+def _raw_of(chain: FakeSkaled, item: dict) -> bytes:
+    """The raw bytes a recorded batch sent for `item`."""
+    for batch in chain.batches:
+        for raw in batch:
+            if keccak(raw) == item["hash"]:
+                return raw
+    raise AssertionError("not sent in a batch")
+
+
 class _FakeProvider:
     def __init__(self, response):
         self.response = response
@@ -897,7 +1007,7 @@ def _warnings(caplog) -> list[str]:
     return [
         r.getMessage()
         for r in caplog.records
-        if r.name == "agentpit.onchain.tx_sender" and r.levelno == logging.WARNING
+        if r.name == "agentpit.onchain.chain_rpc" and r.levelno == logging.WARNING
     ]
 
 

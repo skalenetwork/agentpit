@@ -19,7 +19,8 @@ from eth_account import Account
 from web3 import Web3
 
 from agentpit.onchain.deployment import Deployment
-from agentpit.onchain.tx_sender import AdminTxSender, Web3ChainRpc
+from agentpit.onchain.chain_rpc import Web3ChainRpc
+from agentpit.onchain.tx_sender import AdminTxSender
 from agentpit.onchain.web3_client import build_http_provider
 
 

@@ -3,7 +3,10 @@ result per input."""
 
 import secrets
 
+import pytest
+import requests
 from eth_utils import keccak
+from web3.exceptions import TimeExhausted
 
 from agentpit.config import Settings
 from agentpit.onchain.admin import OnchainAdmin
@@ -17,6 +20,9 @@ from agentpit.services.market_service import (
     prepare_market_on_chain,
     prepare_markets_on_chain,
 )
+from tests.chain_fakes import SkaledAdmin
+from tests.fake_skaled import FakeFn, FakeRpcError, FakeSkaled, make_sender
+from tests.test_tx_sender_recovery import _refused
 
 
 def _admin() -> OnchainAdmin:
@@ -190,6 +196,7 @@ def test_a_failed_prepare_item_fails_only_its_market():
     assert not isinstance(results[0], Exception)
     assert not isinstance(results[2], Exception)
     assert len(admin.waited) == 5  # every call that went out is still awaited
+    assert results.stop is None  # a refusal of one market's call
 
 
 def test_a_failed_register_item_is_left_to_the_verdict_read():
@@ -218,3 +225,91 @@ def test_submit_many_raising_fails_every_market_that_needed_a_transaction():
     assert not isinstance(results[1], Exception)
     assert len(admin.batches) == 1
     assert admin.waited == []
+    assert results.stop is boom
+
+
+@pytest.mark.parametrize(
+    "error",
+    [requests.ConnectionError("reset by peer"), TimeExhausted("no free slot")],
+    ids=["no answer", "no slot"],
+)
+def test_a_stop_class_register_failure_is_reported_as_the_stop(error):
+    """A failed registerToken is left to the verdict read, so the market's own
+    result does not show it: the stop says it."""
+    admin = _FakeAdmin(item_errors={1: error})  # market 0's registerToken
+    results = prepare_markets_on_chain(
+        admin, [(_q("reg 0"), ["Yes", "No"]), (_q("reg 1"), ["Yes", "No"])]
+    )
+    assert isinstance(results[0], MarketStateError)
+    assert not isinstance(results[1], Exception)
+    assert results.stop is error
+
+
+# --- through a real AdminTxSender on a fake skaled ---------------------------
+
+
+def _skaled_admin(**kw) -> tuple[SkaledAdmin, FakeSkaled]:
+    chain = FakeSkaled()
+    sender, _, _ = make_sender(chain, **kw)
+    return SkaledAdmin(chain, sender), chain
+
+
+def _items(n: int, tag: str) -> list[tuple[str, list[str]]]:
+    return [(_q(f"{tag} {i}"), ["Yes", "No"]) for i in range(n)]
+
+
+def test_a_chunk_that_went_through_reports_no_stop():
+    admin, chain = _skaled_admin()
+    results = prepare_markets_on_chain(admin, _items(5, "fine"))
+    assert not any(isinstance(r, Exception) for r in results)
+    assert results.stop is None
+    assert len(chain.batches) == 1
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [lambda: requests.ConnectionError("reset by peer"), _refused],
+    ids=["after connecting", "before connecting"],
+)
+def test_a_chunk_lost_to_an_outage_reports_the_stop(make_error):
+    admin, chain = _skaled_admin()
+    first = make_error()
+    chain.batch_errors.extend([first, make_error()])
+    results = prepare_markets_on_chain(admin, _items(3, "outage"))
+    assert all(r is first for r in results)
+    assert results.stop is first
+
+
+def test_no_free_admin_slot_reports_the_stop():
+    admin, _ = _skaled_admin(max_in_flight=4, slot_timeout=1, mine_on_sleep=False)
+    admin.sender.submit_many([(FakeFn(), 100_000)] * 4)  # every slot taken
+    results = prepare_markets_on_chain(admin, _items(1, "slot"))
+    assert isinstance(results[0], TimeExhausted)
+    assert results.stop is results[0]
+
+
+def test_a_register_only_market_lost_to_an_outage_reports_the_stop():
+    """Its condition is prepared already, so its only transaction is the
+    registerToken, whose failure the verdict read turns into a
+    MarketStateError. The stop still says the node was out of reach."""
+    admin, chain = _skaled_admin()
+    q = _q("register only")
+    (prepared,) = admin.sender.submit_many(
+        [admin.prepare_condition_call(admin.oracle_address, keccak(text=q), 2)]
+    )
+    admin.sender.wait(prepared, timeout=10)
+    first = requests.ConnectionError("reset by peer")
+    # One call: it goes out on the single path, and both copies are lost.
+    chain.send_errors.extend([first, requests.ConnectionError("again")])
+    results = prepare_markets_on_chain(admin, [(q, ["Yes", "No"])])
+    assert isinstance(results[0], MarketStateError)
+    assert results.stop is first
+
+
+def test_a_market_refused_for_its_own_reason_reports_no_stop():
+    admin, chain = _skaled_admin()
+    chain.refuse[0] = refusal = FakeRpcError("Invalid RPC parameters.")
+    results = prepare_markets_on_chain(admin, _items(2, "own reason"))
+    assert results[0] is refusal  # its prepareCondition, not sent again
+    assert not isinstance(results[1], Exception)
+    assert results.stop is None

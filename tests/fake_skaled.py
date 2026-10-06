@@ -162,8 +162,9 @@ class FakeSkaled:
 
     # --- test controls ----------------------------------------------
 
-    def mine(self) -> int:
-        """Cut one block: every queued tx whose nonce is next for its sender."""
+    def mine(self, limit: int | None = None) -> int:
+        """Cut one block: every queued tx whose nonce is next for its sender
+        (the first `limit` of them, if given)."""
         with self._lock:
             self.block += 1
             count = 0
@@ -171,6 +172,8 @@ class FakeSkaled:
             while progress:
                 progress = False
                 for item in sorted(self.queue, key=lambda q: q["nonce"]):
+                    if limit is not None and count >= limit:
+                        break
                     if item["nonce"] != self.committed[item["sender"]]:
                         continue
                     self.queue.remove(item)

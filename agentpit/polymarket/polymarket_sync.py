@@ -1053,8 +1053,10 @@ def create_polymarket_markets_if_needed(
     prepare the new ones on chain a chunk at a time with every transaction
     broadcast before any receipt is awaited, then insert what succeeded. A
     market listed twice counts once. A chunk whose chain step raises as a
-    whole ends the chain work of the pass: the rest count as failed, and the
-    next pass retries them.
+    whole, or whose sends found the node out of reach or no admin slot free
+    (the result's `stop`), ends the chain work of the pass in one warning
+    line: what that chunk prepared is inserted, the rest count as failed,
+    and the next pass retries them.
 
     Each database step runs in its own SAVEPOINT: the batch shares one
     transaction (the caller's db.write()), and without it a single failed
@@ -1108,18 +1110,19 @@ def create_polymarket_markets_if_needed(
             # one line; the next pass retries every one of these markets.
             left = len(new) - start
             failed += left
-            logger.warning(
-                "Chain step failed (%s: %s); %d new markets left for the next pass",
-                exc.__class__.__name__,
-                _one_line(exc),
-                left,
-            )
-            logger.debug("Chain step failure details", exc_info=exc)
+            _log_chain_stop(exc, left)
             break
+        # A plain list (a test's stand-in) carries no stop.
+        stop = getattr(prepared, "stop", None)
+        chain_failed = 0  # markets of this chunk the chain step failed
         for (request, pm_market), outcome in zip(batch, prepared, strict=True):
             if isinstance(outcome, Exception):
                 failed += 1
-                _log_skip(request.question, outcome)
+                if stop is None:
+                    _log_skip(request.question, outcome)
+                else:
+                    chain_failed += 1  # told in the one line below
+                    logger.debug("Skip %r details", request.question, exc_info=outcome)
                 continue
             try:
                 with db.transaction():
@@ -1129,6 +1132,15 @@ def create_polymarket_markets_if_needed(
                 _log_skip(request.question, exc)
                 continue
             created_markets.append(market)
+        if stop is not None:
+            # The chunk came back, but its sends found the node out of reach
+            # or no admin slot free: the next chunks would only add sends
+            # whose answers are lost (each one a nonce for the stall healer)
+            # or wait out the same timeout. Same ending as a raise.
+            unsent = len(new) - start - len(batch)
+            failed += unsent
+            _log_chain_stop(stop, chain_failed + unsent)
+            break
 
     logger.info(
         "Synced %d/%d Polymarket markets locally (%d failed)",
@@ -1137,6 +1149,16 @@ def create_polymarket_markets_if_needed(
         failed,
     )
     return created_markets
+
+
+def _log_chain_stop(exc: Exception, left: int) -> None:
+    logger.warning(
+        "Chain step failed (%s: %s); %d new markets left for the next pass",
+        exc.__class__.__name__,
+        _one_line(exc),
+        left,
+    )
+    logger.debug("Chain step failure details", exc_info=exc)
 
 
 def _log_skip(question: str, exc: Exception) -> None:
