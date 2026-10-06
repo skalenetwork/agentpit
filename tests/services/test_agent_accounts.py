@@ -1,9 +1,11 @@
+import pytest
 from eth_account.signers.local import LocalAccount
 
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.domain.exceptions import OnboardingError
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -107,6 +109,19 @@ def test_an_api_agent_is_funded_at_once_and_has_no_app():
     assert agent.onboarded_at is not None
     assert agent.agent_app is None and agent.handle
     assert onboard.calls == [agent.user_id]
+
+
+def test_an_api_agent_that_cannot_be_funded_is_not_left_behind():
+    db = fresh_test_db()
+
+    def fail(_user_id: str, _acct: LocalAccount) -> User:
+        raise OnboardingError("chain down")
+
+    with pytest.raises(OnboardingError):
+        AgentAccounts(db, fail).create_api_agent(OWNER)
+
+    with db.read() as conn:
+        assert TableRead.agents_owned_by(conn, OWNER) == []
 
 
 def test_the_latest_sign_in_host_is_kept():

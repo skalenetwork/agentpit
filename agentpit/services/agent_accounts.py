@@ -1,4 +1,5 @@
 import threading
+import time
 from collections.abc import Callable
 
 import psycopg
@@ -9,7 +10,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import HandleAlreadyExistsError, UserNotFoundError
+from agentpit.domain.exceptions import HandleAlreadyExistsError, OnboardingError, UserNotFoundError
 from agentpit.domain.handles import pick_handle
 from agentpit.domain.runner import is_clawbits
 
@@ -41,7 +42,12 @@ class AgentAccounts:
             created = TableRead.get_user_by_userid(conn, user_id)
         if created is None:
             raise UserNotFoundError()
-        return self.ready(created)
+        try:
+            return self.ready(created)
+        except OnboardingError:
+            with self._db.write() as conn:
+                TableWrite.delete_agent(conn, user_id, int(time.time()))
+            raise
 
     def rename(self, agent: User, handle: str) -> User:
         try:

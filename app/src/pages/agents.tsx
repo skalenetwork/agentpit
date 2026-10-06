@@ -24,8 +24,8 @@ const NewAgent = ({ onClose, count }: { onClose: () => void; count: number }) =>
   const made = create.data;
 
   useEffect(() => {
-    if (!made && !create.isPending && count > before.current) onClose();
-  }, [count, made, create.isPending, onClose]);
+    if (create.isIdle && count > before.current) onClose();
+  }, [count, create.isIdle, onClose]);
 
   const done = () => made && navigate({ to: "/agents/$address", params: { address: made.eth_address } });
 
