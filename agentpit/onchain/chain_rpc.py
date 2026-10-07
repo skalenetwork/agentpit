@@ -269,13 +269,22 @@ class Web3ChainRpc:
         return self._w3.eth.estimate_gas(tx)  # type: ignore[arg-type]
 
     def fee_params(self) -> tuple[int, int]:
-        """(maxFeePerGas, maxPriorityFeePerGas) as web3's own defaults compute
-        them: twice the latest base fee plus the node's suggested tip."""
-        priority = self._w3.eth.max_priority_fee
-        base = self._w3.eth.get_block("latest").get("baseFeePerGas") or 0
-        if not base:
-            return self._w3.eth.gas_price, 0
-        return 2 * base + priority, priority
+        return current_fee_params(self._w3)
+
+
+def current_fee_params(web3: Web3) -> tuple[int, int]:
+    """(maxFeePerGas, maxPriorityFeePerGas): the node's current `eth_gasPrice`
+    and no tip.
+
+    skaled bills `maxFeePerGas` in full (`effectiveGasPrice = maxFeePerGas`,
+    not base fee + tip, measured 2026-10-06 on mainnet and testnet), so every
+    wei above the current price is paid: web3's default of twice the base fee
+    plus a tip doubled every cost. Below the current price the node refuses
+    the transaction, and it drops a queued one once the price rises past it.
+    anvil and geth bill base fee + tip, and their `eth_gasPrice` is at least
+    the base fee.
+    """
+    return web3.eth.gas_price, 0
 
 
 def _match_receipts(

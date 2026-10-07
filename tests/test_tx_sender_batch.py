@@ -705,15 +705,19 @@ def test_a_whole_batch_refusal_resigns_the_same_bytes_on_the_same_nonces():
     Should a proxy have passed it on anyway, the one-at-a-time copies are
     the very same bytes (same nonce, same fees, deterministic signatures),
     which the node answers "already known": nothing runs twice, even when
-    the cached fee went stale in between."""
+    the cached fee went stale and the price fell in between (a fresh read
+    would sign cheaper, different bytes). A price that ROSE is the one case
+    the pin cannot cover: the price is checked first, so the pinned bytes
+    are refused for their fee and re-signed at the current one (the next
+    test)."""
     chain = FakeSkaled()
     sender, _, clock = _sender(chain, mine_on_sleep=False)
     real = chain.send_raw_batch
 
     def batch(raws):
         real(raws)  # the node took every item...
-        clock.advance(31)  # ...and the cached fee is past its TTL now
-        chain.fee = (400_000, 0)
+        clock.advance(31)  # ...the cached fee is past its TTL now...
+        chain.fee = (100_000, 0)  # ...and the price fell
         raise BatchRefused("{'code': -32600, 'message': 'refused by a proxy'}")
 
     chain.send_raw_batch = batch
@@ -749,6 +753,24 @@ def test_a_fee_refusal_in_the_fallback_still_refreshes_the_fee():
     assert [a["tx"]["maxFeePerGas"] for a in chain.accepted] == [400_000] * 3
     sender.wait_all(results, timeout=10)
     assert _executions(chain) == [0, 1, 2]
+
+
+def test_a_batch_signs_at_the_current_price_not_a_cached_one():
+    """Every fee is the current price with no headroom (skaled bills
+    maxFeePerGas in full). A batch signed at a cached price the node has
+    since raised would have every item refused and sent again one by one,
+    so each batch reads the price afresh."""
+    chain = FakeSkaled()
+    sender, _, _ = _sender(chain)
+    sender.submit(FakeFn(), gas=100_000)  # caches 200_000
+    chain.fee = (400_000, 0)
+    singles = _record_singles(chain)
+
+    results = sender.submit_many(_calls(3))
+
+    assert singles == []
+    assert [r.nonce for r in results] == [1, 2, 3]
+    assert [a["tx"]["maxFeePerGas"] for a in chain.accepted[1:]] == [400_000] * 3
 
 
 # --- a lost batch ------------------------------------------------------------

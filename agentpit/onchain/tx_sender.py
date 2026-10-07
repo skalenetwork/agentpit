@@ -18,6 +18,10 @@ skaled behaviour this relies on (tag 5.2.0-beta.1, checked 2026-10-06):
   answers null (libweb3jsonrpc/Eth.cpp, ClientBase.cpp). The queue is visible
   in `eth_pendingTransactions`, but only its current part: a transaction
   parked behind a nonce gap is not listed (Client::pending).
+- The fee billed is `maxFeePerGas` in full, so every transaction is priced at
+  the current `eth_gasPrice` with no headroom (`current_fee_params`). The
+  price is checked before the nonce and the queue: a transaction under it is
+  refused, and a queued one is dropped once the price rises past it.
 
 Nonce, sign and broadcast happen under the send lock, normally one round trip;
 the retries of a refused send, the resend after a lost answer and healing a
@@ -1025,6 +1029,10 @@ class _BatchSend:
             if s._next_nonce is None:
                 s._next_nonce = s._rpc.nonce(s.address, "pending")
             self._first = s._next_nonce
+            # Read afresh: with no headroom over the price, a cached one the
+            # node has since raised gets every item refused, and each then
+            # goes out again on its own. One read per batch.
+            s._fees = None
             self._fees = s._fee_params()
             signed = [
                 s._sign(base, self._first + i, gas, self._fees)
@@ -1209,8 +1217,12 @@ class _BatchSend:
         # Re-signed at the batch's own fees, an item on its batch nonce is the
         # batch's very bytes (signatures are deterministic): were the batch
         # taken after all, the node answers "already known" rather than
-        # meeting a second copy of the action on a later nonce. A fee refusal
-        # clears the pin (`_sign_and_send`).
+        # meeting a second copy of the action on a later nonce. That holds
+        # only while the price has not risen past the batch's: its fee is the
+        # price read for it, with no headroom, and the node checks the price
+        # before its queue. A fee refusal clears the pin (`_sign_and_send`)
+        # and leaves this rule's trust alone; the window is the one round
+        # trip since the batch read its price.
         s._pinned_fees = self._fees
         refused_too: Exception | None = None
         try:
