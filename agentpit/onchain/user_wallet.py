@@ -4,6 +4,7 @@ from eth_account.signers.local import LocalAccount
 from web3.contract.contract import ContractFunction
 from web3.types import TxReceipt
 
+from agentpit.onchain.chain_rpc import current_fee_params
 from agentpit.onchain.web3_client import Web3Client
 
 
@@ -22,17 +23,23 @@ def send_user_tx(
     """
     web3 = client.web3
     nonce = web3.eth.get_transaction_count(user_account.address, "pending")
+    # Estimated before any price is set: with one, a dry account's estimate
+    # already fails, before the send can say it is short of gas (what
+    # `InsufficientGasError` is made from).
+    gas_estimate = fn.estimate_gas({"from": user_account.address})
+    # Not web3's default fee: skaled bills maxFeePerGas in full.
+    max_fee, priority = current_fee_params(web3)
+    # Every field filled in, so web3 builds this without a single RPC.
     tx = fn.build_transaction(
         {
             "from": user_account.address,
             "nonce": nonce,
             "chainId": client.deployment.chain_id,
+            "gas": gas_estimate * (100 + gas_buffer_pct) // 100,
+            "maxFeePerGas": max_fee,
+            "maxPriorityFeePerGas": priority,
         }
     )
-    if "gas" not in tx:
-        gas_estimate = fn.estimate_gas({"from": user_account.address})
-        tx["gas"] = gas_estimate * (100 + gas_buffer_pct) // 100
-
     signed = user_account.sign_transaction(tx)
     tx_hash = web3.eth.send_raw_transaction(signed.raw_transaction)
     return web3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)

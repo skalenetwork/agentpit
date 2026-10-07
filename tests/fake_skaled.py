@@ -5,6 +5,8 @@ Models the rules the sender depends on (skaled 5.2.0-beta.1):
   invisible to it.
 - With MTM on, any nonce >= committed is accepted and waits until the gap
   below it is filled; with MTM off only nonce == committed is accepted.
+- A transaction priced under the current price (`fee`) is refused, before
+  its nonce or the queue is looked at.
 - A taken nonce is refused (no replace-by-fee); a duplicate hash is refused.
 - `mine()` cuts one block holding every contiguous nonce per sender.
 - A JSON-RPC batch of `eth_sendRawTransaction` is imported one item after
@@ -99,6 +101,10 @@ class FakeSkaled:
         tx_hash = keccak(raw)
         if nonce in self.refuse:
             raise self.refuse.pop(nonce)
+        # skaled checks the price first (verifyTransaction): under the current
+        # eth_gasPrice is refused even when the node holds these very bytes.
+        if tx["maxFeePerGas"] < self.fee[0]:
+            raise FakeRpcError("Transaction gas price lower than current eth_gasPrice.")
         # skaled verifies the nonce BEFORE it looks at its queue
         # (Client::importTransaction), so a mined transaction sent again
         # is "Invalid transaction nonce", not "already in the blockchain".
