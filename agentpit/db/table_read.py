@@ -1638,6 +1638,16 @@ class TableRead:
         return int(row["N"])
 
     @staticmethod
+    def sponsored_gas_used(db: psycopg.Connection, api_key: str, day: int) -> int:
+        """Gas the admin has paid for this account's fills on `day`
+        (unix seconds // 86_400); 0 when it has none."""
+        row = db.execute(
+            "SELECT GAS_USED FROM sponsored_gas WHERE API_KEY = %s AND DAY = %s",
+            (api_key, day),
+        ).fetchone()
+        return int(row["GAS_USED"]) if row else 0
+
+    @staticmethod
     def list_live_order_levels(
         db: psycopg.Connection, api_key: str, token_ids: list[str]
     ) -> list[dict]:

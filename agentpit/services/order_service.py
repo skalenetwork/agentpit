@@ -26,6 +26,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     BusinessRuleError,
+    GasBudgetExceededError,
     InsufficientBalanceError,
     MarketNotFoundError,
     MarketStateError,
@@ -64,6 +65,8 @@ _EXCHANGE_ONE = 10**18
 # In addition, the expiration must be at least 3 minutes in the future —
 # orders expiring sooner are rejected."
 _EXPIRY_MIN_LEAD_SECONDS = 180
+
+_SECONDS_PER_DAY = 86_400  # the sponsored-gas budget resets at 00:00 UTC
 
 
 def _exchange_price(maker_amount: int, taker_amount: int, side: str) -> int:
@@ -142,6 +145,7 @@ class OrderService:
         )
         if not user.is_bot:
             self._check_order_limits(user, payload, maker_amount, taker_amount)
+            self._check_gas_budget(user)
 
         # Pre-flight balance check — reject obvious losers before signing.
         # `balance_hint` lets a batch caller (the mirror) supply the relevant
@@ -207,8 +211,11 @@ class OrderService:
 
         tx_hashes: list[str] = []
         if matches:
+            # Filled by _settle_on_chain as each tx lands, so a placement that
+            # dies after its first group still books the gas that group burned.
+            gas_used: list[int] = []
             try:
-                hashes = self._settle_on_chain(order, signature, matches)
+                hashes = self._settle_on_chain(order, signature, matches, gas_used)
                 tx_hashes = ["0x" + h.hex() for h in hashes]
             except Exception as exc:
                 log.exception("on-chain settlement failed for order %s", order_id)
@@ -227,6 +234,7 @@ class OrderService:
                 )
             finally:
                 touch(user.eth_address, *(m["maker_row"]["MAKER"] for m in matches))
+                self._record_sponsored_gas(user, sum(gas_used))
 
         with self._db.read() as conn:
             row = self._get_order_row(conn, order_id)
@@ -776,6 +784,32 @@ class OrderService:
                     f"too many open orders: {live} are live and the limit is {cap} — cancel some first"
                 )
 
+    def _check_gas_budget(self, user: User) -> None:
+        """Refuse a non-house taker that already made the admin pay its
+        daily share of fills. Soft cap: checked before matching, counted after
+        settlement, so one placement can overshoot by its own fills."""
+        budget = self._settings.daily_sponsored_gas_per_account
+        if not budget:
+            return
+        now = int(time.time())
+        with self._db.read() as conn:
+            used = TableRead.sponsored_gas_used(conn, user.api_key, now // _SECONDS_PER_DAY)
+        if used >= budget:
+            raise GasBudgetExceededError(retry_after=_SECONDS_PER_DAY - now % _SECONDS_PER_DAY)
+
+    def _record_sponsored_gas(self, user: User, gas: int) -> None:
+        """Book the fill gas on the taker. Never fails the order: the trade is
+        already on chain by now, and a lost row only under-counts."""
+        if user.is_bot or gas <= 0:
+            return
+        try:
+            with self._db.write() as conn:
+                TableWrite.add_sponsored_gas(
+                    conn, user.api_key, int(time.time()) // _SECONDS_PER_DAY, gas
+                )
+        except Exception:
+            log.exception("recording sponsored gas failed for %s", user.user_id)
+
     def _check_balance(
         self,
         eth_address: str,
@@ -1145,13 +1179,18 @@ class OrderService:
     # --- on-chain settlement -------------------------------------------
 
     def _settle_on_chain(
-        self, taker_order: OrderData, taker_signature: bytes, matches: list[dict]
+        self,
+        taker_order: OrderData,
+        taker_signature: bytes,
+        matches: list[dict],
+        gas_used: list[int],
     ) -> list[bytes]:
         """Submit `matchOrders` as the operator, one tx per match-kind group.
 
         Each call to CTFExchange.matchOrders resolves to a single MatchType
         derived from the taker/maker token pairing, so NORMAL fills cannot
-        share a tx with MINT/MERGE fills. Returns one tx hash per group.
+        share a tx with MINT/MERGE fills. Returns one tx hash per group, and
+        appends each group's receipt gasUsed to `gas_used` as it lands.
         """
         client = self._onchain._client  # noqa: SLF001
         exchange = self._onchain._contracts.exchange  # noqa: SLF001
@@ -1202,6 +1241,9 @@ class OrderService:
                 maker_fill_amounts,
             )
             receipt = send_admin_tx(client, fn, timeout=60)
+            # Counted whatever the receipt's status: a reverted match still
+            # burned the admin's gas. `.get`: fakes and some nodes omit it.
+            gas_used.append(int(receipt.get("gasUsed") or 0))
             tx_hashes.append(receipt["transactionHash"])
         return tx_hashes
 

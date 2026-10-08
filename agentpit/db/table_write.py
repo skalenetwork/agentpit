@@ -183,6 +183,22 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
+    def add_sponsored_gas(
+        db: psycopg.Connection, api_key: str, day: int, gas: int
+    ) -> None:
+        """Add `gas` to the account's total for `day` (unix seconds // 86_400).
+
+        An upsert that adds in SQL rather than read-modify-write, so two
+        placements settling at once cannot overwrite each other's gas.
+        """
+        db.execute(
+            "INSERT INTO sponsored_gas (API_KEY, DAY, GAS_USED) VALUES (%s, %s, %s) "
+            "ON CONFLICT (API_KEY, DAY) DO UPDATE SET "
+            "GAS_USED = sponsored_gas.GAS_USED + EXCLUDED.GAS_USED",
+            (api_key, day, gas),
+        )
+
+    @staticmethod
     def mark_key_export_attempt(
         db: psycopg.Connection, user_id: str, at: int, not_before: int
     ) -> bool:
