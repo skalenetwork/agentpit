@@ -82,7 +82,9 @@ class OnboardingChain:
         self.funded.append((user_address, value_wei))
         return AttributeDict({"status": 1, "gasUsed": 21_000})
 
-    def send_as_user(self, user_account, fn, *, gas, max_fee, timeout=30):
+    def send_as_user(
+        self, user_account, fn, *, gas, max_fee, timeout=30, on_signed=None
+    ):
         self.calls.append("send_as_user")
         self.sent.append((user_account.address, fn, gas, max_fee))
         self._nonce += 1

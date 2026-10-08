@@ -26,7 +26,7 @@ to become a Postgres advisory lock (`pg_try_advisory_lock` on the address).
 import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Literal
 
@@ -52,6 +52,9 @@ from agentpit.onchain.tx_sender import TRANSFER_GAS
 log = logging.getLogger(__name__)
 
 SponsorKind = Literal["claim", "split", "merge", "onboarding"]
+# Called with (the call's index in `calls`, its transaction's hash) each time a
+# call is signed, just before that transaction is broadcast.
+OnSigned = Callable[[int, str], None]
 
 _SECONDS_PER_DAY = 86_400  # the sponsored-gas budget resets at 00:00 UTC
 # The node's estimate plus 20%, the pad `send_user_tx` has always used. skaled
@@ -81,6 +84,16 @@ def _lock_for(address: str) -> threading.Lock:
         if lock is None:
             lock = _locks[key] = threading.Lock()
         return lock
+
+
+def _call_hook(
+    on_signed: OnSigned | None, index: int
+) -> Callable[[str], None] | None:
+    """`send_user_tx`'s one-argument hook for call `index`: each signature of
+    that call, a resized retry's included, reports its own hash under it."""
+    if on_signed is None:
+        return None
+    return lambda tx_hash: on_signed(index, tx_hash)
 
 
 class UserGasSponsor:
@@ -122,7 +135,12 @@ class UserGasSponsor:
             lock.release()
 
     def send(
-        self, user: User, calls: list[ContractFunction], kind: SponsorKind
+        self,
+        user: User,
+        calls: list[ContractFunction],
+        kind: SponsorKind,
+        *,
+        on_signed: OnSigned | None = None,
     ) -> list[TxReceipt]:
         """Top `user` up to exactly what `calls` need, then send them in order,
         signed by the user's key. Must be called inside `locked(user)`.
@@ -153,15 +171,21 @@ class UserGasSponsor:
         the broadcast, `SendError.TRANSPORT`) may have mined, so it books like
         a receipt timeout: the reservation stands. The error propagates as it
         is.
+
+        `on_signed(i, tx_hash)` is called each time call `i` is signed, before
+        its transaction is broadcast, so the caller can record a transaction
+        that may mine even if this never returns. A call is signed again only
+        after the node refused it at import (the one resize-and-retry), so a
+        second hash for the same `i` means the first can never mine.
         """
         # A cheap guard against a caller that forgot the lock. It cannot tell
         # which thread holds it, but a lock nobody holds is a sure bug.
         if not _lock_for(user.eth_address).locked():
             raise RuntimeError("UserGasSponsor.send must run inside locked(user)")
         if kind != "onboarding" and not self._settings.sponsor_user_gas:
-            receipts = self._send_unsponsored(user, calls)
+            receipts = self._send_unsponsored(user, calls, on_signed)
         else:
-            receipts = self._send_sponsored(user, calls, kind)
+            receipts = self._send_sponsored(user, calls, kind, on_signed)
         for receipt in receipts:
             if receipt["status"] != 1:
                 tx_hash = receipt.get("transactionHash")
@@ -179,7 +203,11 @@ class UserGasSponsor:
     # --- the two paths ---------------------------------------------------
 
     def _send_sponsored(
-        self, user: User, calls: list[ContractFunction], kind: SponsorKind
+        self,
+        user: User,
+        calls: list[ContractFunction],
+        kind: SponsorKind,
+        on_signed: OnSigned | None,
     ) -> list[TxReceipt]:
         """Size, reserve, top up, send, book (spec §1 steps 2-6)."""
         price, limits, shortfall = self._size(user, calls)
@@ -195,7 +223,11 @@ class UserGasSponsor:
             i = 0
             while i < len(calls):
                 try:
-                    receipts.append(self._send_one(user, calls[i], limits[i], price))
+                    receipts.append(
+                        self._send_one(
+                            user, calls[i], limits[i], price, _call_hook(on_signed, i)
+                        )
+                    )
                 except Exception as exc:
                     balance_low = is_balance_low(exc)
                     if (
@@ -244,7 +276,10 @@ class UserGasSponsor:
         return receipts
 
     def _send_unsponsored(
-        self, user: User, calls: list[ContractFunction]
+        self,
+        user: User,
+        calls: list[ContractFunction],
+        on_signed: OnSigned | None,
     ) -> list[TxReceipt]:
         """The kill switch is off: send at the current price from the wallet as
         it stands. No balance read, no reservation, no top-up, no booking,
@@ -253,9 +288,11 @@ class UserGasSponsor:
         """
         price, limits = self._limits(user, calls)
         receipts: list[TxReceipt] = []
-        for fn, gas in zip(calls, limits):
+        for i, (fn, gas) in enumerate(zip(calls, limits)):
             try:
-                receipts.append(self._send_one(user, fn, gas, price))
+                receipts.append(
+                    self._send_one(user, fn, gas, price, _call_hook(on_signed, i))
+                )
             except Exception as exc:
                 if is_balance_low(exc):
                     raise InsufficientGasError(_CANNOT_PAY) from exc
@@ -351,7 +388,12 @@ class UserGasSponsor:
             raise GasTopUpTimeoutError() from exc
 
     def _send_one(
-        self, user: User, fn: ContractFunction, gas: int, price: int
+        self,
+        user: User,
+        fn: ContractFunction,
+        gas: int,
+        price: int,
+        on_signed: Callable[[str], None] | None,
     ) -> TxReceipt:
         """One user-signed send at the sized limit and price, so `send_user_tx`
         does not estimate again (one more ~0.5 s round trip on SKALE)."""
@@ -361,6 +403,7 @@ class UserGasSponsor:
             gas=gas,
             max_fee=price,
             timeout=self._settings.tx_confirmations_timeout_s,
+            on_signed=on_signed,
         )
 
     def _book(

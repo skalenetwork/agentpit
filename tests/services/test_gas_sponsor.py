@@ -76,6 +76,9 @@ class _Chain:
     `fund_errors` are raised by the next top-ups in turn, after the transfer is
     recorded as sent: a receipt timeout, where the transfer went out and its
     receipt did not come back (None lets that top-up mine).
+    Every send is signed first: it gets a hash of its own, recorded in
+    `signed` and handed to `on_signed` before the send can be refused, as
+    `send_user_tx` hands it over before the broadcast.
     There is deliberately no `check_sponsored`: a wallet that needs no top-up
     must not meet the breaker at all.
     """
@@ -100,6 +103,7 @@ class _Chain:
         self.paused = paused
         self.during_send = during_send
         self.events: list[tuple] = []
+        self.signed: list[str] = []
 
     @staticmethod
     def _next(values: list[int]) -> int:
@@ -122,9 +126,20 @@ class _Chain:
         return {"status": 1, "gasUsed": TRANSFER_GAS}
 
     def send_as_user(
-        self, user_account, fn, *, gas: int, max_fee: int, timeout: int = 30
+        self,
+        user_account,
+        fn,
+        *,
+        gas: int,
+        max_fee: int,
+        timeout: int = 30,
+        on_signed=None,
     ):
         self.events.append(("send", fn.name, gas, max_fee))
+        tx_hash = "0x%064x" % (len(self.signed) + 1)
+        self.signed.append(tx_hash)
+        if on_signed is not None:
+            on_signed(tx_hash)
         if self.during_send is not None:
             self.during_send()
         refusal = self.refusals.pop(0) if self.refusals else None
@@ -184,10 +199,10 @@ def _spend(db, user, gas: int) -> None:
         TableWrite.add_sponsored_gas(conn, user.api_key, _today(), gas)
 
 
-def _send(db, chain, user, calls, kind, **settings):
+def _send(db, chain, user, calls, kind, *, on_signed=None, **settings):
     sponsor = UserGasSponsor(db, chain, _settings(**settings))  # type: ignore[arg-type]
     with sponsor.locked(user):
-        return sponsor.send(user, calls, kind)  # type: ignore[arg-type]
+        return sponsor.send(user, calls, kind, on_signed=on_signed)  # type: ignore[arg-type]
 
 
 # --- settings ---------------------------------------------------------------
@@ -358,6 +373,79 @@ def test_any_other_refusal_propagates_without_a_retry():
         _send(db, chain, user, [_Call()], "claim")
     assert chain.funded == [NEED]
     assert len(chain.sends) == 1
+
+
+# --- the signing hook -------------------------------------------------------
+
+
+def test_each_call_reports_its_index_and_hash_as_it_is_signed():
+    """`on_signed(i, tx_hash)` for every call, in order: what the caller writes
+    its intent row under before the broadcast."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain()
+    reported: list[tuple[int, str]] = []
+    _send(
+        db,
+        chain,
+        user,
+        [_Call("a"), _Call("b"), _Call("c")],
+        "onboarding",
+        on_signed=lambda i, tx_hash: reported.append((i, tx_hash)),
+    )
+    assert reported == list(enumerate(chain.signed))
+    assert len(set(chain.signed)) == 3
+
+
+@pytest.mark.parametrize("message", [SKALED_FEE_LOW, SKALED_BALANCE_LOW])
+def test_a_resized_retry_reports_its_new_hash_for_the_same_call(message):
+    """The node refused the first signature at import; the retry is signed
+    again, at the new size, and is a different transaction with a different
+    hash. Reported under the same index, so the caller can tell that the
+    first one was refused."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(
+        prices=(1_000, 1_500), balances=(0, NEED), refusals=[_refused(message)]
+    )
+    reported: list[tuple[int, str]] = []
+    _send(
+        db,
+        chain,
+        user,
+        [_Call()],
+        "claim",
+        on_signed=lambda i, tx_hash: reported.append((i, tx_hash)),
+    )
+    assert reported == [(0, chain.signed[0]), (0, chain.signed[1])]
+    assert chain.signed[0] != chain.signed[1]
+
+
+def test_the_hook_reports_with_the_kill_switch_off_too():
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain()
+    reported: list[tuple[int, str]] = []
+    _send(
+        db,
+        chain,
+        user,
+        [_Call()],
+        "split",
+        on_signed=lambda i, tx_hash: reported.append((i, tx_hash)),
+        AGENTPIT_SPONSOR_USER_GAS=False,
+    )
+    assert reported == [(0, chain.signed[0])]
+
+
+def test_no_hook_is_the_default():
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain()
+    sponsor = UserGasSponsor(db, chain, _settings())  # type: ignore[arg-type]
+    with sponsor.locked(user):
+        sponsor.send(user, [_Call()], "claim")  # type: ignore[list-item]
+    assert len(chain.signed) == 1
 
 
 # --- the per-user lock ------------------------------------------------------

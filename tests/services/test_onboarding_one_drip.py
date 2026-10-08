@@ -86,7 +86,9 @@ class _FlakyChain(OnboardingChain):
             raise TimeExhausted("no receipt for the top-up")
         return receipt
 
-    def send_as_user(self, user_account, fn, *, gas, max_fee, timeout=30):
+    def send_as_user(
+        self, user_account, fn, *, gas, max_fee, timeout=30, on_signed=None
+    ):
         failing = self._fails_now(fn)
         if failing and self._how == "read_timeout":
             raise ReadTimeout("no answer to the broadcast")
