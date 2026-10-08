@@ -20,27 +20,38 @@ GAS_PRICE = 1_000_000_000
 APPROVAL_LIMIT = APPROVAL_GAS * 120 // 100
 #: Three approvals at their limits and `GAS_PRICE`: an empty wallet's whole top-up.
 ONBOARDING_NEED = 3 * APPROVAL_LIMIT * GAS_PRICE
+#: The collateral one faucet drip mints, as `OnchainAdmin.signup_grant_raw`
+#: reports it. Small, so a test can read a balance at a glance.
+SIGNUP_GRANT = 100_000
 
 
 class OnboardingChain:
     """Records, in order, what onboarding did (`calls`), the top-ups it sent
     (`funded`, as (address, wei)) and each user-signed send (`sent`, as
-    (signer address, call, gas limit, max fee))."""
+    (signer address, call, gas limit, max fee)).
+
+    Keeps the two facts onboarding reads back from a chain: the collateral
+    each drip minted (`minted`, per lowercased address, in drips) and the
+    wallet's nonce, which every mined user transaction advances."""
 
     deployment_id = "0xctf"
     # anvil: the re-onboarding repair only runs on a chain that can be wiped.
     chain_id = 31337
+    signup_grant_raw = SIGNUP_GRANT
 
     def __init__(self, *, nonce: int = 0) -> None:
         self.calls: list[str] = []
         self.funded: list[tuple[str, int]] = []
         self.sent: list[tuple[str, object, int, int]] = []
+        self.minted: dict[str, int] = {}
         self._nonce = nonce
 
     # --- read and sent by AuthService itself --------------------------
 
     def faucet_drip(self, recipient, *, timeout=30):
         self.calls.append("faucet_drip")
+        key = recipient.lower()
+        self.minted[key] = self.minted.get(key, 0) + 1
         return AttributeDict({"status": 1, "gasUsed": 50_000})
 
     def approval_calls(self):
@@ -53,7 +64,7 @@ class OnboardingChain:
         return self._nonce
 
     def usd_balance(self, address):
-        return 100
+        return self.minted.get(address.lower(), 0) * self.signup_grant_raw
 
     # --- read and sent by UserGasSponsor --------------------------------
 
@@ -74,4 +85,5 @@ class OnboardingChain:
     def send_as_user(self, user_account, fn, *, gas, max_fee, timeout=30):
         self.calls.append("send_as_user")
         self.sent.append((user_account.address, fn, gas, max_fee))
+        self._nonce += 1
         return AttributeDict({"status": 1, "gasUsed": APPROVAL_GAS})
