@@ -1630,6 +1630,17 @@ class TableRead:
 
     @staticmethod
     def count_live_orders(db: psycopg.Connection, api_key: str) -> int:
+        """How many orders this account has resting, on any market: the cheap
+        count (0.04 ms on the dev DB), an upper bound of
+        `count_live_orders_on_active_markets`."""
+        row = db.execute(
+            f"SELECT COUNT(*) AS N FROM orders WHERE API_KEY = %s AND {TableRead.LIVE_ORDER}",
+            (api_key, int(time.time())),
+        ).fetchone()
+        return int(row["N"])
+
+    @staticmethod
+    def count_live_orders_on_active_markets(db: psycopg.Connection, api_key: str) -> int:
         """How many orders this account has resting on a market that can trade.
 
         Only ACTIVE markets count. Closing, resolving or cancelling a market
@@ -1639,7 +1650,9 @@ class TableRead:
 
         The token set is built once from the ACTIVE markets (ERC1155_TOKENS is
         a JSON array of [token_id, label] pairs) and hashed against the
-        account's few rows, rather than scanned per order.
+        account's few rows, rather than scanned per order. Even so it expands
+        every ACTIVE market: 17-36 ms on the dev DB (4,685 of them), so call
+        it only when `count_live_orders` has already reached the cap.
         """
         row = db.execute(
             "SELECT COUNT(*) AS N FROM orders WHERE API_KEY = %s "

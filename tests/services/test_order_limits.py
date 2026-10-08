@@ -7,6 +7,7 @@ from typing import Literal
 from unittest.mock import patch
 
 import pytest
+from web3.exceptions import TimeExhausted
 
 from agentpit.config import Settings
 from agentpit.datastructures.condition_id import ConditionId
@@ -18,6 +19,7 @@ from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import AdminGasPausedError, BusinessRuleError, GasBudgetExceededError
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.order_signer import OrderData
+from agentpit.onchain.tx_sender import TxDropped
 from agentpit.services.order_service import OrderService
 from tests.db_helpers import fresh_test_db
 from tests.fake_skaled import FakeFn, FakeSkaled, make_sender
@@ -158,9 +160,51 @@ def test_dead_market_orders_are_not_counted_but_active_ones_still_are():
     _rest_live_orders(db, user.api_key, 5, token=dead_yes)
     _rest_live_orders(db, user.api_key, 2, token=YES)
     with db.read() as conn:
-        assert TableRead.count_live_orders(conn, user.api_key) == 2
+        assert TableRead.count_live_orders(conn, user.api_key) == 7                # every live order
+        assert TableRead.count_live_orders_on_active_markets(conn, user.api_key) == 2
     with pytest.raises(BusinessRuleError, match="2 are live"):
         svc.place_order(user, _req(size="10"))
+
+
+def _spy_on_active_count(monkeypatch):
+    """Count the calls to the (expensive) ACTIVE-market count."""
+    calls = []
+    real = TableRead.count_live_orders_on_active_markets
+
+    def spy(conn, api_key):
+        calls.append(api_key)
+        return real(conn, api_key)
+
+    monkeypatch.setattr(TableRead, "count_live_orders_on_active_markets", staticmethod(spy))
+    return calls
+
+
+def test_the_active_market_count_only_runs_once_the_plain_count_reaches_the_cap(monkeypatch):
+    # Expanding ERC1155_TOKENS for every ACTIVE market cost 17-36 ms per call on
+    # the dev DB (4,685 ACTIVE markets) against 0.04 ms for the plain count, and
+    # it ran on every GTC/GTD placement. The plain count never undercounts, so
+    # below the cap it already settles the question.
+    calls = _spy_on_active_count(monkeypatch)
+    svc, db, user = _setup(AGENTPIT_MAX_LIVE_ORDERS_PER_ACCOUNT=3)
+    _rest_live_orders(db, user.api_key, 2)
+    with pytest.raises(_ReachedChain):
+        svc.place_order(user, _req(size="10"))
+    assert calls == []
+
+
+def test_the_active_market_count_decides_once_the_plain_count_reaches_the_cap(monkeypatch):
+    calls = _spy_on_active_count(monkeypatch)
+    dead_yes, dead_no = "77" + "0" * 20, "77" + "0" * 19 + "1"
+    svc, db, user = _setup(AGENTPIT_MAX_LIVE_ORDERS_PER_ACCOUNT=3)
+    _add_market(db, MarketState.CANCELLED, dead_yes, dead_no, "dead")
+    _rest_live_orders(db, user.api_key, 3, token=dead_yes)               # plain count 3 = the cap
+    with pytest.raises(_ReachedChain):                                   # ... but none of them can fill
+        svc.place_order(user, _req(size="10"))
+    assert calls == [user.api_key]
+    _rest_live_orders(db, user.api_key, 3, token=YES)                    # now 3 on an ACTIVE market
+    with pytest.raises(BusinessRuleError, match="3 are live"):
+        svc.place_order(user, _req(size="10"))
+    assert calls == [user.api_key, user.api_key]
 
 
 def test_live_order_cap_lets_fak_and_fok_through():
@@ -379,6 +423,81 @@ def test_house_taker_gas_is_split_over_the_non_house_makers():
         assert TableRead.sponsored_gas_used(conn, house.api_key, day) == 0
 
 
+def test_book_trues_up_the_day_the_reservation_was_taken_on():
+    # A placement that settles across 00:00 UTC: the reservation sits on day D
+    # and the true-up must go there, not to D+1 as a negative row.
+    svc, db, user = _setup()
+    today = int(time.time()) // 86_400
+    reserved_on = today - 1
+    with db.write() as conn:
+        TableWrite.add_sponsored_gas(conn, user.api_key, reserved_on, 500_000)
+    svc._book_sponsored_gas(user, [(168_000, ["maker-key"])], 500_000, day=reserved_on)
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, user.api_key, reserved_on) == 168_000
+        assert TableRead.sponsored_gas_used(conn, user.api_key, today) == 0
+    assert _booked_rows(db, user.api_key) == 1                          # no row on the other day
+
+
+def test_house_taker_gas_is_booked_on_the_given_day():
+    svc, db, user = _setup()
+    day = int(time.time()) // 86_400 - 1
+    with db.write() as conn:
+        TableWrite.mark_user_as_bot(conn, user.api_key)
+        house = TableRead.get_user_by_userid(conn, user.user_id)
+        _u, _a, maker = TableWrite.create_user(conn, email="m@example.com", password_hash=None, handle=None)
+    assert house is not None
+    svc._book_sponsored_gas(house, [(300_000, [maker])], 0, day=day)
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, maker, day) == 300_000
+        assert TableRead.sponsored_gas_used(conn, maker, day + 1) == 0
+
+
+def test_maker_rows_are_booked_in_key_order(monkeypatch):
+    # Two placements booking the same makers in different orders would lock
+    # their rows crosswise and deadlock; one order for everybody cannot.
+    svc, db, user = _setup()
+    with db.write() as conn:
+        TableWrite.mark_user_as_bot(conn, user.api_key)
+        house = TableRead.get_user_by_userid(conn, user.user_id)
+        makers = [
+            TableWrite.create_user(conn, email=f"order{i}@example.com", password_hash=None, handle=None)[2]
+            for i in range(4)
+        ]
+    assert house is not None
+    written: list[str] = []
+    real = TableWrite.add_sponsored_gas
+
+    def record(conn, api_key, day, gas):
+        written.append(api_key)
+        real(conn, api_key, day, gas)
+
+    monkeypatch.setattr(TableWrite, "add_sponsored_gas", staticmethod(record))
+    svc._book_sponsored_gas(house, [(400_000, sorted(makers, reverse=True))], 0)
+    assert written == sorted(makers)
+
+
+def test_a_receipt_timeout_never_refunds_below_the_reservation():
+    # The transaction was broadcast and may well have mined unseen: its gas is
+    # probably spent, so the estimate stands until a receipt says otherwise.
+    svc, db, user = _setup()
+    day = int(time.time()) // 86_400
+    with db.write() as conn:
+        TableWrite.add_sponsored_gas(conn, user.api_key, day, 500_000)
+    svc._book_sponsored_gas(user, [(100_000, ["maker-key"])], 500_000, receipt_timed_out=True)
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day) == 500_000   # one group's gas is no refund
+
+
+def test_a_receipt_timeout_still_charges_what_exceeded_the_reservation():
+    svc, db, user = _setup()
+    day = int(time.time()) // 86_400
+    with db.write() as conn:
+        TableWrite.add_sponsored_gas(conn, user.api_key, day, 250_000)
+    svc._book_sponsored_gas(user, [(300_000, ["a"]), (50_000, ["b"])], 250_000, receipt_timed_out=True)
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day) == 350_000
+
+
 def _rest_ask(db, api_key, token, price_micro, size_micro) -> str:
     """Rest a SELL straight in the table (no signature check, no chain): the
     book a taker will run into."""
@@ -466,6 +585,70 @@ def test_the_house_reserves_nothing():
         TableWrite.mark_user_as_bot(conn, user.api_key)
         bot = TableRead.get_user_by_userid(conn, user.user_id)
         assert bot is not None
-        assert svc._reserve_sponsored_gas(conn, bot, 5) == 0
-        assert svc._reserve_sponsored_gas(conn, user, 0) == 0
+        assert svc._reserve_sponsored_gas(conn, bot, 5)[0] == 0
+        assert svc._reserve_sponsored_gas(conn, user, 0)[0] == 0
     assert _booked_rows(db, user.api_key) == 0
+
+
+def _fake_onchain():
+    """A chain fake that signs, passes the balance and breaker checks, and has
+    a `matchOrders` for `_settle_on_chain` to build (the send itself is patched)."""
+    exchange = SimpleNamespace(functions=SimpleNamespace(matchOrders=lambda *args: ("matchOrders", args)))
+    return SimpleNamespace(
+        _client=SimpleNamespace(deployment=Deployment.load(Settings().deployment_path)),
+        _contracts=SimpleNamespace(exchange=exchange),
+        usd_balance=lambda _a: 10**15, ctf_balance=lambda _a, _t: 10**15,
+        check_sponsored=lambda: None,
+    )
+
+
+def _reserving_placement(email="rest@example.com"):
+    """A service whose taker will fill one resting ask and so reserve 250k."""
+    _svc, db, user = _setup()
+    with db.write() as conn:
+        _u, _a, maker = TableWrite.create_user(conn, email=email, password_hash=None, handle=None)
+    _rest_ask(db, maker, YES, 500_000, 10_000_000)
+    svc = OrderService(db, _fake_onchain(), Settings(AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT=1_000_000))  # type: ignore[arg-type]
+    return svc, db, user
+
+
+def test_a_receipt_timeout_keeps_the_reservation():
+    svc, db, user = _reserving_placement()
+    day = int(time.time()) // 86_400
+    timeout = TimeExhausted("Transaction 0xabc is not in the chain after 60 seconds")
+    with patch("agentpit.services.order_service.send_admin_tx", side_effect=timeout):
+        resp = svc.place_order(user, _req(price="0.5", size="10"))
+    assert not resp.success and "settlement failed" in resp.errorMsg
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day) == 250_000   # the match may have mined
+
+
+@pytest.mark.parametrize("refusal", [TxDropped("nonce taken"), RuntimeError("estimate failed")])
+def test_a_failure_that_cannot_have_spent_gas_still_refunds(refusal):
+    svc, db, user = _reserving_placement()
+    day = int(time.time()) // 86_400
+    with patch("agentpit.services.order_service.send_admin_tx", side_effect=refusal):
+        resp = svc.place_order(user, _req(price="0.5", size="10"))
+    assert not resp.success
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day) == 0
+
+
+def test_a_placement_settling_after_midnight_trues_up_the_day_it_reserved(monkeypatch):
+    svc, db, user = _reserving_placement()
+    day = int(time.time()) // 86_400 + 1
+    clock = [(day + 1) * 86_400 - 5]                 # five seconds before 00:00 UTC
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+
+    def settle(_order, _signature, matches, gas_used):
+        clock[0] += 10                               # the fills land after midnight
+        gas_used.append((168_000, [m["maker_row"]["API_KEY"] for m in matches]))
+        return [b"\x01"]
+
+    svc._settle_on_chain = settle                    # type: ignore[method-assign]
+    assert svc.place_order(user, _req(price="0.5", size="10")).success
+    assert clock[0] // 86_400 == day + 1
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day) == 168_000   # 250k reserved, 82k back
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day + 1) == 0
+    assert _booked_rows(db, user.api_key) == 1

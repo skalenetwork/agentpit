@@ -48,9 +48,21 @@ def test_merge_still_works_on_a_cancelled_market_but_split_does_not():
     key = register(client)["api_key"]
     market = create_market(client)
     mid = market["market_id"]
+    yes_id, no_id = market["erc1155_tokens"][0][0], market["erc1155_tokens"][1][0]
     client.post(f"/markets/{mid}/split_position", headers=hdr(key), json={"amount": 10_000_000}).raise_for_status()
-    client.post(f"/markets/{mid}/cancel", headers=ADMIN_HDR).raise_for_status()
+    cancel = client.post(f"/markets/{mid}/cancel", headers=ADMIN_HDR)
+    cancel.raise_for_status()
+    assert cancel.json()["market"]["market_state"] == "CANCELLED"   # the guard is tested against the state it names
+
     split = client.post(f"/markets/{mid}/split_position", headers=hdr(key), json={"amount": 1_000_000})
-    merge = client.post(f"/markets/{mid}/merge_positions", headers=hdr(key), json={"amount": 1_000_000})
     assert split.status_code == 400 and "ACTIVE" in split.json()["detail"]
+    before = int(client.get("/balance-allowance", headers=hdr(key)).json()["balance"])
+
+    merge = client.post(f"/markets/{mid}/merge_positions", headers=hdr(key), json={"amount": 1_000_000})
     assert merge.status_code == 200, merge.text  # a cancelled market's holders get their collateral back this way
+    body = merge.json()
+    assert body["amount"] == 1_000_000
+    assert body["token_balances"][yes_id] == 9_000_000 and body["token_balances"][no_id] == 9_000_000
+    # The point of allowing it: the merged pair came back as apUSD.
+    after = int(client.get("/balance-allowance", headers=hdr(key)).json()["balance"])
+    assert after == before + 1_000_000

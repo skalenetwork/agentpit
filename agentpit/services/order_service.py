@@ -12,6 +12,7 @@ from typing import Any
 
 from eth_utils.crypto import keccak
 from web3 import Web3
+from web3.exceptions import TimeExhausted
 
 from agentpit.config import Settings
 from agentpit.datastructures.cancel_orders_response import CancelOrdersResponse
@@ -184,9 +185,10 @@ class OrderService:
         order_id = self._compute_order_id(order)
         price_int = self._price_int(order)
 
-        # What the matching transaction reserved on the taker's day; stays 0 on
-        # every path that reserved nothing, so the booking below always has it.
-        reserved = 0
+        # What the matching transaction reserved, and the UTC day it reserved it
+        # on; (0, None) on every path that reserved nothing, so the booking
+        # below always has both.
+        reserved, reserved_day = 0, None
         try:
             with self._db.write() as conn:
                 if coid is not None:
@@ -210,7 +212,7 @@ class OrderService:
                 matches = self._match(conn, taker_row)
                 # Inside this transaction, so a refusal rolls back the order
                 # row, the fills and the idempotency claim together.
-                reserved = self._reserve_sponsored_gas(conn, user, len(matches))
+                reserved, reserved_day = self._reserve_sponsored_gas(conn, user, len(matches))
         except psycopg.errors.UniqueViolation:
             # A concurrent request claimed this client_order_id first; the row is
             # committed by the time the violation fires, so replay its order. A
@@ -229,11 +231,17 @@ class OrderService:
             # Filled by _settle_on_chain as each tx lands, so a placement that
             # dies after its first group still books the gas that group burned.
             gas_used: list[tuple[int, list[str]]] = []
+            receipt_timed_out = False
             try:
                 hashes = self._settle_on_chain(order, signature, matches, gas_used)
                 tx_hashes = ["0x" + h.hex() for h in hashes]
             except Exception as exc:
                 log.exception("on-chain settlement failed for order %s", order_id)
+                # Broadcast but no receipt in time: the match may still mine,
+                # so its gas is not refunded (`_book_sponsored_gas`). The
+                # slot-wait `TimeExhausted`, raised before anything is sent,
+                # lands here too and over-counts: the safe direction.
+                receipt_timed_out = isinstance(exc, TimeExhausted)
                 with self._db.write() as conn:
                     conn.execute(
                         "UPDATE trades SET STATUS = 'FAILED' "
@@ -249,7 +257,9 @@ class OrderService:
                 )
             finally:
                 touch(user.eth_address, *(m["maker_row"]["MAKER"] for m in matches))
-                self._book_sponsored_gas(user, gas_used, reserved)
+                self._book_sponsored_gas(
+                    user, gas_used, reserved, day=reserved_day, receipt_timed_out=receipt_timed_out
+                )
 
         with self._db.read() as conn:
             row = self._get_order_row(conn, order_id)
@@ -794,6 +804,13 @@ class OrderService:
             cap = self._settings.max_live_orders_per_account
             with self._db.read() as conn:
                 live = TableRead.count_live_orders(conn, user.api_key)
+                # The plain count only ever over-counts (it includes orders on
+                # markets that no longer trade), so under the cap it decides.
+                # The ACTIVE-market count costs 17-36 ms against 0.04 ms for
+                # this one (dev DB, 4,685 ACTIVE markets): only run it when
+                # the plain count would refuse.
+                if live >= cap:
+                    live = TableRead.count_live_orders_on_active_markets(conn, user.api_key)
             if live >= cap:
                 raise BusinessRuleError(
                     f"too many open orders: {live} are live and the limit is {cap} — cancel some first"
@@ -815,35 +832,54 @@ class OrderService:
         if used >= budget:
             raise GasBudgetExceededError(retry_after=_SECONDS_PER_DAY - now % _SECONDS_PER_DAY)
 
-    def _reserve_sponsored_gas(self, conn, user: User, makers: int) -> int:
+    def _reserve_sponsored_gas(self, conn, user: User, makers: int) -> tuple[int, int]:
         """Reserve this placement's fill gas on a non-house taker, inside the
         matching transaction, so a refusal rolls the whole placement back.
         The pre-check alone let concurrent placements all pass before any
-        was counted. Returns what was reserved (0 when nothing applies)."""
+        was counted. Returns (what was reserved, 0 when nothing applies; the
+        UTC day it sits on): the booking after settlement must true up that
+        day, and settlement may well end after midnight."""
+        now = int(time.time())
+        day = now // _SECONDS_PER_DAY
         budget = self._settings.daily_sponsored_gas_per_account
         if user.is_bot or not budget or not makers:
-            return 0
+            return 0, day
         estimate = makers * _SPONSORED_GAS_PER_MAKER
-        now = int(time.time())
-        if not TableWrite.reserve_sponsored_gas(conn, user.api_key, now // _SECONDS_PER_DAY, estimate, budget):
+        if not TableWrite.reserve_sponsored_gas(conn, user.api_key, day, estimate, budget):
             raise GasBudgetExceededError(retry_after=_SECONDS_PER_DAY - now % _SECONDS_PER_DAY)
-        return estimate
+        return estimate, day
 
     def _book_sponsored_gas(
-        self, user: User, groups: list[tuple[int, list[str]]], reserved: int
+        self,
+        user: User,
+        groups: list[tuple[int, list[str]]],
+        reserved: int,
+        *,
+        day: int | None = None,
+        receipt_timed_out: bool = False,
     ) -> None:
-        """Book what this placement's fills really cost the admin.
+        """Book what this placement's fills really cost the admin, on `day`
+        (the reservation's; today when not given).
 
         A non-house taker pays: it is booked the receipts minus its reservation
         (a refund when the estimate was high, all of it when nothing settled).
+        After a receipt timeout nothing is refunded: the match was broadcast
+        and may have mined unseen, so only an overrun is booked on top.
         A house taker is never charged; each group's gas is split evenly over
         that group's non-house makers instead -- otherwise anyone could rest
         orders at the mirrored touch and have the house fill them on our gas
-        without ever touching their own budget. Never fails the order: the
-        trade is on chain by now, and a lost row only under-counts."""
+        without ever touching their own budget.
+
+        Never fails the order: the trade is on chain by now (or the settlement
+        failed, and this runs from `finally` all the same). A lost booking
+        leaves a non-house taker's whole reservation standing, which over-counts,
+        the safe direction; only a house taker's makers go uncharged, so only
+        that case under-counts."""
         charges: dict[str, int] = {}
         if not user.is_bot:
             delta = sum(gas for gas, _makers in groups) - reserved
+            if receipt_timed_out:
+                delta = max(delta, 0)
             if delta:
                 charges[user.api_key] = delta
         try:
@@ -856,8 +892,11 @@ class OrderService:
                         for key in makers:
                             if key in payers:
                                 charges[key] = charges.get(key, 0) + gas // len(makers)
-                day = int(time.time()) // _SECONDS_PER_DAY
-                for key, gas in charges.items():
+                if day is None:
+                    day = int(time.time()) // _SECONDS_PER_DAY
+                # Sorted: concurrent bookings then take the rows' locks in one
+                # order and cannot deadlock on each other.
+                for key, gas in sorted(charges.items()):
                     TableWrite.add_sponsored_gas(conn, key, day, gas)
         except Exception:
             log.exception("booking sponsored gas failed for %s", user.user_id)
