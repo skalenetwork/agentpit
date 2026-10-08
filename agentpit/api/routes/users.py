@@ -22,10 +22,6 @@ from agentpit.datastructures.agent_summary import AgentSummary, NewAgent, OwnedA
 from agentpit.datastructures.auth_response import UserPublic
 from agentpit.datastructures.change_password_request import ChangePasswordRequest
 from agentpit.datastructures.open_order import TitledOpenOrder
-from agentpit.datastructures.private_key_request import (
-    PrivateKeyRequest,
-    PrivateKeyResponse,
-)
 from agentpit.datastructures.update_handle_request import UpdateHandleRequest
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
@@ -192,33 +188,6 @@ def update_me_auto_redeem(
         TableWrite.set_auto_redeem(conn, user.user_id, payload.enabled)
         refreshed = TableRead.get_user_by_userid(conn, user.user_id)
     return UserPublic.model_validate((refreshed or user).model_dump())
-
-
-@router.post("/me/private-key/code", status_code=202)
-def send_private_key_code(user: CurrentUserDep, service: AuthServiceDep) -> dict:
-    """Mail a fresh export code to this account's own address.
-
-    The address comes off the authenticated row, never off the request.
-    """
-    service.send_key_export_code(user_id=user.user_id)
-    return {"status": "sent"}
-
-
-@router.post("/me/private-key", response_model=PrivateKeyResponse)
-def export_me_private_key(
-    payload: PrivateKeyRequest,
-    user: CurrentUserDep,
-    service: AuthServiceDep,
-    response: Response,
-) -> PrivateKeyResponse:
-    """The account's own wallet key, to import into a wallet app.
-
-    POST rather than GET on purpose: a key in a URL lands in proxy logs,
-    browser history and the Referer header.
-    """
-    key = service.export_private_key(user_id=user.user_id, code=payload.code)
-    response.headers["Cache-Control"] = "no-store"
-    return PrivateKeyResponse(private_key=key, eth_address=user.eth_address)
 
 
 @router.get("/me/top-up", response_model=TopUpStatusWire)

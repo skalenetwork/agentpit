@@ -1345,6 +1345,15 @@ class OrderService:
             gas_used.append(
                 (int(receipt.get("gasUsed") or 0), [m["maker_row"]["API_KEY"] for m in group])
             )
+            # The receipt comes back whether or not the transaction ran: one
+            # that reverted at inclusion (a maker's balance or approval gone
+            # since its gas was estimated) moved nothing, so it is a failed
+            # settlement, not a settled one.
+            if receipt["status"] != 1:
+                raise RuntimeError(
+                    "matchOrders transaction "
+                    f"0x{bytes(receipt['transactionHash']).hex()} reverted"
+                )
             tx_hashes.append(receipt["transactionHash"])
         return tx_hashes
 

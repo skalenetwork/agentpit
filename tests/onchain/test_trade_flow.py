@@ -132,6 +132,107 @@ def test_match_settles_on_chain():
     assert ltp == {"price": "0.6", "side": "SELL"}
 
 
+def test_reverted_settlement_fails_the_order(monkeypatch):
+    """A matchOrders mined with status 0 moved nothing, so the order fails:
+    its trades are FAILED and the answer is not a success.
+
+    The maker revokes the exchange's apUSD allowance after resting, so the
+    match reverts on chain. The admin send skips the gas estimate (a static
+    limit) so the revert lands in a mined receipt instead of failing at
+    estimation, as when the chain changes between estimate and inclusion.
+    """
+    from agentpit.api.app import create_app
+    from agentpit.config import Settings
+    from agentpit.db.session import DbSession
+    from agentpit.db.table_read import TableRead
+    from agentpit.onchain.admin import OnchainAdmin
+    from agentpit.onchain.contracts import Contracts
+    from agentpit.onchain.deployment import Deployment
+    from agentpit.onchain.user_wallet import send_user_tx
+    from agentpit.onchain.web3_client import Web3Client
+    from agentpit.services import order_service
+
+    app = create_app()
+    client = TestClient(app)
+
+    a_email = _email()
+    b_email = _email()
+    ra = register(client, a_email)
+    rb = register(client, b_email)
+    ta, tb = ra["access_token"], rb["access_token"]
+    ea, eb = ra["user"]["eth_address"], rb["user"]["eth_address"]
+
+    market = client.post(
+        "/markets",
+        json={
+            "question": f"Live test {secrets.token_hex(4)}?",
+            "description": "YES if test passes",
+            "outcome_labels": ["YES", "NO"],
+            "state": "ACTIVE",
+        },
+        headers=ADMIN_HDR,
+    ).json()
+    yes_token = market["erc1155_tokens"][0][0]
+    yes_id = int(yes_token)
+
+    settings = Settings()
+    d = Deployment.load(settings.deployment_path)
+    w = Web3Client(settings, d)
+    c = Contracts(w.web3, d)
+    admin = OnchainAdmin(w, c)
+    db = DbSession(settings.database_url)
+    with db.read() as conn:
+        user_a = TableRead.get_user_by_email(conn, a_email)
+        user_b = TableRead.get_user_by_email(conn, b_email)
+    assert user_a is not None and user_b is not None
+    cond = bytes.fromhex(market["condition_id"]["value"][2:])
+    admin.user_split_position(user_b.eth_key, cond, 200_000_000)
+
+    pa = client.post(
+        "/order",
+        headers=_hdr(ta),
+        json={"token_id": yes_token, "side": "BUY", "price": "0.6", "size": 100},
+    ).json()
+    assert pa["success"] and pa["status"] == "live"
+
+    # The resting BUY can no longer pay: matchOrders against it reverts.
+    send_user_tx(w, user_a.eth_key, c.usd.functions.approve(d.exchange, 0))
+    a_pre_usd = admin.usd_balance(ea)
+    b_pre_yes = admin.ctf_balance(eb, yes_id)
+
+    receipts = []
+
+    def send_without_estimate(client, fn, *, timeout, **_):
+        receipt = client.admin_sender.send(fn, timeout=timeout, gas=2_000_000)
+        receipts.append(receipt)
+        return receipt
+
+    monkeypatch.setattr(order_service, "send_admin_tx", send_without_estimate)
+
+    pb = client.post(
+        "/order",
+        headers=_hdr(tb),
+        json={"token_id": yes_token, "side": "SELL", "price": "0.6", "size": 100},
+    ).json()
+
+    assert [r["status"] for r in receipts] == [0]  # the revert was mined
+    assert pb["success"] is False, pb
+    assert "reverted" in pb["errorMsg"]
+    assert not pb.get("transactionsHashes")
+    with db.read() as conn:
+        statuses = [
+            r["STATUS"]
+            for r in conn.execute(
+                "SELECT STATUS FROM trades WHERE TAKER_ORDER_ID = %s",
+                (pb["orderID"],),
+            ).fetchall()
+        ]
+    assert statuses == ["FAILED"]
+    # Nothing moved on chain.
+    assert admin.usd_balance(ea) == a_pre_usd
+    assert admin.ctf_balance(eb, yes_id) == b_pre_yes
+
+
 def test_complementary_buys_mint_via_split():
     """Two BUYs on opposite outcomes whose prices sum to >= 1.00 should match.
 

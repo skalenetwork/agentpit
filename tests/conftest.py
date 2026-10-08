@@ -1,9 +1,69 @@
 import os
+import re
+from pathlib import Path
+
+import psycopg
+from psycopg import sql
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+# Comment put on a database this file created for a worktree, followed by the
+# worktree's path. The sweep below drops only databases carrying it, never one
+# somebody made by hand.
+_WORKTREE_DB_LABEL = "agentpit test db for worktree "
+
+
+def _worktree_test_db(admin: psycopg.Connection) -> str:
+    """`agentpit_test_<worktree>`, created on first use. Every test TRUNCATEs
+    every table first, so sessions in parallel worktrees sharing one database
+    wipe each other's rows mid-run."""
+    suffix = re.sub(r"[^a-z0-9_]", "_", _REPO_ROOT.name.lower())
+    name = f"agentpit_test_{suffix}"[:63]  # Postgres's identifier limit
+    found = admin.execute(
+        "SELECT 1 FROM pg_database WHERE datname = %s", (name,)
+    ).fetchone()
+    if not found:
+        try:
+            admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+        except psycopg.errors.DuplicateDatabase:
+            pass  # a concurrent run in the same worktree created it first
+    # On every run, so a database created before the label existed gets it too.
+    admin.execute(
+        sql.SQL("COMMENT ON DATABASE {} IS {}").format(
+            sql.Identifier(name), sql.Literal(_WORKTREE_DB_LABEL + str(_REPO_ROOT))
+        )
+    )
+    return name
+
+
+def _drop_orphaned_worktree_dbs(admin: psycopg.Connection) -> None:
+    """Removing a worktree leaves its database behind, so every run drops the
+    labelled databases whose worktree is gone from disk."""
+    rows = admin.execute(
+        "SELECT datname, shobj_description(oid, 'pg_database') FROM pg_database "
+        "WHERE shobj_description(oid, 'pg_database') LIKE %s",
+        (_WORKTREE_DB_LABEL + "%",),
+    ).fetchall()
+    for name, label in rows:
+        if Path(label.removeprefix(_WORKTREE_DB_LABEL)).exists():
+            continue
+        try:
+            admin.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(name)))
+        except psycopg.errors.ObjectInUse:
+            pass  # something is still connected; a later run tries again
+
 
 # Tests run against a real local Postgres (the suite already requires anvil +
 # the deployed exchange — no off-mode). Each test gets a clean DB via TRUNCATE
-# and its own DbSession pool, overridden onto the shared app.
-os.environ.setdefault("AGENTPIT_DATABASE_URL", "postgresql:///agentpit_test")
+# and its own DbSession pool, overridden onto the shared app. That DB is
+# `agentpit_test`, except in a linked git worktree, which gets its own: a linked
+# worktree's .git is a file pointing back at the main repo, while the main
+# checkout (and CI's actions/checkout) has a .git directory.
+with psycopg.connect("postgresql:///postgres", autocommit=True) as _admin:
+    _drop_orphaned_worktree_dbs(_admin)
+    if "AGENTPIT_DATABASE_URL" not in os.environ:
+        _in_worktree = (_REPO_ROOT / ".git").is_file()
+        _db = _worktree_test_db(_admin) if _in_worktree else "agentpit_test"
+        os.environ["AGENTPIT_DATABASE_URL"] = f"postgresql:///{_db}"
 os.environ.setdefault("AGENTPIT_POOL_MIN_SIZE", "0")  # leaked create_app pools hold 0 conns
 os.environ.setdefault("AGENTPIT_POOL_MAX_IDLE", "5")  # shed idle connections fast in tests
 os.environ.setdefault("SYNC", "false")
@@ -19,7 +79,6 @@ os.environ.setdefault("JWT_SECRET", "test-only-secret")
 # small orders much of the suite places; guard tests set it explicitly.
 os.environ.setdefault("AGENTPIT_MIN_ORDER_NOTIONAL_MICRO", "0")
 
-import psycopg
 import pytest
 
 from agentpit.api.deps import (

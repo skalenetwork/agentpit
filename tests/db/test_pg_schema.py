@@ -2,13 +2,12 @@
 import psycopg
 import pytest
 from agentpit.db.table_create import TableCreate
-
-DSN = "postgresql:///agentpit_test"
+from tests.db_helpers import TEST_DSN
 
 
 @pytest.fixture()
 def conn():
-    c = psycopg.connect(DSN, autocommit=True)
+    c = psycopg.connect(TEST_DSN, autocommit=True)
     c.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
     yield c
     c.close()

@@ -97,7 +97,7 @@ class TableWrite:
         """Claim the right to onboard this row, atomically.
 
         The predicate and the stamp are one statement -- the idiom of
-        `mark_key_export_attempt` -- so two parallel first sign-ins cannot
+        `claim_topup` -- so two parallel first sign-ins cannot
         both find the row unclaimed and both send the gas grant. A claim older
         than `stale_before` belongs to a process that died mid-onboarding and
         may be taken over. False when the row is onboarded, claimed, or gone.
@@ -174,8 +174,8 @@ class TableWrite:
     ) -> bool:
         """Spend one hit against a fixed window. False when the window is full.
 
-        The same idiom as `mark_key_export_attempt` below and for the same
-        reason: the predicate and the increment are ONE statement, so two
+        The same idiom as `claim_topup` and for the same reason: the
+        predicate and the increment are ONE statement, so two
         concurrent callers cannot both read the same stale count, both find it
         under the limit, and both proceed. Postgres serialises them on the row
         lock; the loser re-evaluates its `WHERE` against the count the winner
@@ -251,45 +251,6 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
-    def mark_key_export_attempt(
-        db: psycopg.Connection, user_id: str, at: int, not_before: int
-    ) -> bool:
-        """Claim the export-attempt cooldown, atomically.
-
-        The predicate and the stamp are one statement -- the same idiom as
-        `claim_topup` -- so two concurrent callers cannot both read the same
-        stale `KEY_EXPORT_ATTEMPT_AT` and both pass the check before either
-        writes. Under READ COMMITTED, a second UPDATE that targets a row
-        another open transaction is about to write blocks on that row's
-        lock; once the first commits, the second re-evaluates its WHERE
-        clause against the value that commit just wrote, not the value it
-        started with. So the loser sees the winner's fresh stamp and its own
-        predicate fails, returning `rowcount == 0` here -- the cooldown is
-        active precisely because someone just claimed it, not because of a
-        stale read.
-
-        Returns False when the cooldown is still active.
-        """
-        cur = db.execute(
-            "UPDATE users SET KEY_EXPORT_ATTEMPT_AT = %s "
-            "WHERE USER_ID = %s "
-            "AND (KEY_EXPORT_ATTEMPT_AT IS NULL OR KEY_EXPORT_ATTEMPT_AT <= %s)",
-            (at, user_id, not_before),
-        )
-        return cur.rowcount > 0
-
-    @staticmethod
-    def mark_key_exported(db: psycopg.Connection, user_id: str, at: int) -> bool:
-        """First export only — a later one must not move the stamp, or the
-        re-grant lock would appear to lapse."""
-        cur = db.execute(
-            "UPDATE users SET KEY_EXPORTED_AT = %s "
-            "WHERE USER_ID = %s AND KEY_EXPORTED_AT IS NULL",
-            (at, user_id),
-        )
-        return cur.rowcount > 0
-
-    @staticmethod
     def link_google_identity(
         db: psycopg.Connection, user_id: str, google_sub: str
     ) -> bool:
@@ -338,9 +299,8 @@ class TableWrite:
         The argument for clearing is good and will be acted on: registration
         takes any address on trust, so a password sitting on a row is no
         evidence that whoever set it owns the address, while a mailed code is.
-        Key export is no longer what stands in the way -- `export_private_key`
-        stopped reading PASSWORD_HASH and now re-authenticates every account
-        the same way, with a mailed code pinned to WORKOS_USER_ID.
+        Key export is not what stands in the way -- wallet keys cannot be
+        exported at all any more, so nothing about the key reads PASSWORD_HASH.
 
         The rollback is. `/login` answers 410 since the cutover, but the
         service behind it was left untouched for exactly this reason:

@@ -16,7 +16,6 @@ from agentpit.api.deps import (
     get_jwt_coder,
     get_onchain_admin,
     get_settings,
-    get_workos_client,
 )
 from agentpit.datastructures.register_request import RegisterRequest
 from agentpit.db.table_read import TableRead
@@ -61,7 +60,6 @@ def _auth_service(client: TestClient) -> AuthService:
         overrides[get_onchain_admin](),
         overrides[get_settings](),
         overrides[get_google_verifier](),
-        overrides[get_workos_client](),
     )
 
 

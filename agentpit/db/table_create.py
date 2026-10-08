@@ -183,6 +183,9 @@ class TableCreate:
             ("TOTAL_DEPOSITED", "BIGINT"),
             ("DEPLOYMENT_ID", "TEXT"),
             ("GOOGLE_SUB", "TEXT"),
+            # Key export is gone and nothing writes these two any more. They
+            # stay: KEY_EXPORTED_AT marks the accounts whose key is already
+            # out (see `TableRead.get_key_export_state`).
             ("KEY_EXPORTED_AT", "BIGINT"),
             ("KEY_EXPORT_ATTEMPT_AT", "BIGINT"),
             ("AUTO_REDEEM_ENABLED", "BOOLEAN NOT NULL DEFAULT FALSE"),

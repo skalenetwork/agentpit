@@ -120,9 +120,8 @@ def get_auth_service(
     onchain: OnchainAdminDep,
     settings: SettingsDep,
     google: GoogleVerifierDep,
-    workos: WorkOsClientDep,
 ) -> AuthService:
-    return AuthService(db, coder, onchain, settings, google, workos)
+    return AuthService(db, coder, onchain, settings, google)
 
 
 def get_order_service(

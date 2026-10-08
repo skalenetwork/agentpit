@@ -36,6 +36,17 @@ def test_the_legacy_doors_are_gone():
         assert client.post("/auth/google", json={}).status_code == 404
 
 
+def test_the_key_export_doors_are_gone():
+    # Wallets are custodial: we are the only holder of every key we generate,
+    # which is what lets us pay a user's gas without the holder racing us for
+    # it. Deleted, not stubbed -- an existing route would answer an
+    # unauthenticated call 401, so a 404 means there is nothing there.
+    with TestClient(app) as client:
+        assert client.post("/me/private-key/code").status_code == 404
+        assert client.post("/me/private-key", json={"code": "123456"}).status_code == 404
+    assert [p for p in app.openapi()["paths"] if "private-key" in p] == []
+
+
 def test_signing_in_never_reads_a_password_hash(monkeypatch, sign_in):
     # The spec's plainest requirement, and the cheapest way to hold it: make
     # reading a hash raise, then drive the only door left. A row's
@@ -65,6 +76,9 @@ def test_me_returns_current_user(sign_in):
         resp = client.get("/me", headers=_hdr(token))
         assert resp.status_code == 200
         assert resp.json()["email"] == "eve@example.com"
+        # UserPublic is a whitelist and must stay one.
+        assert "private_key" not in resp.text
+        assert "eth_key" not in resp.text
 
 
 def test_me_rejects_invalid_token():
@@ -120,6 +134,25 @@ def _seed_password_account(email: str, password: str) -> tuple[str, str]:
 def _stored_hash(user_id: str) -> str | None:
     with fresh_test_conn() as conn:
         return TableRead.get_password_hash_by_userid(conn, user_id)
+
+
+def test_has_password_reflects_whether_the_row_still_carries_a_hash():
+    # The Settings page shows the password form on this flag, so it must not
+    # start reporting True for the accounts the cutover creates -- that would
+    # put a password form in front of people who have never had one.
+    with fresh_test_conn() as conn:
+        _uid, _acct, with_hash = TableWrite.create_user(
+            conn, email="haspw@example.com", password_hash="$2b$12$x", handle=None
+        )
+        _uid2, _acct2, without_hash = TableWrite.create_user(
+            conn, email="nopw@example.com", password_hash=None, handle=None
+        )
+
+    with TestClient(app) as client:
+        legacy = client.get("/me", headers={"X-API-Key": with_hash}).json()
+        current = client.get("/me", headers={"X-API-Key": without_hash}).json()
+    assert legacy["has_password"] is True
+    assert current["has_password"] is False
 
 
 def test_a_legacy_account_can_still_change_its_password():

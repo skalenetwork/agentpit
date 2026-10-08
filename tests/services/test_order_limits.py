@@ -295,16 +295,17 @@ def _taker_and_matches(n_groups):
     return taker, matches
 
 
-def _settle(receipts):
+def _settle(receipts, gas_used: "list[tuple[int, list[str]]] | None" = None):
     """Run `_settle_on_chain` against fake admin sends that return `receipts`
     in order, one per match-kind group. Returns (tx hashes, gas_used), gas_used
-    holding one (receipt gasUsed, [maker API keys]) per group."""
+    holding one (receipt gasUsed, [maker API keys]) per group. Pass `gas_used`
+    to read it after a settlement that raises."""
     taker, matches = _taker_and_matches(len(receipts))
     exchange = SimpleNamespace(functions=SimpleNamespace(matchOrders=lambda *args: ("matchOrders", args)))
     onchain = SimpleNamespace(_client=object(), _contracts=SimpleNamespace(exchange=exchange))
     svc = OrderService(None, onchain, Settings())  # type: ignore[arg-type]
     sent = iter(receipts)
-    gas_used: list[tuple[int, list[str]]] = []
+    gas_used = [] if gas_used is None else gas_used
     with patch("agentpit.services.order_service.send_admin_tx", lambda *_a, **_k: next(sent)):
         hashes = svc._settle_on_chain(taker, b"\x00", matches, gas_used)
     return hashes, gas_used
@@ -316,9 +317,12 @@ def test_receipt_without_gas_used_counts_zero():
     assert gas_used == [(0, ["maker-normal"])]
 
 
-def test_reverted_receipt_still_counts_its_gas():
-    hashes, gas_used = _settle([{"transactionHash": b"\x02", "status": 0, "gasUsed": 123_456}])
-    assert hashes == [b"\x02"]
+def test_a_reverted_receipt_fails_settlement_but_its_gas_is_counted():
+    """A match that reverted at inclusion moved nothing, so settlement fails;
+    it still burned the admin's gas, so the gas is booked before the raise."""
+    gas_used: list[tuple[int, list[str]]] = []
+    with pytest.raises(RuntimeError, match="reverted"):
+        _settle([{"transactionHash": b"\x02", "status": 0, "gasUsed": 123_456}], gas_used)
     assert gas_used == [(123_456, ["maker-normal"])]
 
 

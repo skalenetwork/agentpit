@@ -226,7 +226,6 @@ schemas, and every error code. This table is a map, not a substitute.
 | `GET /me/top-up` · `POST /me/top-up` | cooldown status; restore to $100k |
 | `GET /me/credits` | native gas balance, wei as a string |
 | `PATCH /me/auto-redeem` | auto-collect winnings on resolution |
-| `POST /me/private-key/code` · `POST /me/private-key` | export the wallet key |
 
 **Catalogue** — public
 
@@ -324,7 +323,7 @@ cp .env.example .env          # then fill in PK, ADMIN, and the WORKOS_* keys
 account — safe locally, never anywhere else.
 
 > **Sign-in needs the `WORKOS_*` keys, even locally.** Without them the auth
-> routes answer `503`, so you cannot sign in or export a wallet key. Everything
+> routes answer `503`, so you cannot sign in. Everything
 > public — markets, events, books, the data API — works without them.
 
 ```bash
@@ -376,6 +375,13 @@ cd ui && yarn test
 > off sync, the liquidity engine and the leaderboard timer. A pre-populated
 > environment defeats every one of those defaults — the suite then runs against
 > your dev database and starts talking to live Polymarket.
+
+Run from a linked git worktree (such as the ones under `.claude/worktrees/`),
+the suite uses its own database, `agentpit_test_<worktree name>`, and creates it
+on the first run, so sessions testing in parallel worktrees don't truncate each
+other's tables. Set `AGENTPIT_DATABASE_URL` to pick a database yourself.
+Once the worktree is removed, the next test run from any checkout drops its
+database. Databases made by hand are never touched.
 
 ---
 
