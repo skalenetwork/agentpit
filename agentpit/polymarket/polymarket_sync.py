@@ -1410,9 +1410,14 @@ def auto_redeem_resolved_markets(db, admin: OnchainAdmin) -> int:
 
     Returns the number of holder redemptions performed.
     """
+    from agentpit.config import Settings
+    from agentpit.services.gas_sponsor import UserGasSponsor
     from agentpit.services.position_service import PositionService
 
-    svc = PositionService(db, admin)
+    # Every claim below is sponsored, and the sponsor reads its limits from
+    # Settings. This function is not handed the app's, so it builds them from
+    # the environment, the way `create_app` does when it is given none.
+    svc = PositionService(db, admin, UserGasSponsor(db, admin, Settings()))
     redeemed = 0
     with db.read() as conn:
         markets = TableRead.list_resolved_unredeemed_markets(conn)

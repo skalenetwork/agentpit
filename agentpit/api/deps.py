@@ -17,6 +17,7 @@ from agentpit.services.auth_service import AuthService
 from agentpit.services.authkit_service import AuthKitService
 from agentpit.services.balance_service import BalanceService
 from agentpit.services.event_service import EventService
+from agentpit.services.gas_sponsor import UserGasSponsor
 from agentpit.services.leaderboard_service import LeaderboardService
 from agentpit.services.market_service import MarketService
 from agentpit.services.order_service import OrderService
@@ -102,8 +103,10 @@ def get_usdc_service(db: SessionDep, onchain: OnchainAdminDep) -> UsdcService:
     return UsdcService(db, onchain)
 
 
-def get_position_service(db: SessionDep, onchain: OnchainAdminDep) -> PositionService:
-    return PositionService(db, onchain)
+def get_position_service(
+    db: SessionDep, onchain: OnchainAdminDep, settings: SettingsDep
+) -> PositionService:
+    return PositionService(db, onchain, UserGasSponsor(db, onchain, settings))
 
 
 def get_personality_service(db: SessionDep) -> PersonalityService:

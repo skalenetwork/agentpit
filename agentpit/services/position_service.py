@@ -1,5 +1,3 @@
-from web3.exceptions import Web3RPCError
-
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.position_response import PositionResponse
 from agentpit.datastructures.redeem_position_response import RedeemPositionResponse
@@ -13,51 +11,58 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     InsufficientBalanceError,
-    InsufficientGasError,
     MarketNotFoundError,
     MarketStateError,
+    NothingToClaimError,
 )
 from agentpit.onchain.admin import OnchainAdmin
-from agentpit.onchain.user_wallet import send_user_tx
+from agentpit.services.gas_sponsor import UserGasSponsor
 from agentpit.utils.parse import hex2bytes
 
-_ZERO_BYTES32 = b"\x00" * 32
 
-
-def _is_insufficient_gas(exc: Web3RPCError) -> bool:
-    """True when a broadcast-time `Web3RPCError` is the node rejecting the
-    transaction because the sender can't cover gas * price (+ value).
-
-    There is no dedicated exception subclass for this on web3.py 7.x --
-    anvil/geth report it as a generic JSON-RPC error (observed: code -32003,
-    message "Insufficient funds for gas * price + value"), so the message
-    text is the only signal. Matched case-insensitively and by substring
-    since the exact wording isn't part of any spec.
-    """
-    message = (exc.message or str(exc)).lower()
-    return "insufficient funds" in message
+def _partition(market) -> list[int]:
+    """One index set per outcome: `[1, 2]` for a binary market. Outcome i is
+    `market.erc1155_tokens[i]`, so a call over this partition covers every
+    token the market has. That is why a claim burns the losing tokens in the
+    same transaction that pays the winner."""
+    return [1 << i for i in range(len(market.erc1155_tokens))]
 
 
 class PositionService:
-    """User-signed split / merge / redeem against the on-chain CTF contract."""
+    """User-signed split / merge / redeem against the on-chain CTF contract.
 
-    def __init__(self, db: DbSession, onchain: OnchainAdmin):
+    Signed by the user's custodial key and paid for through `UserGasSponsor`,
+    which tops the wallet up to exactly what the call needs just before it is
+    sent, so a wallet holding no native coin at all can still split, merge and
+    claim. Each action runs inside the sponsor's per-user lock, and so do its
+    on-chain checks. The four kinds of user transaction share one nonce
+    stream, so a second request for the same account gets a 409 instead of
+    racing the first. The SPLIT / MERGE / REDEEM row is written only once the
+    transaction has succeeded.
+    """
+
+    def __init__(self, db: DbSession, onchain: OnchainAdmin, sponsor: UserGasSponsor):
         self._db = db
         self._onchain = onchain
+        self._sponsor = sponsor
 
     def split(
         self, user: User, market_id: int, payload: SplitPositionRequest
     ) -> PositionResponse:
         market = self._require_active_market(market_id)
         condition_id = hex2bytes(market.condition_id.value)
-        bal = self._onchain.usd_balance(user.eth_address)
-        if bal < payload.amount:
-            raise InsufficientBalanceError(f"need {payload.amount}, have {bal}")
-        self._onchain.user_split_position(user.eth_key, condition_id, payload.amount)
-        with self._db.write() as conn:
-            TableWrite.log_transaction(
-                conn, user.api_key, "SPLIT", market_id, {"amount": payload.amount}
+        with self._sponsor.locked(user):
+            bal = self._onchain.usd_balance(user.eth_address)
+            if bal < payload.amount:
+                raise InsufficientBalanceError(f"need {payload.amount}, have {bal}")
+            call = self._onchain.split_call(
+                condition_id, _partition(market), payload.amount
             )
+            self._sponsor.send(user, [call], "split")
+            with self._db.write() as conn:
+                TableWrite.log_transaction(
+                    conn, user.api_key, "SPLIT", market_id, {"amount": payload.amount}
+                )
         return self._snapshot(user, market, locked=payload.amount)
 
     def merge(
@@ -65,50 +70,74 @@ class PositionService:
     ) -> PositionResponse:
         market = self._require_market(market_id)
         condition_id = hex2bytes(market.condition_id.value)
-        for token_id, _label in market.erc1155_tokens:
-            bal = self._onchain.ctf_balance(user.eth_address, int(token_id))
-            if bal < payload.amount:
-                raise InsufficientBalanceError(
-                    f"need {payload.amount} of token {token_id}, have {bal}"
-                )
-        usd_address = self._onchain._contracts.usd.address  # noqa: SLF001
-        partition = [1 << i for i in range(len(market.erc1155_tokens))]
-        fn = self._onchain._contracts.ctf.functions.mergePositions(
-            usd_address, _ZERO_BYTES32, condition_id, partition, payload.amount
-        )
-        send_user_tx(self._onchain._client, user.eth_key, fn)  # noqa: SLF001
-        with self._db.write() as conn:
-            TableWrite.log_transaction(
-                conn, user.api_key, "MERGE", market_id, {"amount": payload.amount}
+        with self._sponsor.locked(user):
+            for token_id, _label in market.erc1155_tokens:
+                bal = self._onchain.ctf_balance(user.eth_address, int(token_id))
+                if bal < payload.amount:
+                    raise InsufficientBalanceError(
+                        f"need {payload.amount} of token {token_id}, have {bal}"
+                    )
+            call = self._onchain.merge_call(
+                condition_id, _partition(market), payload.amount
             )
+            self._sponsor.send(user, [call], "merge")
+            with self._db.write() as conn:
+                TableWrite.log_transaction(
+                    conn, user.api_key, "MERGE", market_id, {"amount": payload.amount}
+                )
         return self._snapshot(user, market, unlocked=payload.amount)
 
-    def redeem(self, user: User, market_id: int) -> RedeemPositionResponse:
+    def redeem(
+        self,
+        user: User,
+        market_id: int,
+        *,
+        payout_vector: tuple[int, list[int]] | None = None,
+    ) -> RedeemPositionResponse:
+        """Claim `user`'s payout on a resolved market.
+
+        Gated on chain before anything is sent. `redeemPositions` succeeds
+        with nothing to redeem, and the admin pays for the top-up in front of
+        it either way. So a claim the chain would pay out less than
+        `min_claim_micro` for (no tokens, only losing ones, or dust) is
+        refused with `NothingToClaimError`. If the database says RESOLVED but
+        the payouts were never reported on chain, the claim would revert, and
+        that is a `MarketStateError`. The gate runs inside the lock, so a
+        concurrent claim cannot pass it while this one burns the same tokens.
+
+        `payout_vector` is the market's `(payoutDenominator,
+        payoutNumerators)` when the caller has already read it: the
+        auto-redeem pass reads it once per market, not once per holder.
+        """
         market = self._require_market(market_id)
         if market.market_state != MarketState.RESOLVED:
             raise MarketStateError("market not resolved yet")
         condition_id = hex2bytes(market.condition_id.value)
-        usd_address = self._onchain._contracts.usd.address  # noqa: SLF001
-        partition = [1 << i for i in range(len(market.erc1155_tokens))]
-        fn = self._onchain._contracts.ctf.functions.redeemPositions(
-            usd_address, _ZERO_BYTES32, condition_id, partition
-        )
-        pre_balance = self._onchain.usd_balance(user.eth_address)
-        try:
-            send_user_tx(self._onchain._client, user.eth_key, fn)  # noqa: SLF001
-        except Web3RPCError as exc:
-            if not _is_insufficient_gas(exc):
-                raise
-            raise InsufficientGasError(
-                "wallet balance too low to pay for this transaction's gas -- "
-                f"send credits to {user.eth_address} and try claiming again"
-            ) from exc
-        new_balance = self._onchain.usd_balance(user.eth_address)
-        with self._db.write() as conn:
-            TableWrite.log_transaction(
-                conn, user.api_key, "REDEEM", market_id,
-                {"collateral_amount": new_balance - pre_balance},
-            )
+        token_ids = [int(token_id) for token_id, _label in market.erc1155_tokens]
+        with self._sponsor.locked(user):
+            if payout_vector is None:
+                payout_vector = self._onchain.payout_vector(
+                    condition_id, len(token_ids)
+                )
+            den, nums = payout_vector
+            if den == 0:
+                raise MarketStateError("market is not resolved on chain yet")
+            balances = self._onchain.ctf_balances(user.eth_address, token_ids)
+            # Floored per outcome, as ConditionalTokens.redeemPositions pays
+            # (payoutStake * numerator / den per index set) and as the
+            # auto-redeem scan's `_claimable_payout` computes it.
+            payout = sum(bal * num // den for bal, num in zip(balances, nums))
+            if payout < self._sponsor.min_claim_micro:
+                raise NothingToClaimError()
+            pre_balance = self._onchain.usd_balance(user.eth_address)
+            call = self._onchain.redeem_call(condition_id, _partition(market))
+            self._sponsor.send(user, [call], "claim")
+            new_balance = self._onchain.usd_balance(user.eth_address)
+            with self._db.write() as conn:
+                TableWrite.log_transaction(
+                    conn, user.api_key, "REDEEM", market_id,
+                    {"collateral_amount": new_balance - pre_balance},
+                )
         return RedeemPositionResponse(
             market_id=market.market_id,
             collateral_amount=new_balance - pre_balance,
@@ -130,9 +159,10 @@ class PositionService:
         """`_require_market`, plus: split only while the market trades. After
         resolution a split mints a pair whose loser is worthless and whose winner
         is redeemable, which is a free way to manufacture claims. Merge is not
-        guarded: it is user-signed (no admin gas) and is how holders recover
-        collateral from YES+NO pairs on a cancelled market, so it runs in any
-        state."""
+        guarded: it is how holders recover collateral from YES+NO pairs on a
+        cancelled market, so it runs in any state. Its gas is sponsored like a
+        split's and counts against the same daily budget, which is what bounds
+        a merge loop."""
         market = self._require_market(market_id)
         if market.market_state != MarketState.ACTIVE:
             raise MarketStateError("split only runs on ACTIVE markets")
