@@ -16,6 +16,7 @@ from web3 import Web3
 from agentpit.datastructures.cancel_orders_response import CancelOrdersResponse
 from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookSummary
 from agentpit.datastructures.condition_id import ConditionId
+from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.order_response import OrderResponse
 from agentpit.datastructures.place_order_request import PlaceOrderRequest
 from agentpit.datastructures.user import User
@@ -661,6 +662,10 @@ class OrderService:
             resolved = resolve_by_token_id(conn, payload.token_id)
         if resolved is None:
             raise MarketStateError(f"unknown token_id '{payload.token_id}'")
+        # Every fill is an admin-paid matchOrders; a market that is not open
+        # (DRAFT, CLOSED, RESOLVED, CANCELLED) must not take new orders at all.
+        if resolved.market.market_state != MarketState.ACTIVE:
+            raise MarketStateError("market is not open for trading")
         return int(resolved.token_id), resolved.token_id
 
     def _safe_row(self, order_id: str):

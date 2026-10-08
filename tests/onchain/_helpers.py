@@ -91,13 +91,14 @@ def register(client: TestClient, email: str | None = None) -> dict:
     }
 
 
-def create_market(client: TestClient, question: str | None = None) -> dict:
+def create_market(client: TestClient, question: str | None = None, *, state: str = "ACTIVE") -> dict:
     return client.post(
         "/markets",
         json={
             "question": question or unique_question(),
             "description": "test",
             "outcome_labels": ["YES", "NO"],
+            "state": state,
         },
         headers=ADMIN_HDR,
     ).json()

@@ -48,7 +48,7 @@ class PositionService:
     def split(
         self, user: User, market_id: int, payload: SplitPositionRequest
     ) -> PositionResponse:
-        market = self._require_market(market_id)
+        market = self._require_active_market(market_id)
         condition_id = hex2bytes(market.condition_id.value)
         bal = self._onchain.usd_balance(user.eth_address)
         if bal < payload.amount:
@@ -63,7 +63,7 @@ class PositionService:
     def merge(
         self, user: User, market_id: int, payload: MergePositionRequest
     ) -> PositionResponse:
-        market = self._require_market(market_id)
+        market = self._require_active_market(market_id)
         condition_id = hex2bytes(market.condition_id.value)
         for token_id, _label in market.erc1155_tokens:
             bal = self._onchain.ctf_balance(user.eth_address, int(token_id))
@@ -124,6 +124,15 @@ class PositionService:
             raise MarketNotFoundError(market_id)
         if market.condition_id is None:
             raise MarketStateError("market has no on-chain condition_id")
+        return market
+
+    def _require_active_market(self, market_id: int):
+        """`_require_market`, plus: split and merge only while the market trades.
+        After resolution a split mints a pair whose loser is worthless and whose
+        winner is redeemable, which is a free way to manufacture claims."""
+        market = self._require_market(market_id)
+        if market.market_state != MarketState.ACTIVE:
+            raise MarketStateError("split and merge only run on ACTIVE markets")
         return market
 
     def _snapshot(self, user: User, market, *, locked: int = 0, unlocked: int = 0):

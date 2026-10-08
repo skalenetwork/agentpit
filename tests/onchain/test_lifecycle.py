@@ -9,7 +9,7 @@ from tests.onchain._helpers import ADMIN_HDR, create_market, fresh_client
 
 def test_market_lifecycle_happy_path():
     client = fresh_client()
-    market = create_market(client)
+    market = create_market(client, state="DRAFT")
     mid = market["market_id"]
     assert market["market_state"] == "DRAFT"
 
@@ -38,7 +38,7 @@ def test_market_lifecycle_happy_path():
 
 def test_cancel_market_from_draft():
     client = fresh_client()
-    mid = create_market(client)["market_id"]
+    mid = create_market(client, state="DRAFT")["market_id"]
     cancel = client.post(f"/markets/{mid}/cancel", headers=ADMIN_HDR).json()
     assert cancel["market"]["market_state"] == "CANCELLED"
     # On-chain CTF positions: refund flows are now off-loaded to merge/redeem
@@ -50,7 +50,7 @@ def test_cancel_market_from_draft():
 
 def test_invalid_state_transitions():
     client = fresh_client()
-    mid = create_market(client)["market_id"]
+    mid = create_market(client, state="DRAFT")["market_id"]
 
     # DRAFT → CLOSE is invalid
     resp = client.post(f"/markets/{mid}/close", headers=ADMIN_HDR)

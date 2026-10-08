@@ -40,7 +40,7 @@ def test_activity_has_split_and_trade_rows():
 
     market = client.post("/markets", json={
         "question": f"Act {secrets.token_hex(4)}?", "description": "x",
-        "outcome_labels": ["YES", "NO"]}, headers=ADMIN_HDR).json()
+        "outcome_labels": ["YES", "NO"], "state": "ACTIVE"}, headers=ADMIN_HDR).json()
     mid = market["market_id"]
     yes = market["erc1155_tokens"][0][0]
     cond = market["condition_id"]["value"]
