@@ -5,12 +5,14 @@ pays for whatever this service lets through. These tests pin the gate in
 front of it with fakes for the chain and the sponsor: a claim with nothing
 worth claiming, or on a market the chain has not resolved, never reaches
 `send`; every chain read runs inside the user's lock; and a row is written only
-after the sponsor reports success. tests/onchain/test_sponsored_positions.py
-proves the same against anvil.
+after the sponsor reports success. A claim is logged at the payout its receipt
+reports, whatever the wallet's balance did meanwhile. tests/onchain/
+test_sponsored_positions.py proves the same against anvil.
 """
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 
 import pytest
@@ -45,13 +47,16 @@ _YES, _NO = "7001", "7002"
 class _FakeChain:
     """The reads `PositionService` gates on, and call builders that return
     plain tuples, so a test sees exactly which call went to the sponsor.
-    `reads` records every chain read, in order."""
+    `reads` records every chain read, in order. `redeemed_payout` reads the
+    figure off the receipt the sponsor returned, as the real one decodes it
+    from the receipt's logs, and remembers whose payout it was asked for."""
 
     def __init__(self, *, vector=(1, [1, 0]), balances=(0, 0), usd=(0,)):
         self.vector = vector
         self.balances = dict(zip((int(_YES), int(_NO)), balances))
         self._usd = list(usd)  # successive usd_balance answers; the last repeats
         self.reads: list[str] = []
+        self.payout_reads: list[tuple[dict, str]] = []
 
     def payout_vector(self, condition_id, outcome_count=2):
         self.reads.append("payout_vector")
@@ -69,6 +74,11 @@ class _FakeChain:
         self.reads.append("usd_balance")
         return self._usd.pop(0) if len(self._usd) > 1 else self._usd[0]
 
+    def redeemed_payout(self, receipt, redeemer):
+        self.reads.append("redeemed_payout")
+        self.payout_reads.append((receipt, redeemer))
+        return receipt["payout"]
+
     def redeem_call(self, condition_id, partition):
         return ("redeemPositions", condition_id, partition)
 
@@ -82,12 +92,19 @@ class _FakeChain:
 class _FakeSponsor:
     """Records each `send` as (calls, kind, whether the lock was held).
     `busy` makes `locked` refuse as a held lock does; `fail` is raised from
-    `send` after it is recorded, as a reverted transaction is."""
+    `send` after it is recorded, as a reverted transaction is. Each receipt it
+    returns carries `payout`, what the fake chain reads back as the claim's
+    `PayoutRedemption`. A `log` is appended to by every `send`, so a test can
+    tell which chain reads came before it and which after."""
 
-    def __init__(self, *, busy=False, fail=None, min_claim_micro=10_000):
+    def __init__(
+        self, *, busy=False, fail=None, min_claim_micro=10_000, payout=0, log=None
+    ):
         self._busy = busy
         self._fail = fail
         self._min = min_claim_micro
+        self._payout = payout
+        self._log = log
         self.held = False
         self.sent: list[tuple[list, str, bool]] = []
 
@@ -107,9 +124,11 @@ class _FakeSponsor:
 
     def send(self, user, calls, kind):
         self.sent.append((calls, kind, self.held))
+        if self._log is not None:
+            self._log.append("send")
         if self._fail is not None:
             raise self._fail
-        return [{"status": 1} for _ in calls]
+        return [{"status": 1, "payout": self._payout} for _ in calls]
 
 
 def _setup(state: MarketState):
@@ -156,6 +175,19 @@ def _rows(db, user) -> list[str]:
         ]
 
 
+def _redeem_amounts(db, user) -> list[int]:
+    """`collateral_amount` of each REDEEM row, as the profile page reads it."""
+    with db.read() as conn:
+        return [
+            json.loads(r["DETAILS"])["collateral_amount"]
+            for r in conn.execute(
+                "SELECT DETAILS FROM transactions "
+                "WHERE API_KEY = %s AND TRANSACTION_TYPE = 'REDEEM'",
+                (user.api_key,),
+            ).fetchall()
+        ]
+
+
 def _act(service, action, user, market_id):
     if action == "split":
         return service.split(user, market_id, SplitPositionRequest(amount=40_000_000))
@@ -169,8 +201,8 @@ def _act(service, action, user, market_id):
 
 def test_a_winning_claim_is_sent_under_the_lock_and_logged():
     db, user, mid = _setup(MarketState.RESOLVED)
-    chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(5, 100_000_005))
-    sponsor = _FakeSponsor()
+    chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(100_000_005,))
+    sponsor = _FakeSponsor(payout=100_000_000)
 
     out = _service(db, chain, sponsor).redeem(user, mid)
 
@@ -179,6 +211,58 @@ def test_a_winning_claim_is_sent_under_the_lock_and_logged():
     assert out.collateral_amount == 100_000_000
     assert out.new_usdc_balance == 100_000_005
     assert _rows(db, user) == ["REDEEM"]
+    assert _redeem_amounts(db, user) == [100_000_000]
+
+
+@pytest.mark.parametrize(
+    "usd",
+    [
+        pytest.param((5, 70_000_005), id="a-debit-of-30-while-claiming"),
+        pytest.param((5, 107_000_005), id="a-credit-of-7-while-claiming"),
+        pytest.param((5, 5), id="a-debit-as-big-as-the-payout"),
+    ],
+)
+def test_the_claim_is_the_payout_in_the_receipt_whatever_the_balance_did(usd):
+    """The wallet's apUSD moves while a claim is in flight (a fill, a mint, a
+    transfer out), and a difference of two balance reads would take that for
+    the payout: a credit overstates it, and a debit larger than the payout
+    makes a won market read as lost. The receipt's `PayoutRedemption` is the
+    figure, for the response and for the REDEEM row alike."""
+    db, user, mid = _setup(MarketState.RESOLVED)
+    chain = _FakeChain(balances=(100_000_000, 0), usd=usd)
+    sponsor = _FakeSponsor(payout=100_000_000)
+
+    out = _service(db, chain, sponsor).redeem(user, mid)
+
+    assert out.collateral_amount == 100_000_000
+    assert _redeem_amounts(db, user) == [100_000_000]
+
+
+def test_the_payout_is_read_from_the_claims_receipt_for_the_claimant():
+    db, user, mid = _setup(MarketState.RESOLVED)
+    chain = _FakeChain(balances=(100_000_000, 0), usd=(100_000_005,))
+    sponsor = _FakeSponsor(payout=100_000_000)
+
+    _service(db, chain, sponsor).redeem(user, mid)
+
+    assert chain.payout_reads == [
+        ({"status": 1, "payout": 100_000_000}, user.eth_address)
+    ]
+
+
+def test_the_new_balance_is_one_fresh_read_after_the_claim_and_none_before():
+    """`new_usdc_balance` is what the wallet holds once the claim has landed.
+    No balance is read before the send: nothing needs the old figure now."""
+    db, user, mid = _setup(MarketState.RESOLVED)
+    chain = _FakeChain(balances=(100_000_000, 0), usd=(250_000_000,))
+    sponsor = _FakeSponsor(payout=100_000_000, log=chain.reads)
+
+    out = _service(db, chain, sponsor).redeem(user, mid)
+
+    sent_at = chain.reads.index("send")
+    assert "usd_balance" not in chain.reads[:sent_at]
+    assert chain.reads[sent_at:].count("usd_balance") == 1
+    assert out.new_usdc_balance == 250_000_000
 
 
 @pytest.mark.parametrize(

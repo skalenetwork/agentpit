@@ -105,6 +105,10 @@ class PositionService:
         that is a `MarketStateError`. The gate runs inside the lock, so a
         concurrent claim cannot pass it while this one burns the same tokens.
 
+        The amount in the response and in the REDEEM row is the payout the
+        chain reports in the claim's receipt (`OnchainAdmin.redeemed_payout`).
+        `new_usdc_balance` is read afresh once the claim has landed.
+
         `payout_vector` is the market's `(payoutDenominator,
         payoutNumerators)` when the caller has already read it: the
         auto-redeem pass reads it once per market, not once per holder.
@@ -132,18 +136,23 @@ class PositionService:
             # not reach the sponsor even if that were ever relaxed.
             if payout <= 0 or payout < self._sponsor.min_claim_micro:
                 raise NothingToClaimError()
-            pre_balance = self._onchain.usd_balance(user.eth_address)
             call = self._onchain.redeem_call(condition_id, _partition(market))
-            self._sponsor.send(user, [call], "claim")
+            (receipt,) = self._sponsor.send(user, [call], "claim")
+            # What the CTF paid, from the claim's own receipt. Not the change
+            # in the wallet's apUSD across the claim: fills, mints and
+            # transfers move that without taking this lock, so the change can
+            # be larger than the payout, or negative, and the profile page
+            # reads a payout of zero or less as a lost market.
+            paid = self._onchain.redeemed_payout(receipt, user.eth_address)
             new_balance = self._onchain.usd_balance(user.eth_address)
             with self._db.write() as conn:
                 TableWrite.log_transaction(
                     conn, user.api_key, "REDEEM", market_id,
-                    {"collateral_amount": new_balance - pre_balance},
+                    {"collateral_amount": paid},
                 )
         return RedeemPositionResponse(
             market_id=market.market_id,
-            collateral_amount=new_balance - pre_balance,
+            collateral_amount=paid,
             new_usdc_balance=new_balance,
         )
 
