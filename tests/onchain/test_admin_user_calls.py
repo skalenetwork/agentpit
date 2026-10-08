@@ -343,3 +343,67 @@ def test_user_split_position_still_splits_for_a_self_funded_wallet():
 
     assert receipt["status"] == 1
     assert admin.ctf_balances(house.address, tokens) == [7_000_000, 7_000_000]
+
+
+# --- the signing hook and the receipt read -----------------------------------
+
+
+def test_the_hash_is_handed_over_after_signing_and_before_the_broadcast():
+    """`on_signed` gets the transaction's own hash, the one its receipt will
+    carry, while the chain has not seen it yet: what `PositionService` writes
+    its intent row under before anything can mine."""
+    admin = _admin()
+    wallet = Account.create()
+    fn = admin.approval_calls()[0]
+    gas, price = _sized(admin, fn, wallet.address), admin.gas_price()
+    admin.fund_gas(wallet.address, gas * price)
+    seen: list[tuple[str, int, object]] = []
+
+    def on_signed(tx_hash: str) -> None:
+        seen.append(
+            (
+                tx_hash,
+                admin.transaction_count(wallet.address),
+                admin.transaction_receipt(tx_hash),
+            )
+        )
+
+    receipt = admin.send_as_user(wallet, fn, gas=gas, max_fee=price, on_signed=on_signed)
+
+    expected = "0x" + bytes(receipt["transactionHash"]).hex()
+    assert seen == [(expected, 0, None)]  # nothing sent, nothing mined, yet
+
+
+def test_a_hook_that_raises_stops_the_broadcast():
+    """An intent row that could not be written must not leave a transaction
+    on its way that nothing records."""
+    admin = _admin()
+    wallet = Account.create()
+    fn = admin.approval_calls()[0]
+    gas, price = _sized(admin, fn, wallet.address), admin.gas_price()
+    admin.fund_gas(wallet.address, gas * price)
+
+    def on_signed(_tx_hash: str) -> None:
+        raise RuntimeError("the database is down")
+
+    with pytest.raises(RuntimeError, match="database is down"):
+        admin.send_as_user(wallet, fn, gas=gas, max_fee=price, on_signed=on_signed)
+    assert admin.transaction_count(wallet.address) == 0
+    assert admin.native_balance(wallet.address) == gas * price
+
+
+def test_a_receipt_is_read_by_hash_and_an_unknown_hash_reads_none():
+    admin = _admin()
+    wallet = Account.create()
+    fn = admin.approval_calls()[0]
+    gas, price = _sized(admin, fn, wallet.address), admin.gas_price()
+    admin.fund_gas(wallet.address, gas * price)
+    receipt = admin.send_as_user(wallet, fn, gas=gas, max_fee=price)
+    tx_hash = "0x" + bytes(receipt["transactionHash"]).hex()
+
+    found = admin.transaction_receipt(tx_hash)
+
+    assert found is not None
+    assert found["status"] == 1
+    assert found["transactionHash"] == receipt["transactionHash"]
+    assert admin.transaction_receipt("0x" + secrets.token_hex(32)) is None

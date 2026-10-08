@@ -1,5 +1,7 @@
 """Helpers for sending transactions signed by a user's private key."""
 
+from collections.abc import Callable
+
 from eth_account.signers.local import LocalAccount
 from web3.contract.contract import ContractFunction
 from web3.types import TxReceipt
@@ -17,6 +19,7 @@ def send_user_tx(
     gas_buffer_pct: int = 20,
     gas: int | None = None,
     max_fee: int | None = None,
+    on_signed: Callable[[str], None] | None = None,
 ) -> TxReceipt:
     """Build, sign and broadcast `fn(...)` from the user's account; wait for receipt.
 
@@ -30,6 +33,12 @@ def send_user_tx(
     answer that could disagree with what was funded. `max_fee` is then the
     maxFeePerGas, with no tip. Either one left out is worked out here, as it
     always was.
+
+    `on_signed` is called with the transaction's hash ("0x" and lowercase hex,
+    the hash its receipt will carry) once it is signed and before it is
+    broadcast, so a caller can record it before it can possibly mine
+    (`PositionService` writes its pending row there). If the hook raises,
+    nothing is broadcast.
     """
     web3 = client.web3
     nonce = web3.eth.get_transaction_count(user_account.address, "pending")
@@ -56,6 +65,8 @@ def send_user_tx(
         }
     )
     signed = user_account.sign_transaction(tx)
+    if on_signed is not None:
+        on_signed("0x" + bytes(signed.hash).hex())
     tx_hash = web3.eth.send_raw_transaction(signed.raw_transaction)
     return web3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
 

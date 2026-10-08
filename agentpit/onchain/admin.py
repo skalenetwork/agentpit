@@ -1,8 +1,11 @@
 """High-level on-chain operations executed with the admin/operator key."""
 
+from collections.abc import Callable
+
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
 from web3.contract.contract import ContractFunction
+from web3.exceptions import TransactionNotFound
 from web3.logs import DISCARD
 from web3.types import TxReceipt
 
@@ -181,6 +184,7 @@ class OnchainAdmin:
         gas: int,
         max_fee: int,
         timeout: int = 30,
+        on_signed: Callable[[str], None] | None = None,
     ) -> TxReceipt:
         """Send `fn` from `user_account` with exactly the gas limit and price
         its top-up paid for; wait for the receipt.
@@ -191,10 +195,29 @@ class OnchainAdmin:
         `gasLimit × maxFeePerGas` against the balance. Returns the receipt
         whatever its status: with the limit given nothing is estimated, so a
         call that reverts is mined and paid for instead of refused up front.
+
+        `on_signed` gets the transaction's hash before it is broadcast
+        (`send_user_tx`).
         """
         return send_user_tx(
-            self._client, user_account, fn, timeout=timeout, gas=gas, max_fee=max_fee
+            self._client,
+            user_account,
+            fn,
+            timeout=timeout,
+            gas=gas,
+            max_fee=max_fee,
+            on_signed=on_signed,
         )
+
+    def transaction_receipt(self, tx_hash: str) -> TxReceipt | None:
+        """The receipt of `tx_hash`, or None while the chain has none: not
+        mined yet, or never going to be. How the pending-transaction
+        reconciler learns how a user transaction ended after its sender
+        stopped waiting for it."""
+        try:
+            return self._client.web3.eth.get_transaction_receipt(tx_hash)
+        except TransactionNotFound:
+            return None
 
     # --- markets ----------------------------------------------------
 
