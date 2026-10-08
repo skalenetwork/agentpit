@@ -15,7 +15,7 @@ from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.web3_client import Web3Client
 
-from tests.onchain._helpers import ADMIN_HDR, hdr, register
+from tests.onchain._helpers import ADMIN_HDR, fund_direct_sends, hdr, register
 
 
 def _hdr(t):
@@ -55,6 +55,7 @@ def test_activity_has_split_and_trade_rows():
     db = DbSession(settings.database_url)
     with db.read() as conn:
         user_b = TableRead.get_user_by_email(conn, b_email)
+    fund_direct_sends(client, user_b.eth_address)
     admin.user_split_position(user_b.eth_key, bytes.fromhex(cond[2:]), 200_000_000)
     client.post("/order", headers=_hdr(ta), json={"token_id": yes, "side": "BUY", "price": "0.6", "size": 100})
     client.post("/order", headers=_hdr(tb), json={"token_id": yes, "side": "SELL", "price": "0.6", "size": 100})

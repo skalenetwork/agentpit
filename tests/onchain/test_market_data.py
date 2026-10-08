@@ -1,7 +1,7 @@
 """GET /midpoint, /price, /last-trade-price (§8.7). Live-chain: resting
 orders give a deterministic book; 404 paths when book/trades are absent."""
 
-from tests.onchain._helpers import create_market, fresh_client, register, hdr
+from tests.onchain._helpers import create_market, fresh_client, fund_direct_sends, register, hdr
 
 
 def _yes(market) -> str:
@@ -22,6 +22,7 @@ def _give_yes_tokens(client, market, user_eth_key, amount: int = 10_000_000):
     c = Contracts(w.web3, d)
     admin = OnchainAdmin(w, c)
     cond = bytes.fromhex(market["condition_id"]["value"][2:])
+    fund_direct_sends(client, user_eth_key.address)
     admin.user_split_position(user_eth_key, cond, amount)
 
 

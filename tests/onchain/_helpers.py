@@ -58,7 +58,9 @@ def unique_question() -> str:
 def _auth_service(client: TestClient) -> AuthService:
     """An AuthService built from the very dependencies the app under test is
     using, so a test account is onboarded against the same chain and database
-    as the requests that follow."""
+    as the requests that follow. The service builds its own `UserGasSponsor`
+    from these, so the onboarding top-up comes from the app's admin and is
+    booked in the app's database."""
     overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
     return AuthService(
         overrides[get_db_session](),
@@ -70,14 +72,19 @@ def _auth_service(client: TestClient) -> AuthService:
 
 
 def register(client: TestClient, email: str | None = None) -> dict:
-    """A funded, approved account, shaped like the old POST /register reply.
+    """An onboarded account -- collateral dripped, approvals set -- shaped
+    like the old POST /register reply.
 
     `POST /register` went away with the WorkOS cutover -- there is no
     programmatic signup any more -- but the service behind it is untouched and
-    is still the only place that provisions a wallet, grants gas and sets the
-    exchange approvals. Tests call it directly and authenticate with the
-    account's API key; `access_token` keeps its name so the suite reads the
+    is still the only place that provisions a wallet, drips its collateral and
+    sets the exchange approvals. Tests call it directly and authenticate with
+    the account's API key; `access_token` keeps its name so the suite reads the
     same either side of the cutover.
+
+    The wallet keeps no spare gas: onboarding tops it up to exactly what the
+    approvals need. A test that signs as the account itself calls
+    `fund_direct_sends` first.
     """
     address = email or unique_email()
     service = _auth_service(client)
@@ -93,6 +100,29 @@ def register(client: TestClient, email: str | None = None) -> dict:
         "api_key": user.api_key,
         "user": response.user.model_dump(),
     }
+
+
+#: Native gas for a test that signs as a user itself: about 10M gas at anvil's
+#: ~1 gwei price, where a split's limit is ~132k.
+DIRECT_SEND_GAS_WEI = 10**16
+
+
+def fund_direct_sends(client: TestClient, address: str) -> None:
+    """Give a `register()`ed account gas to sign its own transactions.
+
+    The product never has a user sign outside `UserGasSponsor`, which tops the
+    wallet up to exactly each action's need, so onboarding leaves no spare
+    gas. A test that calls `user_split_position` or `send_user_tx` as the user
+    -- to stock a book, or to break an allowance on purpose -- funds the
+    wallet first. On anvil the onboarding leftover would happen to cover one
+    split (anvil bills the 7 wei base fee, not the price offered); leaning on
+    that would make these tests pass for a reason no real chain shares.
+
+    Sent by the app's own admin, so its `AdminTxSender` stays the only writer
+    of the admin nonce.
+    """
+    admin = client.app.dependency_overrides[get_onchain_admin]()  # type: ignore[attr-defined]
+    admin.fund_gas(address, DIRECT_SEND_GAS_WEI)
 
 
 def create_market(client: TestClient, question: str | None = None, *, state: str = "ACTIVE") -> dict:
