@@ -231,9 +231,8 @@ class TableWrite:
         The argument for clearing is good and will be acted on: registration
         takes any address on trust, so a password sitting on a row is no
         evidence that whoever set it owns the address, while a mailed code is.
-        Key export is no longer what stands in the way -- `export_private_key`
-        stopped reading PASSWORD_HASH and now re-authenticates every account
-        the same way, with a mailed code pinned to WORKOS_USER_ID.
+        Key export is not what stands in the way -- wallet keys cannot be
+        exported at all any more, so nothing about the key reads PASSWORD_HASH.
 
         The rollback is. `/login` answers 410 since the cutover, but the
         service behind it was left untouched for exactly this reason:

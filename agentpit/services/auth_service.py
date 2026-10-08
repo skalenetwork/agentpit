@@ -224,19 +224,21 @@ class AuthService:
         per account. (The house account does not rely on this path at all — it is
         kept above a gas floor by the mirror's top-up loop.)
 
-        A second lock sits beside the first: once the holder has exported their
-        private key, this repair never runs again, because from that point a
-        zero balance can also mean they emptied the wallet on purpose.
+        A second lock sits beside the first: an account that exported its
+        private key while export still existed never gets this repair, because
+        its key is out in the wild and a zero balance can also mean the holder
+        emptied the wallet on purpose. Wallets are custodial now, so no account
+        can newly enter that state, but the ones already in it stay there.
         """
         if not self._settings.simulated_chain:
             return
         with self._db.read() as conn:
             exported_at, _ = TableRead.get_key_export_state(conn, user.user_id)
         if exported_at is not None:
-            # While we hold the key the only way to a zero balance is a chain
-            # wipe, which is what this repair is for. Once the holder has the
-            # key they can empty the wallet deliberately, and every login would
-            # be another free grant.
+            # While only we hold the key the only way to a zero balance is a
+            # chain wipe, which is what this repair is for. A key exported
+            # before export was removed can still empty the wallet
+            # deliberately, and every login would be another free grant.
             return
         if self._onchain is None or user.onboarded_at is None:
             return

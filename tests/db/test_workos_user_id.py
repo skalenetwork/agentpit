@@ -50,9 +50,9 @@ def test_linking_stamps_the_identity_and_keeps_the_password():
     # is unreachable over HTTP only because the cutover deleted the route, so
     # that reverting one commit restores legacy sign-in. Nulling it here spends
     # that on each holder's first code sign-in, irreversibly, across all 17
-    # production accounts. Key export is no longer the reason -- it
-    # re-authenticates every account with a mailed code now -- so the password
-    # outlives the routes by one plan and goes when plan 4 drops the column.
+    # production accounts. Key export is not the reason -- wallet keys cannot
+    # be exported at all -- so the password outlives the routes by one plan
+    # and goes when plan 4 drops the column.
     db = DbSession(Settings().database_url)
     with db.write() as conn:
         user_id, _acct, _api_key = TableWrite.create_user(
@@ -70,8 +70,8 @@ def test_adoption_leaves_the_password_flag_true():
     """The derived flag, not just the column the test above reads.
 
     `has_password` is `PASSWORD_HASH IS NOT NULL` projected onto the read
-    model, and it is what a caller actually sees. Key export no longer consults
-    it -- every account re-authenticates with a mailed code -- but
+    model, and it is what a caller actually sees. Nothing about the wallet key
+    consults it -- keys cannot be exported at all -- but
     `change_password` still needs the hash, and reverting the cutover commit
     puts `/login` back on top of it, so a false here would be the row denying
     a credential it holds.
