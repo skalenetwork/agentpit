@@ -13,6 +13,9 @@ from agentpit.onchain.deployment import is_disposable_chain
 
 log = logging.getLogger(__name__)
 
+# The pad `send_user_tx` puts on an estimate, which is what the approvals are
+# sent with. `_fund` sizes the gas for them with the same one.
+_GAS_PAD_PCT = 20
 _EMAIL = "house-bot-{i}@agentpit.local"
 _PASSWORD = "house-bot-fixed-secret-pw"  # house accounts never log in via HTTP
 
@@ -77,6 +80,16 @@ class HouseAccountProvisioner:
         assert user is not None
         return user
 
+    def _approvals_need_wei(self, address: str) -> int:
+        """What the house's three approvals cost: each one's estimate plus the
+        pad `send_user_tx` adds, at the current price (the `maxFeePerGas` they
+        go out with)."""
+        gas = sum(
+            self._onchain.estimate_user_gas(fn, address) * (100 + _GAS_PAD_PCT) // 100
+            for fn in self._onchain.approval_calls()
+        )
+        return gas * self._onchain.gas_price()
+
     def _fund(self, acct) -> None:
         """Mint the collateral, fund the gas AT the floor, send the approvals.
 
@@ -88,13 +101,23 @@ class HouseAccountProvisioner:
         grant to reuse any more: users get exact per-transaction top-ups
         (`UserGasSponsor`). The house signs its own mirror splits, so it needs
         a standing balance instead.
+
+        Never less than the approvals need, though: a floor of 0 (which also
+        switches `top_up_gas` off) or a tiny one would leave the house unable
+        to pay for the three approvals sent right below, and provisioning
+        would fail startup.
         """
         timeout = self._settings.tx_confirmations_timeout_s
         self._onchain.mint_to(
             acct.address, self._settings.house_mint_raw, timeout=timeout
         )
         self._onchain.fund_gas(
-            acct.address, self._settings.liquidity_gas_floor_wei, timeout=timeout
+            acct.address,
+            max(
+                self._settings.liquidity_gas_floor_wei,
+                self._approvals_need_wei(acct.address),
+            ),
+            timeout=timeout,
         )
         self._onchain.grant_user_approvals(acct, timeout=timeout)
 

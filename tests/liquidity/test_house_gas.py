@@ -1,4 +1,6 @@
 # tests/liquidity/test_house_gas.py
+import pytest
+
 from agentpit.liquidity.house_accounts import gas_topup_wei
 
 ETH = 10**18
@@ -39,9 +41,29 @@ def test_never_returns_negative_when_misconfigured():
 # --- the simulated-chain gate -----------------------------------------------
 # Re-onboarding on a zero balance repairs an account a disposable chain forgot.
 # On a durable chain the same condition means the account spent its gas, and
-# re-granting on login would be a faucet anyone could drain on repeat.
+# re-funding it from the admin every time it ran dry would be a drain on the
+# admin wallet.
 
-class _FakeOnchain:
+PRICE = 1_000                         # wei per gas on the fake chain
+ESTIMATE = 50_000                     # gas an approval is estimated at
+# What three approvals need: each estimate padded by 20%, at the price.
+APPROVALS_NEED = 3 * (ESTIMATE * 120 // 100) * PRICE
+
+
+class _ApprovalCosts:
+    """What `HouseAccountProvisioner._fund` reads to size the house's gas."""
+
+    def gas_price(self):
+        return PRICE
+
+    def approval_calls(self):
+        return ["approve_exchange", "approve_ctf", "approve_all"]
+
+    def estimate_user_gas(self, fn, address):
+        return ESTIMATE
+
+
+class _FakeOnchain(_ApprovalCosts):
     chain_id = 31337                  # anvil: the one chain the gate honours
 
     def __init__(self):
@@ -91,7 +113,7 @@ def test_zero_balance_reonboards_on_a_simulated_chain():
 def test_zero_balance_does_not_regrant_on_a_durable_chain():
     prov, onchain = _provisioner(False)
     prov._maybe_reonboard(_User())
-    assert onchain.funded == [], "login must not mint a fresh gas grant"
+    assert onchain.funded == [], "login must not fund a house that ran dry"
 
 
 def test_zero_balance_does_not_regrant_on_a_durable_chain_even_if_simulated():
@@ -113,7 +135,7 @@ def test_house_is_funded_by_one_mint_not_repeated_drips():
 
     calls = []
 
-    class _Onchain:
+    class _Onchain(_ApprovalCosts):
         def faucet_drip(self, address, *, timeout=30):
             calls.append(("drip", address))
 
@@ -156,6 +178,39 @@ def test_a_new_house_account_is_funded_at_the_gas_floor():
 
     assert [c for c in onchain.funded if c[0] == "gas"] == [
         ("gas", _Key.address, settings.liquidity_gas_floor_wei)
+    ]
+
+
+@pytest.mark.parametrize("floor", [0, 1, APPROVALS_NEED - 1])
+def test_a_new_house_account_can_always_pay_for_its_three_approvals(floor):
+    """The floor is what the account is held at later, not what it needs now.
+    A floor of 0 (which also switches the refill loop off) or a tiny one would
+    leave the house unable to pay for the approvals it signs next, and
+    `ensure_provisioned` would fail startup. So a new account is funded with
+    whichever is more: the floor, or the gas of the three approvals (each
+    estimate plus 20%, at the current price)."""
+    from agentpit.config import Settings
+    from agentpit.liquidity.house_accounts import HouseAccountProvisioner
+
+    onchain = _FakeOnchain()
+    settings = Settings(AGENTPIT_LIQUIDITY_GAS_FLOOR_WEI=floor)
+    HouseAccountProvisioner(None, onchain, settings)._fund(_Key())  # noqa: SLF001
+
+    assert [c for c in onchain.funded if c[0] == "gas"] == [
+        ("gas", _Key.address, APPROVALS_NEED)
+    ]
+
+
+def test_a_floor_above_the_approvals_need_is_still_what_a_new_house_gets():
+    from agentpit.config import Settings
+    from agentpit.liquidity.house_accounts import HouseAccountProvisioner
+
+    onchain = _FakeOnchain()
+    settings = Settings(AGENTPIT_LIQUIDITY_GAS_FLOOR_WEI=APPROVALS_NEED + 1)
+    HouseAccountProvisioner(None, onchain, settings)._fund(_Key())  # noqa: SLF001
+
+    assert [c for c in onchain.funded if c[0] == "gas"] == [
+        ("gas", _Key.address, APPROVALS_NEED + 1)
     ]
 
 

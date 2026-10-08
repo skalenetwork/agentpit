@@ -1,3 +1,5 @@
+from web3 import Web3
+
 from agentpit.config import Settings
 from agentpit.liquidity.house_accounts import HouseAccountProvisioner
 from agentpit.onchain.admin import OnchainAdmin
@@ -8,10 +10,10 @@ from tests.db_helpers import fresh_test_db
 from tests.onchain._helpers import HOUSE_TEST_GAS_FLOOR_WEI
 
 
-def _provisioner(count=3):
+def _provisioner(count=3, floor=HOUSE_TEST_GAS_FLOOR_WEI):
     s = Settings(
         liquidity_house_account_count=count,
-        liquidity_gas_floor_wei=HOUSE_TEST_GAS_FLOOR_WEI,
+        liquidity_gas_floor_wei=floor,
     )
     d = Deployment.load(s.deployment_path)
     w = Web3Client(s, d)
@@ -44,3 +46,21 @@ def test_provision_is_idempotent():
     second = prov.ensure_provisioned()
     assert {u.email for u in first} == {u.email for u in second}
     assert len(second) == 3  # no duplicates created
+
+
+def test_a_zero_gas_floor_still_funds_the_house_for_its_approvals():
+    """A floor of 0 switches the refill loop off, and says nothing about what
+    a NEW house account needs: it still signs three approvals before it can
+    trade. It is funded with what they cost, so provisioning completes."""
+    prov, admin, d = _provisioner(count=1, floor=0)
+    (user,) = prov.ensure_provisioned()
+    assert user.onboarded_at is not None
+    # The approvals were mined: the exchange may move the house's collateral.
+    allowance = admin._contracts.usd.functions.allowance(  # noqa: SLF001
+        Web3.to_checksum_address(user.eth_address), d.exchange
+    ).call()
+    assert allowance > 0
+    # Funded with the approvals' need, not a floor-sized stash: what is left
+    # is the unused part of the pad, a few thousand times less than the test
+    # floor.
+    assert 0 < admin.native_balance(user.eth_address) < HOUSE_TEST_GAS_FLOOR_WEI
