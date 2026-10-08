@@ -47,7 +47,7 @@ from agentpit.domain.exceptions import (
 )
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.chain_rpc import SendError, classify_send_error, is_balance_low
-from agentpit.onchain.tx_sender import TRANSFER_GAS
+from agentpit.onchain.tx_sender import TRANSFER_GAS, TxDropped
 
 log = logging.getLogger(__name__)
 
@@ -154,18 +154,23 @@ class UserGasSponsor:
         A top-up whose receipt times out (`fund_gas` raises `TimeExhausted`,
         also when the admin sender finds no free transaction slot) stops the
         send before any user transaction goes out, and is re-raised as
-        `GasTopUpTimeoutError` (503, "the platform is busy"). The top-up may
-        still mine, so it is treated like a fill whose receipt timed out in
-        `OrderService._book_sponsored_gas`: a split/merge reservation is left
-        standing, an over-count and the safe direction, and nothing else is
-        booked, not even the transfer. Nothing has to remember it either:
-        every send sizes against the balance it reads, so once the late
-        top-up has mined, the next send tops up only max(0, need - balance),
-        which is nothing when the late top-up covers it. (If it has not mined
-        yet, the next send tops up in full and the wallet briefly holds more
-        than one need, which later sends use up before they top up again.) A
-        top-up that can never run (`TxDropped`) is no timeout: like a paused
-        breaker, it hands the reservation back.
+        `GasTopUpTimeoutError` (503, "the platform is busy"). `fund_gas` takes
+        `tx_confirmations_timeout_s` at most for the slot wait and the receipt
+        wait together, so a jammed sender cannot hold the user's lock for
+        longer. The top-up may still mine (unless no slot was ever found, when
+        nothing was broadcast), so it is treated like a fill whose receipt
+        timed out in `OrderService._book_sponsored_gas`: a split/merge
+        reservation is left standing, an over-count and the safe direction,
+        and nothing else is booked, not even the transfer. Nothing has to
+        remember it either: every send sizes against the balance it reads, so
+        once the late top-up has mined, the next send tops up only
+        max(0, need - balance), which is nothing when the late top-up covers
+        it. (If it has not mined yet, the next send tops up in full and the
+        wallet briefly holds more than one need, which later sends use up
+        before they top up again.) A top-up that can never run (`TxDropped`:
+        the node lost it and a gap filler took its nonce) cannot mine later,
+        so it is no timeout: it is the same retryable `GasTopUpTimeoutError`
+        (503), but like a paused breaker it hands the reservation back.
 
         A user transaction that got no answer at all (a transport error after
         the broadcast, `SendError.TRANSPORT`) may have mined, so it books like
@@ -256,6 +261,13 @@ class UserGasSponsor:
                         topups += 1
                     continue
                 i += 1
+        except TxDropped as exc:
+            # The top-up's nonce went to a gap filler or another writer's
+            # transaction: it never ran and never will, so this is no timeout
+            # and the reservation is refunded. It answers like one, because to
+            # the caller it is the same: our side is busy, try again. Raised
+            # from a handler, so the clause below does not catch it.
+            raise GasTopUpTimeoutError() from exc
         except (TimeExhausted, GasTopUpTimeoutError):
             # No receipt in time, for a top-up or for a user transaction: it
             # may still mine, so the booking must not refund the reservation.
@@ -376,7 +388,8 @@ class UserGasSponsor:
         breaker refuses it (`AdminGasPausedError`, 503). Only a wallet that
         needs a top-up meets the breaker; a funded one proceeds while paused.
         `TimeExhausted` (no receipt in time, or no free admin slot) becomes
-        `GasTopUpTimeoutError` (503); `TxDropped` propagates as it is.
+        `GasTopUpTimeoutError` (503). `TxDropped` becomes one too, but in
+        `_send_sponsored`, which has to tell the two apart for the booking.
         `send`'s docstring says what each does to the booking."""
         try:
             self._onchain.fund_gas(
