@@ -90,6 +90,8 @@ class Web3Client:
             self.admin,
             deployment.chain_id,
             max_in_flight=settings.admin_tx_max_in_flight,
+            alarm_gas=settings.admin_gas_alarm_gas,
+            stop_gas=settings.admin_gas_stop_gas,
         )
 
     def verify_chain(self) -> None:

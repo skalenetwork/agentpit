@@ -55,6 +55,9 @@ class FakeSkaled:
         self.estimate_errors: list[Exception] = []
         self.pending_errors: list[Exception] = []  # raised by pending_hashes
         self.fee = (200_000, 0)
+        # Native balance per address; anything unset is rich enough not to matter.
+        self.balances: dict[str, int] = {}
+        self.balance_calls = 0
         self.fee_calls = 0
         self.estimate_calls = 0
         self.nonce_calls = 0
@@ -154,6 +157,11 @@ class FakeSkaled:
         with self._lock:
             return [self.mined.get(bytes(h)) for h in tx_hashes]
 
+    def balance(self, address: str) -> int:
+        with self._lock:
+            self.balance_calls += 1
+            return self.balances.get(address, 10**24)
+
     def estimate_gas(self, tx: dict) -> int:
         with self._lock:
             self.estimate_calls += 1
@@ -190,6 +198,10 @@ class FakeSkaled:
                             "blockNumber": self.block,
                             "nonce": item["nonce"],
                             "gas": item["tx"]["gas"],
+                            # The whole limit counts as used, at the max fee (skaled
+                            # bills the price in full): a send's cost is exact.
+                            "gasUsed": item["tx"]["gas"],
+                            "effectiveGasPrice": item["tx"]["maxFeePerGas"],
                         }
                     )
                     self.committed[item["sender"]] += 1
