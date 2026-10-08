@@ -376,6 +376,13 @@ cd ui && yarn test
 > environment defeats every one of those defaults — the suite then runs against
 > your dev database and starts talking to live Polymarket.
 
+Run from a linked git worktree (such as the ones under `.claude/worktrees/`),
+the suite uses its own database, `agentpit_test_<worktree name>`, and creates it
+on the first run, so sessions testing in parallel worktrees don't truncate each
+other's tables. Set `AGENTPIT_DATABASE_URL` to pick a database yourself.
+Removing a worktree leaves its database behind; `dropdb agentpit_test_<name>`
+deletes it.
+
 ---
 
 ## Architecture
