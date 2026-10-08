@@ -7,7 +7,9 @@ real chain:
 - the top-up is exact;
 - the wallet never keeps more than one action's need;
 - a claim with nothing worth claiming costs nobody a transaction;
-- the sponsored gas lands in the account's daily `sponsored_gas` row.
+- the sponsored gas lands in the account's daily `sponsored_gas` row;
+- a claim is logged at the CTF's payout, whatever else moves the wallet's
+  apUSD while the claim is in flight.
 
 Each branch of the gate is pinned with fakes in
 tests/services/test_position_service.py.
@@ -15,12 +17,14 @@ tests/services/test_position_service.py.
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 from web3 import Web3
+from web3.logs import DISCARD
 
 from agentpit.api.app import create_app
 from agentpit.api.deps import get_db_session, get_onchain_admin
@@ -45,6 +49,7 @@ from agentpit.polymarket.polymarket_sync import (
     create_polymarket_markets_if_needed,
     mirror_polymarket_resolutions,
 )
+from agentpit.services.account_service import AccountService
 from agentpit.services.gas_sponsor import UserGasSponsor
 from agentpit.utils.parse import hex2bytes
 from tests.db_helpers import fresh_test_db
@@ -383,3 +388,89 @@ def test_with_the_kill_switch_off_a_dry_wallet_gets_402_not_500():
     assert admin.ctf_balances(user.eth_address, tokens) == [100_000_000, 100_000_000]
     assert _booked(db, user) == booked  # the switch stops booking as well
     assert _rows(db, user, "REDEEM") == 0
+
+
+def _redeem_amounts(db: DbSession, user: User) -> list[int]:
+    """`collateral_amount` of each REDEEM row: what the profile page reads."""
+    with db.read() as conn:
+        return [
+            json.loads(r["DETAILS"])["collateral_amount"]
+            for r in conn.execute(
+                "SELECT DETAILS FROM transactions "
+                "WHERE API_KEY = %s AND TRANSACTION_TYPE = 'REDEEM'",
+                (user.api_key,),
+            ).fetchall()
+        ]
+
+
+def _move_apusd_while_topping_up(
+    monkeypatch, admin: OnchainAdmin, user: User, *, credit: int = 0, debit: int = 0
+) -> None:
+    """Change the user's apUSD between the claim's gate and the claim itself.
+
+    The sponsor tops the wallet up just before it sends, so a hook on
+    `fund_gas` runs inside the claim, under the user's lock, as a fill, a
+    `/me/top-up` mint or a transfer out can at any time (none of those take
+    the lock). A `credit` is minted to the wallet. A `debit` is sent by the
+    user itself, on gas it is given for the purpose, after the sponsored
+    top-up has landed.
+    """
+    real = admin.fund_gas
+    me = user.eth_address.lower()
+    elsewhere = Web3.to_checksum_address("0x" + "5e" * 20)
+
+    def fund_gas(address, value_wei, **kwargs):
+        receipt = real(address, value_wei, **kwargs)
+        if address.lower() == me:
+            if credit:
+                admin.mint_to(address, credit)
+            if debit:
+                real(address, 10**16)  # spare gas for the user's own transfer
+                transfer = admin._contracts.usd.functions.transfer(  # noqa: SLF001
+                    elsewhere, debit
+                )
+                assert send_user_tx(admin._client, user.eth_key, transfer)["status"] == 1  # noqa: SLF001
+        return receipt
+
+    monkeypatch.setattr(admin, "fund_gas", fund_gas)
+
+
+@pytest.mark.parametrize(
+    ("credit", "debit"),
+    [
+        pytest.param(7_000_000, 0, id="a-mint-of-7-lands-during-the-claim"),
+        pytest.param(0, 130_000_000, id="a-transfer-of-130-leaves-during-the-claim"),
+    ],
+)
+def test_a_claim_is_logged_at_the_ctf_payout_whatever_the_wallet_does_meanwhile(
+    monkeypatch, credit, debit
+):
+    """A difference of two balance reads was wrong in both directions: a credit
+    during the claim made it read 107, and a debit larger than the payout made
+    it read -30, which `list_closed_positions` takes for a lost market and
+    drops. The amount is what `redeemPositions` paid, from the receipt."""
+    admin, db = _chain()
+    market, pm = _market(db, admin)
+    user = _holder(db, admin)
+    positions = position_service(db, admin)
+    positions.split(user, market.market_id, SplitPositionRequest(amount=100_000_000))
+    _resolve(db, admin, market, pm, winner=0)  # YES wins
+    drain_native_balance(admin, user.eth_address)  # a top-up is certain
+    _move_apusd_while_topping_up(monkeypatch, admin, user, credit=credit, debit=debit)
+
+    claimed = positions.redeem(user, market.market_id)
+
+    receipt = _last_receipt(admin, user.eth_address)
+    assert receipt["status"] == 1
+    paid = admin._contracts.ctf.events.PayoutRedemption().process_receipt(  # noqa: SLF001
+        receipt, errors=DISCARD
+    )[0]["args"]["payout"]
+    assert paid == 100_000_000
+    assert claimed.collateral_amount == paid
+    assert _redeem_amounts(db, user) == [paid]
+    assert claimed.new_usdc_balance == admin.usd_balance(user.eth_address)
+
+    closed = AccountService(db, admin).list_closed_positions(user.eth_address)
+    assert len(closed) == 1
+    assert closed[0].curPrice == 1.0
+    assert closed[0].currentValue == 100.0
