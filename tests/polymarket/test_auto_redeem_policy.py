@@ -38,6 +38,9 @@ from tests.db_helpers import fresh_test_db
 
 _LOGGER = "agentpit.polymarket.polymarket_sync"
 _ONE_USD = 1_000_000  # micro-apUSD, well above the $0.01 minimum
+# The real sponsor, taken before the autouse `sponsors` fixture swaps it out,
+# for the test that wants its real lock.
+_REAL_SPONSOR = gas_sponsor.UserGasSponsor
 
 
 class _Chain:
@@ -497,6 +500,109 @@ def test_a_held_lock_is_not_backed_off(claims):
     assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
     assert len(calls) == 2
     assert _flagged(db, market[0]) is True
+
+
+# ----- busy locks must not starve the cap -------------------------------------
+
+
+def test_holders_with_held_locks_do_not_use_up_the_cap(claims):
+    """A held lock is a 409 before any chain read, so it costs the admin
+    nothing, and it is not backed off (the next pass may find the lock free).
+    Counted toward the cap, `cap` such holders visited first in key order would
+    use it up on every pass: the honest holder in the next market, and the
+    house's own claims, would never be reached."""
+    calls, outcomes = claims
+    db, chain = fresh_test_db(), _Chain()
+    first, second = _market(db), _market(db)
+    squatters = [
+        _holder(db, chain, first, holds={first[1]: _ONE_USD}) for _ in range(25)
+    ]
+    honest = _holder(db, chain, second, holds={second[1]: _ONE_USD})
+    for squatter in squatters:
+        outcomes[(squatter.user_id, first[0])] = TransactionInProgressError()
+
+    # The honest holder is claimed in the very first pass, after 25 refusals
+    # that spent nothing of the cap of 20.
+    assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 1  # type: ignore[arg-type]
+    assert [u for u, _m, _vector in calls].count(honest.user_id) == 1
+    assert len(calls) == 26
+    assert _flagged(db, second[0]) is True
+    # Their market stays open and nobody is backed off.
+    assert _flagged(db, first[0]) is False
+    assert not polymarket_sync._claim_backoff_until
+
+    # Later passes meet the same busy locks again, and settle nothing more.
+    for _ in range(4):
+        assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 0  # type: ignore[arg-type]
+    assert [u for u, _m, _vector in calls].count(honest.user_id) == 1
+    assert _flagged(db, first[0]) is False
+
+
+def test_the_cap_still_counts_the_claims_that_were_tried_after_busy_locks(claims):
+    """Skipping a busy holder gives the cap back, no more: the claims that
+    really go out are still limited to `cap` a pass."""
+    calls, outcomes = claims
+    db, chain = fresh_test_db(), _Chain()
+    first = _market(db)
+    for _ in range(3):
+        squatter = _holder(db, chain, first, holds={first[1]: _ONE_USD})
+        outcomes[(squatter.user_id, first[0])] = TransactionInProgressError()
+    # One market apiece, so a claimed holder is not met again by the next pass.
+    honest = [_market(db) for _ in range(3)]
+    for market in honest:
+        _holder(db, chain, market, holds={market[1]: _ONE_USD})
+
+    assert auto_redeem_resolved_markets(db, chain, _settings(cap=2)) == 2  # type: ignore[arg-type]
+    claimed = [m for _u, m, _vector in calls if m != first[0]]
+    assert claimed == [honest[0][0], honest[1][0]]
+    assert [_flagged(db, m[0]) for m in honest] == [True, True, False]
+
+    assert auto_redeem_resolved_markets(db, chain, _settings(cap=2)) == 1  # type: ignore[arg-type]
+    assert calls[-1][1] == honest[2][0]
+    assert _flagged(db, honest[2][0]) is True
+    assert _flagged(db, first[0]) is False
+
+
+def test_holders_on_a_really_held_lock_are_passed_by_before_any_chain_read(
+    monkeypatch,
+):
+    """The same with the real sponsor lock instead of a stubbed error: the
+    squatters go through the real `PositionService.redeem`, which refuses at
+    `locked()` before its first read (`_Chain` has no `redeem_call`, so a
+    claim that got further would raise something else and be backed off)."""
+    monkeypatch.setattr(gas_sponsor, "UserGasSponsor", _REAL_SPONSOR)
+    db, chain = fresh_test_db(), _Chain()
+    first, second = _market(db), _market(db)
+    squatters = [
+        _holder(db, chain, first, holds={first[1]: _ONE_USD}) for _ in range(25)
+    ]
+    honest = _holder(db, chain, second, holds={second[1]: _ONE_USD})
+    busy = {s.user_id for s in squatters}
+    claimed: list[str] = []
+    real_redeem = PositionService.redeem
+
+    def redeem(self, user, market_id, *, payout_vector=None):
+        if user.user_id in busy:
+            return real_redeem(self, user, market_id, payout_vector=payout_vector)
+        claimed.append(user.user_id)
+
+    monkeypatch.setattr(PositionService, "redeem", redeem)
+    locks = [gas_sponsor._lock_for(s.eth_address) for s in squatters]  # noqa: SLF001
+    for lock in locks:
+        assert lock.acquire(blocking=False)
+    try:
+        assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 1  # type: ignore[arg-type]
+    finally:
+        for lock in locks:
+            lock.release()
+
+    assert claimed == [honest.user_id]
+    assert _flagged(db, second[0]) is True
+    assert _flagged(db, first[0]) is False
+    assert not polymarket_sync._claim_backoff_until
+    # Only the pass's own reads: one vector a market, one balance a holder.
+    assert chain.vector_reads == 2
+    assert chain.balance_reads == 26
 
 
 # ----- a market that cannot be read ------------------------------------------
