@@ -5,6 +5,7 @@ from web3 import Web3
 from web3.contract.contract import ContractFunction
 from web3.types import TxReceipt
 
+from agentpit.onchain.chain_rpc import current_fee_params
 from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.tx_sender import PendingTx
 from agentpit.onchain.user_wallet import (
@@ -20,6 +21,10 @@ from agentpit.onchain.web3_client import Web3Client
 _BALANCE_BATCH = 200
 
 _MAX_UINT256 = 2**256 - 1
+
+# parentCollectionId of a top-level position. agentpit never nests positions,
+# so every split, merge and redeem names this one.
+_ZERO_BYTES32 = b"\x00" * 32
 
 # Static gas limits for the sync's batched sends, about twice the gas measured
 # on SKALE (57,226 and 109,909). An estimate would cost a round trip per
@@ -68,7 +73,29 @@ class OnchainAdmin:
     def grant_user_approvals(
         self, user_account: LocalAccount, *, timeout: int = 30
     ) -> tuple[TxReceipt, TxReceipt, TxReceipt]:
-        """Send the three one-time approvals on behalf of `user_account`.
+        """Send `approval_calls` from `user_account`, which pays its own gas.
+
+        House accounts only: the house signs its own approvals from the
+        balance its floor/target loop keeps funded. A user or agent wallet
+        holds no gas of its own, so it onboards through `UserGasSponsor`,
+        which tops it up to exactly what `approval_calls` need and sends them
+        with `send_as_user`.
+        """
+        rcpt_a, rcpt_b, rcpt_c = [
+            send_user_tx(self._client, user_account, fn, timeout=timeout)
+            for fn in self.approval_calls()
+        ]
+        return rcpt_a, rcpt_b, rcpt_c
+
+    # --- user-signed calls ------------------------------------------
+    #
+    # Built here, sized, funded and sent by `UserGasSponsor`: it estimates
+    # each call with `estimate_user_gas`, prices it at `gas_price`, tops the
+    # wallet up to exactly that, then sends with `send_as_user`. A builder
+    # only builds; nothing reaches the chain until the sponsor sends.
+
+    def approval_calls(self) -> list[ContractFunction]:
+        """The three one-time approvals every trading account needs, in order.
 
         1. usd.approve(exchange, max)         — collateral movement during fills
         2. usd.approve(ctf, max)              — splitPosition during MINT matches
@@ -77,26 +104,96 @@ class OnchainAdmin:
         usd = self._contracts.usd
         ctf = self._contracts.ctf
         exch = self._contracts.exchange.address
-
-        rcpt_a = send_user_tx(
-            self._client,
-            user_account,
+        return [
             usd.functions.approve(exch, _MAX_UINT256),
-            timeout=timeout,
-        )
-        rcpt_b = send_user_tx(
-            self._client,
-            user_account,
             usd.functions.approve(ctf.address, _MAX_UINT256),
-            timeout=timeout,
-        )
-        rcpt_c = send_user_tx(
-            self._client,
-            user_account,
             ctf.functions.setApprovalForAll(exch, True),
-            timeout=timeout,
+        ]
+
+    def split_call(
+        self, condition_id: bytes, partition: list[int], amount: int
+    ) -> ContractFunction:
+        """splitPosition: lock `amount` apUSD, receive `amount` of every
+        outcome in `partition`. Needs `usd.approve(ctf)` from onboarding."""
+        return self._contracts.ctf.functions.splitPosition(
+            self._contracts.usd.address, _ZERO_BYTES32, condition_id, partition, amount
         )
-        return rcpt_a, rcpt_b, rcpt_c
+
+    def merge_call(
+        self, condition_id: bytes, partition: list[int], amount: int
+    ) -> ContractFunction:
+        """mergePositions: burn `amount` of every outcome in `partition`,
+        receive `amount` apUSD back."""
+        return self._contracts.ctf.functions.mergePositions(
+            self._contracts.usd.address, _ZERO_BYTES32, condition_id, partition, amount
+        )
+
+    def redeem_call(
+        self, condition_id: bytes, partition: list[int]
+    ) -> ContractFunction:
+        """redeemPositions over every index set in `partition`.
+
+        Pass the whole partition, losers included, so losing tokens burn in
+        the same transaction instead of lingering as worthless balances. The
+        CTF pays `msg.sender` only, and it succeeds with zero holdings: the
+        chain never refuses a worthless claim, so a sponsored one is gated on
+        `payout_vector` and `ctf_balances` before it is sent.
+        """
+        return self._contracts.ctf.functions.redeemPositions(
+            self._contracts.usd.address, _ZERO_BYTES32, condition_id, partition
+        )
+
+    def gas_price(self) -> int:
+        """The node's current `eth_gasPrice`: the `maxFeePerGas` every user
+        transaction carries (`current_fee_params`), so the price a top-up is
+        sized at."""
+        return current_fee_params(self._client.web3)[0]
+
+    def estimate_user_gas(self, fn: ContractFunction, address: str) -> int:
+        """Gas `fn` needs when `address` sends it, on committed state.
+
+        No fee fields, on purpose. A sponsored wallet is usually empty when
+        it is sized, and anvil answers "gas required exceeds allowance: 0" to
+        an estimate that carries a `gasPrice` or `maxFeePerGas` from a
+        zero-balance sender. Without them, anvil and skaled both estimate an
+        empty wallet's call.
+        """
+        return fn.estimate_gas({"from": Web3.to_checksum_address(address)})
+
+    def transaction_count(self, address: str) -> int:
+        """How many transactions `address` has had mined: its "latest" nonce.
+
+        Incoming transfers do not count, so a wallet that has only ever been
+        topped up reads 0. That separates "this chain never saw the account's
+        approvals" (a wiped anvil) from "the account spent its gas down to
+        near zero", which with exact top-ups is every healthy wallet.
+        """
+        return self._client.web3.eth.get_transaction_count(
+            Web3.to_checksum_address(address), "latest"
+        )
+
+    def send_as_user(
+        self,
+        user_account: LocalAccount,
+        fn: ContractFunction,
+        *,
+        gas: int,
+        max_fee: int,
+        timeout: int = 30,
+    ) -> TxReceipt:
+        """Send `fn` from `user_account` with exactly the gas limit and price
+        its top-up paid for; wait for the receipt.
+
+        Neither is worked out again: another estimate is one more ~0.5 s
+        round trip on SKALE, and a higher limit or price than the top-up
+        covered is refused at import, because skaled checks
+        `gasLimit × maxFeePerGas` against the balance. Returns the receipt
+        whatever its status: with the limit given nothing is estimated, so a
+        call that reverts is mined and paid for instead of refused up front.
+        """
+        return send_user_tx(
+            self._client, user_account, fn, timeout=timeout, gas=gas, max_fee=max_fee
+        )
 
     # --- markets ----------------------------------------------------
 
@@ -198,14 +295,14 @@ class OnchainAdmin:
         *,
         timeout: int = 30,
     ) -> TxReceipt:
-        """User-signed splitPosition: lock `amount` apUSD, get equal YES+NO tokens.
+        """Self-funded splitPosition: lock `amount` apUSD, get equal YES+NO tokens.
 
-        Useful for tests / first-time SELL flows before any orders have settled.
+        House accounts only in production (the mirror reconciler's inventory
+        splits): the house pays its own gas from the balance its floor/target
+        loop keeps funded. A user's split goes through `UserGasSponsor` with
+        `split_call`. Tests use it on accounts they fund themselves.
         """
-        usd_address = self._contracts.usd.address
-        fn = self._contracts.ctf.functions.splitPosition(
-            usd_address, b"\x00" * 32, condition_id, [1, 2], amount
-        )
+        fn = self.split_call(condition_id, [1, 2], amount)
         return send_user_tx(self._client, user_account, fn, timeout=timeout)
 
     # --- read-only --------------------------------------------------
@@ -292,3 +389,29 @@ class OnchainAdmin:
                 ).call()
             )
         return out
+
+    def payout_vector(
+        self, condition_id: bytes, outcome_count: int = 2
+    ) -> tuple[int, list[int]]:
+        """(payoutDenominator, [payoutNumerators(cid, i) for every outcome]).
+
+        A claim pays `Σ balance_i × num_i // den`, and that sum is the gate in
+        front of every sponsored claim. It is read from the CTF, not taken from
+        the database's RESOLVED: a market can be RESOLVED in the database
+        before (or without) its `reportPayouts` being mined, and
+        redeemPositions reverts until it is ("result for condition not
+        received yet").
+
+        `den == 0` means not reported: every numerator is zero, so none is
+        read. Otherwise the numerators go in one JSON-RPC batch, one round
+        trip however many outcomes, as in `read_market_states`.
+        """
+        ctf = self._contracts.ctf.functions
+        den = int(ctf.payoutDenominator(condition_id).call())
+        if den == 0:
+            return 0, [0] * outcome_count
+        with self._client.web3.batch_requests() as batch:
+            for i in range(outcome_count):
+                batch.add(ctf.payoutNumerators(condition_id, i))
+            nums = batch.execute()
+        return den, [int(n) for n in nums]
