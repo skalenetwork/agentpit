@@ -41,7 +41,7 @@ def _user(api_key: str) -> User:
 
 
 def _live_market(client: TestClient, maker: str) -> tuple[str, str]:
-    market = create_market(client)
+    market = create_market(client, state="DRAFT")
     client.post(f"/markets/{market['market_id']}/activate", headers=ADMIN_HDR).raise_for_status()
     client.post(
         f"/markets/{market['market_id']}/split_position", headers=hdr(maker), json={"amount": 200_000_000}

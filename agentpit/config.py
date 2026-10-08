@@ -329,6 +329,48 @@ class Settings(BaseSettings):
         default=128, ge=1, le=256, validation_alias="AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT"
     )
 
+    # --- Admin-gas guards (owner decisions 2026-10-08) ----------------------
+    # The admin wallet pays for every fill (matchOrders) and every onboarding
+    # grant, so anything a user can trigger for free is a way to spend it.
+    # Smallest order a non-house account may place: its collateral leg
+    # (price x size) in micro-apUSD. 0 disables.
+    min_order_notional_micro: int = Field(
+        default=1_000_000, ge=0, validation_alias="AGENTPIT_MIN_ORDER_NOTIONAL_MICRO"
+    )
+    # Live GTC/GTD orders one non-house account may have resting at once.
+    max_live_orders_per_account: int = Field(
+        default=200, ge=1, validation_alias="AGENTPIT_MAX_LIVE_ORDERS_PER_ACCOUNT"
+    )
+    # Resting orders one taker may fill in one placement. A 200-maker MINT sweep
+    # measured 19.7M gas in a single admin-paid transaction.
+    max_makers_per_match: int = Field(
+        default=20, ge=1, validation_alias="AGENTPIT_MAX_MAKERS_PER_MATCH"
+    )
+    # Gas (receipt gasUsed) one non-house account may make the admin spend as a
+    # taker per UTC day. ~100 fills. 0 disables.
+    daily_sponsored_gas_per_account: int = Field(
+        default=20_000_000, ge=0, validation_alias="AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT"
+    )
+    # Admin-wallet floors, in GAS valued at the current eth_gasPrice, so the same
+    # numbers mean 20 / 5 CREDIT on mainnet (47.6 gwei) and do not trip on the
+    # testnet, where gas is ~476,000x cheaper. Below the alarm the balance loop
+    # logs ERROR; below the stop every sponsored admin send is refused (only the
+    # oracle, the catalogue sync and the settlement of a placement already
+    # admitted still go out). 0 disables either.
+    admin_gas_alarm_gas: int = Field(
+        default=420_000_000, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_ALARM_GAS"
+    )
+    admin_gas_stop_gas: int = Field(
+        default=105_000_000, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_STOP_GAS"
+    )
+    # How often the balance loop re-reads the admin balance. 0 disables the
+    # loop, and with it the breaker: nothing else ever reads the balance, it
+    # stays unknown, and unknown is allowed -- so a stop level above can never
+    # trip. Startup logs a WARNING for that combination.
+    admin_gas_check_interval_seconds: float = Field(
+        default=60.0, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_CHECK_INTERVAL_SECONDS"
+    )
+
     # Admin
     admin_token: str = Field(
         default="dev-admin-token",

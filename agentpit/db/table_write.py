@@ -91,16 +91,48 @@ class TableWrite:
         )
 
     @staticmethod
+    def claim_onboarding(
+        db: psycopg.Connection, user_id: str, now: int, stale_before: int
+    ) -> bool:
+        """Claim the right to onboard this row, atomically.
+
+        The predicate and the stamp are one statement -- the idiom of
+        `claim_topup` -- so two parallel first sign-ins cannot
+        both find the row unclaimed and both send the gas grant. A claim older
+        than `stale_before` belongs to a process that died mid-onboarding and
+        may be taken over. False when the row is onboarded, claimed, or gone.
+        """
+        cur = db.execute(
+            "UPDATE users SET ONBOARDING_STARTED_AT = %s "
+            "WHERE USER_ID = %s AND ONBOARDED_AT IS NULL "
+            "AND (ONBOARDING_STARTED_AT IS NULL OR ONBOARDING_STARTED_AT < %s)",
+            (now, user_id, stale_before),
+        )
+        return cur.rowcount > 0
+
+    @staticmethod
+    def release_onboarding_claim(db: psycopg.Connection, user_id: str) -> None:
+        """Drop a claim after a failed onboarding so an honest retry need not wait."""
+        db.execute(
+            "UPDATE users SET ONBOARDING_STARTED_AT = NULL WHERE USER_ID = %s",
+            (user_id,),
+        )
+
+    @staticmethod
     def clear_user_onboarded(db: psycopg.Connection, user_id: str) -> bool:
         """Test-only: put a row back into the never-onboarded state.
 
         The condition it recreates is real -- `_create_account` commits the row
         before onboarding it, so a chain outage leaves exactly this -- but
         nothing in the product ever writes it, and the repair paths that read
-        `ONBOARDED_AT` cannot be tested without a way to produce it.
+        `ONBOARDED_AT` cannot be tested without a way to produce it. The claim
+        goes too: a row left holding one would refuse the very onboarding the
+        test is trying to provoke.
         """
         cur = db.execute(
-            "UPDATE users SET ONBOARDED_AT = NULL WHERE USER_ID = %s", (user_id,)
+            "UPDATE users SET ONBOARDED_AT = NULL, ONBOARDING_STARTED_AT = NULL "
+            "WHERE USER_ID = %s",
+            (user_id,),
         )
         return cur.rowcount > 0
 
@@ -179,6 +211,42 @@ class TableWrite:
                 "expired": expired_before,
                 "limit": limit,
             },
+        )
+        return cur.rowcount > 0
+
+    @staticmethod
+    def add_sponsored_gas(
+        db: psycopg.Connection, api_key: str, day: int, gas: int
+    ) -> None:
+        """Add `gas` to the account's total for `day` (unix seconds // 86_400).
+
+        An upsert that adds in SQL rather than read-modify-write, so two
+        placements settling at once cannot overwrite each other's gas.
+        """
+        db.execute(
+            "INSERT INTO sponsored_gas (API_KEY, DAY, GAS_USED) VALUES (%s, %s, %s) "
+            "ON CONFLICT (API_KEY, DAY) DO UPDATE SET "
+            "GAS_USED = sponsored_gas.GAS_USED + EXCLUDED.GAS_USED",
+            (api_key, day, gas),
+        )
+
+    @staticmethod
+    def reserve_sponsored_gas(
+        db: psycopg.Connection, api_key: str, day: int, gas: int, budget: int
+    ) -> bool:
+        """Add `gas` to the account's day unless the day is already at `budget`.
+
+        The predicate and the increment are one statement (the idiom of
+        `claim_auth_code_attempt`), so concurrent placements from one account
+        serialise on the row lock and each sees the reservations before it:
+        however many run at once, the day overshoots by at most one
+        placement's reservation. False when refused."""
+        cur = db.execute(
+            "INSERT INTO sponsored_gas (API_KEY, DAY, GAS_USED) VALUES (%s, %s, %s) "
+            "ON CONFLICT (API_KEY, DAY) DO UPDATE SET "
+            "GAS_USED = sponsored_gas.GAS_USED + EXCLUDED.GAS_USED "
+            "WHERE sponsored_gas.GAS_USED < %s",
+            (api_key, day, gas, budget),
         )
         return cur.rowcount > 0
 

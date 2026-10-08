@@ -12,10 +12,13 @@ from typing import Any
 
 from eth_utils.crypto import keccak
 from web3 import Web3
+from web3.exceptions import TimeExhausted
 
+from agentpit.config import Settings
 from agentpit.datastructures.cancel_orders_response import CancelOrdersResponse
 from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookSummary
 from agentpit.datastructures.condition_id import ConditionId
+from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.order_response import OrderResponse
 from agentpit.datastructures.place_order_request import PlaceOrderRequest
 from agentpit.datastructures.user import User
@@ -24,6 +27,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     BusinessRuleError,
+    GasBudgetExceededError,
     InsufficientBalanceError,
     MarketNotFoundError,
     MarketStateError,
@@ -63,6 +67,13 @@ _EXCHANGE_ONE = 10**18
 # orders expiring sooner are rejected."
 _EXPIRY_MIN_LEAD_SECONDS = 180
 
+_SECONDS_PER_DAY = 86_400  # the sponsored-gas budget resets at 00:00 UTC
+
+# Gas reserved per matched maker before settlement, trued up to the receipt
+# afterwards. Above every measurement: one-maker NORMAL 168k, MINT 235k, and
+# ~98k per extra maker in a 200-maker MINT sweep (19.7M).
+_SPONSORED_GAS_PER_MAKER = 250_000
+
 
 def _exchange_price(maker_amount: int, taker_amount: int, side: str) -> int:
     """CalculatorHelper._calculatePrice — floored, scaled by 1e18."""
@@ -97,9 +108,12 @@ class OrderService:
     happens on-chain via the deployed CTFExchange.
     """
 
-    def __init__(self, db: DbSession, onchain: OnchainAdmin):
+    def __init__(
+        self, db: DbSession, onchain: OnchainAdmin, settings: Settings | None = None
+    ):
         self._db = db
         self._onchain = onchain
+        self._settings = settings if settings is not None else Settings()
 
     # --- public API -----------------------------------------------------
 
@@ -135,6 +149,13 @@ class OrderService:
         maker_amount, taker_amount = self._amounts_from_price_size(
             payload.side, payload.price, size_micro
         )
+        if not user.is_bot:
+            self._check_order_limits(user, payload, maker_amount, taker_amount)
+            self._check_gas_budget(user)
+        # Before any order row is written: a pause found inside settlement would
+        # leave FAILED trades and a 200 `success=False`. The house is gated too,
+        # so the mirror stops placing hot orders while the admin is dry.
+        self._onchain.check_sponsored()
 
         # Pre-flight balance check — reject obvious losers before signing.
         # `balance_hint` lets a batch caller (the mirror) supply the relevant
@@ -164,6 +185,10 @@ class OrderService:
         order_id = self._compute_order_id(order)
         price_int = self._price_int(order)
 
+        # What the matching transaction reserved, and the UTC day it reserved it
+        # on; (0, None) on every path that reserved nothing, so the booking
+        # below always has both.
+        reserved, reserved_day = 0, None
         try:
             with self._db.write() as conn:
                 if coid is not None:
@@ -185,6 +210,9 @@ class OrderService:
                 )
                 taker_row = self._get_order_row(conn, order_id)
                 matches = self._match(conn, taker_row)
+                # Inside this transaction, so a refusal rolls back the order
+                # row, the fills and the idempotency claim together.
+                reserved, reserved_day = self._reserve_sponsored_gas(conn, user, len(matches))
         except psycopg.errors.UniqueViolation:
             # A concurrent request claimed this client_order_id first; the row is
             # committed by the time the violation fires, so replay its order. A
@@ -200,11 +228,20 @@ class OrderService:
 
         tx_hashes: list[str] = []
         if matches:
+            # Filled by _settle_on_chain as each tx lands, so a placement that
+            # dies after its first group still books the gas that group burned.
+            gas_used: list[tuple[int, list[str]]] = []
+            receipt_timed_out = False
             try:
-                hashes = self._settle_on_chain(order, signature, matches)
+                hashes = self._settle_on_chain(order, signature, matches, gas_used)
                 tx_hashes = ["0x" + h.hex() for h in hashes]
             except Exception as exc:
                 log.exception("on-chain settlement failed for order %s", order_id)
+                # Broadcast but no receipt in time: the match may still mine,
+                # so its gas is not refunded (`_book_sponsored_gas`). The
+                # slot-wait `TimeExhausted`, raised before anything is sent,
+                # lands here too and over-counts: the safe direction.
+                receipt_timed_out = isinstance(exc, TimeExhausted)
                 with self._db.write() as conn:
                     conn.execute(
                         "UPDATE trades SET STATUS = 'FAILED' "
@@ -220,6 +257,9 @@ class OrderService:
                 )
             finally:
                 touch(user.eth_address, *(m["maker_row"]["MAKER"] for m in matches))
+                self._book_sponsored_gas(
+                    user, gas_used, reserved, day=reserved_day, receipt_timed_out=receipt_timed_out
+                )
 
         with self._db.read() as conn:
             row = self._get_order_row(conn, order_id)
@@ -661,6 +701,10 @@ class OrderService:
             resolved = resolve_by_token_id(conn, payload.token_id)
         if resolved is None:
             raise MarketStateError(f"unknown token_id '{payload.token_id}'")
+        # Every fill is an admin-paid matchOrders; a market that is not open
+        # (DRAFT, CLOSED, RESOLVED, CANCELLED) must not take new orders at all.
+        if resolved.market.market_state != MarketState.ACTIVE:
+            raise MarketStateError("market is not open for trading")
         return int(resolved.token_id), resolved.token_id
 
     def _safe_row(self, order_id: str):
@@ -737,6 +781,125 @@ class OrderService:
         if side == "BUY":
             return collateral_int, int(size)
         return int(size), collateral_int
+
+    def _check_order_limits(
+        self, user: User, payload: PlaceOrderRequest, maker_amount: int, taker_amount: int
+    ) -> None:
+        """Size and count limits for non-house accounts.
+
+        Every fill is a matchOrders the admin pays for, so a dust order or a
+        wall of resting dust is a way to spend our gas for nothing. The house
+        is exempt: it mirrors Polymarket's book level by level, small levels
+        included, and is bounded by the mirror instead.
+        """
+        floor = self._settings.min_order_notional_micro
+        # The collateral leg: what a BUY pays, what a SELL receives.
+        notional = maker_amount if payload.side == "BUY" else taker_amount
+        if floor and notional < floor:
+            raise BusinessRuleError(
+                f"order is too small: the minimum is ${floor / 1_000_000:g} (price × size)"
+            )
+        # FOK/FAK never rest, so they cannot grow the book.
+        if payload.order_type in ("GTC", "GTD"):
+            cap = self._settings.max_live_orders_per_account
+            with self._db.read() as conn:
+                live = TableRead.count_live_orders(conn, user.api_key)
+                # The plain count only ever over-counts (it includes orders on
+                # markets that no longer trade), so under the cap it decides.
+                # The ACTIVE-market count costs 17-36 ms against 0.04 ms for
+                # this one (dev DB, 4,685 ACTIVE markets): only run it when
+                # the plain count would refuse.
+                if live >= cap:
+                    live = TableRead.count_live_orders_on_active_markets(conn, user.api_key)
+            if live >= cap:
+                raise BusinessRuleError(
+                    f"too many open orders: {live} are live and the limit is {cap} — cancel some first"
+                )
+
+    def _check_gas_budget(self, user: User) -> None:
+        """Refuse a non-house taker that already used its daily share of fills.
+
+        The cheap pre-check, before anything is signed or written. It is not
+        the binding one: concurrent placements can all pass it before any of
+        them is counted, so `_reserve_sponsored_gas` re-checks atomically
+        inside the matching transaction."""
+        budget = self._settings.daily_sponsored_gas_per_account
+        if not budget:
+            return
+        now = int(time.time())
+        with self._db.read() as conn:
+            used = TableRead.sponsored_gas_used(conn, user.api_key, now // _SECONDS_PER_DAY)
+        if used >= budget:
+            raise GasBudgetExceededError(retry_after=_SECONDS_PER_DAY - now % _SECONDS_PER_DAY)
+
+    def _reserve_sponsored_gas(self, conn, user: User, makers: int) -> tuple[int, int]:
+        """Reserve this placement's fill gas on a non-house taker, inside the
+        matching transaction, so a refusal rolls the whole placement back.
+        The pre-check alone let concurrent placements all pass before any
+        was counted. Returns (what was reserved, 0 when nothing applies; the
+        UTC day it sits on): the booking after settlement must true up that
+        day, and settlement may well end after midnight."""
+        now = int(time.time())
+        day = now // _SECONDS_PER_DAY
+        budget = self._settings.daily_sponsored_gas_per_account
+        if user.is_bot or not budget or not makers:
+            return 0, day
+        estimate = makers * _SPONSORED_GAS_PER_MAKER
+        if not TableWrite.reserve_sponsored_gas(conn, user.api_key, day, estimate, budget):
+            raise GasBudgetExceededError(retry_after=_SECONDS_PER_DAY - now % _SECONDS_PER_DAY)
+        return estimate, day
+
+    def _book_sponsored_gas(
+        self,
+        user: User,
+        groups: list[tuple[int, list[str]]],
+        reserved: int,
+        *,
+        day: int | None = None,
+        receipt_timed_out: bool = False,
+    ) -> None:
+        """Book what this placement's fills really cost the admin, on `day`
+        (the reservation's; today when not given).
+
+        A non-house taker pays: it is booked the receipts minus its reservation
+        (a refund when the estimate was high, all of it when nothing settled).
+        After a receipt timeout nothing is refunded: the match was broadcast
+        and may have mined unseen, so only an overrun is booked on top.
+        A house taker is never charged; each group's gas is split evenly over
+        that group's non-house makers instead -- otherwise anyone could rest
+        orders at the mirrored touch and have the house fill them on our gas
+        without ever touching their own budget.
+
+        Never fails the order: the trade is on chain by now (or the settlement
+        failed, and this runs from `finally` all the same). A lost booking
+        leaves a non-house taker's whole reservation standing, which over-counts,
+        the safe direction; only a house taker's makers go uncharged, so only
+        that case under-counts."""
+        charges: dict[str, int] = {}
+        if not user.is_bot:
+            delta = sum(gas for gas, _makers in groups) - reserved
+            if receipt_timed_out:
+                delta = max(delta, 0)
+            if delta:
+                charges[user.api_key] = delta
+        try:
+            with self._db.write() as conn:
+                if user.is_bot:
+                    payers = TableRead.non_bot_api_keys(conn, [k for _g, ks in groups for k in ks])
+                    for gas, makers in groups:
+                        # Split by ALL the group's makers, then drop the
+                        # house's shares: the house is not charged for them.
+                        for key in makers:
+                            if key in payers:
+                                charges[key] = charges.get(key, 0) + gas // len(makers)
+                if day is None:
+                    day = int(time.time()) // _SECONDS_PER_DAY
+                # Sorted: concurrent bookings then take the rows' locks in one
+                # order and cannot deadlock on each other.
+                for key, gas in sorted(charges.items()):
+                    TableWrite.add_sponsored_gas(conn, key, day, gas)
+        except Exception:
+            log.exception("booking sponsored gas failed for %s", user.user_id)
 
     def _check_balance(
         self,
@@ -911,19 +1074,28 @@ class OrderService:
         # matching pass cannot disagree with itself about what time it is.
         now = int(time.time())
 
+        # A self-match moves nothing between people but makes the admin pay for
+        # a matchOrders, so the taker is never paired with its own family (the
+        # human and all their agents). It is not rejected: it just does not see
+        # those makers. The predicate lives in TableRead.NOT_IN_FAMILY so all
+        # four queries below apply the same rule.
+        family = TableRead.family_api_keys(conn, taker_row["API_KEY"])
+
         opposite = "SELL" if taker_side == "BUY" else "BUY"
         if taker_side == "BUY":
             sql = (
                 "SELECT * FROM orders WHERE SIDE=%s AND PRICE <= %s "
-                f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
+                "AND TOKEN_ID=%s AND ORDER_ID != %s "
+                f"AND {TableRead.NOT_IN_FAMILY} AND {TableRead.LIVE_ORDER}"
             )
         else:
             sql = (
                 "SELECT * FROM orders WHERE SIDE=%s AND PRICE >= %s "
-                f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
+                "AND TOKEN_ID=%s AND ORDER_ID != %s "
+                f"AND {TableRead.NOT_IN_FAMILY} AND {TableRead.LIVE_ORDER}"
             )
         same_token = conn.execute(
-            sql, (opposite, taker_price, token_id, taker_row["ORDER_ID"], now)
+            sql, (opposite, taker_price, token_id, taker_row["ORDER_ID"], family, now)
         ).fetchall()
         same_token = sorted(
             same_token,
@@ -941,7 +1113,8 @@ class OrderService:
             if taker_side == "BUY":
                 comp_sql = (
                     "SELECT * FROM orders WHERE SIDE='BUY' AND PRICE >= %s "
-                    f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
+                    "AND TOKEN_ID=%s AND ORDER_ID != %s "
+                    f"AND {TableRead.NOT_IN_FAMILY} AND {TableRead.LIVE_ORDER}"
                 )
                 kind = "MINT"
                 # best maker = highest price (covers more of the mint cost).
@@ -949,19 +1122,26 @@ class OrderService:
             else:
                 comp_sql = (
                     "SELECT * FROM orders WHERE SIDE='SELL' AND PRICE <= %s "
-                    f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
+                    "AND TOKEN_ID=%s AND ORDER_ID != %s "
+                    f"AND {TableRead.NOT_IN_FAMILY} AND {TableRead.LIVE_ORDER}"
                 )
                 kind = "MERGE"
                 # best maker = lowest ask (smallest cut of the merge proceeds).
                 comp_key = lambda r: (int(r["PRICE"]), int(r["CREATED_AT"]))
             comp_rows = conn.execute(
-                comp_sql, (threshold, complement_id, taker_row["ORDER_ID"], now)
+                comp_sql,
+                (threshold, complement_id, taker_row["ORDER_ID"], family, now),
             ).fetchall()
             tagged.extend((kind, r) for r in sorted(comp_rows, key=comp_key))
 
         matches: list[dict] = []
         for kind, maker in tagged:
             if taker_remaining <= 0:
+                break
+            # One matchOrders per placement pays for every maker in it: cap the
+            # sweep. What is left follows the order type below (GTC rests, FAK
+            # is killed, FOK fails).
+            if len(matches) >= self._settings.max_makers_per_match:
                 break
             maker_remaining = int(maker["REMAINING_AMOUNT"])
             if maker_remaining <= 0:
@@ -1090,13 +1270,20 @@ class OrderService:
     # --- on-chain settlement -------------------------------------------
 
     def _settle_on_chain(
-        self, taker_order: OrderData, taker_signature: bytes, matches: list[dict]
+        self,
+        taker_order: OrderData,
+        taker_signature: bytes,
+        matches: list[dict],
+        gas_used: list[tuple[int, list[str]]],
     ) -> list[bytes]:
         """Submit `matchOrders` as the operator, one tx per match-kind group.
 
         Each call to CTFExchange.matchOrders resolves to a single MatchType
         derived from the taker/maker token pairing, so NORMAL fills cannot
-        share a tx with MINT/MERGE fills. Returns one tx hash per group.
+        share a tx with MINT/MERGE fills. Returns one tx hash per group, and
+        appends to `gas_used` as each tx lands one `(receipt gasUsed, [API keys
+        of that group's makers])`: the gas is charged to the taker, or to the
+        makers when the taker is the house (`_book_sponsored_gas`).
         """
         client = self._onchain._client  # noqa: SLF001
         exchange = self._onchain._contracts.exchange  # noqa: SLF001
@@ -1146,7 +1333,18 @@ class OrderService:
                 taker_fill_amount,
                 maker_fill_amounts,
             )
-            receipt = send_admin_tx(client, fn, timeout=60)
+            # essential: `place_order` already gated this placement on the
+            # admin-gas breaker, before any order row existed, and it is
+            # admitted or refused as a whole. A breaker that trips after that
+            # (a concurrent debit, or this placement's own first group) must
+            # not refuse a later group: the except in `place_order` would mark
+            # every trade FAILED, including a group already settled on chain.
+            receipt = send_admin_tx(client, fn, timeout=60, essential=True)
+            # Counted whatever the receipt's status: a reverted match still
+            # burned the admin's gas. `.get`: fakes and some nodes omit it.
+            gas_used.append(
+                (int(receipt.get("gasUsed") or 0), [m["maker_row"]["API_KEY"] for m in group])
+            )
             # The receipt comes back whether or not the transaction ran: one
             # that reverted at inclusion (a maker's balance or approval gone
             # since its gas was estimated) moved nothing, so it is a failed

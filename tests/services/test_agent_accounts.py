@@ -5,7 +5,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import OnboardingError
+from agentpit.domain.exceptions import AdminGasPausedError, OnboardingError
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -119,6 +119,19 @@ def test_an_api_agent_that_cannot_be_funded_is_not_left_behind():
 
     with pytest.raises(OnboardingError):
         AgentAccounts(db, fail).create_api_agent(OWNER)
+
+    with db.read() as conn:
+        assert TableRead.agents_owned_by(conn, OWNER) == []
+
+
+def test_an_api_agent_refused_by_the_breaker_is_not_left_behind():
+    db = fresh_test_db()
+
+    def paused(_user_id: str, _acct: LocalAccount) -> User:
+        raise AdminGasPausedError()
+
+    with pytest.raises(AdminGasPausedError):
+        AgentAccounts(db, paused).create_api_agent(OWNER)
 
     with db.read() as conn:
         assert TableRead.agents_owned_by(conn, OWNER) == []

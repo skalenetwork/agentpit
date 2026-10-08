@@ -51,7 +51,7 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_write import TableWrite
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.contracts import Contracts
-from agentpit.onchain.deployment import Deployment
+from agentpit.onchain.deployment import ANVIL_CHAIN_ID, Deployment, is_disposable_chain
 from agentpit.onchain.web3_client import Web3Client
 from agentpit.datastructures.user import User
 from agentpit.liquidity.house_accounts import HouseAccountProvisioner, email_for
@@ -201,6 +201,55 @@ async def _house_gas_loop(
         except Exception:
             log.exception("House gas top-up cycle failed")
         await asyncio.sleep(settings.liquidity_gas_check_interval_seconds)
+
+
+async def _admin_gas_loop(admin: OnchainAdmin, settings: Settings) -> None:
+    """Re-read the admin wallet for the gas breaker, and shout while it is low.
+
+    The breaker (AdminTxSender) refuses sponsored sends below the stop
+    level; this loop is what keeps its figure fresh and what a person
+    reading the logs sees. There is no alerting beyond the logs.
+    """
+    while True:
+        try:
+            balance, state = await asyncio.to_thread(admin.refresh_admin_gas)
+            if state in ("low", "paused"):
+                log.error(
+                    "ADMIN GAS %s: the admin wallet holds %.6f native (alarm %d gas, stop %d gas); %s",
+                    state.upper(), balance / 1e18,
+                    settings.admin_gas_alarm_gas, settings.admin_gas_stop_gas,
+                    "sponsored sends are REFUSED" if state == "paused" else "refill it soon",
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("admin gas check failed")
+        await asyncio.sleep(settings.admin_gas_check_interval_seconds)
+
+
+def _start_admin_gas_loop(
+    admin: OnchainAdmin, settings: Settings
+) -> asyncio.Task | None:
+    """Start `_admin_gas_loop`, or say loudly that it is off.
+
+    An interval of 0 disables the loop, and the loop is the only thing that
+    ever reads the admin balance: without it the balance stays unknown, and
+    unknown means allowed, so a configured stop level would never fire. That is
+    a breaker silently off, which is worse than one the operator chose to turn
+    off, so it is a WARNING.
+    """
+    if settings.admin_gas_check_interval_seconds > 0:
+        return asyncio.create_task(_admin_gas_loop(admin, settings))
+    if settings.admin_gas_stop_gas > 0:
+        log.warning(
+            "Admin gas loop is OFF (AGENTPIT_ADMIN_GAS_CHECK_INTERVAL_SECONDS=0) but "
+            "the stop level is %d gas: the admin balance is never read, so the "
+            "breaker can never trip and sponsored sends are NEVER refused. Set the "
+            "interval above 0, or AGENTPIT_ADMIN_GAS_STOP_GAS=0 to turn the breaker "
+            "off on purpose.",
+            settings.admin_gas_stop_gas,
+        )
+    return None
 
 
 def _run_pin_sync(db: DbSession, admin: OnchainAdmin, settings: Settings) -> list[int]:
@@ -379,6 +428,17 @@ async def _leaderboard_loop(service: LeaderboardService, interval_seconds: int) 
         await asyncio.sleep(_LEADERBOARD_TICK_SECONDS)
 
 
+def _warn_if_simulated_on_durable_chain(settings: Settings, chain_id: int) -> None:
+    """AGENTPIT_SIMULATED_CHAIN=true outside anvil is ignored (see
+    `is_disposable_chain`), but it is still a wrong config worth a loud line."""
+    if settings.simulated_chain and not is_disposable_chain(chain_id):
+        log.error(
+            "AGENTPIT_SIMULATED_CHAIN=true is IGNORED on chain %d: re-granting gas "
+            "on login is only for a disposable anvil (%d). Set it to false.",
+            chain_id, ANVIL_CHAIN_ID,
+        )
+
+
 def _build_onchain_admin(settings: Settings) -> OnchainAdmin:
     if not settings.deployment_path.exists():
         raise RuntimeError(
@@ -388,6 +448,7 @@ def _build_onchain_admin(settings: Settings) -> OnchainAdmin:
     deployment = Deployment.load(settings.deployment_path)
     client = Web3Client(settings, deployment)
     client.verify_chain()
+    _warn_if_simulated_on_durable_chain(settings, deployment.chain_id)
     contracts = Contracts(client.web3, deployment)
     log.info(
         "on-chain stack ready: usd=%s faucet=%s exchange=%s",
@@ -645,6 +706,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             _order_cleanup_loop(db_session, settings)
         )
 
+        # Started after house provisioning on purpose: provisioning is a run of
+        # sponsored sends, and a first refresh that finds the admin low must
+        # not be what makes startup refuse them.
+        admin_gas_task = _start_admin_gas_loop(onchain_admin, settings)
+
         try:
             async with mcp_endpoint.running() if mcp_endpoint else nullcontext():
                 yield
@@ -657,6 +723,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 requote_task,
                 pin_resolve_task,
                 order_cleanup_task,
+                admin_gas_task,
                 *mirror_tasks,
             ):
                 if task is None:

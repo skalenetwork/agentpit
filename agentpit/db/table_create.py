@@ -195,6 +195,7 @@ class TableCreate:
             ("AGENT_HOST", "TEXT"),
             ("AGENT_CLIENT", "TEXT"),
             ("DELETED_AT", "BIGINT"),
+            ("ONBOARDING_STARTED_AT", "BIGINT"),
         ]
         for col, col_type in additions:
             conn.execute(
@@ -509,6 +510,25 @@ class TableCreate:
         )
 
     @staticmethod
+    def create_sponsored_gas_table(conn: psycopg.Connection) -> None:
+        """Gas the admin paid for the fills each account took, per UTC day.
+
+        One row per account per day, DAY being unix seconds // 86_400, GAS_USED
+        the sum of the receipts' gasUsed. The rows are tiny and nothing reads
+        a past day, so there is no cleanup job.
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sponsored_gas (
+                API_KEY  TEXT    NOT NULL,
+                DAY      INTEGER NOT NULL,
+                GAS_USED BIGINT  NOT NULL DEFAULT 0,
+                PRIMARY KEY (API_KEY, DAY)
+            )
+            """
+        )
+
+    @staticmethod
     def create_all_tables(conn: psycopg.Connection) -> None:
         # errors propagate; no exception handling here
         TableCreate.create_orders_table(conn)
@@ -524,3 +544,4 @@ class TableCreate:
         TableCreate.create_account_snapshots_table(conn)
         TableCreate.create_idempotency_keys_table(conn)
         TableCreate.create_auth_code_attempts_table(conn)
+        TableCreate.create_sponsored_gas_table(conn)

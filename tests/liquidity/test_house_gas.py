@@ -42,6 +42,8 @@ def test_never_returns_negative_when_misconfigured():
 # re-granting on login would be a faucet anyone could drain on repeat.
 
 class _FakeOnchain:
+    chain_id = 31337                  # anvil: the one chain the gate honours
+
     def __init__(self):
         self.funded = []
 
@@ -92,6 +94,13 @@ def test_zero_balance_does_not_regrant_on_a_durable_chain():
     assert onchain.funded == [], "login must not mint a fresh gas grant"
 
 
+def test_zero_balance_does_not_regrant_on_a_durable_chain_even_if_simulated():
+    prov, onchain = _provisioner(True)
+    onchain.chain_id = 324705682
+    prov._maybe_reonboard(_User())
+    assert onchain.funded == []
+
+
 def test_house_is_funded_by_one_mint_not_repeated_drips():
     """One mint of a stated size — not N repetitions of a user's grant.
 
@@ -128,3 +137,35 @@ def test_house_is_funded_by_one_mint_not_repeated_drips():
     assert len(mints) == 1
     assert mints[0][2] == settings.house_mint_raw
     assert not [c for c in calls if c[0] == "drip"]
+
+
+# --- the admin gas breaker ---------------------------------------------------
+# A paused breaker refuses every sponsored send, `fund_gas` included, until the
+# admin is refilled. The loop retries every few minutes, so each account would
+# otherwise log a traceback per cycle for something already logged as an ERROR
+# by the balance loop.
+
+def test_top_up_while_the_breaker_is_paused_is_quiet(caplog):
+    import logging
+
+    from agentpit.config import Settings
+    from agentpit.domain.exceptions import AdminGasPausedError
+    from agentpit.liquidity.house_accounts import HouseAccountProvisioner
+
+    attempts = []
+
+    class _PausedOnchain:
+        def native_balance(self, address):
+            return 0                  # below the floor: a top-up is due
+
+        def fund_gas(self, address, value_wei, *, timeout=30):
+            attempts.append(address)
+            raise AdminGasPausedError()
+
+    prov = HouseAccountProvisioner(None, _PausedOnchain(), Settings())
+    with caplog.at_level(logging.DEBUG, logger="agentpit.liquidity.house_accounts"):
+        assert prov.top_up_gas([_User(), _User()]) == 0   # type: ignore[list-item]
+
+    assert len(attempts) == 2, "one refused account must not stop the others being tried"
+    assert not [r for r in caplog.records if r.exc_info], "no traceback per account"
+    assert any("breaker is paused" in r.getMessage() for r in caplog.records)

@@ -14,7 +14,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agentpit.api.exception_handlers import register_exception_handlers
-from agentpit.domain.exceptions import BusinessRuleError, InsufficientGasError
+from agentpit.domain.exceptions import (
+    AdminGasPausedError,
+    BusinessRuleError,
+    GasBudgetExceededError,
+    InsufficientGasError,
+)
 
 
 def _stub_app() -> FastAPI:
@@ -49,3 +54,33 @@ def test_plain_business_rule_errors_still_map_to_400():
     resp = client.get("/boom-business-rule")
     assert resp.status_code == 400
     assert resp.json()["detail"] == "something else entirely"
+
+
+def _gas_stub_app() -> FastAPI:
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/paused")
+    def _paused():
+        raise AdminGasPausedError()
+
+    @app.get("/budget")
+    def _budget():
+        raise GasBudgetExceededError(retry_after=123)
+
+    return app
+
+
+def test_admin_gas_paused_is_503():
+    client = TestClient(_gas_stub_app(), raise_server_exceptions=False)
+    r = client.get("/paused")
+    assert r.status_code == 503
+    assert "paused" in r.json()["detail"]
+
+
+def test_gas_budget_is_429_with_retry_after():
+    client = TestClient(_gas_stub_app(), raise_server_exceptions=False)
+    r = client.get("/budget")
+    assert r.status_code == 429
+    assert r.headers["Retry-After"] == "123"
+    assert "00:00 UTC" in r.json()["detail"]

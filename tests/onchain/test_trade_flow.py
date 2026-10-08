@@ -71,6 +71,7 @@ def test_match_settles_on_chain():
             "question": f"Live test {secrets.token_hex(4)}?",
             "description": "YES if test passes",
             "outcome_labels": ["YES", "NO"],
+            "state": "ACTIVE",
         },
         headers=ADMIN_HDR,
     ).json()
@@ -167,6 +168,7 @@ def test_reverted_settlement_fails_the_order(monkeypatch):
             "question": f"Live test {secrets.token_hex(4)}?",
             "description": "YES if test passes",
             "outcome_labels": ["YES", "NO"],
+            "state": "ACTIVE",
         },
         headers=ADMIN_HDR,
     ).json()
@@ -261,6 +263,7 @@ def test_complementary_buys_mint_via_split():
             "question": f"Complement test {secrets.token_hex(4)}?",
             "description": "MINT match path",
             "outcome_labels": ["YES", "NO"],
+            "state": "ACTIVE",
         },
         headers=ADMIN_HDR,
     ).json()

@@ -193,6 +193,16 @@ class TableRead:
         f"OR EXPIRATION > %s + {EXPIRY_GRACE_SECONDS})"
     )
 
+    #: "Not placed by anyone in this family": the self-trade rule every matcher
+    #: query shares. Takes ONE parameter, the list from `family_api_keys`, and
+    #: goes BEFORE `LIVE_ORDER` (which must stay last, it carries `now`).
+    #:
+    #: orders.API_KEY is nullable and `<> ALL` alone evaluates to NULL for a
+    #: NULL key, which WHERE drops, so a NULL-key maker would silently vanish
+    #: from the book. The IS NULL arm keeps it matchable. Defined once so the
+    #: NORMAL, MINT and MERGE queries cannot drift apart on this rule.
+    NOT_IN_FAMILY = "(API_KEY IS NULL OR API_KEY <> ALL(%s))"
+
     #: One price print per (match, token): "this token traded at this price".
     #:
     #: The taker branch covers every non-failed row; the maker branch fires
@@ -409,6 +419,21 @@ class TableRead:
             (owner_workos_id,),
         ).fetchall()
         return [TableRead._row_to_user(r) for r in rows]
+
+    @staticmethod
+    def family_api_keys(db: psycopg.Connection, api_key: str) -> list[str]:
+        """Every API key that trades for the same person as `api_key`: the
+        human (WORKOS_USER_ID) and all their agents (OWNER_WORKOS_ID), deleted
+        agents included -- their orders are cancelled on delete anyway. An
+        account with neither id (house, legacy) is a family of one. Always
+        contains `api_key`, even for a key with no users row."""
+        rows = db.execute(
+            "SELECT API_KEY FROM users WHERE API_KEY = %(k)s "
+            "OR COALESCE(OWNER_WORKOS_ID, WORKOS_USER_ID) = "
+            "(SELECT COALESCE(OWNER_WORKOS_ID, WORKOS_USER_ID) FROM users WHERE API_KEY = %(k)s)",
+            {"k": api_key},
+        ).fetchall()
+        return sorted({api_key, *(r["API_KEY"] for r in rows)})
 
     @staticmethod
     def get_idempotency_order_id(
@@ -1609,6 +1634,65 @@ class TableRead:
             if r["API_KEY"]:
                 keys.add(r["API_KEY"])
         return keys
+
+    @staticmethod
+    def count_live_orders(db: psycopg.Connection, api_key: str) -> int:
+        """How many orders this account has resting, on any market: the cheap
+        count (0.04 ms on the dev DB), an upper bound of
+        `count_live_orders_on_active_markets`."""
+        row = db.execute(
+            f"SELECT COUNT(*) AS N FROM orders WHERE API_KEY = %s AND {TableRead.LIVE_ORDER}",
+            (api_key, int(time.time())),
+        ).fetchone()
+        return int(row["N"])
+
+    @staticmethod
+    def count_live_orders_on_active_markets(db: psycopg.Connection, api_key: str) -> int:
+        """How many orders this account has resting on a market that can trade.
+
+        Only ACTIVE markets count. Closing, resolving or cancelling a market
+        leaves its resting orders behind and takers are refused there, so such
+        an order can never fill and is not growing a book anyone reads; if it
+        counted, it would hold one of the account's slots forever.
+
+        The token set is built once from the ACTIVE markets (ERC1155_TOKENS is
+        a JSON array of [token_id, label] pairs) and hashed against the
+        account's few rows, rather than scanned per order. Even so it expands
+        every ACTIVE market: 17-36 ms on the dev DB (4,685 of them), so call
+        it only when `count_live_orders` has already reached the cap.
+        """
+        row = db.execute(
+            "SELECT COUNT(*) AS N FROM orders WHERE API_KEY = %s "
+            "AND TOKEN_ID IN (SELECT t.pair->>0 FROM markets m, "
+            "jsonb_array_elements(m.ERC1155_TOKENS::jsonb) AS t(pair) "
+            "WHERE m.MARKET_STATE = 'ACTIVE') "
+            f"AND {TableRead.LIVE_ORDER}",
+            (api_key, int(time.time())),
+        ).fetchone()
+        return int(row["N"])
+
+    @staticmethod
+    def sponsored_gas_used(db: psycopg.Connection, api_key: str, day: int) -> int:
+        """Gas the admin has paid for this account's fills on `day`
+        (unix seconds // 86_400); 0 when it has none."""
+        row = db.execute(
+            "SELECT GAS_USED FROM sponsored_gas WHERE API_KEY = %s AND DAY = %s",
+            (api_key, day),
+        ).fetchone()
+        return int(row["GAS_USED"]) if row else 0
+
+    @staticmethod
+    def non_bot_api_keys(db: psycopg.Connection, api_keys: list[str]) -> set[str]:
+        """Those of `api_keys` that belong to a real account: the house
+        (IS_BOT) and keys nobody holds are dropped. Who is charged for a
+        house-taker fill."""
+        if not api_keys:
+            return set()
+        rows = db.execute(
+            "SELECT API_KEY FROM users WHERE API_KEY = ANY(%s) AND IS_BOT = 0",
+            (list(set(api_keys)),),
+        ).fetchall()
+        return {r["API_KEY"] for r in rows}
 
     @staticmethod
     def list_live_order_levels(

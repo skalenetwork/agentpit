@@ -22,6 +22,8 @@ class _WipedChain:
     """Every wallet reads empty, as after a chain reset; records what ran."""
 
     deployment_id = "test-deployment"
+    # anvil: the repair only ever runs on a chain that can be wiped.
+    chain_id = 31337
 
     def __init__(self):
         self.calls: list[str] = []

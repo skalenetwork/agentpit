@@ -39,7 +39,7 @@ def test_positions_and_value_public_by_address():
 
     market = client.post("/markets", json={
         "question": f"Pos {secrets.token_hex(4)}?", "description": "x",
-        "outcome_labels": ["YES", "NO"]}, headers=ADMIN_HDR).json()
+        "outcome_labels": ["YES", "NO"], "state": "ACTIVE"}, headers=ADMIN_HDR).json()
     yes = market["erc1155_tokens"][0][0]
     cond = market["condition_id"]["value"]
 

@@ -164,6 +164,8 @@ class ChainRpc(Protocol):
 
     def fee_params(self) -> tuple[int, int]: ...
 
+    def balance(self, address: str) -> int: ...
+
 
 class Web3ChainRpc:
     """`ChainRpc` over a web3 HTTP provider."""
@@ -270,6 +272,9 @@ class Web3ChainRpc:
 
     def fee_params(self) -> tuple[int, int]:
         return current_fee_params(self._w3)
+
+    def balance(self, address: str) -> int:
+        return self._w3.eth.get_balance(Web3.to_checksum_address(address))
 
 
 def current_fee_params(web3: Web3) -> tuple[int, int]:

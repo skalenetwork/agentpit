@@ -40,7 +40,7 @@ def test_data_trades_dual_perspective_and_secret_safe():
 
     market = client.post("/markets", json={
         "question": f"Trades {secrets.token_hex(4)}?", "description": "x",
-        "outcome_labels": ["YES", "NO"]}, headers=ADMIN_HDR).json()
+        "outcome_labels": ["YES", "NO"], "state": "ACTIVE"}, headers=ADMIN_HDR).json()
     yes = market["erc1155_tokens"][0][0]
     cond = market["condition_id"]["value"]
 
