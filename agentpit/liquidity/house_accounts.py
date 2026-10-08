@@ -78,12 +78,23 @@ class HouseAccountProvisioner:
         return user
 
     def _fund(self, acct) -> None:
+        """Mint the collateral, fund the gas AT the floor, send the approvals.
+
+        The floor, not the target. `top_up_gas` lifts the account to the
+        target within one check interval anyway. Funding a fresh account
+        straight to the target (100 native by default) would make every
+        provisioning on the persistent local anvil cost the admin 100 native,
+        and the test suite provisions on every run. There is no user signup
+        grant to reuse any more: users get exact per-transaction top-ups
+        (`UserGasSponsor`). The house signs its own mirror splits, so it needs
+        a standing balance instead.
+        """
         timeout = self._settings.tx_confirmations_timeout_s
         self._onchain.mint_to(
             acct.address, self._settings.house_mint_raw, timeout=timeout
         )
         self._onchain.fund_gas(
-            acct.address, self._settings.signup_gas_grant_wei, timeout=timeout
+            acct.address, self._settings.liquidity_gas_floor_wei, timeout=timeout
         )
         self._onchain.grant_user_approvals(acct, timeout=timeout)
 

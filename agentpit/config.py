@@ -295,23 +295,22 @@ class Settings(BaseSettings):
     )
     operator_private_key: str | None = Field(default=None, validation_alias="PK")
     rpc_url_override: str | None = Field(default=None, validation_alias="RPC_URL")
-    # Gas for the three transactions a new account must send before it can
-    # trade: approve(exchange), approve(ctf), setApprovalForAll(exchange).
-    # Measured at 138,946 gas across all 16 accounts on the production chain.
-    # At SKALE Base's 47.6 gwei that is 0.0066 native; this is 3x that, which
-    # also covers a few later claims at 91,743 gas each. The previous default
-    # was 10**18 — 21,000,000 gas, 150x the need — which cost $0.25 a signup
-    # on a chain where the native coin is bought with USDC.
-    signup_gas_grant_wei: int = Field(
-        default=2 * 10**16, validation_alias="AGENTPIT_SIGNUP_GAS_GRANT_WEI"
-    )
+    # Users get no gas at signup: AGENTPIT_SIGNUP_GAS_GRANT_WEI was deleted with the
+    # gasless-transactions change (2026-10-08); an old .env that still sets it
+    # loads fine (extra="ignore"). Every transaction a user signs -- the three
+    # onboarding approvals, split, merge, claim -- is topped up to exactly its
+    # own need just before it is sent (`UserGasSponsor`,
+    # agentpit/services/gas_sponsor.py), so a wallet never holds more than one
+    # transaction's gas. The house is funded at liquidity_gas_floor_wei.
+    #
     # True while the chain can be wiped out from under the database (a local
-    # anvil): a zero native balance then means "the chain forgot this account"
-    # and re-running onboarding is the repair. On a durable chain a zero balance
-    # means the opposite -- the account simply spent its gas -- and re-granting
-    # would turn login into a treasury faucet, repeatable by anyone willing to
-    # empty their own wallet. Set false before pointing at a real chain: the
-    # signup grant then becomes once per account rather than once per drain.
+    # anvil). There, an onboarded account whose address has sent no
+    # transaction (nonce 0) means "the chain forgot this account", and
+    # re-running onboarding is the repair. A zero balance is no signal any
+    # more: with exact top-ups an ordinary wallet sits near zero. A durable
+    # chain forgets nothing, so on one the repair could only onboard an
+    # account a second time, faucet drip included. Set false before pointing
+    # at a real chain. The chain id is checked as well (`is_disposable_chain`).
     simulated_chain: bool = Field(
         default=True, validation_alias="AGENTPIT_SIMULATED_CHAIN"
     )
@@ -330,8 +329,10 @@ class Settings(BaseSettings):
     )
 
     # --- Admin-gas guards (owner decisions 2026-10-08) ----------------------
-    # The admin wallet pays for every fill (matchOrders) and every onboarding
-    # grant, so anything a user can trigger for free is a way to spend it.
+    # The admin wallet pays for every fill (matchOrders) and, through exact
+    # top-ups, for the gas of every transaction a user signs (onboarding,
+    # split, merge, claim). Anything a user can trigger for free is a way to
+    # spend it.
     # Smallest order a non-house account may place: its collateral leg
     # (price x size) in micro-apUSD. 0 disables.
     min_order_notional_micro: int = Field(
@@ -346,8 +347,10 @@ class Settings(BaseSettings):
     max_makers_per_match: int = Field(
         default=20, ge=1, validation_alias="AGENTPIT_MAX_MAKERS_PER_MATCH"
     )
-    # Gas (receipt gasUsed) one non-house account may make the admin spend as a
-    # taker per UTC day. ~100 fills. 0 disables.
+    # Gas one non-house account may make the admin spend per UTC day. Fills as
+    # a taker (receipt gasUsed) and sponsored split/merge top-ups are refused
+    # past it. Claims and onboarding are never refused, but their gas is
+    # booked to the same daily row. ~100 fills. 0 disables.
     daily_sponsored_gas_per_account: int = Field(
         default=20_000_000, ge=0, validation_alias="AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT"
     )
@@ -436,12 +439,14 @@ class Settings(BaseSettings):
         default=86_400, validation_alias="AGENTPIT_TOPUP_COOLDOWN_SECONDS"
     )
     # House gas. The mirror signs its own split transactions, so the account
-    # spends gas continuously and its signup grant is not a lifetime supply:
-    # production burned it in ~82 minutes and the mirror then failed silently.
-    # A floor of 5 ETH is ~45 hours of headroom at the observed post-fix rate
-    # (0.111 ETH/h), so a refill is never urgent. Topping up is gas ONLY --
-    # the zero-balance path in HouseAccountProvisioner means "the chain was
-    # reset, re-onboard from scratch" and must stay distinct from this.
+    # spends gas continuously and no one-off amount lasts: production burned
+    # the old signup grant in ~82 minutes and the mirror then failed silently.
+    # A new house account is funded AT the floor (`HouseAccountProvisioner.
+    # _fund`), and the top-up loop lifts it to the target within one check
+    # interval. A floor of 5 ETH is ~45 hours of headroom at the observed
+    # post-fix rate (0.111 ETH/h), so a refill is never urgent. Topping up is
+    # gas ONLY. The zero-balance path in HouseAccountProvisioner means "the
+    # chain was reset, re-onboard from scratch", and the two must stay apart.
     liquidity_gas_floor_wei: int = Field(
         default=5 * 10**18, validation_alias="AGENTPIT_LIQUIDITY_GAS_FLOOR_WEI"
     )
