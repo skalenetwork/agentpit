@@ -86,6 +86,9 @@ def fund_user_with_native(
 ) -> TxReceipt:
     """Send `value_wei` native tokens from admin to user_address.
 
-    Used at signup so the new user can pay gas for their three approval txns.
+    Reached through `OnchainAdmin.fund_gas`: `UserGasSponsor` uses it to top a
+    user's wallet up to exactly what their next transactions need, and the
+    house gas loop to keep the house accounts above their floor. There is no
+    signup grant any more.
     """
     return client.admin_sender.send_value(user_address, value_wei, timeout=timeout)

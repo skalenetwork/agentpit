@@ -58,7 +58,7 @@ class Web3Client:
 
     Every admin-key transaction goes through `admin_sender`, which counts the
     nonce locally and keeps many transactions in flight, so concurrent admin
-    sends (sync, settlement, faucet, gas grants) share blocks. One instance
+    sends (sync, settlement, faucet, gas top-ups) share blocks. One instance
     per process: two senders for one key would race on the nonce.
     """
 

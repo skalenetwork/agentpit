@@ -1673,8 +1673,9 @@ class TableRead:
 
     @staticmethod
     def sponsored_gas_used(db: psycopg.Connection, api_key: str, day: int) -> int:
-        """Gas the admin has paid for this account's fills on `day`
-        (unix seconds // 86_400); 0 when it has none."""
+        """Gas the admin has paid for this account on `day` (unix seconds //
+        86_400): its fills, plus the top-ups and transactions `UserGasSponsor`
+        sent for it; 0 when it has none."""
         row = db.execute(
             "SELECT GAS_USED FROM sponsored_gas WHERE API_KEY = %s AND DAY = %s",
             (api_key, day),

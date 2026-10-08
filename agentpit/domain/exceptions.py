@@ -100,10 +100,13 @@ class MarketStateError(BusinessRuleError):
 class InsufficientGasError(BusinessRuleError):
     """Raised when a user's wallet can't cover a transaction's gas.
 
-    The house no longer tops accounts up automatically -- the wallet is
-    theirs to fund. Distinct from the generic `BusinessRuleError` 400 so the
-    UI can tell "your input is wrong" from "your wallet needs funding" and
-    show the right recourse.
+    The platform pays: `UserGasSponsor` tops the wallet up to exactly what the
+    transaction needs before sending it. So this means the node still refused
+    for balance after the sponsor's one resize-and-retry, or the operator
+    switched sponsorship off (`AGENTPIT_SPONSOR_USER_GAS=false`). 402, distinct
+    from the generic `BusinessRuleError` 400, so a caller can tell "your input
+    is wrong" from "the wallet could not pay". Neither is anything the user can
+    fund, so the UI says only that the action is unavailable right now.
     """
 
 

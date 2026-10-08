@@ -520,11 +520,13 @@ class TableCreate:
 
     @staticmethod
     def create_sponsored_gas_table(conn: psycopg.Connection) -> None:
-        """Gas the admin paid for the fills each account took, per UTC day.
+        """Gas the admin paid for each account, per UTC day: the fills it took,
+        plus the top-ups and transactions `UserGasSponsor` sent for it.
 
         One row per account per day, DAY being unix seconds // 86_400, GAS_USED
-        the sum of the receipts' gasUsed. The rows are tiny and nothing reads
-        a past day, so there is no cleanup job.
+        the sum of the receipts' gasUsed (a top-up counts as its 21,000-gas
+        transfer). The rows are tiny and nothing reads a past day, so there is
+        no cleanup job.
         """
         conn.execute(
             """
