@@ -1244,7 +1244,13 @@ class OrderService:
                 taker_fill_amount,
                 maker_fill_amounts,
             )
-            receipt = send_admin_tx(client, fn, timeout=60)
+            # essential: `place_order` already gated this placement on the
+            # admin-gas breaker, before any order row existed, and it is
+            # admitted or refused as a whole. A breaker that trips after that
+            # (a concurrent debit, or this placement's own first group) must
+            # not refuse a later group: the except in `place_order` would mark
+            # every trade FAILED, including a group already settled on chain.
+            receipt = send_admin_tx(client, fn, timeout=60, essential=True)
             # Counted whatever the receipt's status: a reverted match still
             # burned the admin's gas. `.get`: fakes and some nodes omit it.
             gas_used.append(int(receipt.get("gasUsed") or 0))

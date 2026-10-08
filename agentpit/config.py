@@ -355,14 +355,18 @@ class Settings(BaseSettings):
     # numbers mean 20 / 5 CREDIT on mainnet (47.6 gwei) and do not trip on the
     # testnet, where gas is ~476,000x cheaper. Below the alarm the balance loop
     # logs ERROR; below the stop every sponsored admin send is refused (only the
-    # oracle and the catalogue sync still go out). 0 disables either.
+    # oracle, the catalogue sync and the settlement of a placement already
+    # admitted still go out). 0 disables either.
     admin_gas_alarm_gas: int = Field(
         default=420_000_000, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_ALARM_GAS"
     )
     admin_gas_stop_gas: int = Field(
         default=105_000_000, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_STOP_GAS"
     )
-    # How often the balance loop re-reads the admin balance. 0 disables the loop.
+    # How often the balance loop re-reads the admin balance. 0 disables the
+    # loop, and with it the breaker: nothing else ever reads the balance, it
+    # stays unknown, and unknown is allowed -- so a stop level above can never
+    # trip. Startup logs a WARNING for that combination.
     admin_gas_check_interval_seconds: float = Field(
         default=60.0, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_CHECK_INTERVAL_SECONDS"
     )

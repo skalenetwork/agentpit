@@ -1630,9 +1630,23 @@ class TableRead:
 
     @staticmethod
     def count_live_orders(db: psycopg.Connection, api_key: str) -> int:
-        """How many orders this account has resting right now."""
+        """How many orders this account has resting on a market that can trade.
+
+        Only ACTIVE markets count. Closing, resolving or cancelling a market
+        leaves its resting orders behind and takers are refused there, so such
+        an order can never fill and is not growing a book anyone reads; if it
+        counted, it would hold one of the account's slots forever.
+
+        The token set is built once from the ACTIVE markets (ERC1155_TOKENS is
+        a JSON array of [token_id, label] pairs) and hashed against the
+        account's few rows, rather than scanned per order.
+        """
         row = db.execute(
-            f"SELECT COUNT(*) AS N FROM orders WHERE API_KEY = %s AND {TableRead.LIVE_ORDER}",
+            "SELECT COUNT(*) AS N FROM orders WHERE API_KEY = %s "
+            "AND TOKEN_ID IN (SELECT t.pair->>0 FROM markets m, "
+            "jsonb_array_elements(m.ERC1155_TOKENS::jsonb) AS t(pair) "
+            "WHERE m.MARKET_STATE = 'ACTIVE') "
+            f"AND {TableRead.LIVE_ORDER}",
             (api_key, int(time.time())),
         ).fetchone()
         return int(row["N"])

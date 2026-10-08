@@ -234,8 +234,8 @@ class AdminTxSender:
 
     def _gate(self, essential: bool) -> None:
         # Sponsored by default, so a new admin-paid feature is covered without
-        # anyone remembering to opt it in. Only the oracle and the catalogue
-        # sync pass essential=True.
+        # anyone remembering to opt it in. Only the oracle, the catalogue sync
+        # and the settlement of an already-admitted placement pass essential=True.
         if not essential:
             self.check_sponsored()
 

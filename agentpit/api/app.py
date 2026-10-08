@@ -227,6 +227,31 @@ async def _admin_gas_loop(admin: OnchainAdmin, settings: Settings) -> None:
         await asyncio.sleep(settings.admin_gas_check_interval_seconds)
 
 
+def _start_admin_gas_loop(
+    admin: OnchainAdmin, settings: Settings
+) -> asyncio.Task | None:
+    """Start `_admin_gas_loop`, or say loudly that it is off.
+
+    An interval of 0 disables the loop, and the loop is the only thing that
+    ever reads the admin balance: without it the balance stays unknown, and
+    unknown means allowed, so a configured stop level would never fire. That is
+    a breaker silently off, which is worse than one the operator chose to turn
+    off, so it is a WARNING.
+    """
+    if settings.admin_gas_check_interval_seconds > 0:
+        return asyncio.create_task(_admin_gas_loop(admin, settings))
+    if settings.admin_gas_stop_gas > 0:
+        log.warning(
+            "Admin gas loop is OFF (AGENTPIT_ADMIN_GAS_CHECK_INTERVAL_SECONDS=0) but "
+            "the stop level is %d gas: the admin balance is never read, so the "
+            "breaker can never trip and sponsored sends are NEVER refused. Set the "
+            "interval above 0, or AGENTPIT_ADMIN_GAS_STOP_GAS=0 to turn the breaker "
+            "off on purpose.",
+            settings.admin_gas_stop_gas,
+        )
+    return None
+
+
 def _run_pin_sync(db: DbSession, admin: OnchainAdmin, settings: Settings) -> list[int]:
     """Sync the current window of each pinned series; return the live-window
     market ids (created or pre-existing) for an immediate liquidity fill."""
@@ -685,10 +710,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Started after house provisioning on purpose: provisioning is a run of
         # sponsored sends, and a first refresh that finds the admin low must
         # not be what makes startup refuse them.
-        admin_gas_task: asyncio.Task | None = (
-            asyncio.create_task(_admin_gas_loop(onchain_admin, settings))
-            if settings.admin_gas_check_interval_seconds > 0 else None
-        )
+        admin_gas_task = _start_admin_gas_loop(onchain_admin, settings)
 
         try:
             async with mcp_endpoint.running() if mcp_endpoint else nullcontext():

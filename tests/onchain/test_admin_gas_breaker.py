@@ -10,10 +10,13 @@ from tests.onchain._helpers import create_market, fresh_client, hdr, register
 
 
 def _trip(admin):
+    """Pause the breaker. Returns (sender, the stop level it had before), so the
+    caller can put it back: the app object is shared by every later test."""
     sender = admin._client.admin_sender  # noqa: SLF001
+    original = sender._stop_gas          # noqa: SLF001
     sender._stop_gas = 10**30            # noqa: SLF001  any balance is below this
     admin.refresh_admin_gas()
-    return sender
+    return sender, original
 
 
 def test_paused_breaker_refuses_fills_and_grants_but_not_the_oracle():
@@ -25,7 +28,7 @@ def test_paused_breaker_refuses_fills_and_grants_but_not_the_oracle():
     client.post("/order", headers=hdr(maker), json={"token_id": yes, "side": "SELL", "price": "0.5", "size": 10}).raise_for_status()
 
     admin = client.app.dependency_overrides[get_onchain_admin]()  # type: ignore[attr-defined]
-    sender = _trip(admin)
+    sender, original_stop_gas = _trip(admin)
     try:
         assert admin.refresh_admin_gas()[1] == "paused"
         r = client.post("/order", headers=hdr(taker), json={"token_id": yes, "side": "BUY", "price": "0.5", "size": 10})
@@ -40,4 +43,4 @@ def test_paused_breaker_refuses_fills_and_grants_but_not_the_oracle():
         receipt = admin.prepare_condition(admin.oracle_address, secrets.token_bytes(32), 2)
         assert receipt["status"] == 1
     finally:
-        sender._stop_gas = 0             # noqa: SLF001  the app object is shared by later tests
+        sender._stop_gas = original_stop_gas   # noqa: SLF001  not 0: that would leave the breaker off for every later test
