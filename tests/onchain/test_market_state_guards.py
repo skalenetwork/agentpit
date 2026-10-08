@@ -29,7 +29,7 @@ def test_order_on_a_closed_market_is_refused():
     assert "not open for trading" in r.json()["detail"]
 
 
-def test_split_and_merge_are_refused_once_resolved():
+def test_split_is_refused_once_resolved_but_merge_still_works():
     client = fresh_client()
     key = register(client)["api_key"]
     market = create_market(client)
@@ -40,4 +40,17 @@ def test_split_and_merge_are_refused_once_resolved():
     split = client.post(f"/markets/{mid}/split_position", headers=hdr(key), json={"amount": 1_000_000})
     merge = client.post(f"/markets/{mid}/merge_positions", headers=hdr(key), json={"amount": 1_000_000})
     assert split.status_code == 400 and "ACTIVE" in split.json()["detail"]
-    assert merge.status_code == 400 and "ACTIVE" in merge.json()["detail"]
+    assert merge.status_code == 200, merge.text  # merge is user-paid and the only way back from YES+NO
+
+
+def test_merge_still_works_on_a_cancelled_market_but_split_does_not():
+    client = fresh_client()
+    key = register(client)["api_key"]
+    market = create_market(client)
+    mid = market["market_id"]
+    client.post(f"/markets/{mid}/split_position", headers=hdr(key), json={"amount": 10_000_000}).raise_for_status()
+    client.post(f"/markets/{mid}/cancel", headers=ADMIN_HDR).raise_for_status()
+    split = client.post(f"/markets/{mid}/split_position", headers=hdr(key), json={"amount": 1_000_000})
+    merge = client.post(f"/markets/{mid}/merge_positions", headers=hdr(key), json={"amount": 1_000_000})
+    assert split.status_code == 400 and "ACTIVE" in split.json()["detail"]
+    assert merge.status_code == 200, merge.text  # a cancelled market's holders get their collateral back this way

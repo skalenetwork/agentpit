@@ -63,7 +63,7 @@ class PositionService:
     def merge(
         self, user: User, market_id: int, payload: MergePositionRequest
     ) -> PositionResponse:
-        market = self._require_active_market(market_id)
+        market = self._require_market(market_id)
         condition_id = hex2bytes(market.condition_id.value)
         for token_id, _label in market.erc1155_tokens:
             bal = self._onchain.ctf_balance(user.eth_address, int(token_id))
@@ -127,12 +127,15 @@ class PositionService:
         return market
 
     def _require_active_market(self, market_id: int):
-        """`_require_market`, plus: split and merge only while the market trades.
-        After resolution a split mints a pair whose loser is worthless and whose
-        winner is redeemable, which is a free way to manufacture claims."""
+        """`_require_market`, plus: split only while the market trades. After
+        resolution a split mints a pair whose loser is worthless and whose winner
+        is redeemable, which is a free way to manufacture claims. Merge is not
+        guarded: it is user-signed (no admin gas) and is how holders recover
+        collateral from YES+NO pairs on a cancelled market, so it runs in any
+        state."""
         market = self._require_market(market_id)
         if market.market_state != MarketState.ACTIVE:
-            raise MarketStateError("split and merge only run on ACTIVE markets")
+            raise MarketStateError("split only runs on ACTIVE markets")
         return market
 
     def _snapshot(self, user: User, market, *, locked: int = 0, unlocked: int = 0):
