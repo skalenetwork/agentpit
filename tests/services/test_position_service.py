@@ -8,14 +8,27 @@ worth claiming, or on a market the chain has not resolved, never reaches
 after the sponsor reports success. A claim is logged at the payout its receipt
 reports, whatever the wallet's balance did meanwhile. tests/onchain/
 test_sponsored_positions.py proves the same against anvil.
+
+Every transaction the sponsor signs gets an intent row in `pending_user_txs`
+before it is broadcast. Once its receipt is in, the row becomes the
+SPLIT / MERGE / REDEEM row; a refusal or a revert removes it; and when nobody
+knows how the transaction ended (no receipt in time, no answer to the
+broadcast) it stays, the caller gets `TransactionPendingError` (503), and the
+auto-redeem pass settles it later. tests/onchain/test_pending_user_txs.py
+proves that against anvil.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import time
 from contextlib import contextmanager
 
+import psycopg_pool
 import pytest
+import requests
+from web3.exceptions import TimeExhausted, Web3RPCError
 
 from agentpit.api.deps import get_position_service
 from agentpit.config import Settings
@@ -29,16 +42,21 @@ from agentpit.datastructures.split_position_request import (
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
+    GasTopUpTimeoutError,
     InsufficientBalanceError,
+    InsufficientGasError,
     MarketStateError,
     NothingToClaimError,
     TransactionInProgressError,
+    TransactionPendingError,
     TransactionRevertedError,
 )
 from agentpit.services.gas_sponsor import UserGasSponsor
+from agentpit.services.pending_user_txs import _PENDING_TTL_SECONDS
 from agentpit.services.position_service import PositionService
 from tests.db_helpers import fresh_test_db
 
+_LOGGER = "agentpit.services.position_service"
 _CONDITION = "0x" + "ab" * 32
 _CID = bytes.fromhex(_CONDITION[2:])
 _YES, _NO = "7001", "7002"
@@ -49,7 +67,8 @@ class _FakeChain:
     plain tuples, so a test sees exactly which call went to the sponsor.
     `reads` records every chain read, in order. `redeemed_payout` reads the
     figure off the receipt the sponsor returned, as the real one decodes it
-    from the receipt's logs, and remembers whose payout it was asked for."""
+    from the receipt's logs, and remembers whose payout it was asked for.
+    An exception among the `usd` answers is raised by that read."""
 
     def __init__(self, *, vector=(1, [1, 0]), balances=(0, 0), usd=(0,)):
         self.vector = vector
@@ -72,7 +91,10 @@ class _FakeChain:
 
     def usd_balance(self, address):
         self.reads.append("usd_balance")
-        return self._usd.pop(0) if len(self._usd) > 1 else self._usd[0]
+        answer = self._usd.pop(0) if len(self._usd) > 1 else self._usd[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     def redeemed_payout(self, receipt, redeemer):
         self.reads.append("redeemed_payout")
@@ -95,18 +117,38 @@ class _FakeSponsor:
     `send` after it is recorded, as a reverted transaction is. Each receipt it
     returns carries `payout`, what the fake chain reads back as the claim's
     `PayoutRedemption`. A `log` is appended to by every `send`, so a test can
-    tell which chain reads came before it and which after."""
+    tell which chain reads came before it and which after.
+
+    Each call is signed `signs` times before `fail` (2: refused at import and
+    signed again at the new size, as the real sponsor's one retry does), and
+    every hash goes to `on_signed` and into `hashes`. With `fail_unsigned`,
+    `fail` is raised before anything is signed: a failed read or top-up.
+    `during_send` runs once the calls are signed, while their transactions
+    would be on their way."""
 
     def __init__(
-        self, *, busy=False, fail=None, min_claim_micro=10_000, payout=0, log=None
+        self,
+        *,
+        busy=False,
+        fail=None,
+        min_claim_micro=10_000,
+        payout=0,
+        log=None,
+        signs=1,
+        fail_unsigned=False,
+        during_send=None,
     ):
         self._busy = busy
         self._fail = fail
         self._min = min_claim_micro
         self._payout = payout
         self._log = log
+        self._signs = signs
+        self._fail_unsigned = fail_unsigned
+        self._during_send = during_send
         self.held = False
         self.sent: list[tuple[list, str, bool]] = []
+        self.hashes: list[str] = []
 
     @property
     def min_claim_micro(self) -> int:
@@ -122,10 +164,20 @@ class _FakeSponsor:
         finally:
             self.held = False
 
-    def send(self, user, calls, kind):
+    def send(self, user, calls, kind, *, on_signed=None):
         self.sent.append((calls, kind, self.held))
         if self._log is not None:
             self._log.append("send")
+        if self._fail is not None and self._fail_unsigned:
+            raise self._fail
+        for i, _call in enumerate(calls):
+            for _ in range(self._signs):
+                tx_hash = "0x%064x" % (len(self.hashes) + 1)
+                self.hashes.append(tx_hash)
+                if on_signed is not None:
+                    on_signed(i, tx_hash)
+        if self._during_send is not None:
+            self._during_send()
         if self._fail is not None:
             raise self._fail
         return [{"status": 1, "payout": self._payout} for _ in calls]
@@ -186,6 +238,23 @@ def _redeem_amounts(db, user) -> list[int]:
                 (user.api_key,),
             ).fetchall()
         ]
+
+
+def _pending(db) -> list[tuple[str, str, str, int | None, dict]]:
+    """Every intent row: (hash, api key, type, market, details)."""
+    with db.read() as conn:
+        return [
+            (r.tx_hash, r.api_key, r.transaction_type, r.market_id, r.details)
+            for r in TableRead.list_pending_user_txs(conn)
+        ]
+
+
+def _write_pending(db, user, market_id, *, age: int, tx_hash="0x" + "cd" * 32):
+    with db.write() as conn:
+        TableWrite.insert_pending_user_tx(
+            conn, tx_hash, user.api_key, "REDEEM", market_id, {},
+            created_at=int(time.time()) - age,
+        )
 
 
 def _act(service, action, user, market_id):
@@ -392,6 +461,236 @@ def test_a_reverted_transaction_writes_no_row(action):
         _act(_service(db, chain, sponsor), action, user, mid)
     assert len(sponsor.sent) == 1
     assert _rows(db, user) == []
+    assert _pending(db) == []  # it mined and failed: nothing is unknown
+
+
+# --- the intent row ------------------------------------------------------------
+
+_ACTIONS = ["split", "merge", "redeem"]
+# What each action's intent row carries: the final row's type and details,
+# with no amount yet for a claim (the receipt has not said what it paid).
+_INTENT = {
+    "split": ("SPLIT", {"amount": 40_000_000}),
+    "merge": ("MERGE", {"amount": 40_000_000}),
+    "redeem": ("REDEEM", {}),
+}
+
+
+def _ready(action):
+    """A user, a market in the state `action` needs, and a chain on which
+    `action` passes its checks: 100 of each token and 100 apUSD."""
+    db, user, mid = _setup(
+        MarketState.RESOLVED if action == "redeem" else MarketState.ACTIVE
+    )
+    chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(100_000_000,))
+    return db, user, mid, chain
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_the_intent_row_is_written_before_the_send_and_becomes_the_row(action):
+    db, user, mid, chain = _ready(action)
+    seen: list[list] = []
+    sponsor = _FakeSponsor(payout=100_000_000, during_send=lambda: seen.append(_pending(db)))
+
+    _act(_service(db, chain, sponsor), action, user, mid)
+
+    kind, details = _INTENT[action]
+    assert seen == [[(sponsor.hashes[0], user.api_key, kind, mid, details)]]
+    assert _pending(db) == []
+    assert _rows(db, user) == [kind]
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(TimeExhausted("no receipt in 30s"), id="receipt-timeout"),
+        pytest.param(requests.ReadTimeout("read timed out"), id="read-timeout"),
+        pytest.param(requests.ConnectionError("connection reset"), id="reset"),
+    ],
+)
+def test_a_sent_transaction_nobody_heard_back_about_stays_pending(action, error, caplog):
+    """It may mine yet. The intent row stays for the auto-redeem pass to
+    settle, nothing is written to the history now, and the caller hears 503
+    with "do not repeat it", not a 500."""
+    caplog.set_level(logging.WARNING, logger="agentpit.services.position_service")
+    db, user, mid, chain = _ready(action)
+    sponsor = _FakeSponsor(fail=error)
+
+    with pytest.raises(TransactionPendingError, match="do not repeat it") as caught:
+        _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert caught.value.__cause__ is error
+    kind, details = _INTENT[action]
+    assert _pending(db) == [(sponsor.hashes[0], user.api_key, kind, mid, details)]
+    assert _rows(db, user) == []
+    warnings = [r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and sponsor.hashes[0] in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_no_answer_before_anything_was_signed_is_no_pending_transaction(action):
+    """A read or a top-up that got no answer: no transaction of the user's
+    exists, so there is nothing to wait for and the error is what it is."""
+    db, user, mid, chain = _ready(action)
+    error = requests.ConnectionError("connection reset")
+    sponsor = _FakeSponsor(fail=error, fail_unsigned=True)
+
+    with pytest.raises(requests.ConnectionError):
+        _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert _pending(db) == []
+    assert _rows(db, user) == []
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(InsufficientGasError("could not pay"), id="balance-low-twice-402"),
+        pytest.param(
+            Web3RPCError("Transaction gas price lower than current eth_gasPrice"),
+            id="fee-low-twice",
+        ),
+        pytest.param(GasTopUpTimeoutError(), id="the-retrys-top-up-timed-out"),
+        pytest.param(Web3RPCError("nonce too low"), id="any-other-refusal"),
+    ],
+)
+def test_a_transaction_the_node_refused_leaves_no_pending_row(action, error):
+    """Signed, refused at import, signed again and refused (or never sent,
+    because the retry's top-up failed): the node holds none of them, so
+    neither leaves a row behind."""
+    db, user, mid, chain = _ready(action)
+    sponsor = _FakeSponsor(fail=error, signs=2)
+
+    with pytest.raises(type(error)):
+        _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert len(sponsor.hashes) == 2
+    assert _pending(db) == []
+    assert _rows(db, user) == []
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_a_resized_retry_replaces_the_refused_signatures_row(action):
+    """The sponsor signs a call again only after the node refused it, so the
+    first hash can never mine: its row goes as the second one's is written."""
+    db, user, mid, chain = _ready(action)
+    seen: list[list] = []
+    sponsor = _FakeSponsor(
+        payout=100_000_000, signs=2, during_send=lambda: seen.append(_pending(db))
+    )
+
+    _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert [[row[0] for row in rows] for rows in seen] == [[sponsor.hashes[1]]]
+    assert _pending(db) == []
+    assert _rows(db, user) == [_INTENT[action][0]]
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_a_transaction_confirmed_meanwhile_is_not_logged_twice(action):
+    """The auto-redeem pass can settle the intent row while the request is
+    still waiting for the same receipt. Whoever confirms second finds the row
+    gone and writes nothing."""
+    db, user, mid, chain = _ready(action)
+
+    def reconciler_first():
+        with db.write() as conn:
+            TableWrite.confirm_pending_user_tx(
+                conn, sponsor.hashes[0], {"collateral_amount": 100_000_000}
+            )
+
+    sponsor = _FakeSponsor(payout=100_000_000, during_send=reconciler_first)
+
+    _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert _rows(db, user) == [_INTENT[action][0]]
+    assert _pending(db) == []
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_a_mined_transaction_whose_row_cannot_be_written_stays_pending(
+    action, monkeypatch, caplog
+):
+    """It mined, and the history row could not be written (the pool timed
+    out). The intent row is still there, so the auto-redeem pass writes the
+    row later; the caller hears what it would for an unknown outcome, and the
+    log says whose transaction it was."""
+    db, user, mid, chain = _ready(action)
+    sponsor = _FakeSponsor(payout=100_000_000)
+
+    def broken(*_a, **_k):
+        raise psycopg_pool.PoolTimeout("couldn't get a connection after 30 sec")
+
+    monkeypatch.setattr(TableWrite, "confirm_pending_user_tx", broken)
+
+    with pytest.raises(TransactionPendingError):
+        _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert [row[0] for row in _pending(db)] == sponsor.hashes
+    assert _rows(db, user) == []
+    errors = [r for r in caplog.records if r.name == _LOGGER and r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert user.user_id in errors[0].getMessage()
+    assert str(mid) in errors[0].getMessage()
+
+
+def test_a_claims_row_is_written_before_the_balance_is_read_again():
+    """The claim mined: its REDEEM row does not hang on the read of the new
+    balance that follows it."""
+    db, user, mid = _setup(MarketState.RESOLVED)
+    chain = _FakeChain(
+        balances=(100_000_000, 0), usd=(requests.ReadTimeout("read timed out"),)
+    )
+    sponsor = _FakeSponsor(payout=100_000_000)
+
+    with pytest.raises(requests.ReadTimeout):
+        _service(db, chain, sponsor).redeem(user, mid)
+
+    assert _redeem_amounts(db, user) == [100_000_000]
+    assert _pending(db) == []
+
+
+# --- an earlier transaction still pending -------------------------------------
+
+
+def test_the_pending_ttl_is_ten_minutes():
+    assert _PENDING_TTL_SECONDS == 600
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_a_pending_transaction_on_the_market_refuses_another_before_any_read(action):
+    """A retry of a split whose answer was lost would split twice. Until the
+    first is settled (or ten minutes have passed), a split, merge or claim on
+    the same market is a 409, refused inside the lock before any chain read."""
+    db, user, mid, chain = _ready(action)
+    _write_pending(db, user, mid, age=_PENDING_TTL_SECONDS - 5)
+    sponsor = _FakeSponsor()
+
+    with pytest.raises(TransactionInProgressError, match="not confirmed yet"):
+        _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert chain.reads == []
+    assert sponsor.sent == []
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_an_expired_or_unrelated_pending_row_refuses_nothing(action):
+    db, user, mid, chain = _ready(action)
+    _write_pending(db, user, mid, age=_PENDING_TTL_SECONDS + 5, tx_hash="0x" + "01" * 32)
+    _write_pending(db, user, mid + 1_000, age=0, tx_hash="0x" + "02" * 32)
+    with db.write() as conn:
+        other_id, _acct, _key = TableWrite.create_user(
+            conn, email="other@x.com", password_hash="x", handle=None
+        )
+        other = TableRead.get_user_by_userid(conn, other_id)
+    _write_pending(db, other, mid, age=0, tx_hash="0x" + "03" * 32)
+    sponsor = _FakeSponsor(payout=100_000_000)
+
+    _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert _rows(db, user) == [_INTENT[action][0]]
 
 
 # --- split / merge -------------------------------------------------------------
