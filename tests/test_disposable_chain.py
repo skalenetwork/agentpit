@@ -8,6 +8,7 @@ from agentpit.db.table_write import TableWrite
 from agentpit.onchain.deployment import is_disposable_chain
 from agentpit.services.auth_service import AuthService
 from tests.db_helpers import fresh_test_db
+from tests.onboarding_fakes import OnboardingChain
 
 SKALE_BASE_TESTNET = 324705682
 
@@ -18,27 +19,15 @@ def test_only_anvil_is_disposable():
     assert not is_disposable_chain(1187947933)
 
 
-class _EmptyWallets:
+class _EmptyWallets(OnboardingChain):
+    """A wiped chain: no wallet has ever sent from it, and every one is empty."""
+
     def __init__(self, chain_id):
+        super().__init__(nonce=0)
         self.chain_id = chain_id
-        self.funded = []
-
-    def native_balance(self, _a):
-        return 0
-
-    def fund_gas(self, address, _wei, *, timeout=30):
-        self.funded.append(address)
-
-    def faucet_drip(self, *_a, **_k):
-        pass
-
-    def grant_user_approvals(self, *_a, **_k):
-        pass
 
     def usd_balance(self, _a):
         return 0
-
-    deployment_id = "0xctf"
 
 
 def _reonboard(chain_id):
@@ -54,12 +43,14 @@ def _reonboard(chain_id):
     return chain
 
 
-def test_login_regrants_on_anvil():
-    assert len(_reonboard(31337).funded) == 1
+def test_login_reonboards_a_wiped_account_on_anvil():
+    chain = _reonboard(31337)
+    assert len(chain.funded) == 1 and chain.calls.count("send_as_user") == 3
 
 
-def test_login_never_regrants_on_a_durable_chain_even_if_simulated_is_true():
-    assert _reonboard(SKALE_BASE_TESTNET).funded == []
+def test_login_never_reonboards_on_a_durable_chain_even_if_simulated_is_true():
+    chain = _reonboard(SKALE_BASE_TESTNET)
+    assert chain.funded == [] and chain.calls == []
 
 
 def test_startup_shouts_when_simulated_is_set_on_a_durable_chain(caplog):
