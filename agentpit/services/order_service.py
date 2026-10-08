@@ -949,19 +949,28 @@ class OrderService:
         # matching pass cannot disagree with itself about what time it is.
         now = int(time.time())
 
+        # A self-match moves nothing between people but makes the admin pay for
+        # a matchOrders, so the taker is never paired with its own family (the
+        # human and all their agents). It is not rejected: it just does not see
+        # those makers. The predicate lives in TableRead.NOT_IN_FAMILY so all
+        # four queries below apply the same rule.
+        family = TableRead.family_api_keys(conn, taker_row["API_KEY"])
+
         opposite = "SELL" if taker_side == "BUY" else "BUY"
         if taker_side == "BUY":
             sql = (
                 "SELECT * FROM orders WHERE SIDE=%s AND PRICE <= %s "
-                f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
+                "AND TOKEN_ID=%s AND ORDER_ID != %s "
+                f"AND {TableRead.NOT_IN_FAMILY} AND {TableRead.LIVE_ORDER}"
             )
         else:
             sql = (
                 "SELECT * FROM orders WHERE SIDE=%s AND PRICE >= %s "
-                f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
+                "AND TOKEN_ID=%s AND ORDER_ID != %s "
+                f"AND {TableRead.NOT_IN_FAMILY} AND {TableRead.LIVE_ORDER}"
             )
         same_token = conn.execute(
-            sql, (opposite, taker_price, token_id, taker_row["ORDER_ID"], now)
+            sql, (opposite, taker_price, token_id, taker_row["ORDER_ID"], family, now)
         ).fetchall()
         same_token = sorted(
             same_token,
@@ -979,7 +988,8 @@ class OrderService:
             if taker_side == "BUY":
                 comp_sql = (
                     "SELECT * FROM orders WHERE SIDE='BUY' AND PRICE >= %s "
-                    f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
+                    "AND TOKEN_ID=%s AND ORDER_ID != %s "
+                    f"AND {TableRead.NOT_IN_FAMILY} AND {TableRead.LIVE_ORDER}"
                 )
                 kind = "MINT"
                 # best maker = highest price (covers more of the mint cost).
@@ -987,19 +997,26 @@ class OrderService:
             else:
                 comp_sql = (
                     "SELECT * FROM orders WHERE SIDE='SELL' AND PRICE <= %s "
-                    f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
+                    "AND TOKEN_ID=%s AND ORDER_ID != %s "
+                    f"AND {TableRead.NOT_IN_FAMILY} AND {TableRead.LIVE_ORDER}"
                 )
                 kind = "MERGE"
                 # best maker = lowest ask (smallest cut of the merge proceeds).
                 comp_key = lambda r: (int(r["PRICE"]), int(r["CREATED_AT"]))
             comp_rows = conn.execute(
-                comp_sql, (threshold, complement_id, taker_row["ORDER_ID"], now)
+                comp_sql,
+                (threshold, complement_id, taker_row["ORDER_ID"], family, now),
             ).fetchall()
             tagged.extend((kind, r) for r in sorted(comp_rows, key=comp_key))
 
         matches: list[dict] = []
         for kind, maker in tagged:
             if taker_remaining <= 0:
+                break
+            # One matchOrders per placement pays for every maker in it: cap the
+            # sweep. What is left follows the order type below (GTC rests, FAK
+            # is killed, FOK fails).
+            if len(matches) >= self._settings.max_makers_per_match:
                 break
             maker_remaining = int(maker["REMAINING_AMOUNT"])
             if maker_remaining <= 0:

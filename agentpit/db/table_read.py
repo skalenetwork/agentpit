@@ -193,6 +193,16 @@ class TableRead:
         f"OR EXPIRATION > %s + {EXPIRY_GRACE_SECONDS})"
     )
 
+    #: "Not placed by anyone in this family": the self-trade rule every matcher
+    #: query shares. Takes ONE parameter, the list from `family_api_keys`, and
+    #: goes BEFORE `LIVE_ORDER` (which must stay last, it carries `now`).
+    #:
+    #: orders.API_KEY is nullable and `<> ALL` alone evaluates to NULL for a
+    #: NULL key, which WHERE drops, so a NULL-key maker would silently vanish
+    #: from the book. The IS NULL arm keeps it matchable. Defined once so the
+    #: NORMAL, MINT and MERGE queries cannot drift apart on this rule.
+    NOT_IN_FAMILY = "(API_KEY IS NULL OR API_KEY <> ALL(%s))"
+
     #: One price print per (match, token): "this token traded at this price".
     #:
     #: The taker branch covers every non-failed row; the maker branch fires
@@ -409,6 +419,21 @@ class TableRead:
             (owner_workos_id,),
         ).fetchall()
         return [TableRead._row_to_user(r) for r in rows]
+
+    @staticmethod
+    def family_api_keys(db: psycopg.Connection, api_key: str) -> list[str]:
+        """Every API key that trades for the same person as `api_key`: the
+        human (WORKOS_USER_ID) and all their agents (OWNER_WORKOS_ID), deleted
+        agents included -- their orders are cancelled on delete anyway. An
+        account with neither id (house, legacy) is a family of one. Always
+        contains `api_key`, even for a key with no users row."""
+        rows = db.execute(
+            "SELECT API_KEY FROM users WHERE API_KEY = %(k)s "
+            "OR COALESCE(OWNER_WORKOS_ID, WORKOS_USER_ID) = "
+            "(SELECT COALESCE(OWNER_WORKOS_ID, WORKOS_USER_ID) FROM users WHERE API_KEY = %(k)s)",
+            {"k": api_key},
+        ).fetchall()
+        return sorted({api_key, *(r["API_KEY"] for r in rows)})
 
     @staticmethod
     def get_idempotency_order_id(
