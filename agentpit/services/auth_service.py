@@ -31,6 +31,7 @@ from agentpit.domain.exceptions import (
 )
 from agentpit.domain.handles import pick_handle
 from agentpit.onchain.admin import OnchainAdmin
+from agentpit.onchain.deployment import is_disposable_chain
 
 log = logging.getLogger(__name__)
 
@@ -339,6 +340,11 @@ class AuthService:
             # be another free grant.
             return
         if self._onchain is None or user.onboarded_at is None:
+            return
+        # `simulated_chain` is only a claim about the chain; the chain id is the
+        # fact. A flag left on after a move to a durable chain would otherwise
+        # turn every zero-balance login into a free gas grant.
+        if not is_disposable_chain(self._onchain.chain_id):
             return
         try:
             native = self._onchain.native_balance(user.eth_address)

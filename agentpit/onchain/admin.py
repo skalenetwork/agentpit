@@ -248,6 +248,12 @@ class OnchainAdmin:
         """
         return self._client.deployment.ctf
 
+    @property
+    def chain_id(self) -> int:
+        """Id of the chain this deployment lives on, from the deployment file:
+        no RPC round-trip, like `deployment_id`."""
+        return self._client.deployment.chain_id
+
     def usd_balance(self, address: str) -> int:
         return self._contracts.usd.functions.balanceOf(
             Web3.to_checksum_address(address)

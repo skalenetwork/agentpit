@@ -42,6 +42,8 @@ def test_never_returns_negative_when_misconfigured():
 # re-granting on login would be a faucet anyone could drain on repeat.
 
 class _FakeOnchain:
+    chain_id = 31337                  # anvil: the one chain the gate honours
+
     def __init__(self):
         self.funded = []
 
@@ -90,6 +92,13 @@ def test_zero_balance_does_not_regrant_on_a_durable_chain():
     prov, onchain = _provisioner(False)
     prov._maybe_reonboard(_User())
     assert onchain.funded == [], "login must not mint a fresh gas grant"
+
+
+def test_zero_balance_does_not_regrant_on_a_durable_chain_even_if_simulated():
+    prov, onchain = _provisioner(True)
+    onchain.chain_id = 324705682
+    prov._maybe_reonboard(_User())
+    assert onchain.funded == []
 
 
 def test_house_is_funded_by_one_mint_not_repeated_drips():

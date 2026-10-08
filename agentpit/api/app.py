@@ -51,7 +51,7 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_write import TableWrite
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.contracts import Contracts
-from agentpit.onchain.deployment import Deployment
+from agentpit.onchain.deployment import ANVIL_CHAIN_ID, Deployment, is_disposable_chain
 from agentpit.onchain.web3_client import Web3Client
 from agentpit.datastructures.user import User
 from agentpit.liquidity.house_accounts import HouseAccountProvisioner, email_for
@@ -403,6 +403,17 @@ async def _leaderboard_loop(service: LeaderboardService, interval_seconds: int) 
         await asyncio.sleep(_LEADERBOARD_TICK_SECONDS)
 
 
+def _warn_if_simulated_on_durable_chain(settings: Settings, chain_id: int) -> None:
+    """AGENTPIT_SIMULATED_CHAIN=true outside anvil is ignored (see
+    `is_disposable_chain`), but it is still a wrong config worth a loud line."""
+    if settings.simulated_chain and not is_disposable_chain(chain_id):
+        log.error(
+            "AGENTPIT_SIMULATED_CHAIN=true is IGNORED on chain %d: re-granting gas "
+            "on login is only for a disposable anvil (%d). Set it to false.",
+            chain_id, ANVIL_CHAIN_ID,
+        )
+
+
 def _build_onchain_admin(settings: Settings) -> OnchainAdmin:
     if not settings.deployment_path.exists():
         raise RuntimeError(
@@ -412,6 +423,7 @@ def _build_onchain_admin(settings: Settings) -> OnchainAdmin:
     deployment = Deployment.load(settings.deployment_path)
     client = Web3Client(settings, deployment)
     client.verify_chain()
+    _warn_if_simulated_on_durable_chain(settings, deployment.chain_id)
     contracts = Contracts(client.web3, deployment)
     log.info(
         "on-chain stack ready: usd=%s faucet=%s exchange=%s",

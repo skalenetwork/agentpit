@@ -9,6 +9,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import AdminGasPausedError
 from agentpit.onchain.admin import OnchainAdmin
+from agentpit.onchain.deployment import is_disposable_chain
 
 log = logging.getLogger(__name__)
 
@@ -127,11 +128,14 @@ class HouseAccountProvisioner:
     def _maybe_reonboard(self, user: User) -> None:
         """Repair an account the chain forgot — a wipe, not ordinary spending.
 
-        Gated on `simulated_chain` for the same reason as the user-facing path:
-        only a disposable chain can forget a funded account. Routine depletion is
-        `top_up_gas`'s job, and it triggers on a floor rather than on zero.
+        Gated on `simulated_chain` and on the chain id (`is_disposable_chain`) for
+        the same reason as the user-facing path: only a disposable chain can
+        forget a funded account. Routine depletion is `top_up_gas`'s job, and it
+        triggers on a floor rather than on zero.
         """
-        if not self._settings.simulated_chain:
+        if not self._settings.simulated_chain or not is_disposable_chain(
+            self._onchain.chain_id
+        ):
             return
         try:
             if self._onchain.native_balance(user.eth_address) > 0:
