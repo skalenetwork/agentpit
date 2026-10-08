@@ -9,10 +9,12 @@ from agentpit.auth.workos_client import (
     WorkOsUnavailableError,
 )
 from agentpit.domain.exceptions import (
+    AdminGasPausedError,
     AlreadyExistsError,
     AuthCodeRateLimitedError,
     BusinessRuleError,
     FeatureDisabledError,
+    GasBudgetExceededError,
     InsufficientGasError,
     InvalidCredentialsError,
     NotFoundError,
@@ -53,6 +55,22 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(FeatureDisabledError)
     async def _feature_disabled(_: Request, exc: FeatureDisabledError) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(GasBudgetExceededError)
+    async def _gas_budget(_: Request, exc: GasBudgetExceededError) -> JSONResponse:
+        """A per-account limiter working, so INFO -- same as the auth-code limit."""
+        log.info("daily gas budget refused a request: %s", exc)
+        return JSONResponse(
+            status_code=429,
+            content={"detail": str(exc)},
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+
+    @app.exception_handler(AdminGasPausedError)
+    async def _admin_gas_paused(_: Request, exc: AdminGasPausedError) -> JSONResponse:
+        """Our wallet is low: an outage on our side, so 503 and WARNING."""
+        log.warning("admin gas breaker refused a request: %s", exc)
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     # Registered ahead of the generic BusinessRuleError handler below it, but

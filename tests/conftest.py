@@ -15,6 +15,9 @@ os.environ.setdefault("LIQUIDITY_ENGINE", "false")
 # make every TestClient(app) lifespan start ticking it.
 os.environ.setdefault("AGENTPIT_LEADERBOARD_ENABLED", "false")
 os.environ.setdefault("JWT_SECRET", "test-only-secret")
+# The $1 minimum order (AGENTPIT_MIN_ORDER_NOTIONAL_MICRO) would reject the
+# small orders much of the suite places; guard tests set it explicitly.
+os.environ.setdefault("AGENTPIT_MIN_ORDER_NOTIONAL_MICRO", "0")
 
 import psycopg
 import pytest

@@ -105,3 +105,34 @@ class InsufficientGasError(BusinessRuleError):
     UI can tell "your input is wrong" from "your wallet needs funding" and
     show the right recourse.
     """
+
+
+class AdminGasPausedError(DomainError):
+    """The admin wallet, which pays for users' fills and grants, is below its
+    stop level, so sponsored sends are refused until it is refilled.
+
+    A direct `DomainError` (503), not a `BusinessRuleError` (400): nothing the
+    caller did is wrong, and it must not read as "wallet still being set up"
+    the way an `OnboardingError` does over MCP.
+    """
+
+    def __init__(
+        self,
+        message: str = "trading is paused: the platform's gas wallet is running low — try again later",
+    ):
+        super().__init__(message)
+
+
+class GasBudgetExceededError(DomainError):
+    """The account has made the admin pay for its daily share of fills.
+
+    429 with `Retry-After` (seconds to the next UTC midnight), like
+    `AuthCodeRateLimitedError`. The message is self-contained because MCP
+    callers see only the text, not the header.
+    """
+
+    def __init__(self, retry_after: int):
+        super().__init__(
+            "this account has used its daily trading gas budget — it resets at 00:00 UTC"
+        )
+        self.retry_after = retry_after
