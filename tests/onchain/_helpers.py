@@ -8,6 +8,7 @@ import secrets
 import uuid
 
 from fastapi.testclient import TestClient
+from web3 import Web3
 
 from agentpit.api.app import create_app
 from agentpit.api.deps import (
@@ -17,9 +18,14 @@ from agentpit.api.deps import (
     get_onchain_admin,
     get_settings,
 )
+from agentpit.config import Settings
 from agentpit.datastructures.register_request import RegisterRequest
+from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
+from agentpit.onchain.admin import OnchainAdmin
 from agentpit.services.auth_service import AuthService
+from agentpit.services.gas_sponsor import UserGasSponsor
+from agentpit.services.position_service import PositionService
 
 # AGENTPIT_ADMIN_TOKEN is read at app startup by Settings; tests rely on
 # the default ("dev-admin-token") so we don't need to mutate env here.
@@ -100,3 +106,29 @@ def create_market(client: TestClient, question: str | None = None, *, state: str
         },
         headers=ADMIN_HDR,
     ).json()
+
+
+def position_service(
+    db: DbSession, admin: OnchainAdmin, settings: Settings | None = None
+) -> PositionService:
+    """A PositionService wired the way `deps.get_position_service` wires one,
+    so a split, merge or claim made from a test is sponsored exactly as the
+    API's would be. `settings` defaults to the environment's: sponsorship on
+    unless AGENTPIT_SPONSOR_USER_GAS says otherwise."""
+    settings = settings or Settings()
+    return PositionService(db, admin, UserGasSponsor(db, admin, settings))
+
+
+def drain_native_balance(admin: OnchainAdmin, address: str) -> None:
+    """Set `address`'s native balance to exactly 0: the wallet the sponsor
+    has to top up from nothing.
+
+    A real send-to-zero is fussy to get exact (EIP-1559's effective gas
+    price is only known after the block mines, so a transfer sized off
+    `maxFeePerGas` overpays and leaves dust behind). This is a local anvil
+    chain, so use its `anvil_setBalance` cheat method instead -- exact, and
+    it's the balance-manipulation tool the chain itself provides for tests.
+    """
+    admin._client.web3.provider.make_request(  # noqa: SLF001
+        "anvil_setBalance", [Web3.to_checksum_address(address), "0x0"]
+    )
