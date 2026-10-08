@@ -8,19 +8,16 @@ is flagged FULLY_REDEEMED.
 
 import secrets
 
-import pytest
-
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.split_position_request import SplitPositionRequest
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import InsufficientGasError
 from agentpit.polymarket.polymarket_sync import (
     auto_redeem_resolved_markets,
     create_polymarket_markets_if_needed,
     mirror_polymarket_resolutions,
 )
-from agentpit.services.position_service import PositionService
+from tests.onchain._helpers import position_service
 
 
 def _build_admin_and_db():
@@ -86,19 +83,6 @@ def _resolved(pm: dict, winner_index: int) -> dict:
     return out
 
 
-def _drain_native_balance(client, user_account) -> None:
-    """Zero out `user_account`'s native balance -- the state I4's
-    `InsufficientGasError` path exercises.
-
-    A real send-to-zero is fussy to get exact (EIP-1559's effective gas
-    price is only known after the block mines, so a transfer sized off
-    `maxFeePerGas` overpays and leaves dust behind). This is a local anvil
-    chain, so use its `anvil_setBalance` cheat method instead -- exact, and
-    it's the balance-manipulation tool the chain itself provides for tests.
-    """
-    client.web3.provider.make_request("anvil_setBalance", [user_account.address, "0x0"])
-
-
 def test_auto_redeem_pays_winner_and_flags_market():
     admin, db = _build_admin_and_db()
     pm = _pm(secrets.token_hex(4))
@@ -113,7 +97,7 @@ def test_auto_redeem_pays_winner_and_flags_market():
     user = _onboard_user(db, admin)
     assert user is not None
     split_amount = 100_000_000  # 100 apUSD raw
-    PositionService(db, admin).split(user, mid, SplitPositionRequest(amount=split_amount))
+    position_service(db, admin).split(user, mid, SplitPositionRequest(amount=split_amount))
 
     bal_before = admin.usd_balance(user.eth_address)
     assert admin.ctf_balance(user.eth_address, yes_token) == split_amount
@@ -161,7 +145,7 @@ def test_a_holder_who_has_not_opted_in_keeps_their_tokens():
     user = _onboard_user(db, admin, auto_redeem=False)
     assert user is not None
     split_amount = 100_000_000  # 100 apUSD raw
-    PositionService(db, admin).split(user, mid, SplitPositionRequest(amount=split_amount))
+    position_service(db, admin).split(user, mid, SplitPositionRequest(amount=split_amount))
 
     bal_before = admin.usd_balance(user.eth_address)
     assert admin.ctf_balance(user.eth_address, yes_token) == split_amount
@@ -185,48 +169,3 @@ def test_a_holder_who_has_not_opted_in_keeps_their_tokens():
     assert row is not None
     assert row.market_state == MarketState.RESOLVED
     assert row.fully_redeemed is False
-
-
-def test_claiming_with_no_gas_raises_a_domain_error_not_a_crash():
-    """I4: `send_user_tx`'s broadcast fails against the *real* node with
-    web3's `Web3RPCError` ("Insufficient funds for gas * price + value",
-    code -32003) when the sender can't cover gas. `PositionService.redeem`
-    must turn that into `InsufficientGasError` naming what's missing and
-    where to send it -- not let the raw RPC exception escape toward a 500."""
-    admin, db = _build_admin_and_db()
-    pm = _pm(secrets.token_hex(4))
-
-    with db.write() as conn:
-        created = create_polymarket_markets_if_needed(conn, [pm], admin)
-    market = created[0]
-    mid = market.market_id
-
-    user = _onboard_user(db, admin)
-    assert user is not None
-    split_amount = 100_000_000  # 100 apUSD raw
-    PositionService(db, admin).split(
-        user, mid, SplitPositionRequest(amount=split_amount)
-    )
-
-    fake = _resolved(pm, winner_index=0)  # YES wins
-    with db.write() as conn:
-        mirror_polymarket_resolutions(
-            conn, admin, fetcher=lambda _cid: fake, now=9_999_999_999
-        )
-
-    _drain_native_balance(admin._client, user.eth_key)  # noqa: SLF001
-    assert admin.native_balance(user.eth_address) == 0
-
-    with pytest.raises(InsufficientGasError) as exc_info:
-        PositionService(db, admin).redeem(user, mid)
-
-    # Names what's missing (gas) and where to send it (the user's own
-    # address) -- not just "it failed".
-    message = str(exc_info.value)
-    assert "gas" in message
-    assert user.eth_address in message
-
-    # Nothing moved: the failed send never got far enough to burn tokens or
-    # pay out collateral.
-    yes_token = int(market.erc1155_tokens[0][0])
-    assert admin.ctf_balance(user.eth_address, yes_token) == split_amount

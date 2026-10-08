@@ -1,7 +1,7 @@
 """I4: an out-of-gas claim must surface as a domain error, not a bare 500.
 
-`PositionService.redeem` raises `InsufficientGasError` when a user's wallet
-can't cover a transaction's gas (see tests/onchain/test_auto_redeem.py for
+`UserGasSponsor` raises `InsufficientGasError` when a user's wallet can't
+cover a transaction's gas (see tests/onchain/test_sponsored_positions.py for
 the end-to-end proof against a real drained wallet). This is the narrower,
 anvil-free proof that the exception itself maps to a structured 402 rather
 than falling through to FastAPI's default unhandled-exception 500 -- built
