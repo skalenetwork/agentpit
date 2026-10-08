@@ -1630,6 +1630,12 @@ def auto_redeem_resolved_markets(
                     market.market_id,
                 )
             except TransactionInProgressError:
+                # Refused at the holder's lock, before any chain read or any
+                # gas: nothing was spent, so the attempt is given back. Counted,
+                # `cap` such holders visited first in key order would use the
+                # cap up on every pass -- a held lock is cheap to keep -- and
+                # the honest holders after them would never be reached.
+                attempts -= 1
                 logger.info(
                     "auto-redeem: %s has a transaction in progress; market %s "
                     "is retried next pass",
