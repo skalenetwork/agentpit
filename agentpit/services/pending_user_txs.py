@@ -68,11 +68,10 @@ def reconcile_pending_user_txs(db: DbSession, admin: OnchainAdmin) -> int:
             written += _settle(db, admin, row, now)
         except Exception:
             logger.exception(
-                "pending %s transaction %s of %s on market %s could not be "
-                "settled; tried again next pass",
+                "pending %s transaction %s on market %s could not be settled; "
+                "tried again next pass",
                 row.transaction_type,
                 row.tx_hash,
-                row.api_key,
                 row.market_id,
             )
     return written
@@ -88,11 +87,10 @@ def _settle(db: DbSession, admin: OnchainAdmin, row: PendingUserTx, now: int) ->
         with db.write() as conn:
             TableWrite.delete_pending_user_tx(conn, row.tx_hash)
         logger.warning(
-            "pending %s transaction %s of %s on market %s has had no receipt "
-            "for %d s; dropped as lost",
+            "pending %s transaction %s on market %s has had no receipt for "
+            "%d s; dropped as lost",
             row.transaction_type,
             row.tx_hash,
-            row.api_key,
             row.market_id,
             now - row.created_at,
         )
@@ -101,11 +99,9 @@ def _settle(db: DbSession, admin: OnchainAdmin, row: PendingUserTx, now: int) ->
         with db.write() as conn:
             TableWrite.delete_pending_user_tx(conn, row.tx_hash)
         logger.warning(
-            "pending %s transaction %s of %s on market %s mined and reverted; "
-            "dropped",
+            "pending %s transaction %s on market %s mined and reverted; dropped",
             row.transaction_type,
             row.tx_hash,
-            row.api_key,
             row.market_id,
         )
         return 0
@@ -117,11 +113,10 @@ def _settle(db: DbSession, admin: OnchainAdmin, row: PendingUserTx, now: int) ->
         confirmed = TableWrite.confirm_pending_user_tx(conn, row.tx_hash, details)
     if confirmed:
         logger.info(
-            "pending %s transaction %s of %s on market %s mined; written to "
-            "the history",
+            "pending %s transaction %s on market %s mined; written to the "
+            "history",
             row.transaction_type,
             row.tx_hash,
-            row.api_key,
             row.market_id,
         )
     return int(confirmed)
