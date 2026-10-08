@@ -505,7 +505,14 @@ class TableRead:
     def get_key_export_state(
         db: psycopg.Connection, user_id: str
     ) -> "tuple[int | None, int | None]":
-        """`(exported_at, last_attempt_at)` for one user, epoch seconds."""
+        """`(exported_at, last_attempt_at)` for one user, epoch seconds.
+
+        Nothing writes either column any more: wallets are custodial and the
+        export routes are gone. A non-null `exported_at` marks an account whose
+        key left before that, and is still out there -- `_maybe_reonboard`
+        stops re-funding those, and anything we pay gas for on a user's behalf
+        has to treat them the same way.
+        """
         row = db.execute(
             "SELECT KEY_EXPORTED_AT, KEY_EXPORT_ATTEMPT_AT FROM users "
             "WHERE USER_ID = %s",

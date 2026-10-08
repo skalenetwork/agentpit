@@ -127,8 +127,8 @@ export async function apiFetch<T>(
       // Server rejected our token (expired, secret rotated, account deleted).
       // The provider listens for this and clears local auth state.
       //
-      // A password re-auth endpoint (change-password, key export) also
-      // answers 401 for "you typed the wrong password" — nothing to do with
+      // A password re-auth endpoint (change-password) also answers 401
+      // for "you typed the wrong password" — nothing to do with
       // the bearer token above, which is still perfectly valid. Those
       // callers pass skipAuthEvent so a mistyped password doesn't log the
       // user out from under the dialog they're re-authenticating in. Do not

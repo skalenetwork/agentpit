@@ -219,9 +219,9 @@ class AuthKitService:
         # `existing` was read before the stamp, so reflect it locally rather
         # than re-reading the row. Only the identity changed: the password is
         # deliberately left in place (see `TableWrite.link_workos_identity`),
-        # and `has_password` must keep saying so. Key export no longer consults
-        # this flag -- every account re-authenticates with a mailed code -- but
-        # it still describes the row, and the row still holds a hash that
+        # and `has_password` must keep saying so. Nothing about the wallet key
+        # consults this flag -- keys cannot be exported at all -- but it still
+        # describes the row, and the row still holds a hash that
         # `change_password` reads and that `/login` would accept again the
         # moment the cutover commit is reverted. A false here would be the
         # response denying a credential the row is still carrying.

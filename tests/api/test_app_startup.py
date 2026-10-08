@@ -56,7 +56,6 @@ def test_an_unconfigured_workos_is_an_error_naming_the_consequence():
     # operator reading it should not have to already know what WorkOS gates.
     said = workos[0]
     assert "NOBODY CAN SIGN IN" in said
-    assert "private-key export" in said
     # And what still works, so nobody reads this and restarts the bots too.
     assert "X-API-Key" in said
 
