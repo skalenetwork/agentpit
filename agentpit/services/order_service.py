@@ -146,6 +146,10 @@ class OrderService:
         if not user.is_bot:
             self._check_order_limits(user, payload, maker_amount, taker_amount)
             self._check_gas_budget(user)
+        # Before any order row is written: a pause found inside settlement would
+        # leave FAILED trades and a 200 `success=False`. The house is gated too,
+        # so the mirror stops placing hot orders while the admin is dry.
+        self._onchain.check_sponsored()
 
         # Pre-flight balance check — reject obvious losers before signing.
         # `balance_hint` lets a batch caller (the mirror) supply the relevant

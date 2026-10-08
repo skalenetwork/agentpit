@@ -203,6 +203,30 @@ async def _house_gas_loop(
         await asyncio.sleep(settings.liquidity_gas_check_interval_seconds)
 
 
+async def _admin_gas_loop(admin: OnchainAdmin, settings: Settings) -> None:
+    """Re-read the admin wallet for the gas breaker, and shout while it is low.
+
+    The breaker (AdminTxSender) refuses sponsored sends below the stop
+    level; this loop is what keeps its figure fresh and what a person
+    reading the logs sees. There is no alerting beyond the logs.
+    """
+    while True:
+        try:
+            balance, state = await asyncio.to_thread(admin.refresh_admin_gas)
+            if state in ("low", "paused"):
+                log.error(
+                    "ADMIN GAS %s: the admin wallet holds %.6f native (alarm %d gas, stop %d gas); %s",
+                    state.upper(), balance / 1e18,
+                    settings.admin_gas_alarm_gas, settings.admin_gas_stop_gas,
+                    "sponsored sends are REFUSED" if state == "paused" else "refill it soon",
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("admin gas check failed")
+        await asyncio.sleep(settings.admin_gas_check_interval_seconds)
+
+
 def _run_pin_sync(db: DbSession, admin: OnchainAdmin, settings: Settings) -> list[int]:
     """Sync the current window of each pinned series; return the live-window
     market ids (created or pre-existing) for an immediate liquidity fill."""
@@ -646,6 +670,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             _order_cleanup_loop(db_session, settings)
         )
 
+        # Started after house provisioning on purpose: provisioning is a run of
+        # sponsored sends, and a first refresh that finds the admin low must
+        # not be what makes startup refuse them.
+        admin_gas_task: asyncio.Task | None = (
+            asyncio.create_task(_admin_gas_loop(onchain_admin, settings))
+            if settings.admin_gas_check_interval_seconds > 0 else None
+        )
+
         try:
             async with mcp_endpoint.running() if mcp_endpoint else nullcontext():
                 yield
@@ -658,6 +690,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 requote_task,
                 pin_resolve_task,
                 order_cleanup_task,
+                admin_gas_task,
                 *mirror_tasks,
             ):
                 if task is None:

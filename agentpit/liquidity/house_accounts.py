@@ -7,6 +7,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.domain.exceptions import AdminGasPausedError
 from agentpit.onchain.admin import OnchainAdmin
 
 log = logging.getLogger(__name__)
@@ -110,6 +111,9 @@ class HouseAccountProvisioner:
                     user.eth_address, add,
                     timeout=self._settings.tx_confirmations_timeout_s,
                 )
+            except AdminGasPausedError:
+                log.warning("gas top-up for %s skipped: the admin gas breaker is paused", user.email)
+                continue
             except Exception:
                 log.exception("gas top-up failed for %s", user.email)
                 continue

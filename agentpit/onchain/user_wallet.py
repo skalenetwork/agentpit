@@ -51,14 +51,19 @@ def send_admin_tx(
     *,
     timeout: int = 30,
     gas_buffer_pct: int = 20,
+    essential: bool = False,
 ) -> TxReceipt:
     """Build, sign and broadcast `fn(...)` from the admin account; wait for it.
 
     Goes through `client.admin_sender`, so concurrent admin sends no longer
     wait for each other's receipts: they get consecutive nonces and share
     blocks. Returns the receipt whatever its status.
+
+    Sponsored unless `essential`: see `AdminTxSender._gate`.
     """
-    return client.admin_sender.send(fn, timeout=timeout, gas_buffer_pct=gas_buffer_pct)
+    return client.admin_sender.send(
+        fn, timeout=timeout, gas_buffer_pct=gas_buffer_pct, essential=essential
+    )
 
 
 def fund_user_with_native(

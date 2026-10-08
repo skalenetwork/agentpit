@@ -122,8 +122,14 @@ class OnchainAdmin:
         self, calls: list[tuple[ContractFunction, int]]
     ) -> list[PendingTx | Exception]:
         """Broadcast every call in JSON-RPC batches without waiting; one
-        result per call, in order (`AdminTxSender.submit_many`)."""
-        return self._client.admin_sender.submit_many(calls)
+        result per call, in order (`AdminTxSender.submit_many`).
+
+        Essential: its only callers are the catalogue/pin sync and operator
+        market creation (`prepare_markets_on_chain`), which keep running while
+        the gas breaker is paused -- a market that cannot be prepared is one
+        nobody can trade.
+        """
+        return self._client.admin_sender.submit_many(calls, essential=True)
 
     def wait_all(
         self, pendings: list[PendingTx], *, timeout: float
@@ -162,7 +168,7 @@ class OnchainAdmin:
         fn = self._contracts.ctf.functions.prepareCondition(
             Web3.to_checksum_address(oracle), question_id, outcome_slot_count
         )
-        return send_admin_tx(self._client, fn, timeout=timeout)
+        return send_admin_tx(self._client, fn, timeout=timeout, essential=True)
 
     def register_token(
         self, token_a: int, token_b: int, condition_id: bytes, *, timeout: int = 30
@@ -170,7 +176,7 @@ class OnchainAdmin:
         fn = self._contracts.exchange.functions.registerToken(
             token_a, token_b, condition_id
         )
-        return send_admin_tx(self._client, fn, timeout=timeout)
+        return send_admin_tx(self._client, fn, timeout=timeout, essential=True)
 
     def report_payouts(
         self, question_id: bytes, payouts: list[int], *, timeout: int = 30
@@ -182,7 +188,7 @@ class OnchainAdmin:
         wanting idempotency should pre-check `payoutDenominator` or catch.
         """
         fn = self._contracts.ctf.functions.reportPayouts(question_id, payouts)
-        return send_admin_tx(self._client, fn, timeout=timeout)
+        return send_admin_tx(self._client, fn, timeout=timeout, essential=True)
 
     def user_split_position(
         self,
@@ -203,6 +209,16 @@ class OnchainAdmin:
         return send_user_tx(self._client, user_account, fn, timeout=timeout)
 
     # --- read-only --------------------------------------------------
+
+    def check_sponsored(self) -> None:
+        """Raise `AdminGasPausedError` while the admin wallet is below its stop level."""
+        self._client.admin_sender.check_sponsored()
+
+    def refresh_admin_gas(self) -> tuple[int, str]:
+        """Re-read the admin balance; (balance in wei, breaker state)."""
+        sender = self._client.admin_sender
+        balance = sender.refresh_gas_balance()
+        return balance, sender.gas_state()
 
     @property
     def oracle_address(self) -> str:

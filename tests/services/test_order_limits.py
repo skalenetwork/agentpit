@@ -13,7 +13,7 @@ from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.place_order_request import PlaceOrderRequest
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import BusinessRuleError, GasBudgetExceededError
+from agentpit.domain.exceptions import AdminGasPausedError, BusinessRuleError, GasBudgetExceededError
 from agentpit.onchain.order_signer import OrderData
 from agentpit.services.order_service import OrderService
 from tests.db_helpers import fresh_test_db
@@ -28,6 +28,10 @@ class _ReachedChain(Exception):
 
 
 class _Chain:
+    def check_sponsored(self):
+        """The breaker is closed, so `_ReachedChain` still means the balance
+        check was reached, not that the breaker guard ran."""
+
     def __getattr__(self, name):
         raise _ReachedChain(name)
 
@@ -204,3 +208,30 @@ def test_each_group_is_counted_even_when_one_receipt_lacks_gas():
         {"transactionHash": b"\x04", "status": 1},
     ])
     assert gas_used == [80_000, 0]
+
+
+class _PausedChain:
+    def check_sponsored(self):
+        raise AdminGasPausedError()
+
+    def __getattr__(self, name):
+        raise _ReachedChain(name)
+
+
+def test_paused_breaker_refuses_before_any_order_row():
+    _svc, db, user = _setup()
+    svc = OrderService(db, _PausedChain(), Settings())  # type: ignore[arg-type]
+    with pytest.raises(AdminGasPausedError):
+        svc.place_order(user, _req(size="10"))
+    with db.read() as conn:
+        assert conn.execute("SELECT COUNT(*) AS N FROM orders").fetchone()["N"] == 0
+
+
+def test_paused_breaker_stops_the_house_too():
+    _svc, db, user = _setup()
+    with db.write() as conn:
+        TableWrite.mark_user_as_bot(conn, user.api_key)
+        bot = TableRead.get_user_by_userid(conn, user.user_id)
+    svc = OrderService(db, _PausedChain(), Settings())  # type: ignore[arg-type]
+    with pytest.raises(AdminGasPausedError):
+        svc.place_order(bot, _req(size="10"))

@@ -17,6 +17,7 @@ from agentpit.datastructures.place_order_request import PlaceOrderRequest
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
+from agentpit.domain.exceptions import AdminGasPausedError
 from agentpit.liquidity.replica import MICRO, BookSnapshot
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.services.order_service import OrderService
@@ -387,6 +388,13 @@ def reconcile_market(
                 size=Decimal(p.size_micro) / MICRO,
                 order_type="GTC",
             ), balance_hint=hint)
+        except AdminGasPausedError:
+            # The admin wallet is below its stop level: every hot placement is
+            # refused until it is refilled. Expected and already logged as an
+            # ERROR by the balance loop, so no traceback per placement.
+            log.debug("mirror placement paused by the admin gas breaker (market=%s)", ref.market_id)
+            failed += 1
+            return
         except Exception:
             log.warning("mirror placement raised (market=%s %s@%s)",
                         ref.market_id, p.side, p.price_micro, exc_info=True)

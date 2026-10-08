@@ -21,6 +21,7 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
+    AdminGasPausedError,
     BusinessRuleError,
     FeatureDisabledError,
     InvalidCredentialsError,
@@ -392,6 +393,10 @@ class AuthService:
         # hold the write lock for ~1s of network round-trips.
         try:
             self._run_onboarding(acct)
+        except AdminGasPausedError:
+            # Not wrapped: a 503 "try again later", not an OnboardingError (400,
+            # or MCP's "still being set up") and not a traceback per sign-in.
+            raise
         except Exception as exc:
             log.exception("on-chain onboarding failed for user %s", user_id)
             raise OnboardingError(str(exc)) from exc
