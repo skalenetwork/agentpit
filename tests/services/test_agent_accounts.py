@@ -5,7 +5,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import AdminGasPausedError, InsufficientGasError, OnboardingError
+from agentpit.domain.exceptions import AdminGasPausedError, GasTopUpTimeoutError, InsufficientGasError, OnboardingError
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -145,6 +145,19 @@ def test_an_api_agent_whose_wallet_could_not_pay_is_not_left_behind():
 
     with pytest.raises(InsufficientGasError):
         AgentAccounts(db, dry).create_api_agent(OWNER)
+
+    with db.read() as conn:
+        assert TableRead.agents_owned_by(conn, OWNER) == []
+
+
+def test_an_api_agent_whose_top_up_timed_out_is_not_left_behind():
+    db = fresh_test_db()
+
+    def busy(_user_id: str, _acct: LocalAccount) -> User:
+        raise GasTopUpTimeoutError()
+
+    with pytest.raises(GasTopUpTimeoutError):
+        AgentAccounts(db, busy).create_api_agent(OWNER)
 
     with db.read() as conn:
         assert TableRead.agents_owned_by(conn, OWNER) == []
