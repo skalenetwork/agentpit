@@ -13,6 +13,7 @@ from typing import Any
 from eth_utils.crypto import keccak
 from web3 import Web3
 
+from agentpit.config import Settings
 from agentpit.datastructures.cancel_orders_response import CancelOrdersResponse
 from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookSummary
 from agentpit.datastructures.condition_id import ConditionId
@@ -98,9 +99,12 @@ class OrderService:
     happens on-chain via the deployed CTFExchange.
     """
 
-    def __init__(self, db: DbSession, onchain: OnchainAdmin):
+    def __init__(
+        self, db: DbSession, onchain: OnchainAdmin, settings: Settings | None = None
+    ):
         self._db = db
         self._onchain = onchain
+        self._settings = settings if settings is not None else Settings()
 
     # --- public API -----------------------------------------------------
 
@@ -136,6 +140,8 @@ class OrderService:
         maker_amount, taker_amount = self._amounts_from_price_size(
             payload.side, payload.price, size_micro
         )
+        if not user.is_bot:
+            self._check_order_limits(user, payload, maker_amount, taker_amount)
 
         # Pre-flight balance check — reject obvious losers before signing.
         # `balance_hint` lets a batch caller (the mirror) supply the relevant
@@ -742,6 +748,33 @@ class OrderService:
         if side == "BUY":
             return collateral_int, int(size)
         return int(size), collateral_int
+
+    def _check_order_limits(
+        self, user: User, payload: PlaceOrderRequest, maker_amount: int, taker_amount: int
+    ) -> None:
+        """Size and count limits for non-house accounts.
+
+        Every fill is a matchOrders the admin pays for, so a dust order or a
+        wall of resting dust is a way to spend our gas for nothing. The house
+        is exempt: it mirrors Polymarket's book level by level, small levels
+        included, and is bounded by the mirror instead.
+        """
+        floor = self._settings.min_order_notional_micro
+        # The collateral leg: what a BUY pays, what a SELL receives.
+        notional = maker_amount if payload.side == "BUY" else taker_amount
+        if floor and notional < floor:
+            raise BusinessRuleError(
+                f"order is too small: the minimum is ${floor / 1_000_000:g} (price × size)"
+            )
+        # FOK/FAK never rest, so they cannot grow the book.
+        if payload.order_type in ("GTC", "GTD"):
+            cap = self._settings.max_live_orders_per_account
+            with self._db.read() as conn:
+                live = TableRead.count_live_orders(conn, user.api_key)
+            if live >= cap:
+                raise BusinessRuleError(
+                    f"too many open orders: {live} are live and the limit is {cap} — cancel some first"
+                )
 
     def _check_balance(
         self,

@@ -96,7 +96,7 @@ class MirrorEngine:
         self._onchain = onchain
         self._cfg = settings
         self._user = user
-        self._order = OrderService(db, onchain)
+        self._order = OrderService(db, onchain, settings)
         self.state = MirrorState([])
         # asset -> [0,1] priority for its FIRST cold sweep; rebuilt whenever
         # the target set is reloaded, so a market that climbs the volume

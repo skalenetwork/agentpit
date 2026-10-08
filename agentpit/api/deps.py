@@ -125,8 +125,10 @@ def get_auth_service(
     return AuthService(db, coder, onchain, settings, google, workos)
 
 
-def get_order_service(db: SessionDep, onchain: OnchainAdminDep) -> OrderService:
-    return OrderService(db, onchain)
+def get_order_service(
+    db: SessionDep, onchain: OnchainAdminDep, settings: SettingsDep
+) -> OrderService:
+    return OrderService(db, onchain, settings)
 
 
 def get_trade_service(db: SessionDep) -> TradeService:

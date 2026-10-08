@@ -1604,6 +1604,15 @@ class TableRead:
         return keys
 
     @staticmethod
+    def count_live_orders(db: psycopg.Connection, api_key: str) -> int:
+        """How many orders this account has resting right now."""
+        row = db.execute(
+            f"SELECT COUNT(*) AS N FROM orders WHERE API_KEY = %s AND {TableRead.LIVE_ORDER}",
+            (api_key, int(time.time())),
+        ).fetchone()
+        return int(row["N"])
+
+    @staticmethod
     def list_live_order_levels(
         db: psycopg.Connection, api_key: str, token_ids: list[str]
     ) -> list[dict]:
