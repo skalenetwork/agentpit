@@ -287,11 +287,24 @@ class AdminTxSender:
         return self._submit(self._call_base(fn), gas, gas_buffer_pct)
 
     def submit_value(
-        self, to: str, value_wei: int, *, essential: bool = False
+        self,
+        to: str,
+        value_wei: int,
+        *,
+        essential: bool = False,
+        slot_timeout: float | None = None,
     ) -> PendingTx:
-        """Broadcast a plain native-token transfer."""
+        """Broadcast a plain native-token transfer.
+
+        `slot_timeout` replaces the sender's own for this one send: how long it
+        may wait, queueing on the send lock included, for a free in-flight slot
+        before `TimeExhausted`. A caller that holds something while it waits
+        (the user's lock, for a gas top-up) passes a shorter bound.
+        """
         self._gate(essential)
-        return self._submit(_value_base(to, value_wei), TRANSFER_GAS, 0)
+        return self._submit(
+            _value_base(to, value_wei), TRANSFER_GAS, 0, slot_timeout=slot_timeout
+        )
 
     def submit_many(
         self, calls: list[tuple[ContractFunction, int]], *, essential: bool = False
@@ -370,26 +383,53 @@ class AdminTxSender:
         )
 
     def send_value(
-        self, to: str, value_wei: int, *, timeout: float, essential: bool = False
+        self,
+        to: str,
+        value_wei: int,
+        *,
+        timeout: float,
+        essential: bool = False,
+        slot_timeout: float | None = None,
     ) -> TxReceipt:
-        return self.wait(
-            self.submit_value(to, value_wei, essential=essential), timeout=timeout
-        )
+        """`submit_value` then `wait`: the receipt whatever its status.
 
-    def _submit(self, base: dict, gas: int | None, gas_buffer_pct: int) -> PendingTx:
+        With no `slot_timeout` the wait for a slot and the wait for the receipt
+        are separate, each as long as it is given. With one, the slot wait is
+        capped at it and counts against `timeout`, which then bounds the whole
+        call: a full pipeline raises `TimeExhausted` after `slot_timeout`, and
+        a slot that frees late leaves only what is left of `timeout` for the
+        receipt.
+        """
+        started = self._clock()
+        pending = self.submit_value(
+            to, value_wei, essential=essential, slot_timeout=slot_timeout
+        )
+        if slot_timeout is not None:
+            timeout = max(0.0, timeout - (self._clock() - started))
+        return self.wait(pending, timeout=timeout)
+
+    def _submit(
+        self,
+        base: dict,
+        gas: int | None,
+        gas_buffer_pct: int,
+        *,
+        slot_timeout: float | None = None,
+    ) -> PendingTx:
         if gas is None:
             gas = self._estimate(base) * (100 + gas_buffer_pct) // 100
+        limit = self._slot_timeout if slot_timeout is None else slot_timeout
         # One deadline for the whole wait, set before queueing on the send
         # lock: submitters queued behind each other share it instead of each
         # starting its own once it finally holds the lock.
-        deadline = self._clock() + self._slot_timeout
+        deadline = self._clock() + limit
         if not self._send_lock.acquire(timeout=max(0.0, deadline - self._clock())):
             raise TimeExhausted(
-                f"no free admin transaction slot after {self._slot_timeout:g}s "
+                f"no free admin transaction slot after {limit:g}s "
                 "(queued behind other submitters)"
             )
         try:
-            self._wait_for_slot(deadline)
+            self._wait_for_slot(deadline, limit=limit)
             return self._sign_and_send(base, gas)
         finally:
             self._send_lock.release()
@@ -708,15 +748,26 @@ class AdminTxSender:
             fees = self._fees = (max_fee, priority, now)
         return fees[0], fees[1]
 
-    def _wait_for_slot(self, deadline: float | None = None, need: int = 1) -> None:
-        """Poll until `need` slots are free (a batch takes one per item)."""
+    def _wait_for_slot(
+        self,
+        deadline: float | None = None,
+        need: int = 1,
+        *,
+        limit: float | None = None,
+    ) -> None:
+        """Poll until `need` slots are free (a batch takes one per item).
+
+        `limit` is the bound `deadline` was set from, for the error message;
+        the sender's own `slot_timeout` unless a caller passed a shorter one."""
+        if limit is None:
+            limit = self._slot_timeout
         if deadline is None:
-            deadline = self._clock() + self._slot_timeout
+            deadline = self._clock() + limit
         while self._in_flight_count() + need > self._max_in_flight:
             if self._clock() >= deadline:
                 raise TimeExhausted(
                     f"no {need} free admin transaction slot(s) after "
-                    f"{self._slot_timeout:g}s ({self._max_in_flight} in flight)"
+                    f"{limit:g}s ({self._max_in_flight} in flight)"
                 )
             self.poll()
             self._sleep(self._poll_interval)
