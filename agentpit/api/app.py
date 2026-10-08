@@ -457,9 +457,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # deploy/docker-compose.prod.yml.
         log.error(
             "WorkOS is not configured (WORKOS_API_KEY / WORKOS_CLIENT_ID): "
-            "NOBODY CAN SIGN IN -- /auth/code and /auth/session 503, AuthKit "
-            "sessions are rejected, and private-key export is disabled. "
-            "X-API-Key traffic is unaffected."
+            "NOBODY CAN SIGN IN -- /auth/code and /auth/session 503 and AuthKit "
+            "sessions are rejected. X-API-Key traffic is unaffected."
         )
 
     mcp_endpoint: McpEndpoint | None = None

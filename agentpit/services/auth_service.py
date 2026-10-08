@@ -1,13 +1,10 @@
 import logging
-import time
 
 from eth_account.signers.local import LocalAccount
-from web3 import Web3
 
 from agentpit.auth.google import GoogleTokenVerifier
 from agentpit.auth.jwt import JwtCoder
 from agentpit.auth.passwords import hash_password, verify_password
-from agentpit.auth.workos_client import WorkOsClient
 from agentpit.config import Settings
 from agentpit.datastructures.auth_response import (
     AuthResponse,
@@ -44,14 +41,12 @@ class AuthService:
         onchain_admin: OnchainAdmin,
         settings: Settings,
         google_verifier: GoogleTokenVerifier | None = None,
-        workos: WorkOsClient | None = None,
     ):
         self._db = db
         self._coder = coder
         self._onchain = onchain_admin
         self._settings = settings
         self._google = google_verifier
-        self._workos = workos
 
     def register(self, payload: RegisterRequest) -> AuthResponse:
         with self._db.write() as conn:
@@ -199,96 +194,6 @@ class AuthService:
             )
             if not updated:
                 raise UserNotFoundError()
-
-    #: Seconds between export attempts on one account. This endpoint sits
-    #: behind an authenticated session, so an attacker needs the session
-    #: before they can guess at all — but the prize is a key that cannot be
-    #: revoked, unlike the session itself, so online guessing gets a floor.
-    #: The project has no rate limiting anywhere else, including /login.
-    KEY_EXPORT_COOLDOWN_S = 5
-
-    def send_key_export_code(self, *, user_id: str) -> None:
-        """Mail a fresh code to the account's own address.
-
-        Deliberately not `/auth/code`: that endpoint takes an address from the
-        request body, and this one may only ever mail the address on the row
-        the caller is already authenticated as.
-        """
-        if self._workos is None:
-            raise FeatureDisabledError("key export is not configured")
-        with self._db.read() as conn:
-            user = TableRead.get_user_by_userid(conn, user_id)
-        if user is None:
-            raise UserNotFoundError()
-        if user.email is None:
-            raise BusinessRuleError("an agent's key cannot be exported")
-        self._workos.send_magic_auth_code(user.email)
-
-    def export_private_key(self, *, user_id: str, code: str) -> str:
-        """The account's own private key, after proving it is the account.
-
-        One factor for everybody: a code mailed to the address WorkOS holds.
-        It is not a second factor in the strict sense -- sign-in is also a
-        mailed code -- and what it buys is freshness. A stolen access token out
-        of `localStorage` no longer suffices to export a key that cannot be
-        revoked; the holder must be at the mailbox now.
-        """
-        # Before the cooldown is claimed, as `send_key_export_code` already
-        # does it. A deployment with no WorkOS cannot verify anything, so every
-        # call is a 503 -- and claiming first meant each of those 503s spent the
-        # window, so an honest retry a second later was refused with "too many
-        # attempts" for a feature that was simply switched off.
-        if self._workos is None:
-            raise FeatureDisabledError("key export is not configured")
-
-        now = int(time.time())
-        # Stamped in its own transaction, committed before the credential is
-        # looked at at all. psycopg's connection context commits on clean exit
-        # and rolls back on exception (see db/session.py) -- if this stamp
-        # shared a transaction with the verification below, every REJECTED
-        # guess would roll its own stamp back with it, and the cooldown would
-        # only ever persist after a SUCCESSFUL export: the exact opposite of
-        # the guessing floor this is meant to be.
-        #
-        # The claim itself is `mark_key_export_attempt`'s conditional UPDATE,
-        # not a separate read-then-check: at READ COMMITTED and a 16-
-        # connection pool (db/session.py) with no row lock of our own, N
-        # concurrent requests reading the same stamp before any of them
-        # writes would each see the cooldown as clear and all proceed to
-        # verification, leaving bcrypt as the only real cost. Making the
-        # predicate and the write one statement closes that gap -- see the
-        # docstring on `mark_key_export_attempt`.
-        with self._db.write() as conn:
-            user = TableRead.get_user_by_userid(conn, user_id)
-            if user is None:
-                raise UserNotFoundError()
-            if user.email is None:
-                raise BusinessRuleError("an agent's key cannot be exported")
-            claimed = TableWrite.mark_key_export_attempt(
-                conn, user_id, now, now - self.KEY_EXPORT_COOLDOWN_S
-            )
-            if not claimed:
-                raise BusinessRuleError("too many attempts — wait a moment")
-
-        if user.workos_user_id is None:
-            # Nothing to pin the code against. Only reachable while the legacy
-            # JWT is still accepted -- after the cutover every session came
-            # through AuthKit and every row therefore has an identity.
-            raise BusinessRuleError("sign in again to export this key")
-
-        session = self._workos.authenticate_with_code(user.email, code)
-        # A valid code proves somebody owns an address. It has to be THIS
-        # account's identity, or the key goes to whoever authenticated last --
-        # the same reasoning as the Google-identity check this replaces. It
-        # also covers a stale `users.EMAIL`: if the address has changed hands
-        # upstream the code reaches a stranger, and the code that stranger
-        # presents comes back with a different `workos_user_id`.
-        if session.workos_user_id != user.workos_user_id:
-            raise InvalidCredentialsError("that code is not this account's")
-
-        with self._db.write() as conn:
-            TableWrite.mark_key_exported(conn, user_id, now)
-        return Web3.to_hex(user.eth_key.key)
 
     # --- helpers --------------------------------------------------------
 

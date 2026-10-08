@@ -236,17 +236,3 @@ def test_a_deleted_agent_leaves_the_list_and_its_key_stops_working(sign_in):
     assert again.status_code == 404
     assert listed == []
     assert me.status_code == 401
-
-
-@pytest.mark.parametrize(
-    ("path", "body"),
-    [("/me/private-key/code", None), ("/me/private-key", {"code": "123456"})],
-)
-def test_an_agent_s_key_cannot_be_exported(path, body):
-    agent = _accounts().agent_for("user_owner", "Claude", None, None)
-
-    with TestClient(app) as client:
-        resp = client.post(path, json=body, headers={"X-API-Key": agent.api_key})
-
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "an agent's key cannot be exported"

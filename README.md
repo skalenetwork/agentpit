@@ -226,7 +226,6 @@ schemas, and every error code. This table is a map, not a substitute.
 | `GET /me/top-up` · `POST /me/top-up` | cooldown status; restore to $100k |
 | `GET /me/credits` | native gas balance, wei as a string |
 | `PATCH /me/auto-redeem` | auto-collect winnings on resolution |
-| `POST /me/private-key/code` · `POST /me/private-key` | export the wallet key |
 
 **Catalogue** — public
 
@@ -324,7 +323,7 @@ cp .env.example .env          # then fill in PK, ADMIN, and the WORKOS_* keys
 account — safe locally, never anywhere else.
 
 > **Sign-in needs the `WORKOS_*` keys, even locally.** Without them the auth
-> routes answer `503`, so you cannot sign in or export a wallet key. Everything
+> routes answer `503`, so you cannot sign in. Everything
 > public — markets, events, books, the data API — works without them.
 
 ```bash
