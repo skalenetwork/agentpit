@@ -22,6 +22,7 @@ from agentpit.domain.exceptions import (
     AdminGasPausedError,
     BusinessRuleError,
     FeatureDisabledError,
+    GasTopUpTimeoutError,
     InsufficientGasError,
     InvalidCredentialsError,
     OnboardingError,
@@ -389,11 +390,14 @@ class AuthService:
         # hold the write lock for ~1s of network round-trips.
         try:
             self._run_onboarding(user)
-        except (AdminGasPausedError, InsufficientGasError):
-            # Not wrapped: a 503 "try again later" or a 402 "the wallet could
-            # not pay", not an OnboardingError (400, or MCP's "still being set
-            # up") and not a traceback per sign-in. The claim goes back all the
-            # same: the retry they ask for must not find the row held.
+        except (AdminGasPausedError, GasTopUpTimeoutError, InsufficientGasError):
+            # Not wrapped: a 503 "try again later" (the breaker, or a top-up
+            # that got no receipt in time) or a 402 "the wallet could not pay",
+            # not an OnboardingError (400, or MCP's "still being set up") and
+            # not a traceback per sign-in. The claim goes back all the same:
+            # the retry they ask for must not find the row held. The retry
+            # does not drip again (`_run_onboarding`), so a timeout after the
+            # drip costs nothing.
             self._release_onboarding_claim(user_id)
             raise
         except TransactionInProgressError as exc:
