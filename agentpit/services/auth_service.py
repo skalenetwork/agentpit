@@ -222,13 +222,25 @@ class AuthService:
         The user's transaction lock is taken before the drip, not just around
         the approvals, so a held lock refuses before the admin has sent
         anything.
+
+        The drip is the only step that must not repeat. The faucet mints its
+        amount on every call and the collateral token has no cap, so an account
+        whose first attempt failed after the drip (the top-up timed out, the
+        breaker paused, an approval reverted) would be handed a second grant by
+        the retry. The balance, read under the lock, decides: the wallet is
+        dripped only while it holds less than the grant. A fresh wallet, and a
+        wallet a wiped anvil forgot, hold nothing and get it; the retry of an
+        attempt whose drip landed already holds it. The approvals and the
+        top-up repeat harmlessly: the sponsor sizes the top-up against the
+        balance it finds.
         """
         timeout = self._settings.tx_confirmations_timeout_s
         # Built per call, like every other service: it holds nothing of its own
         # (the per-user locks are module-level).
         sponsor = UserGasSponsor(self._db, self._onchain, self._settings)
         with sponsor.locked(user):
-            self._onchain.faucet_drip(user.eth_address, timeout=timeout)
+            if self._onchain.usd_balance(user.eth_address) < self._onchain.signup_grant_raw:
+                self._onchain.faucet_drip(user.eth_address, timeout=timeout)
             sponsor.send(user, self._onchain.approval_calls(), "onboarding")
 
     def _maybe_reonboard(self, user: User) -> None:

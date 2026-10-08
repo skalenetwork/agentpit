@@ -351,6 +351,15 @@ class OnchainAdmin:
         no RPC round-trip, like `deployment_id`."""
         return self._client.deployment.chain_id
 
+    @property
+    def signup_grant_raw(self) -> int:
+        """What one `faucet_drip` mints, in raw apUSD: the figure the faucet was
+        deployed with (`scripts/deploy_exchange.sh` passes it to the contract and
+        writes it to the deployment file). Read from the file, so no RPC
+        round-trip; `Faucet.amount` is immutable on chain, so the two cannot
+        drift unless the file is edited by hand."""
+        return self._client.deployment.signup_grant_raw
+
     def usd_balance(self, address: str) -> int:
         return self._contracts.usd.functions.balanceOf(
             Web3.to_checksum_address(address)
