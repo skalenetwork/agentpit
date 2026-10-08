@@ -30,7 +30,7 @@ from agentpit.domain.exceptions import (
     TransactionRevertedError,
 )
 from agentpit.onchain.admin import OnchainAdmin
-from agentpit.onchain.tx_sender import TRANSFER_GAS
+from agentpit.onchain.tx_sender import TRANSFER_GAS, TxDropped
 from agentpit.services.gas_sponsor import UserGasSponsor
 from tests.db_helpers import fresh_test_db
 
@@ -613,6 +613,46 @@ def test_a_top_up_whose_receipt_times_out_sends_nothing_and_is_not_paid_twice(
     assert (
         _used(db, user) == standing + 80_000
     )  # the new reservation is trued up; the old one stands
+
+
+@pytest.mark.parametrize("kind", ["claim", "split"])
+def test_a_dropped_top_up_is_a_retryable_503_and_hands_the_reservation_back(kind):
+    """The node lost the top-up and a gap filler took its nonce (`TxDropped`):
+    it can never mine. That is the same "busy, try again" answer as a timeout,
+    not a bare `RuntimeError` (a 500). Unlike a timeout, nothing may mine
+    later, so a split's reservation goes back in full and the retry tops up
+    again."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(fund_errors=[TxDropped("its nonce went to a gap filler")])
+    with pytest.raises(GasTopUpTimeoutError) as caught:
+        _send(db, chain, user, [_Call()], kind)
+    assert isinstance(caught.value.__cause__, TxDropped)
+    assert str(caught.value) == "the platform is busy — try again in a moment"
+    assert chain.funded == [NEED] and chain.sends == []
+    assert _used(db, user) == 0
+
+    _send(db, chain, user, [_Call()], kind)  # the lock is free, and it funds again
+    assert chain.funded == [NEED, NEED]
+    assert _used(db, user) == TRANSFER_GAS + 80_000
+
+
+def test_a_dropped_retry_top_up_keeps_what_the_first_one_cost():
+    """The node refused the first send at import (the price rose) and the
+    re-sizing top-up was then dropped. The first top-up did mine, so its
+    transfer stays booked; the refused transaction never ran."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(
+        prices=(1_000, 1_500),
+        balances=(0, NEED),
+        refusals=[_refused(SKALED_FEE_LOW)],
+        fund_errors=[None, TxDropped("its nonce went to a gap filler")],
+    )
+    with pytest.raises(GasTopUpTimeoutError):
+        _send(db, chain, user, [_Call()], "split")
+    assert len(chain.sends) == 1
+    assert _used(db, user) == TRANSFER_GAS
 
 
 def test_a_transport_error_after_the_broadcast_keeps_the_reservation():
