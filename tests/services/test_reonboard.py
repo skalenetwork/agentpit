@@ -16,6 +16,7 @@ the chain is unreachable.
 """
 
 import logging
+import threading
 from contextlib import nullcontext
 
 from agentpit.auth.jwt import JwtCoder
@@ -102,3 +103,62 @@ def test_a_transaction_in_progress_skips_the_repair_without_a_traceback(caplog):
         calls = _reonboard("busy@example.com", hold_lock=True)
     assert calls == ["transaction_count"]
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+class _StaleNonce(_WipedChain):
+    """The first nonce read returns 0 and then waits: its caller holds a stale
+    zero while another sign-in re-onboards the same wallet (the nonce goes to 3
+    as the approvals mine)."""
+
+    def __init__(self) -> None:
+        super().__init__(nonce=0)
+        self.holding = threading.Event()  # the first reader has its zero
+        self.release = threading.Event()
+        self._reads = 0
+        self._reads_guard = threading.Lock()
+
+    def transaction_count(self, address):
+        value = super().transaction_count(address)
+        with self._reads_guard:
+            self._reads += 1
+            first = self._reads == 1
+        if first:
+            self.holding.set()
+            assert self.release.wait(10), "the second sign-in never finished"
+        return value
+
+
+def test_a_late_reonboard_does_not_drip_or_approve_a_second_time():
+    """Two sign-ins both read a zero nonce; the slower one takes the lock only
+    after the faster has finished. Its zero is stale: the wallet has since sent
+    its three approvals, and repeating the drip and the approvals would hand
+    the account a second grant."""
+    settings = Settings().model_copy(update={"simulated_chain": True})
+    db = DbSession(settings.database_url)
+    chain = _StaleNonce()
+    service = AuthService(db, JwtCoder(settings), chain, settings)  # type: ignore[arg-type]
+    try:
+        with db.write() as conn:
+            user_id, _acct, _key = TableWrite.create_user(
+                conn, email="late@example.com", password_hash=None, handle=None
+            )
+            TableWrite.mark_user_onboarded(conn, user_id)
+        with db.read() as conn:
+            user = TableRead.get_user_by_userid(conn, user_id)
+        assert user is not None
+
+        slow = threading.Thread(target=service._maybe_reonboard, args=(user,))
+        slow.start()
+        try:
+            assert chain.holding.wait(10), "the first sign-in never read the nonce"
+            service._maybe_reonboard(user)  # the fast one runs to completion
+            assert chain._nonce == 3
+        finally:
+            chain.release.set()
+            slow.join(10)
+        assert not slow.is_alive()
+    finally:
+        db.close()
+
+    assert chain.calls.count("faucet_drip") == 1
+    assert chain.calls.count("send_as_user") == 3

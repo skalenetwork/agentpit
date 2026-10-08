@@ -207,7 +207,7 @@ class AuthService:
 
     # --- helpers --------------------------------------------------------
 
-    def _run_onboarding(self, user: User) -> None:
+    def _run_onboarding(self, user: User, *, only_if_unsent: bool = False) -> bool:
         """Drip the account's collateral, then set its three exchange approvals.
 
         The approvals are signed by the account's own key, so its wallet must
@@ -233,15 +233,23 @@ class AuthService:
         attempt whose drip landed already holds it. The approvals and the
         top-up repeat harmlessly: the sponsor sizes the top-up against the
         balance it finds.
+
+        With `only_if_unsent`, nothing is done (and False is returned) when the
+        wallet has by now sent a transaction. `_maybe_reonboard` reads the nonce
+        before it asks for the lock, so a repair that waited for the lock may
+        hold a zero another sign-in has since made stale. True: onboarding ran.
         """
         timeout = self._settings.tx_confirmations_timeout_s
         # Built per call, like every other service: it holds nothing of its own
         # (the per-user locks are module-level).
         sponsor = UserGasSponsor(self._db, self._onchain, self._settings)
         with sponsor.locked(user):
+            if only_if_unsent and self._onchain.transaction_count(user.eth_address):
+                return False
             if self._onchain.usd_balance(user.eth_address) < self._onchain.signup_grant_raw:
                 self._onchain.faucet_drip(user.eth_address, timeout=timeout)
             sponsor.send(user, self._onchain.approval_calls(), "onboarding")
+        return True
 
     def _maybe_reonboard(self, user: User) -> None:
         """Re-run onboarding for an onboarded user the chain has never seen send.
@@ -296,7 +304,15 @@ class AuthService:
             user.user_id,
         )
         try:
-            self._run_onboarding(user)
+            # The nonce is read again under the lock: the read above was made
+            # without it, and a sign-in that got the lock first has since
+            # done the repair this one was about to repeat.
+            if not self._run_onboarding(user, only_if_unsent=True):
+                log.info(
+                    "re-onboarding %s skipped: its wallet has sent since the check",
+                    user.user_id,
+                )
+                return
         except TransactionInProgressError:
             # Something is sending for this account right now. Not a failure
             # worth a traceback: the next sign-in looks again.
