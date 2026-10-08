@@ -23,6 +23,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
+    GasTopUpTimeoutError,
     InsufficientGasError,
     NothingToClaimError,
     TransactionInProgressError,
@@ -43,7 +44,9 @@ class _Chain:
 
     Not a MagicMock on purpose: if the pass itself touched anything else
     (fund_gas, send_as_user, ...) it would raise here instead of quietly
-    recording a call. Unset balances read 0.
+    recording a call. Unset balances read 0. `vector_errors` and
+    `balance_errors` are raised by the next reads in turn (None lets that read
+    answer), as an RPC error would be.
     """
 
     def __init__(self, vector: tuple[int, list[int]] = (1, [1, 0])):
@@ -51,6 +54,8 @@ class _Chain:
         self.held: dict[str, dict[int, int]] = {}
         self.vector_reads = 0
         self.balance_reads = 0
+        self.vector_errors: list[Exception | None] = []
+        self.balance_errors: list[Exception | None] = []
 
     def hold(self, address: str, token: str, amount: int) -> None:
         self.held.setdefault(address.lower(), {})[int(token)] = amount
@@ -59,10 +64,16 @@ class _Chain:
         self, condition_id: bytes, outcome_count: int = 2
     ) -> tuple[int, list[int]]:
         self.vector_reads += 1
+        error = self.vector_errors.pop(0) if self.vector_errors else None
+        if error is not None:
+            raise error
         return self.vector
 
     def ctf_balances(self, address: str, token_ids: list[int]) -> list[int]:
         self.balance_reads += 1
+        error = self.balance_errors.pop(0) if self.balance_errors else None
+        if error is not None:
+            raise error
         held = self.held.get(address.lower(), {})
         return [held.get(t, 0) for t in token_ids]
 
@@ -189,6 +200,24 @@ def test_holders_owed_less_than_the_minimum_cost_nothing_and_settle_the_market(
     assert _flagged(db, market_id) is True
 
 
+def test_a_holder_owed_nothing_is_never_claimed_for_whatever_the_minimum(claims):
+    """`Settings` refuses a minimum below 1, but the scan does not lean on it:
+    with a minimum of 0 a claim for a position worth nothing would still be
+    admin gas for no payout, once per holder and per pass."""
+    calls, _ = claims
+    db, chain = fresh_test_db(), _Chain()
+    market = _market(db)
+    market_id, yes, no = market
+    _holder(db, chain, market, holds={})
+    _holder(db, chain, market, holds={no: 50 * _ONE_USD})
+    # `model_copy` skips validation, which is how a 0 gets past the field.
+    settings = _settings().model_copy(update={"min_claim_micro": 0})
+
+    assert auto_redeem_resolved_markets(db, chain, settings) == 0  # type: ignore[arg-type]
+    assert calls == []
+    assert _flagged(db, market_id) is True
+
+
 def test_a_payout_of_exactly_the_minimum_is_claimed(claims):
     calls, _ = claims
     db, chain = fresh_test_db(), _Chain()
@@ -308,15 +337,16 @@ def test_a_failed_claim_counts_toward_the_cap(claims):
         (TransactionInProgressError(), logging.INFO),
         (AdminGasPausedError(), logging.WARNING),
         (InsufficientGasError("wallet balance too low"), logging.WARNING),
+        (GasTopUpTimeoutError(), logging.WARNING),
     ],
-    ids=["lock-held", "breaker-paused", "not-sponsored"],
+    ids=["lock-held", "breaker-paused", "not-sponsored", "top-up-timed-out"],
 )
 def test_an_expected_refusal_skips_the_holder_quietly_and_keeps_the_market_open(
     claims, caplog, exc, level
 ):
-    """A held lock (they are claiming by hand), a paused gas breaker, or a dry
-    wallet while sponsoring is switched off: retried next pass, and logged
-    without a traceback. The pin loop runs a pass every 20 s; a traceback per
+    """A held lock (they are claiming by hand), a paused gas breaker, a dry
+    wallet while sponsoring is switched off, or a top-up that timed out:
+    retried later, and logged without a traceback. The pin loop runs a pass every 20 s; a traceback per
     holder each time would bury the failures that need one."""
     _calls, outcomes = claims
     db, chain = fresh_test_db(), _Chain()
@@ -361,7 +391,7 @@ def test_a_reverted_claim_is_left_alone_for_an_hour(claims):
 
     assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
     assert len(calls) == 1
-    left = polymarket_sync._revert_backoff_until[key] - time.monotonic()
+    left = polymarket_sync._claim_backoff_until[key] - time.monotonic()
     assert 3_590 < left <= 3_600
 
     # Inside the hour: not tried again, and the market stays open.
@@ -370,12 +400,173 @@ def test_a_reverted_claim_is_left_alone_for_an_hour(claims):
     assert _flagged(db, market[0]) is False
 
     # The hour is up and the cause is gone: claimed, settled, forgotten.
-    polymarket_sync._revert_backoff_until[key] = 0.0
+    polymarket_sync._claim_backoff_until[key] = 0.0
     del outcomes[key]
     assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
     assert len(calls) == 2
     assert _flagged(db, market[0]) is True
-    assert key not in polymarket_sync._revert_backoff_until
+    assert key not in polymarket_sync._claim_backoff_until
+
+
+# ----- a failure that repeats must not starve the rest ------------------------
+
+
+def test_refused_holders_are_backed_off_so_the_next_pass_reaches_the_rest(claims):
+    """With the gas breaker paused, the first 20 holders in api-key order fail
+    the same way on every pass. Counted as attempts and never remembered, they
+    would burn the cap each time: the 21st holder, every later market and the
+    house's own claims (which would succeed) would never be reached, and
+    `_redeem_lock` would be held for ~20 futile attempts every 20 s."""
+    calls, outcomes = claims
+    db, chain = fresh_test_db(), _Chain()
+    first, second = _market(db), _market(db)
+    holders = [
+        _holder(db, chain, first, holds={first[1]: _ONE_USD}) for _ in range(25)
+    ]
+    last = _holder(db, chain, second, holds={second[1]: _ONE_USD})
+    for holder in holders:
+        outcomes[(holder.user_id, first[0])] = AdminGasPausedError()
+
+    # Pass 1 spends the cap on 20 refusals and stops inside the first market.
+    assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 0  # type: ignore[arg-type]
+    tried = [user for user, _market_id, _vector in calls]
+    assert len(tried) == 20
+
+    # Pass 2 passes those 20 by without counting them: the other 5 are tried,
+    # and so is the next market.
+    assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 1  # type: ignore[arg-type]
+    again = [user for user, _market_id, _vector in calls[20:]]
+    assert len(again) == 6
+    assert not set(again) & set(tried)
+    assert last.user_id in again
+    assert _flagged(db, first[0]) is False  # all 25 are still owed
+    assert _flagged(db, second[0]) is True
+
+
+@pytest.mark.parametrize(
+    ("exc", "constant"),
+    [
+        (AdminGasPausedError(), "_REFUSED_BACKOFF_SECONDS"),
+        (InsufficientGasError("wallet balance too low"), "_REFUSED_BACKOFF_SECONDS"),
+        (GasTopUpTimeoutError(), "_REFUSED_BACKOFF_SECONDS"),
+        (RuntimeError("boom"), "_REFUSED_BACKOFF_SECONDS"),
+        (TransactionRevertedError("reverted"), "_REVERT_BACKOFF_SECONDS"),
+    ],
+    ids=["breaker-paused", "not-sponsored", "top-up-timed-out", "unexpected", "reverted"],
+)
+def test_a_failed_claim_is_not_retried_inside_its_backoff_window(claims, exc, constant):
+    """Short for what may clear soon (the breaker, congestion, a kill switch);
+    an hour for a claim that mined and reverted, which costs gas each time."""
+    calls, outcomes = claims
+    db, chain = fresh_test_db(), _Chain()
+    market = _market(db)
+    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
+    key = (user.user_id, market[0])
+    outcomes[key] = exc
+    window = getattr(polymarket_sync, constant)
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
+    left = polymarket_sync._claim_backoff_until[key] - time.monotonic()
+    assert window - 10 < left <= window
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
+    assert len(calls) == 1
+    assert _flagged(db, market[0]) is False
+
+
+def test_a_refusal_is_forgiven_sooner_than_a_revert():
+    assert 0 < polymarket_sync._REFUSED_BACKOFF_SECONDS < 3_600
+    assert polymarket_sync._REVERT_BACKOFF_SECONDS == 3_600
+
+
+def test_a_held_lock_is_not_backed_off(claims):
+    """The holder is claiming by hand: nothing failed, and the next pass may
+    find the lock free."""
+    calls, outcomes = claims
+    db, chain = fresh_test_db(), _Chain()
+    market = _market(db)
+    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
+    key = (user.user_id, market[0])
+    outcomes[key] = TransactionInProgressError()
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
+    assert key not in polymarket_sync._claim_backoff_until
+
+    del outcomes[key]
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
+    assert len(calls) == 2
+    assert _flagged(db, market[0]) is True
+
+
+# ----- a market that cannot be read ------------------------------------------
+
+
+def _poison_market(db) -> int:
+    """A RESOLVED market whose token ids are not numbers (a bad row), found
+    in the suite as `ValueError: invalid literal for int() ... 'cut-y'`."""
+    with db.write() as conn:
+        row = conn.execute(
+            "INSERT INTO markets (CONDITION_ID, QUESTION, SLUG, DESCRIPTION, "
+            "ERC1155_TOKENS, START_DATE, MARKET_STATE, RESOLVED_OUTCOME) "
+            "VALUES (%s, %s, %s, 'd', %s, 100, 'RESOLVED', 0) "
+            "RETURNING MARKET_ID",
+            (
+                f"0x{secrets.token_hex(32)}",
+                f"Poison {secrets.token_hex(4)}?",
+                f"poison-{secrets.token_hex(4)}",
+                json.dumps([["cut-y", "YES"], ["cut-n", "NO"]]),
+            ),
+        ).fetchone()
+    return row["MARKET_ID"]
+
+
+def test_a_market_that_cannot_be_read_is_skipped_and_the_pass_goes_on(claims, caplog):
+    """One bad row must not stop every later market from being claimed: it is
+    logged once, left open, and the pass moves to the next market."""
+    calls, _ = claims
+    db, chain = fresh_test_db(), _Chain()
+    poison = _poison_market(db)  # the lower market id, so it comes first
+    good = _market(db)
+    _holder(db, chain, good, holds={good[1]: _ONE_USD})
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
+    assert [m for _user, m, _vector in calls] == [good[0]]
+    assert _flagged(db, poison) is False
+    assert _flagged(db, good[0]) is True
+    errors = [
+        r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.ERROR
+    ]
+    assert len(errors) == 1
+    assert errors[0].exc_info is not None
+
+
+def test_an_rpc_error_reading_one_markets_payout_does_not_abort_the_pass(claims):
+    calls, _ = claims
+    db, chain = fresh_test_db(), _Chain()
+    first, second = _market(db), _market(db)
+    _holder(db, chain, first, holds={first[1]: _ONE_USD})
+    _holder(db, chain, second, holds={second[1]: _ONE_USD})
+    chain.vector_errors = [RuntimeError("node hiccup")]  # the first market's read
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
+    assert [m for _user, m, _vector in calls] == [second[0]]
+    assert _flagged(db, first[0]) is False
+    assert _flagged(db, second[0]) is True
+
+
+def test_an_rpc_error_reading_a_holders_balances_leaves_the_market_open(claims):
+    calls, _ = claims
+    db, chain = fresh_test_db(), _Chain()
+    first, second = _market(db), _market(db)
+    _holder(db, chain, first, holds={first[1]: _ONE_USD})
+    _holder(db, chain, second, holds={second[1]: _ONE_USD})
+    chain.balance_errors = [RuntimeError("node hiccup")]  # the first read
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
+    assert [m for _user, m, _vector in calls] == [second[0]]
+    assert _flagged(db, first[0]) is False
+    assert _flagged(db, second[0]) is True
 
 
 def test_a_holder_who_claimed_by_hand_meanwhile_does_not_hold_the_market_open(

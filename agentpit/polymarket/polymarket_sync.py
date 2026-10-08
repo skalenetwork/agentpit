@@ -17,6 +17,7 @@ from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
+    GasTopUpTimeoutError,
     InsufficientGasError,
     MarketStateError,
     NothingToClaimError,
@@ -1391,13 +1392,24 @@ def mirror_polymarket_resolutions(
     return resolved_count
 
 
-# A claim that mined and reverted is not retried for this long. Keyed by
-# (user_id, market_id); the value is the time.monotonic() it may go again.
-# Module-level because a pass builds its services afresh every time. Only
-# `auto_redeem_resolved_markets` touches it, and app.py runs that under
-# `_redeem_lock`, so one thread at a time.
+# A claim that failed is not retried for a while, so a failure that repeats
+# cannot hold up the rest of the pass. Keyed by (user_id, market_id); the value
+# is the time.monotonic() it may go again. Module-level because a pass builds
+# its services afresh every time. Only `auto_redeem_resolved_markets` touches
+# it, and app.py runs that under `_redeem_lock`, so one thread at a time.
+#
+# A claim that mined and reverted costs gas every time and should not happen
+# after the on-chain gate: left alone for an hour.
 _REVERT_BACKOFF_SECONDS = 3600
-_revert_backoff_until: dict[tuple[str, int], float] = {}
+# A claim that was refused or could not go out (the gas breaker is paused, the
+# wallet could not be funded, the top-up timed out, or something unexpected)
+# may well go out soon, and costs little to try again: a quarter of an hour.
+# Without it the same first `auto_redeem_max_per_pass` holders in key order
+# would spend the cap on every pass, with the breaker paused or the kill switch
+# off, and the rest -- the house's own claims among them -- would never be
+# reached.
+_REFUSED_BACKOFF_SECONDS = 900
+_claim_backoff_until: dict[tuple[str, int], float] = {}
 
 
 def _claimable_payout(balances: list[int], den: int, nums: list[int]) -> int:
@@ -1444,12 +1456,17 @@ def auto_redeem_resolved_markets(
     Each claim takes about two blocks while the pass holds `_redeem_lock`,
     which both resolution loops wait on.
 
-    A holder whose lock is held (they are claiming by hand), whose top-up the
-    gas breaker refused, or whose dry wallet the sponsor would not fund (kill
-    switch off) is skipped for this pass and logged without a traceback. A
-    claim that mined and reverted is left alone for an hour: after the
-    on-chain gate that should not happen, and the backoff stops it repeating
-    every pass if it does.
+    A holder whose lock is held (they are claiming by hand) is skipped for
+    this pass. One whose top-up the gas breaker refused or timed out, or whose
+    dry wallet the sponsor would not fund (kill switch off), or whose claim
+    failed unexpectedly, is left alone for `_REFUSED_BACKOFF_SECONDS`; one
+    whose claim mined and reverted for an hour. The backoff keeps a failure
+    that repeats from spending the cap on the same holders every pass. A
+    holder in backoff is passed by without counting toward the cap. The
+    expected refusals are logged without a traceback.
+
+    A market whose chain reads fail (a bad row, an RPC error) is logged and
+    left open; the pass goes on to the next one.
 
     Returns the number of holder redemptions performed.
     """
@@ -1461,8 +1478,11 @@ def auto_redeem_resolved_markets(
     minimum = sponsor.min_claim_micro
     cap = settings.auto_redeem_max_per_pass
     now = time.monotonic()
-    for expired in [k for k, until in _revert_backoff_until.items() if until <= now]:
-        del _revert_backoff_until[expired]
+    for expired in [k for k, until in _claim_backoff_until.items() if until <= now]:
+        del _claim_backoff_until[expired]
+
+    def back_off(key: tuple[str, int], seconds: int) -> None:
+        _claim_backoff_until[key] = time.monotonic() + seconds
 
     redeemed = 0
     attempts = 0
@@ -1470,21 +1490,32 @@ def auto_redeem_resolved_markets(
         markets = TableRead.list_resolved_unredeemed_markets(conn)
 
     for market in markets:
-        token_strs = [t for t, _ in market.erc1155_tokens]
-        token_ints = [int(t) for t in token_strs]
-        with db.read() as conn:
-            api_keys = TableRead.list_participant_api_keys_for_market(
-                conn, market.market_id, token_strs
+        try:
+            token_strs = [t for t, _ in market.erc1155_tokens]
+            token_ints = [int(t) for t in token_strs]
+            with db.read() as conn:
+                api_keys = TableRead.list_participant_api_keys_for_market(
+                    conn, market.market_id, token_strs
+                )
+            vector = None
+            if api_keys:
+                vector = admin.payout_vector(
+                    hex2bytes(market.condition_id.value), len(token_ints)
+                )
+        except Exception:
+            # One bad row or one RPC error must not stop every later market
+            # from being claimed. It stays open and is read again next pass.
+            logger.exception(
+                "auto-redeem: market %s could not be read; retried next pass",
+                market.market_id,
             )
-        if not api_keys:
+            continue
+        if vector is None:
             # Nobody ever traded or split it, so nobody can be owed anything.
             with db.write() as conn:
                 TableWrite.mark_fully_redeemed(conn, market.market_id)
             continue
 
-        vector = admin.payout_vector(
-            hex2bytes(market.condition_id.value), len(token_ints)
-        )
         den, nums = vector
         if den == 0:
             # RESOLVED here without a reportPayouts on chain (the admin resolve
@@ -1503,10 +1534,24 @@ def auto_redeem_resolved_markets(
                 user = TableRead.get_user_by_api_key(conn, api_key)
             if user is None:
                 continue
-            payout = _claimable_payout(
-                admin.ctf_balances(user.eth_address, token_ints), den, nums
-            )
-            if payout < minimum:
+            try:
+                balances = admin.ctf_balances(user.eth_address, token_ints)
+            except Exception:
+                # Probably the node, not the holder: stop reading this market
+                # for this pass instead of one traceback per holder.
+                logger.exception(
+                    "auto-redeem: balances of %s on market %s could not be "
+                    "read; the market is retried next pass",
+                    user.eth_address,
+                    market.market_id,
+                )
+                still_owed = True
+                break
+            payout = _claimable_payout(balances, den, nums)
+            # `payout <= 0` on its own, not left to the minimum: `Settings`
+            # refuses a minimum below 1, but a claim that pays nothing is
+            # pure admin gas even if that were ever relaxed.
+            if payout <= 0 or payout < minimum:
                 # Nothing, only the losing side, or dust: a claim would be
                 # pure admin gas, and nothing here is worth keeping open for.
                 continue
@@ -1516,7 +1561,7 @@ def auto_redeem_resolved_markets(
                 still_owed = True
                 continue
             key = (user.user_id, market.market_id)
-            if _revert_backoff_until.get(key, 0.0) > now:
+            if _claim_backoff_until.get(key, 0.0) > now:
                 still_owed = True
                 continue
             if attempts >= cap:
@@ -1547,17 +1592,23 @@ def auto_redeem_resolved_markets(
                     market.market_id,
                 )
                 still_owed = True
-            except (AdminGasPausedError, InsufficientGasError) as exc:
+            except (
+                AdminGasPausedError,
+                InsufficientGasError,
+                GasTopUpTimeoutError,
+            ) as exc:
+                back_off(key, _REFUSED_BACKOFF_SECONDS)
                 logger.warning(
                     "auto-redeem: claim for %s on market %s not sent (%s); "
-                    "retried next pass",
+                    "not retried for %d s",
                     user.eth_address,
                     market.market_id,
                     exc,
+                    _REFUSED_BACKOFF_SECONDS,
                 )
                 still_owed = True
             except TransactionRevertedError as exc:
-                _revert_backoff_until[key] = now + _REVERT_BACKOFF_SECONDS
+                back_off(key, _REVERT_BACKOFF_SECONDS)
                 logger.warning(
                     "auto-redeem: claim for %s on market %s reverted (%s); "
                     "not retried for %d s",
@@ -1568,10 +1619,13 @@ def auto_redeem_resolved_markets(
                 )
                 still_owed = True
             except Exception:
+                back_off(key, _REFUSED_BACKOFF_SECONDS)
                 logger.exception(
-                    "auto-redeem failed for %s on market %s",
+                    "auto-redeem failed for %s on market %s; not retried "
+                    "for %d s",
                     user.eth_address,
                     market.market_id,
+                    _REFUSED_BACKOFF_SECONDS,
                 )
                 still_owed = True
 

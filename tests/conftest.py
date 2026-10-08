@@ -175,11 +175,11 @@ def _isolated_db_session():
 
     _leaderboard_service._holdings.clear()
     _leaderboard_service._dirty.clear()
-    # Same reason again: a revert backoff left by a previous test would make
+    # Same reason again: a claim backoff left by a previous test would make
     # the next test's auto-redeem pass skip a holder it should claim for.
     from agentpit.polymarket import polymarket_sync as _polymarket_sync
 
-    _polymarket_sync._revert_backoff_until.clear()
+    _polymarket_sync._claim_backoff_until.clear()
     before = {id(s) for s in DbSession._open}
     fresh = fresh_test_db()
     previous = app.dependency_overrides.get(get_db_session)
