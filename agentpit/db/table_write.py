@@ -91,16 +91,48 @@ class TableWrite:
         )
 
     @staticmethod
+    def claim_onboarding(
+        db: psycopg.Connection, user_id: str, now: int, stale_before: int
+    ) -> bool:
+        """Claim the right to onboard this row, atomically.
+
+        The predicate and the stamp are one statement -- the idiom of
+        `mark_key_export_attempt` -- so two parallel first sign-ins cannot
+        both find the row unclaimed and both send the gas grant. A claim older
+        than `stale_before` belongs to a process that died mid-onboarding and
+        may be taken over. False when the row is onboarded, claimed, or gone.
+        """
+        cur = db.execute(
+            "UPDATE users SET ONBOARDING_STARTED_AT = %s "
+            "WHERE USER_ID = %s AND ONBOARDED_AT IS NULL "
+            "AND (ONBOARDING_STARTED_AT IS NULL OR ONBOARDING_STARTED_AT < %s)",
+            (now, user_id, stale_before),
+        )
+        return cur.rowcount > 0
+
+    @staticmethod
+    def release_onboarding_claim(db: psycopg.Connection, user_id: str) -> None:
+        """Drop a claim after a failed onboarding so an honest retry need not wait."""
+        db.execute(
+            "UPDATE users SET ONBOARDING_STARTED_AT = NULL WHERE USER_ID = %s",
+            (user_id,),
+        )
+
+    @staticmethod
     def clear_user_onboarded(db: psycopg.Connection, user_id: str) -> bool:
         """Test-only: put a row back into the never-onboarded state.
 
         The condition it recreates is real -- `_create_account` commits the row
         before onboarding it, so a chain outage leaves exactly this -- but
         nothing in the product ever writes it, and the repair paths that read
-        `ONBOARDED_AT` cannot be tested without a way to produce it.
+        `ONBOARDED_AT` cannot be tested without a way to produce it. The claim
+        goes too: a row left holding one would refuse the very onboarding the
+        test is trying to provoke.
         """
         cur = db.execute(
-            "UPDATE users SET ONBOARDED_AT = NULL WHERE USER_ID = %s", (user_id,)
+            "UPDATE users SET ONBOARDED_AT = NULL, ONBOARDING_STARTED_AT = NULL "
+            "WHERE USER_ID = %s",
+            (user_id,),
         )
         return cur.rowcount > 0
 

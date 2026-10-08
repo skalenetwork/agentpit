@@ -192,6 +192,7 @@ class TableCreate:
             ("AGENT_HOST", "TEXT"),
             ("AGENT_CLIENT", "TEXT"),
             ("DELETED_AT", "BIGINT"),
+            ("ONBOARDING_STARTED_AT", "BIGINT"),
         ]
         for col, col_type in additions:
             conn.execute(

@@ -38,6 +38,10 @@ log = logging.getLogger(__name__)
 class AuthService:
     """Coordinates registration, login, and on-chain onboarding."""
 
+    #: A claim this old belongs to a process that died mid-onboarding. Five
+    #: sequential chain sends at a 30 s timeout each fit inside it.
+    ONBOARDING_CLAIM_STALE_S = 300
+
     def __init__(
         self,
         db: DbSession,
@@ -388,7 +392,25 @@ class AuthService:
         Both signup paths call this and neither does the work inline. Two copies
         would drift -- one gains a step the other does not -- and the difference
         surfaces months later as an account that cannot trade.
+
+        The row is claimed first (`claim_onboarding`), so two parallel calls
+        for one account send the gas grant once and the loser is told to retry.
         """
+        now = int(time.time())
+        with self._db.write() as conn:
+            claimed = TableWrite.claim_onboarding(
+                conn, user_id, now, now - self.ONBOARDING_CLAIM_STALE_S
+            )
+        if not claimed:
+            with self._db.read() as conn:
+                current = TableRead.get_user_by_userid(conn, user_id)
+            if current is None:
+                raise UserNotFoundError()
+            if current.onboarded_at is not None:
+                return current  # someone else finished it
+            raise OnboardingError(
+                "this account is already being set up — try again in a moment"
+            )
         # On-chain onboarding happens *outside* the DB transaction so we don't
         # hold the write lock for ~1s of network round-trips.
         try:
@@ -396,9 +418,13 @@ class AuthService:
         except AdminGasPausedError:
             # Not wrapped: a 503 "try again later", not an OnboardingError (400,
             # or MCP's "still being set up") and not a traceback per sign-in.
+            # The claim goes back all the same: the retry the 503 asks for must
+            # not find the row held.
+            self._release_onboarding_claim(user_id)
             raise
         except Exception as exc:
             log.exception("on-chain onboarding failed for user %s", user_id)
+            self._release_onboarding_claim(user_id)
             raise OnboardingError(str(exc)) from exc
         with self._db.write() as conn:
             TableWrite.mark_user_onboarded(conn, user_id)
@@ -436,6 +462,16 @@ class AuthService:
         if user is None:
             raise RuntimeError("user disappeared between insert and read")
         return user
+
+    def _release_onboarding_claim(self, user_id: str) -> None:
+        # Swallowed: this runs while the real failure is already on its way to
+        # the caller, and a second exception here would replace it. The worst
+        # case of not releasing is the stale-claim wait, not a lost error.
+        try:
+            with self._db.write() as conn:
+                TableWrite.release_onboarding_claim(conn, user_id)
+        except Exception:
+            log.exception("releasing the onboarding claim failed for %s", user_id)
 
     def _google_response(self, user: User, *, created: bool) -> GoogleAuthResponse:
         issued = self._issue(user)
