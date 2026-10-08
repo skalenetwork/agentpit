@@ -40,6 +40,7 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     GasBudgetExceededError,
+    GasTopUpTimeoutError,
     InsufficientGasError,
     TransactionInProgressError,
     TransactionRevertedError,
@@ -132,19 +133,26 @@ class UserGasSponsor:
         per call. If any reverted, `TransactionRevertedError` is raised instead,
         after the gas is booked, because reverted gas is still paid.
 
-        A top-up whose receipt times out (`fund_gas` raises `TimeExhausted`)
-        stops the send before any user transaction goes out, and the error
-        propagates. The top-up may still mine, so it is treated like a fill
-        whose receipt timed out in `OrderService._book_sponsored_gas`: a
-        split/merge reservation is left standing, an over-count and the safe
-        direction, and nothing else is booked, not even the transfer. Nothing
-        has to remember it either: every send sizes against the balance it
-        reads, so once the late top-up has mined, the next send tops up only
-        max(0, need - balance), which is nothing when the late top-up covers
-        it. (If it has not mined yet, the next send tops up in full and the
-        wallet briefly holds more than one need, which later sends use up
-        before they top up again.) A top-up that can never run (`TxDropped`)
-        is no timeout: like a paused breaker, it hands the reservation back.
+        A top-up whose receipt times out (`fund_gas` raises `TimeExhausted`,
+        also when the admin sender finds no free transaction slot) stops the
+        send before any user transaction goes out, and is re-raised as
+        `GasTopUpTimeoutError` (503, "the platform is busy"). The top-up may
+        still mine, so it is treated like a fill whose receipt timed out in
+        `OrderService._book_sponsored_gas`: a split/merge reservation is left
+        standing, an over-count and the safe direction, and nothing else is
+        booked, not even the transfer. Nothing has to remember it either:
+        every send sizes against the balance it reads, so once the late
+        top-up has mined, the next send tops up only max(0, need - balance),
+        which is nothing when the late top-up covers it. (If it has not mined
+        yet, the next send tops up in full and the wallet briefly holds more
+        than one need, which later sends use up before they top up again.) A
+        top-up that can never run (`TxDropped`) is no timeout: like a paused
+        breaker, it hands the reservation back.
+
+        A user transaction that got no answer at all (a transport error after
+        the broadcast, `SendError.TRANSPORT`) may have mined, so it books like
+        a receipt timeout: the reservation stands. The error propagates as it
+        is.
         """
         # A cheap guard against a caller that forgot the lock. It cannot tell
         # which thread holds it, but a lock nobody holds is a sure bug.
@@ -216,10 +224,17 @@ class UserGasSponsor:
                         topups += 1
                     continue
                 i += 1
-        except TimeExhausted:
+        except (TimeExhausted, GasTopUpTimeoutError):
             # No receipt in time, for a top-up or for a user transaction: it
             # may still mine, so the booking must not refund the reservation.
             timed_out = True
+            raise
+        except Exception as exc:
+            # No answer to a broadcast (a reset, a proxy's 502): the node may
+            # hold the transaction and mine it, the same unknown as a timeout.
+            # Any other failure is an answer, and a refusal ran nothing.
+            if classify_send_error(exc) is SendError.TRANSPORT:
+                timed_out = True
             raise
         finally:
             gas = topups * TRANSFER_GAS + sum(
@@ -323,13 +338,17 @@ class UserGasSponsor:
         at import, against committed state. A sponsored admin send, so a paused
         breaker refuses it (`AdminGasPausedError`, 503). Only a wallet that
         needs a top-up meets the breaker; a funded one proceeds while paused.
-        `TimeExhausted` (no receipt in time) and `TxDropped` propagate as they
-        are; `send`'s docstring says what each does to the booking."""
-        self._onchain.fund_gas(
-            user.eth_address,
-            shortfall,
-            timeout=self._settings.tx_confirmations_timeout_s,
-        )
+        `TimeExhausted` (no receipt in time, or no free admin slot) becomes
+        `GasTopUpTimeoutError` (503); `TxDropped` propagates as it is.
+        `send`'s docstring says what each does to the booking."""
+        try:
+            self._onchain.fund_gas(
+                user.eth_address,
+                shortfall,
+                timeout=self._settings.tx_confirmations_timeout_s,
+            )
+        except TimeExhausted as exc:
+            raise GasTopUpTimeoutError() from exc
 
     def _send_one(
         self, user: User, fn: ContractFunction, gas: int, price: int

@@ -510,6 +510,7 @@ The platform pays the gas for all three: before each transaction the server tops
 
 - `409` (`TransactionInProgressError`) `another transaction for this account is in progress — try again in a moment` — one split, merge or claim per account at a time, auto-redeem included.
 - `503` (`AdminGasPausedError`) `the platform's gas wallet is running low — try again later` — a top-up was needed while the platform's gas wallet is below its stop level. A wallet that already holds enough goes ahead.
+- `503` (`GasTopUpTimeoutError`) `the platform is busy — try again in a moment` — the top-up got no receipt in time, so nothing of yours was sent. Retry; if the top-up landed late the retry needs none.
 - `402` (`InsufficientGasError`) — the wallet still could not pay after the top-up and one retry, or the operator has switched sponsorship off (`AGENTPIT_SPONSOR_USER_GAS=false`).
 - `400` (`TransactionRevertedError`) — the transaction mined and reverted. Its gas still counts toward the daily budget.
 

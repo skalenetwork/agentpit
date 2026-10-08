@@ -15,6 +15,7 @@ from agentpit.domain.exceptions import (
     BusinessRuleError,
     FeatureDisabledError,
     GasBudgetExceededError,
+    GasTopUpTimeoutError,
     InsufficientGasError,
     InvalidCredentialsError,
     NotFoundError,
@@ -81,6 +82,15 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _admin_gas_paused(_: Request, exc: AdminGasPausedError) -> JSONResponse:
         """Our wallet is low: an outage on our side, so 503 and WARNING."""
         log.warning("admin gas breaker refused a request: %s", exc)
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(GasTopUpTimeoutError)
+    async def _gas_top_up_timeout(
+        _: Request, exc: GasTopUpTimeoutError
+    ) -> JSONResponse:
+        """The admin's top-up timed out: congestion on our side, so 503 and
+        WARNING, like the breaker."""
+        log.warning("gas top-up timed out, a request was refused: %s", exc)
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     # Registered ahead of the generic BusinessRuleError handler below it, but

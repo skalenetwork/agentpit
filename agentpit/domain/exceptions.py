@@ -128,6 +128,23 @@ class AdminGasPausedError(DomainError):
         super().__init__(message)
 
 
+class GasTopUpTimeoutError(DomainError):
+    """The admin's gas top-up for a user-signed transaction got no receipt in
+    time, or found no free admin transaction slot, so no transaction of the
+    user's was sent.
+
+    A direct `DomainError` (503) like `AdminGasPausedError`: our side is
+    congested, nothing the caller did is wrong, and the same request succeeds
+    once it clears. The top-up may still mine, so a retry sizes against the
+    balance it finds and tops up only the difference.
+    """
+
+    def __init__(
+        self, message: str = "the platform is busy — try again in a moment"
+    ):
+        super().__init__(message)
+
+
 class GasBudgetExceededError(DomainError):
     """The account has made the admin pay for its daily share of gas: fills,
     splits and merges. Claims and onboarding are booked against the same

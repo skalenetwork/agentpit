@@ -14,6 +14,7 @@ import threading
 import time
 
 import pytest
+import requests
 from web3 import Web3
 from web3.exceptions import TimeExhausted, Web3RPCError
 
@@ -23,6 +24,7 @@ from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
     GasBudgetExceededError,
+    GasTopUpTimeoutError,
     InsufficientGasError,
     TransactionInProgressError,
     TransactionRevertedError,
@@ -499,8 +501,10 @@ def test_a_receipt_timeout_keeps_the_reservation():
 def test_a_top_up_whose_receipt_times_out_sends_nothing_and_is_not_paid_twice(
     kind, standing
 ):
-    """`fund_gas` gave up waiting for the top-up's receipt. No user transaction
-    goes out and the error propagates. The top-up may still mine, so a split's
+    """`fund_gas` gave up waiting for the top-up's receipt (or found no free
+    admin transaction slot). No user transaction goes out and the caller gets
+    `GasTopUpTimeoutError` (503) instead of a bare `TimeExhausted` (500). The
+    top-up may still mine, so a split's
     reservation stands (an over-count, the safe direction) and nothing else is
     booked. Once the late top-up has mined, the next send sizes against the
     balance it left and tops up only max(0, need - balance): nothing here."""
@@ -508,8 +512,10 @@ def test_a_top_up_whose_receipt_times_out_sends_nothing_and_is_not_paid_twice(
     user = _user(db)
     # The first read sees the empty wallet; every later one sees the late top-up.
     chain = _Chain(balances=(0, NEED), fund_errors=[TimeExhausted("no receipt in 30s")])
-    with pytest.raises(TimeExhausted):
+    with pytest.raises(GasTopUpTimeoutError) as caught:
         _send(db, chain, user, [_Call()], kind)
+    assert isinstance(caught.value.__cause__, TimeExhausted)
+    assert str(caught.value) == "the platform is busy — try again in a moment"
     assert chain.funded == [NEED] and chain.sends == []
     assert _used(db, user) == standing
 
@@ -519,6 +525,30 @@ def test_a_top_up_whose_receipt_times_out_sends_nothing_and_is_not_paid_twice(
     assert (
         _used(db, user) == standing + 80_000
     )  # the new reservation is trued up; the old one stands
+
+
+def test_a_transport_error_after_the_broadcast_keeps_the_reservation():
+    """No answer to the send (a reset, a proxy's 502): the node may hold the
+    transaction and mine it, so the reservation stands like a receipt
+    timeout's. The error itself propagates as it is."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(refusals=[requests.ConnectionError("connection reset by peer")])
+    with pytest.raises(requests.ConnectionError):
+        _send(db, chain, user, [_Call()], "split")
+    assert _used(db, user) == 120_000 + TRANSFER_GAS
+
+
+def test_a_definite_refusal_hands_a_split_reservation_back():
+    """The counterpart: the node answered and refused ("nonce too low"), so the
+    transaction provably never ran. Only the top-up's transfer, which did go
+    out, stays booked."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(refusals=[_refused("nonce too low")])
+    with pytest.raises(Web3RPCError):
+        _send(db, chain, user, [_Call()], "split")
+    assert _used(db, user) == TRANSFER_GAS
 
 
 def test_a_booking_failure_never_fails_the_action(monkeypatch, caplog):

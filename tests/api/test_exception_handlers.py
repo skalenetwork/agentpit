@@ -20,6 +20,7 @@ from agentpit.domain.exceptions import (
     AdminGasPausedError,
     BusinessRuleError,
     GasBudgetExceededError,
+    GasTopUpTimeoutError,
     InsufficientGasError,
     NothingToClaimError,
     TransactionInProgressError,
@@ -115,6 +116,10 @@ def _sponsor_stub_app() -> FastAPI:
     def _reverted():
         raise TransactionRevertedError("the claim transaction reverted on chain")
 
+    @app.get("/busy")
+    def _busy():
+        raise GasTopUpTimeoutError()
+
     return app
 
 
@@ -144,3 +149,18 @@ def test_nothing_to_claim_and_a_reverted_transaction_are_400():
         400,
         "the claim transaction reverted on chain",
     )
+
+
+def test_a_gas_top_up_that_timed_out_is_503_logged_at_warning(caplog):
+    """The admin's top-up got no receipt in time (or never found a free admin
+    transaction slot): our side is congested, nothing the caller did is wrong,
+    and the same request may succeed in a moment. 503 and WARNING, like the
+    breaker -- not the bare 500 an uncaught `TimeExhausted` used to be."""
+    caplog.set_level(logging.INFO, logger="agentpit.api.exception_handlers")
+    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
+    r = client.get("/busy")
+    assert r.status_code == 503
+    assert r.json() == {"detail": "the platform is busy — try again in a moment"}
+    ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
+    assert [rec.levelno for rec in ours] == [logging.WARNING]
+    assert not issubclass(GasTopUpTimeoutError, BusinessRuleError)
