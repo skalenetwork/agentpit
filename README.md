@@ -380,8 +380,8 @@ Run from a linked git worktree (such as the ones under `.claude/worktrees/`),
 the suite uses its own database, `agentpit_test_<worktree name>`, and creates it
 on the first run, so sessions testing in parallel worktrees don't truncate each
 other's tables. Set `AGENTPIT_DATABASE_URL` to pick a database yourself.
-Removing a worktree leaves its database behind; `dropdb agentpit_test_<name>`
-deletes it.
+Once the worktree is removed, the next test run from any checkout drops its
+database. Databases made by hand are never touched.
 
 ---
 
