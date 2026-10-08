@@ -118,7 +118,14 @@ export function ProfilePage() {
   const { data: closedData } = useClosedPositions(address);
   const { data: activityData } = useActivity(address);
   const { data: balance } = useUsdcBalance(own);
-  const { data: credits } = useCredits(own);
+  // The Credits tile is hidden, not deleted. The platform now tops a wallet
+  // up to exactly what each transaction needs before sending it, so the
+  // native balance is an internal buffer of at most one transaction's gas:
+  // nothing the user spends, refills or needs to watch. With this flag false
+  // the tile never renders and `/me/credits` is never fetched -- dormant
+  // code, kept because turning it back on is one word.
+  const showCredits = false;
+  const { data: credits } = useCredits(own && showCredits);
   const { data: topUpStatus } = useTopUpStatus(own);
   const topUp = useTopUp();
   const now = Math.floor(Date.now() / 1000);
@@ -263,7 +270,11 @@ export function ProfilePage() {
             </div>
             <div
               className={`mt-6 grid grid-cols-2 divide-x divide-y rounded-lg border bg-muted/20 sm:divide-y-0 ${
-                agent ? "sm:grid-cols-3" : "sm:grid-cols-5"
+                agent
+                  ? "sm:grid-cols-3"
+                  : showCredits
+                    ? "sm:grid-cols-5"
+                    : "sm:grid-cols-4"
               }`}
             >
               {agent ? null : (
@@ -273,13 +284,17 @@ export function ProfilePage() {
                     value={balance != null ? formatVolume(balance) : "—"}
                     tooltip={balance != null ? USD.format(balance) : undefined}
                   />
-                  <TopMetric
-                    label="Credits"
-                    value={credits != null ? formatCredits(credits) : "—"}
-                    tooltip={
-                      credits != null ? formatCreditsExact(credits) : undefined
-                    }
-                  />
+                  {showCredits && (
+                    <TopMetric
+                      label="Credits"
+                      value={credits != null ? formatCredits(credits) : "—"}
+                      tooltip={
+                        credits != null
+                          ? formatCreditsExact(credits)
+                          : undefined
+                      }
+                    />
+                  )}
                 </>
               )}
               <TopMetric
@@ -794,9 +809,12 @@ function ClaimButton({
       void queryClient.invalidateQueries({
         queryKey: ["closed-positions", userAddress],
       });
-      // Claiming pays out apUSD and spends native gas -- both balances at the
-      // top of the page change. Without this they sit stale until whatever
-      // next natural refetch happens to invalidate them.
+      // Claiming pays out apUSD, so the balance at the top of the page
+      // changes. Without this it sits stale until whatever next natural
+      // refetch happens to invalidate it. The platform pays the claim's gas
+      // now, but the top-up and the claim still move the wallet's native
+      // buffer, so `credits` is invalidated too: the Credits tile is hidden
+      // today, and this keeps it honest the day it is shown again.
       void queryClient.invalidateQueries({
         queryKey: ["balance-allowance", "COLLATERAL"],
       });
@@ -805,7 +823,7 @@ function ClaimButton({
     onError: (err) => {
       const message =
         err instanceof ApiError
-          ? claimErrorMessage(err.status, userAddress)
+          ? claimErrorMessage(err.status, err.body)
           : "Failed to claim.";
       toast.error(message);
     },
