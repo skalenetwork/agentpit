@@ -97,8 +97,8 @@ class TableWrite:
         """Claim the right to onboard this row, atomically.
 
         The predicate and the stamp are one statement -- the idiom of
-        `claim_topup` -- so two parallel first sign-ins cannot
-        both find the row unclaimed and both send the gas grant. A claim older
+        `claim_topup` -- so two parallel first sign-ins cannot both find the
+        row unclaimed and both drip collateral and top the wallet up. A claim older
         than `stale_before` belongs to a process that died mid-onboarding and
         may be taken over. False when the row is onboarded, claimed, or gone.
         """

@@ -13,6 +13,7 @@ from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
     HandleAlreadyExistsError,
+    InsufficientGasError,
     OnboardingError,
     UserNotFoundError,
 )
@@ -49,7 +50,7 @@ class AgentAccounts:
             raise UserNotFoundError()
         try:
             return self.ready(created)
-        except (OnboardingError, AdminGasPausedError):
+        except (OnboardingError, AdminGasPausedError, InsufficientGasError):
             with self._db.write() as conn:
                 TableWrite.delete_agent(conn, user_id, int(time.time()))
             raise
