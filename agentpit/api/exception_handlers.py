@@ -20,6 +20,7 @@ from agentpit.domain.exceptions import (
     InvalidCredentialsError,
     NotFoundError,
     TransactionInProgressError,
+    TransactionPendingError,
 )
 
 log = logging.getLogger(__name__)
@@ -91,6 +92,16 @@ def register_exception_handlers(app: FastAPI) -> None:
         """The admin's top-up timed out: congestion on our side, so 503 and
         WARNING, like the breaker."""
         log.warning("gas top-up timed out, a request was refused: %s", exc)
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(TransactionPendingError)
+    async def _transaction_pending(
+        _: Request, exc: TransactionPendingError
+    ) -> JSONResponse:
+        """A user transaction went out and its outcome is unknown: no receipt
+        in time, or no answer to the broadcast. 503 and WARNING like the other
+        congestion on our side; the detail tells the caller not to repeat it."""
+        log.warning("a user transaction's outcome is unknown: %s", exc)
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     # Registered ahead of the generic BusinessRuleError handler below it, but

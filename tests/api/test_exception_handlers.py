@@ -24,6 +24,7 @@ from agentpit.domain.exceptions import (
     InsufficientGasError,
     NothingToClaimError,
     TransactionInProgressError,
+    TransactionPendingError,
     TransactionRevertedError,
 )
 
@@ -120,6 +121,10 @@ def _sponsor_stub_app() -> FastAPI:
     def _busy():
         raise GasTopUpTimeoutError()
 
+    @app.get("/pending")
+    def _pending():
+        raise TransactionPendingError()
+
     return app
 
 
@@ -164,3 +169,21 @@ def test_a_gas_top_up_that_timed_out_is_503_logged_at_warning(caplog):
     ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
     assert [rec.levelno for rec in ours] == [logging.WARNING]
     assert not issubclass(GasTopUpTimeoutError, BusinessRuleError)
+
+
+def test_a_transaction_whose_outcome_is_unknown_is_503_logged_at_warning(caplog):
+    """The user's transaction went out and its receipt did not come back in
+    time, or the node never answered the broadcast. It may well mine, so the
+    caller is told not to repeat it: the pending row puts it in their history
+    once it lands. Not a bare 500: nothing failed that the caller could see."""
+    caplog.set_level(logging.INFO, logger="agentpit.api.exception_handlers")
+    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
+    r = client.get("/pending")
+    assert r.status_code == 503
+    assert r.json() == {
+        "detail": "the transaction was sent but is not confirmed yet — it will "
+        "appear in your history once it lands; do not repeat it"
+    }
+    ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
+    assert [rec.levelno for rec in ours] == [logging.WARNING]
+    assert not issubclass(TransactionPendingError, BusinessRuleError)

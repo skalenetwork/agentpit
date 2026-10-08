@@ -186,6 +186,28 @@ class TransactionRevertedError(BusinessRuleError):
         super().__init__(message)
 
 
+class TransactionPendingError(DomainError):
+    """A split, merge or claim was signed and sent, and nobody knows yet how
+    it ended: its receipt did not come back in time, or the node never
+    answered the broadcast. It may well mine.
+
+    Its intent row stays in `pending_user_txs`, so the auto-redeem pass writes
+    the history row once it has mined (`reconcile_pending_user_txs`), and
+    until then a second split, merge or claim on that market is refused (409)
+    instead of repeating it. A direct `DomainError` (503): nothing the caller
+    did is wrong, but they must not simply send it again.
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "the transaction was sent but is not confirmed yet — it will appear "
+            "in your history once it lands; do not repeat it"
+        ),
+    ):
+        super().__init__(message)
+
+
 class TransactionInProgressError(DomainError):
     """Another transaction for this account is still being sent.
 
