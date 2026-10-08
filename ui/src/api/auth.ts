@@ -139,23 +139,3 @@ export function setAutoRedeemRequest(enabled: boolean): Promise<UserPublic> {
     body: JSON.stringify({ enabled }),
   });
 }
-
-export function sendExportCodeRequest(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/me/private-key/code", {
-    method: "POST",
-  });
-}
-
-export function exportPrivateKeyRequest(
-  code: string,
-): Promise<{ private_key: string; eth_address: string }> {
-  return apiFetch<{ private_key: string; eth_address: string }>(
-    "/me/private-key",
-    {
-      method: "POST",
-      body: JSON.stringify({ code }),
-      // A 401 means the typed code was wrong, not that the session died.
-      skipAuthEvent: true,
-    },
-  );
-}
