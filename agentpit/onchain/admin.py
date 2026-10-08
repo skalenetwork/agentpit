@@ -3,6 +3,7 @@
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
 from web3.contract.contract import ContractFunction
+from web3.logs import DISCARD
 from web3.types import TxReceipt
 
 from agentpit.onchain.chain_rpc import current_fee_params
@@ -398,6 +399,34 @@ class OnchainAdmin:
                 ).call()
             )
         return out
+
+    def redeemed_payout(self, receipt: TxReceipt, redeemer: str) -> int:
+        """What the claim in `receipt` paid `redeemer`, in raw apUSD: the sum of
+        the `payout` of every `PayoutRedemption` the ConditionalTokens contract
+        emitted for that address, 0 when the receipt has none.
+
+        This is the amount of a claim. A difference of two apUSD balance reads
+        is not: fills, mints and transfers move that balance without the user's
+        lock while the claim is in flight, so the difference can come out
+        larger than the payout, or negative. The event reports what
+        `redeemPositions` paid, whatever else happened to the wallet.
+
+        The redeemer is compared case-insensitively. Only logs emitted by the
+        CTF itself count: `process_receipt` decodes by the event's signature
+        alone, so a lookalike contract's log would otherwise read as ours. Other
+        accounts' redemptions in the same receipt are not the redeemer's.
+        Reads nothing from the chain.
+        """
+        ctf = self._contracts.ctf
+        ours = ctf.address.lower()
+        who = redeemer.lower()
+        events = ctf.events.PayoutRedemption().process_receipt(receipt, errors=DISCARD)
+        return sum(
+            int(event["args"]["payout"])
+            for event in events
+            if event["address"].lower() == ours
+            and event["args"]["redeemer"].lower() == who
+        )
 
     def payout_vector(
         self, condition_id: bytes, outcome_count: int = 2
