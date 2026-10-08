@@ -3,6 +3,7 @@
 from collections.abc import Callable
 
 from eth_account.signers.local import LocalAccount
+from eth_typing import HexStr
 from web3 import Web3
 from web3.contract.contract import ContractFunction
 from web3.exceptions import TransactionNotFound
@@ -215,7 +216,7 @@ class OnchainAdmin:
         reconciler learns how a user transaction ended after its sender
         stopped waiting for it."""
         try:
-            return self._client.web3.eth.get_transaction_receipt(tx_hash)
+            return self._client.web3.eth.get_transaction_receipt(HexStr(tx_hash))
         except TransactionNotFound:
             return None
 
