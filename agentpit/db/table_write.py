@@ -231,6 +231,26 @@ class TableWrite:
         )
 
     @staticmethod
+    def reserve_sponsored_gas(
+        db: psycopg.Connection, api_key: str, day: int, gas: int, budget: int
+    ) -> bool:
+        """Add `gas` to the account's day unless the day is already at `budget`.
+
+        The predicate and the increment are one statement (the idiom of
+        `claim_auth_code_attempt`), so concurrent placements from one account
+        serialise on the row lock and each sees the reservations before it:
+        however many run at once, the day overshoots by at most one
+        placement's reservation. False when refused."""
+        cur = db.execute(
+            "INSERT INTO sponsored_gas (API_KEY, DAY, GAS_USED) VALUES (%s, %s, %s) "
+            "ON CONFLICT (API_KEY, DAY) DO UPDATE SET "
+            "GAS_USED = sponsored_gas.GAS_USED + EXCLUDED.GAS_USED "
+            "WHERE sponsored_gas.GAS_USED < %s",
+            (api_key, day, gas, budget),
+        )
+        return cur.rowcount > 0
+
+    @staticmethod
     def mark_key_export_attempt(
         db: psycopg.Connection, user_id: str, at: int, not_before: int
     ) -> bool:

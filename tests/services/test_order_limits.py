@@ -1,4 +1,5 @@
 import json
+import secrets
 import time
 from decimal import Decimal
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from agentpit.datastructures.place_order_request import PlaceOrderRequest
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import AdminGasPausedError, BusinessRuleError, GasBudgetExceededError
+from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.order_signer import OrderData
 from agentpit.services.order_service import OrderService
 from tests.db_helpers import fresh_test_db
@@ -216,12 +218,13 @@ def _booked_rows(db, api_key) -> int:
         return conn.execute("SELECT COUNT(*) AS n FROM sponsored_gas WHERE API_KEY = %s", (api_key,)).fetchone()["n"]
 
 
-def test_recording_zero_gas_writes_no_row():
+def test_booking_nothing_writes_no_row():
     svc, db, user = _setup()
-    svc._record_sponsored_gas(user, 0)
-    svc._record_sponsored_gas(user, -5)
+    svc._book_sponsored_gas(user, [], 0)
+    svc._book_sponsored_gas(user, [(0, ["maker-key"])], 0)              # a receipt without gasUsed
+    svc._book_sponsored_gas(user, [(70_000, ["maker-key"])], 70_000)    # the reservation was exact
     assert _booked_rows(db, user.api_key) == 0
-    svc._record_sponsored_gas(user, 70_000)         # the guard is not just a no-op
+    svc._book_sponsored_gas(user, [(70_000, ["maker-key"])], 0)         # the guard is not just a no-op
     assert _booked_rows(db, user.api_key) == 1
 
 
@@ -239,7 +242,10 @@ def _taker_and_matches(n_groups):
         "feeRateBps": 0, "side": 1, "signatureType": 0, "signature": "0x00",
     })
     matches = [
-        {"match_kind": kind, "trade_size": 10_000_000, "maker_row": {"ORDER_JSON": maker_json}}
+        {
+            "match_kind": kind, "trade_size": 10_000_000,
+            "maker_row": {"ORDER_JSON": maker_json, "API_KEY": f"maker-{kind.lower()}"},
+        }
         for kind in ("NORMAL", "MINT")[:n_groups]
     ]
     return taker, matches
@@ -247,13 +253,14 @@ def _taker_and_matches(n_groups):
 
 def _settle(receipts):
     """Run `_settle_on_chain` against fake admin sends that return `receipts`
-    in order, one per match-kind group. Returns (tx hashes, gas_used)."""
+    in order, one per match-kind group. Returns (tx hashes, gas_used), gas_used
+    holding one (receipt gasUsed, [maker API keys]) per group."""
     taker, matches = _taker_and_matches(len(receipts))
     exchange = SimpleNamespace(functions=SimpleNamespace(matchOrders=lambda *args: ("matchOrders", args)))
     onchain = SimpleNamespace(_client=object(), _contracts=SimpleNamespace(exchange=exchange))
     svc = OrderService(None, onchain, Settings())  # type: ignore[arg-type]
     sent = iter(receipts)
-    gas_used: list[int] = []
+    gas_used: list[tuple[int, list[str]]] = []
     with patch("agentpit.services.order_service.send_admin_tx", lambda *_a, **_k: next(sent)):
         hashes = svc._settle_on_chain(taker, b"\x00", matches, gas_used)
     return hashes, gas_used
@@ -262,13 +269,13 @@ def _settle(receipts):
 def test_receipt_without_gas_used_counts_zero():
     hashes, gas_used = _settle([{"transactionHash": b"\x01", "status": 1}])
     assert hashes == [b"\x01"]
-    assert gas_used == [0]
+    assert gas_used == [(0, ["maker-normal"])]
 
 
 def test_reverted_receipt_still_counts_its_gas():
     hashes, gas_used = _settle([{"transactionHash": b"\x02", "status": 0, "gasUsed": 123_456}])
     assert hashes == [b"\x02"]
-    assert gas_used == [123_456]
+    assert gas_used == [(123_456, ["maker-normal"])]
 
 
 def test_each_group_is_counted_even_when_one_receipt_lacks_gas():
@@ -276,7 +283,7 @@ def test_each_group_is_counted_even_when_one_receipt_lacks_gas():
         {"transactionHash": b"\x03", "status": 1, "gasUsed": 80_000},
         {"transactionHash": b"\x04", "status": 1},
     ])
-    assert gas_used == [80_000, 0]
+    assert gas_used == [(80_000, ["maker-normal"]), (0, ["maker-mint"])]
 
 
 class _PausedChain:
@@ -327,8 +334,138 @@ def test_an_admitted_placement_settles_even_when_the_breaker_trips_mid_way():
         _client=SimpleNamespace(admin_sender=sender), _contracts=SimpleNamespace(exchange=exchange)
     )
     svc = OrderService(None, onchain, Settings())  # type: ignore[arg-type]
-    gas_used: list[int] = []
+    gas_used: list[tuple[int, list[str]]] = []
     hashes = svc._settle_on_chain(taker, b"\x00", matches, gas_used)
 
     assert len(hashes) == 2 and len(chain.accepted) == 2
     assert sender.gas_state() == "paused"      # the breaker really did trip in between
+
+
+def test_book_refunds_the_unused_reservation():
+    svc, db, user = _setup()
+    day = int(time.time()) // 86_400
+    with db.write() as conn:
+        TableWrite.add_sponsored_gas(conn, user.api_key, day, 500_000)     # what the reservation took
+    svc._book_sponsored_gas(user, [(168_000, ["maker-key"])], 500_000)
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day) == 168_000
+        assert TableRead.sponsored_gas_used(conn, "maker-key", day) == 0
+
+
+def test_book_refunds_everything_when_nothing_settled():
+    svc, db, user = _setup()
+    day = int(time.time()) // 86_400
+    with db.write() as conn:
+        TableWrite.add_sponsored_gas(conn, user.api_key, day, 500_000)
+    svc._book_sponsored_gas(user, [], 500_000)
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day) == 0
+
+
+def test_house_taker_gas_is_split_over_the_non_house_makers():
+    svc, db, user = _setup()
+    day = int(time.time()) // 86_400
+    with db.write() as conn:
+        _u, _a, other_house = TableWrite.create_user(conn, email="h2@example.com", password_hash=None, handle=None)
+        TableWrite.mark_user_as_bot(conn, other_house)
+        TableWrite.mark_user_as_bot(conn, user.api_key)
+        house = TableRead.get_user_by_userid(conn, user.user_id)
+        _u3, _a3, maker = TableWrite.create_user(conn, email="m@example.com", password_hash=None, handle=None)
+    assert house is not None
+    svc._book_sponsored_gas(house, [(300_000, [maker, other_house]), (200_000, [maker])], 0)
+    with db.read() as conn:
+        assert TableRead.sponsored_gas_used(conn, maker, day) == 150_000 + 200_000
+        assert TableRead.sponsored_gas_used(conn, other_house, day) == 0
+        assert TableRead.sponsored_gas_used(conn, house.api_key, day) == 0
+
+
+def _rest_ask(db, api_key, token, price_micro, size_micro) -> str:
+    """Rest a SELL straight in the table (no signature check, no chain): the
+    book a taker will run into."""
+    zero = "0x" + "00" * 20
+    order = OrderData(
+        salt=secrets.randbits(64), maker=zero, signer=zero, taker=zero, tokenId=int(token),
+        makerAmount=size_micro, takerAmount=price_micro * size_micro // 1_000_000,
+        expiration=0, nonce=0, feeRateBps=0, side=1, signatureType=0,
+    )
+    order_id = OrderService._compute_order_id(order)
+    with db.write() as conn:
+        OrderService(None, None, Settings())._insert_order(  # type: ignore[arg-type]
+            conn, api_key=api_key, order=order, order_id=order_id, signature=b"\x00",
+            price_int=OrderService._price_int(order), order_type="GTC",
+        )
+    return order_id
+
+
+def test_a_refused_reservation_rolls_the_whole_placement_back():
+    """Two placements that both passed the pre-check: the second one's
+    reservation is refused inside the matching transaction, so nothing of it
+    survives -- no order row, no fill, the maker's order untouched."""
+    _svc, db, user = _setup()
+    day = int(time.time()) // 86_400
+    with db.write() as conn:
+        _u, _a, maker = TableWrite.create_user(conn, email="rest@example.com", password_hash=None, handle=None)
+        TableWrite.add_sponsored_gas(conn, user.api_key, day, 1_000_000)       # the day is already at the budget
+    ask = _rest_ask(db, maker, YES, 500_000, 10_000_000)
+    # A chain fake that can sign and passes the balance and breaker checks.
+    onchain = SimpleNamespace(
+        _client=SimpleNamespace(deployment=Deployment.load(Settings().deployment_path)),
+        usd_balance=lambda _a: 10**15, ctf_balance=lambda _a, _t: 10**15,
+        check_sponsored=lambda: None,
+    )
+    svc = OrderService(db, onchain, Settings(AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT=1_000_000))  # type: ignore[arg-type]
+    svc._check_gas_budget = lambda _user: None        # simulate the race: pre-check already passed
+
+    req = _req(price="0.5", size="10").model_copy(update={"client_order_id": "coid-1"})
+    with pytest.raises(GasBudgetExceededError) as info:
+        svc.place_order(user, req)
+    assert 0 < info.value.retry_after <= 86_400
+
+    with db.read() as conn:
+        rows = conn.execute("SELECT ORDER_ID, REMAINING_AMOUNT, STATUS FROM orders").fetchall()
+        assert [r["ORDER_ID"] for r in rows] == [ask]                          # no taker row
+        assert int(rows[0]["REMAINING_AMOUNT"]) == 10_000_000 and rows[0]["STATUS"] == "live"
+        assert conn.execute("SELECT COUNT(*) AS n FROM trades").fetchone()["n"] == 0
+        assert TableRead.get_idempotency_order_id(conn, user.api_key, "coid-1") is None
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day) == 1_000_000   # nothing added
+
+
+def test_the_reservation_is_taken_inside_the_placement():
+    """The positive side of the rollback test: with room in the budget the
+    reservation is made (makers x 250k) before settlement is attempted."""
+    _svc, db, user = _setup()
+    day = int(time.time()) // 86_400
+    with db.write() as conn:
+        _u, _a, maker = TableWrite.create_user(conn, email="rest@example.com", password_hash=None, handle=None)
+    _rest_ask(db, maker, YES, 500_000, 10_000_000)
+    reached = []
+
+    def settle(*_a, **_k):
+        with db.read() as conn:
+            reached.append(TableRead.sponsored_gas_used(conn, user.api_key, day))
+        raise RuntimeError("stop at settlement")
+
+    onchain = SimpleNamespace(
+        _client=SimpleNamespace(deployment=Deployment.load(Settings().deployment_path)),
+        usd_balance=lambda _a: 10**15, ctf_balance=lambda _a, _t: 10**15,
+        check_sponsored=lambda: None,
+    )
+    svc = OrderService(db, onchain, Settings(AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT=1_000_000))  # type: ignore[arg-type]
+    svc._settle_on_chain = settle                      # type: ignore[method-assign]
+    resp = svc.place_order(user, _req(price="0.5", size="10"))
+    assert not resp.success and "settlement failed" in resp.errorMsg
+    assert reached == [250_000]                        # one maker, reserved before settling
+    with db.read() as conn:
+        # Nothing settled, so the whole reservation came back.
+        assert TableRead.sponsored_gas_used(conn, user.api_key, day) == 0
+
+
+def test_the_house_reserves_nothing():
+    svc, db, user = _setup()
+    with db.write() as conn:
+        TableWrite.mark_user_as_bot(conn, user.api_key)
+        bot = TableRead.get_user_by_userid(conn, user.user_id)
+        assert bot is not None
+        assert svc._reserve_sponsored_gas(conn, bot, 5) == 0
+        assert svc._reserve_sponsored_gas(conn, user, 0) == 0
+    assert _booked_rows(db, user.api_key) == 0

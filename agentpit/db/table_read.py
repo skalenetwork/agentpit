@@ -1662,6 +1662,19 @@ class TableRead:
         return int(row["GAS_USED"]) if row else 0
 
     @staticmethod
+    def non_bot_api_keys(db: psycopg.Connection, api_keys: list[str]) -> set[str]:
+        """Those of `api_keys` that belong to a real account: the house
+        (IS_BOT) and keys nobody holds are dropped. Who is charged for a
+        house-taker fill."""
+        if not api_keys:
+            return set()
+        rows = db.execute(
+            "SELECT API_KEY FROM users WHERE API_KEY = ANY(%s) AND IS_BOT = 0",
+            (list(set(api_keys)),),
+        ).fetchall()
+        return {r["API_KEY"] for r in rows}
+
+    @staticmethod
     def list_live_order_levels(
         db: psycopg.Connection, api_key: str, token_ids: list[str]
     ) -> list[dict]:
