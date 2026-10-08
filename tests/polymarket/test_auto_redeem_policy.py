@@ -27,6 +27,7 @@ from agentpit.domain.exceptions import (
     InsufficientGasError,
     NothingToClaimError,
     TransactionInProgressError,
+    TransactionPendingError,
     TransactionRevertedError,
 )
 from agentpit.polymarket import polymarket_sync
@@ -582,3 +583,172 @@ def test_a_holder_who_claimed_by_hand_meanwhile_does_not_hold_the_market_open(
 
     assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
     assert _flagged(db, market[0]) is True
+
+
+# ----- transactions whose outcome nobody saw -----------------------------------
+
+
+class _ReceiptChain(_Chain):
+    """`_Chain`, plus the two things the pass's reconciler asks of the chain:
+    `receipts[tx_hash]` is that hash's receipt (None when the chain has none),
+    and `redeemed_payout` reads a receipt's `payout`."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.receipts: dict[str, dict | None] = {}
+
+    def transaction_receipt(self, tx_hash: str) -> dict | None:
+        return self.receipts.get(tx_hash)
+
+    def redeemed_payout(self, receipt: dict, redeemer: str) -> int:
+        return receipt["payout"]
+
+
+def _account(db) -> User:
+    """An account opted in to auto-redeem with no trade anywhere: the pass
+    finds it only through a SPLIT row, or through a pending one."""
+    with db.write() as conn:
+        user_id, _acct, _key = TableWrite.create_user(
+            conn,
+            email=f"splitter-{secrets.token_hex(4)}@example.com",
+            password_hash="x",
+            handle=None,
+        )
+        TableWrite.set_auto_redeem(conn, user_id, True)
+        user = TableRead.get_user_by_userid(conn, user_id)
+    assert user is not None
+    return user
+
+
+def _pending(db, user: User, market_id: int, kind="REDEEM", details=None, *, tx_hash: str):
+    with db.write() as conn:
+        TableWrite.insert_pending_user_tx(
+            conn, tx_hash, user.api_key, kind, market_id, details or {},
+            created_at=int(time.time()) - 30,
+        )
+
+
+def _history(db, user: User) -> list[tuple[str, dict]]:
+    with db.read() as conn:
+        return [
+            (r["TRANSACTION_TYPE"], json.loads(r["DETAILS"]))
+            for r in conn.execute(
+                "SELECT TRANSACTION_TYPE, DETAILS FROM transactions "
+                "WHERE API_KEY = %s ORDER BY TRANSACTION_ID",
+                (user.api_key,),
+            ).fetchall()
+        ]
+
+
+_H1 = "0x" + "e1" * 32
+
+
+def test_the_pass_settles_a_claim_that_mined_unseen_before_it_scans(claims):
+    """The request gave up waiting for the claim's receipt, and the claim
+    mined. The pass writes its REDEEM row first, then finds nobody owed: the
+    market is done, and the history has the win."""
+    calls, _ = claims
+    db, chain = fresh_test_db(), _ReceiptChain()
+    market = _market(db)
+    user = _holder(db, chain, market, holds={})  # the claim burned the tokens
+    _pending(db, user, market[0], tx_hash=_H1)
+    chain.receipts[_H1] = {"status": 1, "from": user.eth_address, "payout": _ONE_USD}
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
+
+    assert calls == []
+    assert _history(db, user) == [("REDEEM", {"collateral_amount": _ONE_USD})]
+    assert _flagged(db, market[0]) is True
+
+
+def test_a_split_that_mined_unseen_makes_its_holder_a_participant(claims):
+    """Only trades and SPLIT/MERGE rows make a participant, and a split whose
+    answer was lost had neither. Settled first, it is a SPLIT row, so the
+    same pass finds the holder owed and claims for them."""
+    calls, _ = claims
+    db, chain = fresh_test_db(), _ReceiptChain()
+    market = _market(db)
+    user = _account(db)
+    chain.hold(user.eth_address, market[1], _ONE_USD)
+    _pending(db, user, market[0], "SPLIT", {"amount": _ONE_USD}, tx_hash=_H1)
+    chain.receipts[_H1] = {"status": 1, "from": user.eth_address}
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
+
+    assert [(u, m) for u, m, _vector in calls] == [(user.user_id, market[0])]
+    assert _history(db, user) == [("SPLIT", {"amount": _ONE_USD})]
+
+
+def test_a_holder_with_a_transaction_in_flight_is_skipped_and_not_counted(claims):
+    """A pending row with no receipt yet: a split, merge or claim of theirs on
+    this market is on its way, and a claim now would meet the duplicate
+    guard's 409. Passed by like a held lock (no backoff, the market stays
+    open), and without spending the cap the other holders need."""
+    calls, _ = claims
+    db, chain = fresh_test_db(), _ReceiptChain()
+    first, second = _market(db), _market(db)
+    busy = _holder(db, chain, first, holds={first[1]: _ONE_USD})
+    _pending(db, busy, first[0], tx_hash=_H1)  # no receipt yet
+    honest = _holder(db, chain, second, holds={second[1]: _ONE_USD})
+
+    assert auto_redeem_resolved_markets(db, chain, _settings(cap=1)) == 1  # type: ignore[arg-type]
+
+    assert [u for u, _m, _vector in calls] == [honest.user_id]
+    assert (busy.user_id, first[0]) not in polymarket_sync._claim_backoff_until
+    assert _flagged(db, first[0]) is False
+    assert _flagged(db, second[0]) is True
+
+
+def test_a_split_in_flight_holds_the_market_open_for_a_holder_with_no_trades(claims):
+    """Not a participant yet (no trade, no SPLIT row), but the tokens may be
+    on their way: the market is not settled from under them."""
+    calls, _ = claims
+    db, chain = fresh_test_db(), _ReceiptChain()
+    market = _market(db)
+    user = _account(db)
+    _pending(db, user, market[0], "SPLIT", {"amount": _ONE_USD}, tx_hash=_H1)
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
+
+    assert calls == []
+    assert _flagged(db, market[0]) is False
+
+
+def test_a_claim_whose_outcome_is_unknown_keeps_the_market_open_without_a_backoff(
+    claims, caplog
+):
+    """The claim went out and its receipt did not come back: it may mine yet,
+    and its pending row keeps the holder out of the next passes until it is
+    settled. No backoff on top, and no traceback: nothing is broken."""
+    _calls, outcomes = claims
+    db, chain = fresh_test_db(), _Chain()
+    market = _market(db)
+    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
+    key = (user.user_id, market[0])
+    outcomes[key] = TransactionPendingError()
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
+
+    assert key not in polymarket_sync._claim_backoff_until
+    assert _flagged(db, market[0]) is False
+    records = [r for r in caplog.records if r.name == _LOGGER]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    assert records[0].exc_info is None
+
+
+def test_a_reconciler_that_fails_outright_does_not_stop_the_pass(claims, monkeypatch, caplog):
+    calls, _ = claims
+    db, chain = fresh_test_db(), _Chain()
+    market = _market(db)
+    _holder(db, chain, market, holds={market[1]: _ONE_USD})
+
+    def broken(_db, _admin):
+        raise RuntimeError("database gone")
+
+    monkeypatch.setattr(polymarket_sync, "reconcile_pending_user_txs", broken)
+
+    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
+    assert len(calls) == 1
+    errors = [r for r in caplog.records if r.name == _LOGGER and r.levelno >= logging.ERROR]
+    assert len(errors) == 1 and errors[0].exc_info is not None

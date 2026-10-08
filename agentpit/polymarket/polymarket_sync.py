@@ -22,9 +22,14 @@ from agentpit.domain.exceptions import (
     MarketStateError,
     NothingToClaimError,
     TransactionInProgressError,
+    TransactionPendingError,
     TransactionRevertedError,
 )
 from agentpit.onchain.admin import OnchainAdmin
+from agentpit.services.pending_user_txs import (
+    in_flight_since,
+    reconcile_pending_user_txs,
+)
 from agentpit.polymarket.category_resolver import category_rank, resolve_category
 from agentpit.polymarket.tag_taxonomy import normalize_slug
 from agentpit.datastructures.event import Event
@@ -1456,9 +1461,24 @@ def auto_redeem_resolved_markets(
     Each claim takes about two blocks while the pass holds `_redeem_lock`,
     which both resolution loops wait on.
 
+    The pass first settles the user transactions whose outcome nobody saw
+    (`reconcile_pending_user_txs`): a split that mined unseen becomes the
+    SPLIT row that makes its holder a participant, and a claim that mined
+    unseen its REDEEM row, before the scan reads anyone's balance. A failure
+    there is logged and the pass goes on.
+
     A holder whose lock is held (they are claiming by hand) is skipped for
-    this pass. One whose top-up the gas breaker refused or timed out, or whose
-    dry wallet the sponsor would not fund (kill switch off), or whose claim
+    this pass. So is one with a transaction on the market still in flight (a
+    pending row younger than its TTL that the reconciler could not settle
+    yet): a claim now would only meet the duplicate guard's 409. Neither is
+    backed off or counted toward the cap, and both keep the market open; a
+    holder in flight holds it open even before any trade or SPLIT row names
+    them. A claim whose own outcome turns out unknown
+    (`TransactionPendingError`) keeps the market open too, without a backoff:
+    its pending row keeps the holder out until it is settled.
+
+    One whose top-up the gas breaker refused or timed out, or whose dry
+    wallet the sponsor would not fund (kill switch off), or whose claim
     failed unexpectedly, is left alone for `_REFUSED_BACKOFF_SECONDS`; one
     whose claim mined and reverted for an hour. The backoff keeps a failure
     that repeats from spending the cap on the same holders every pass. A
@@ -1484,10 +1504,25 @@ def auto_redeem_resolved_markets(
     def back_off(key: tuple[str, int], seconds: int) -> None:
         _claim_backoff_until[key] = time.monotonic() + seconds
 
+    try:
+        reconcile_pending_user_txs(db, admin)
+    except Exception:
+        logger.exception(
+            "auto-redeem: pending user transactions could not be settled; "
+            "tried again next pass"
+        )
+
     redeemed = 0
     attempts = 0
     with db.read() as conn:
         markets = TableRead.list_resolved_unredeemed_markets(conn)
+        cutoff = in_flight_since(int(time.time()))
+        # (api_key, market_id) of every transaction still on its way.
+        in_flight = {
+            (row.api_key, row.market_id)
+            for row in TableRead.list_pending_user_txs(conn)
+            if row.created_at >= cutoff
+        }
 
     for market in markets:
         try:
@@ -1497,6 +1532,7 @@ def auto_redeem_resolved_markets(
                 api_keys = TableRead.list_participant_api_keys_for_market(
                     conn, market.market_id, token_strs
                 )
+            api_keys |= {k for k, m in in_flight if m == market.market_id}
             vector = None
             if api_keys:
                 vector = admin.payout_vector(
@@ -1533,6 +1569,15 @@ def auto_redeem_resolved_markets(
             with db.read() as conn:
                 user = TableRead.get_user_by_api_key(conn, api_key)
             if user is None:
+                continue
+            if (api_key, market.market_id) in in_flight:
+                logger.info(
+                    "auto-redeem: %s has a transaction on market %s whose "
+                    "outcome is not known yet; retried next pass",
+                    user.eth_address,
+                    market.market_id,
+                )
+                still_owed = True
                 continue
             try:
                 balances = admin.ctf_balances(user.eth_address, token_ints)
@@ -1590,6 +1635,15 @@ def auto_redeem_resolved_markets(
                     "is retried next pass",
                     user.eth_address,
                     market.market_id,
+                )
+                still_owed = True
+            except TransactionPendingError as exc:
+                logger.warning(
+                    "auto-redeem: claim for %s on market %s was sent and its "
+                    "outcome is unknown (%s); settled by a later pass",
+                    user.eth_address,
+                    market.market_id,
+                    exc,
                 )
                 still_owed = True
             except (
