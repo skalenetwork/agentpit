@@ -93,7 +93,12 @@ def send_admin_tx(
 
 
 def fund_user_with_native(
-    client: Web3Client, user_address: str, value_wei: int, *, timeout: int = 30
+    client: Web3Client,
+    user_address: str,
+    value_wei: int,
+    *,
+    timeout: int = 30,
+    slot_timeout: float | None = None,
 ) -> TxReceipt:
     """Send `value_wei` native tokens from admin to user_address.
 
@@ -101,5 +106,10 @@ def fund_user_with_native(
     user's wallet up to exactly what their next transactions need, and the
     house gas loop to keep the house accounts above their floor. There is no
     signup grant any more.
+
+    `slot_timeout` is `AdminTxSender.send_value`'s: it caps the wait for a free
+    admin transaction slot and makes `timeout` cover that wait too.
     """
-    return client.admin_sender.send_value(user_address, value_wei, timeout=timeout)
+    return client.admin_sender.send_value(
+        user_address, value_wei, timeout=timeout, slot_timeout=slot_timeout
+    )

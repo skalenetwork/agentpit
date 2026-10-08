@@ -71,8 +71,21 @@ class OnchainAdmin:
     def fund_gas(
         self, user_address: str, value_wei: int, *, timeout: int = 30
     ) -> TxReceipt:
+        """Send `value_wei` native coin to `user_address` and wait for it.
+
+        Takes `timeout` seconds at most, the wait for a free admin transaction
+        slot included: a top-up runs while the user's lock is held (and, in
+        auto-redeem, `_redeem_lock`), so a full pipeline must not hold them for
+        the sender's own 120 s before the receipt wait even starts. A full
+        pipeline therefore raises `TimeExhausted` after about `timeout`, with
+        nothing broadcast.
+        """
         return fund_user_with_native(
-            self._client, user_address, value_wei, timeout=timeout
+            self._client,
+            user_address,
+            value_wei,
+            timeout=timeout,
+            slot_timeout=timeout,
         )
 
     def grant_user_approvals(
