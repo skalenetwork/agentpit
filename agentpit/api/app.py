@@ -435,8 +435,8 @@ def _warn_if_simulated_on_durable_chain(settings: Settings, chain_id: int) -> No
     `is_disposable_chain`), but it is still a wrong config worth a loud line."""
     if settings.simulated_chain and not is_disposable_chain(chain_id):
         log.error(
-            "AGENTPIT_SIMULATED_CHAIN=true is IGNORED on chain %d: re-granting gas "
-            "on login is only for a disposable anvil (%d). Set it to false.",
+            "AGENTPIT_SIMULATED_CHAIN=true is IGNORED on chain %d: re-running "
+            "onboarding on login is only for a disposable anvil (%d). Set it to false.",
             chain_id, ANVIL_CHAIN_ID,
         )
 
