@@ -10,7 +10,7 @@ def _no_scan(monkeypatch):
 
 def test_run_resolution_cycle_resolves_then_redeems(monkeypatch):
     _no_scan(monkeypatch)
-    calls = {"mirror": 0, "redeem": 0, "now": None}
+    calls = {"mirror": 0, "redeem": 0, "now": None, "settings": None}
 
     class FakeSettings:
         auto_redeem_enabled = True
@@ -32,20 +32,25 @@ def test_run_resolution_cycle_resolves_then_redeems(monkeypatch):
         assert conn == "CONN"
         return 2 if candidates is None else 0
 
-    def fake_redeem(db, admin):
+    def fake_redeem(db, admin, settings):
         calls["redeem"] += 1
+        calls["settings"] = settings
         return 3
 
     monkeypatch.setattr(app_mod, "mirror_polymarket_resolutions", fake_mirror)
     monkeypatch.setattr(app_mod, "auto_redeem_resolved_markets", fake_redeem)
 
+    settings = FakeSettings()
     resolved, redeemed, _scan = app_mod._run_resolution_cycle(
-        FakeDb(), admin="ADMIN", settings=FakeSettings()  # type: ignore[arg-type]
+        FakeDb(), admin="ADMIN", settings=settings  # type: ignore[arg-type]
     )
 
     assert (resolved, redeemed) == (2, 3)
     assert calls["mirror"] == 1 and calls["redeem"] == 1
     assert isinstance(calls["now"], int)
+    # The pass gets the cycle's settings: its claim minimum and per-pass cap
+    # live there.
+    assert calls["settings"] is settings
 
 
 def test_run_resolution_cycle_skips_redeem_when_disabled(monkeypatch):
@@ -72,7 +77,7 @@ def test_run_resolution_cycle_skips_redeem_when_disabled(monkeypatch):
     )
     called = {"redeem": False}
 
-    def fake_redeem(db, admin):
+    def fake_redeem(db, admin, settings):
         called["redeem"] = True
         return 0
 

@@ -75,14 +75,20 @@ def test_run_pin_resolve_returns_only_resolved_and_redeemed(monkeypatch):
         return 1
 
     monkeypatch.setattr(app_mod, "ended_unresolved_window_ids", fake_ids)
-    monkeypatch.setattr(app_mod, "mirror_polymarket_resolutions", fake_mirror)
-    monkeypatch.setattr(app_mod, "auto_redeem_resolved_markets", lambda db, admin: 2)
+    def fake_redeem(db, admin, settings):
+        seen["redeem_settings"] = settings
+        return 2
 
+    monkeypatch.setattr(app_mod, "mirror_polymarket_resolutions", fake_mirror)
+    monkeypatch.setattr(app_mod, "auto_redeem_resolved_markets", fake_redeem)
+
+    settings = _FakeResolveSettings()
     result = app_mod._run_pin_resolve(
-        _FakeDb(), admin="ADMIN", settings=_FakeResolveSettings()  # type: ignore[arg-type]
+        _FakeDb(), admin="ADMIN", settings=settings  # type: ignore[arg-type]
     )
 
     assert result == (1, 2)
+    assert seen["redeem_settings"] is settings
     # Scoped to the just-ended windows, not a whole-table scan.
     assert seen["market_ids"] == {7}
     assert seen["ids_conn"] == "CONN"

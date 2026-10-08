@@ -339,29 +339,34 @@ def test_the_cap_falls_back_to_lifetime_volume_when_24h_volume_is_missing():
     assert [m["groupItemTitle"] for m in extra] == ["Busy"]
 
 
-# ----- the house stops paying other people's gas -----------------------------
+# ----- claim gas is sized per transaction, never granted ---------------------
 
 
-def test_the_redeem_loop_never_funds_gas():
-    """Claiming a win costs the holder 91,743 gas. On a chain where that is
-    money, it is theirs to spend — and we were sending a whole coin, 227x the
-    need, before every single claim."""
+def test_the_redeem_loop_never_funds_gas_itself():
+    """Claims are sponsored since 2026-10-08, but only through
+    `UserGasSponsor`, which tops a wallet up to exactly one claim's need.
+    Before 2026-08-10 this loop sent a whole coin, 227x the need, before every
+    single claim; it must never send gas itself again."""
     import inspect
     from agentpit.polymarket import polymarket_sync
 
     src = inspect.getsource(polymarket_sync.auto_redeem_resolved_markets)
     assert "fund_gas" not in src
     assert "gas_topup_wei" not in src
+    assert "UserGasSponsor" in src
 
 
-def test_the_redeem_loop_takes_no_gas_argument():
+def test_the_redeem_loop_takes_settings_and_no_gas_argument():
+    """`settings` carries the claim minimum, the per-pass cap and, through the
+    sponsor, the kill switch and the top-up ceiling. A gas amount is never a
+    parameter."""
     import inspect
     from agentpit.polymarket import polymarket_sync
 
     params = inspect.signature(
         polymarket_sync.auto_redeem_resolved_markets
     ).parameters
-    assert "gas_topup_wei" not in params
+    assert list(params) == ["db", "admin", "settings"]
 
 
 # ----- the series that regenerate faster than anyone reads them --------------
