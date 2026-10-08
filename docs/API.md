@@ -388,7 +388,14 @@ Response (`OrderResponse`, Polymarket `postOrder` shape): `success`, `errorMsg` 
 
 > Note: a settlement failure is reported as `success: false` + `errorMsg`, not via HTTP status or a distinct `status` value.
 
-Errors: `400` (`InsufficientBalanceError`) if the account can't cover the order; `400` (`MarketStateError`) for an unknown `token_id` or a market not accepting orders; `400` (`OrderNotFilledError`) when a `FOK` cannot fully fill or a `FAK` finds no match, and nothing rests.
+Errors: `400` (`InsufficientBalanceError`) if the account can't cover the order; `400` (`MarketStateError`) for an unknown `token_id` or a market that is not `ACTIVE` (`market is not open for trading`); `400` (`OrderNotFilledError`) when a `FOK` cannot fully fill or a `FAK` finds no match, and nothing rests.
+
+Every fill is a `matchOrders` the platform pays gas for, so non-house accounts are also limited (the house is exempt from the first two, and from the budget):
+
+- `400` `order is too small: the minimum is $1 (price × size)` — the collateral leg (price × size) must be at least $1 (`AGENTPIT_MIN_ORDER_NOTIONAL_MICRO`).
+- `400` `too many open orders: N are live and the limit is 200 — cancel some first` — `GTC`/`GTD` only, since `FOK`/`FAK` never rest. Orders left on markets that no longer trade don't count (`AGENTPIT_MAX_LIVE_ORDERS_PER_ACCOUNT`).
+- `429` `this account has used its daily trading gas budget — it resets at 00:00 UTC` — the gas its fills cost the platform today hit the daily budget (`AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT`). The `Retry-After` header is the seconds to 00:00 UTC. The refused placement leaves nothing behind (no order, no fill, no idempotency claim).
+- `503` `trading is paused: the platform's gas wallet is running low — try again later` — the platform's gas wallet is below its stop level. Not the caller's fault; retry later.
 
 ```bash
 curl -s -X POST http://localhost:8000/order \
@@ -505,7 +512,7 @@ Lock `amount` apUSD on-chain to mint an equal amount of every outcome token for 
 |---|---|---|---|
 | `amount` | int | yes | `> 0` |
 
-Response (`PositionResponse`): `market_id`, `amount`, `collateral_amount`, `token_balances` (map of token id → balance). Errors: `400` (`InsufficientBalanceError`) if the caller can't cover `amount`.
+Response (`PositionResponse`): `market_id`, `amount`, `collateral_amount`, `token_balances` (map of token id → balance). Errors: `400` (`InsufficientBalanceError`) if the caller can't cover `amount`; `400` (`MarketStateError`) `split only runs on ACTIVE markets` for a market in any other state.
 
 ```bash
 curl -s -X POST http://localhost:8000/markets/42/split_position \
@@ -520,7 +527,7 @@ Burn `amount` of each outcome token to recover `amount` apUSD.
 |---|---|---|---|
 | `amount` | int | yes | `> 0` |
 
-Response: `PositionResponse`. Errors: `400` (`InsufficientBalanceError`) if the caller doesn't hold enough of each outcome token.
+Response: `PositionResponse`. Errors: `400` (`InsufficientBalanceError`) if the caller doesn't hold enough of each outcome token. Unlike `split_position`, merge runs in **any** market state, on purpose: it is user-paid (no platform gas) and is the only API way back from a YES+NO pair on a `CANCELLED` market.
 
 ### `POST /markets/{market_id}/redeem_position`
 Redeem winning outcome tokens for apUSD after the market has resolved. No body.
