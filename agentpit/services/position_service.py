@@ -127,7 +127,10 @@ class PositionService:
             # (payoutStake * numerator / den per index set) and as the
             # auto-redeem scan's `_claimable_payout` computes it.
             payout = sum(bal * num // den for bal, num in zip(balances, nums))
-            if payout < self._sponsor.min_claim_micro:
+            # `payout <= 0` on its own, not left to the minimum: the setting is
+            # validated to be at least 1, but a claim that pays nothing must
+            # not reach the sponsor even if that were ever relaxed.
+            if payout <= 0 or payout < self._sponsor.min_claim_micro:
                 raise NothingToClaimError()
             pre_balance = self._onchain.usd_balance(user.eth_address)
             call = self._onchain.redeem_call(condition_id, _partition(market))

@@ -221,6 +221,26 @@ def test_the_payout_weighs_each_balance_by_its_numerator(vector, balances, claim
         assert sponsor.sent == []
 
 
+@pytest.mark.parametrize("minimum", [0, 1], ids=["minimum-0", "minimum-1"])
+@pytest.mark.parametrize(
+    "balances",
+    [
+        pytest.param((0, 0), id="zero-holdings"),
+        pytest.param((0, 50_000_000), id="losing-tokens-only"),
+    ],
+)
+def test_a_payout_of_zero_is_never_sent_whatever_the_minimum(minimum, balances):
+    """The setting is validated to be at least 1, but the gate does not lean on
+    it: a claim that pays nothing is pure admin gas (a top-up and a redeem per
+    HTTP call, never budgeted), so it is refused even if the minimum were 0."""
+    db, user, mid = _setup(MarketState.RESOLVED)
+    sponsor = _FakeSponsor(min_claim_micro=minimum)
+    with pytest.raises(NothingToClaimError):
+        _service(db, _FakeChain(balances=balances), sponsor).redeem(user, mid)
+    assert sponsor.sent == []
+    assert _rows(db, user) == []
+
+
 def test_the_minimum_comes_from_the_sponsor():
     db, user, mid = _setup(MarketState.RESOLVED)
     sponsor = _FakeSponsor(min_claim_micro=1)

@@ -36,12 +36,12 @@ def test_env_overrides(monkeypatch):
         monkeypatch,
         AGENTPIT_SPONSOR_USER_GAS="false",
         AGENTPIT_MAX_TOPUP_GAS="250000",
-        AGENTPIT_MIN_CLAIM_MICRO="0",
+        AGENTPIT_MIN_CLAIM_MICRO="1",
         AGENTPIT_AUTO_REDEEM_MAX_PER_PASS="1",
     )
     assert s.sponsor_user_gas is False
     assert s.max_topup_gas == 250_000
-    assert s.min_claim_micro == 0
+    assert s.min_claim_micro == 1
     assert s.auto_redeem_max_per_pass == 1
 
 
@@ -49,7 +49,13 @@ def test_env_overrides(monkeypatch):
     "name, value",
     [
         ("AGENTPIT_MAX_TOPUP_GAS", "-1"),
+        # A ceiling of 0 turns every top-up into a RuntimeError, onboarding's
+        # included, so every signup would 500.
+        ("AGENTPIT_MAX_TOPUP_GAS", "0"),
         ("AGENTPIT_MIN_CLAIM_MICRO", "-1"),
+        # With a minimum of 0, `payout < minimum` is never true: a position
+        # worth nothing would be claimed for, at the admin's expense.
+        ("AGENTPIT_MIN_CLAIM_MICRO", "0"),
         # A pass that may send no claim at all would never redeem anything.
         ("AGENTPIT_AUTO_REDEEM_MAX_PER_PASS", "0"),
     ],
