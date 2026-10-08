@@ -299,7 +299,7 @@ Errors: `400` insufficient USDC, `400` `"split only runs on ACTIVE markets"` in 
 ### POST `/markets/{market_id}/merge_positions`
 Burn `amount` of each outcome token → receive `amount` USDC. Must hold at least `amount` of every outcome token.
 
-Same request/response schema as `split_position`. Unlike split, merge runs in **any** market state, on purpose: it is user-paid (no platform gas) and is the only API way back from a YES+NO pair on a `CANCELLED` market.
+Same request/response schema as `split_position`. Unlike split, merge runs in **any** market state, on purpose: it is the only API way back from a YES+NO pair on a `CANCELLED` market. The platform pays its gas, and that gas counts against the account's daily budget like split's.
 
 Errors: `400` `"Insufficient balance of token <id>: have X, need Y"`
 

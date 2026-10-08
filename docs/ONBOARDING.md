@@ -253,7 +253,7 @@ Schema is in `agentpit/db/table_create.py`. `TableCreate.create_all_tables(db)` 
 
 These are known and documented — don't be surprised when you find them:
 
-None are tracked here right now. The old split/merge state gap is closed and deliberately asymmetric: `split_position` runs only on `ACTIVE` markets (`400` `split only runs on ACTIVE markets`), while `merge_positions` runs in any state. Merge is user-paid and is the only API way back from a YES+NO pair on a `CANCELLED` market, so guarding it on `ACTIVE` would strand collateral. Don't "fix" it.
+None are tracked here right now. The old split/merge state gap is closed and deliberately asymmetric: `split_position` runs only on `ACTIVE` markets (`400` `split only runs on ACTIVE markets`), while `merge_positions` runs in any state. Merge is the only API way back from a YES+NO pair on a `CANCELLED` market, so guarding it on `ACTIVE` would strand collateral; its sponsored gas counts against the same daily per-account budget as split's. Don't "fix" it.
 
 ---
 

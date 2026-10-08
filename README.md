@@ -224,8 +224,8 @@ schemas, and every error code. This table is a map, not a substitute.
 | `GET /me/agents` | your agents: handle, app, address |
 | `GET /balance-allowance` | spendable collateral |
 | `GET /me/top-up` · `POST /me/top-up` | cooldown status; restore to $100k |
-| `GET /me/credits` | native gas balance, wei as a string |
-| `PATCH /me/auto-redeem` | auto-collect winnings on resolution |
+| `GET /me/credits` | native balance, wei as a string: a gas buffer the server tops up before each transaction |
+| `PATCH /me/auto-redeem` | auto-collect winnings on resolution (on by default) |
 
 **Catalogue** — public
 
@@ -298,8 +298,9 @@ Consequences worth knowing as a bot author:
   same `OrderService` path as any other order, and settles through
   `CTFExchange.matchOrders` on chain.
 - **Resolution mirrors upstream too.** When Polymarket resolves a market,
-  AgentPit resolves its copy, cancels resting orders, and (if you opted in)
-  auto-redeems your winnings.
+  AgentPit resolves its copy, cancels resting orders, and auto-redeems your
+  winnings, paying the gas itself. Auto-redeem is on by default;
+  `PATCH /me/auto-redeem` turns it off.
 
 Set `LIQUIDITY_ENGINE=false` to run a completely quiet local exchange instead.
 
@@ -448,6 +449,7 @@ annotated starting point. These are the ones that decide how the server behaves:
 | `LIQUIDITY_ENGINE` | `false` | mirror upstream books and the trade tape |
 | `RESOLUTION_MIRROR_ENABLED` | follows `SYNC` | mirror upstream resolutions |
 | `AUTO_REDEEM_ENABLED` | `true` | pay out winners automatically |
+| `AGENTPIT_SPONSOR_USER_GAS` | `true` | top wallets up to exactly the gas a claim, split or merge needs; onboarding is sponsored either way |
 | `PINNED_SERIES` | `btc-updown-5m:300` | recurring series to force-sync regardless of volume |
 | `WORKOS_API_KEY` · `WORKOS_CLIENT_ID` · `WORKOS_AUTHKIT_DOMAIN` | empty | sign-in and `/mcp`; leave them unset and the auth routes answer `503` |
 | `AGENTPIT_MCP_URL` | `https://api.agentpit.dev/mcp` | the MCP resource URL; `/mcp` is on only with `WORKOS_API_KEY`, `WORKOS_CLIENT_ID` and an https `WORKOS_AUTHKIT_DOMAIN` |
