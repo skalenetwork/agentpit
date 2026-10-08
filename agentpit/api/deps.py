@@ -137,8 +137,10 @@ def get_trade_service(db: SessionDep) -> TradeService:
     return TradeService(db)
 
 
-def get_account_service(db: SessionDep, onchain: OnchainAdminDep) -> AccountService:
-    return AccountService(db, onchain)
+def get_account_service(
+    db: SessionDep, onchain: OnchainAdminDep, settings: SettingsDep
+) -> AccountService:
+    return AccountService(db, onchain, min_claim_micro=settings.min_claim_micro)
 
 
 AccountServiceDep = Annotated[AccountService, Depends(get_account_service)]

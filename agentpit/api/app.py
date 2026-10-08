@@ -581,7 +581,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             leaderboard_service = LeaderboardService(
                 db_session,
                 onchain_admin,
-                AccountService(db_session, onchain_admin),
+                AccountService(
+                    db_session, onchain_admin, min_claim_micro=settings.min_claim_micro
+                ),
                 settings,
             )
             leaderboard_task = asyncio.create_task(
