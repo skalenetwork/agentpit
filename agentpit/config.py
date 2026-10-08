@@ -371,6 +371,40 @@ class Settings(BaseSettings):
         default=60.0, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_CHECK_INTERVAL_SECONDS"
     )
 
+    # --- User gas sponsorship (owner decisions 2026-10-08) -------------------
+    # Every transaction a user's key signs -- onboarding approvals, split,
+    # merge, claim -- is preceded by an admin top-up of exactly what it needs:
+    # its estimate plus 20%, at the current eth_gasPrice, less what the wallet
+    # already holds (UserGasSponsor). Nobody picks a grant size any more.
+    # Kill switch for the claim/split/merge top-ups. Off, those transactions go
+    # out unfunded and a dry wallet gets 402. Onboarding is sponsored either
+    # way: it replaced the signup grant, and without it no account or agent
+    # could ever be created.
+    sponsor_user_gas: bool = Field(
+        default=True, validation_alias="AGENTPIT_SPONSOR_USER_GAS"
+    )
+    # Ceiling on one top-up, in GAS valued at the current price (like the
+    # admin floors above, so it means the same on mainnet and testnet). The
+    # largest real need is onboarding's three approvals, ~167k with the
+    # buffer; a top-up above this is a wrong estimate, raised as a bug rather
+    # than paid.
+    max_topup_gas: int = Field(
+        default=1_000_000, ge=0, validation_alias="AGENTPIT_MAX_TOPUP_GAS"
+    )
+    # Smallest claim payout worth a sponsored redeemPositions, in micro-apUSD
+    # ($0.01). redeemPositions succeeds with zero holdings, so without a floor
+    # every losing or dust position would be a free way to spend admin gas.
+    min_claim_micro: int = Field(
+        default=10_000, ge=0, validation_alias="AGENTPIT_MIN_CLAIM_MICRO"
+    )
+    # Sponsored claims one auto-redeem pass sends before it stops; the rest
+    # wait for the next pass. The pass is serial at ~2 blocks per holder and
+    # holds the lock both resolution loops share, so with auto-redeem on for
+    # everyone an uncapped pass would stall them for minutes.
+    auto_redeem_max_per_pass: int = Field(
+        default=20, ge=1, validation_alias="AGENTPIT_AUTO_REDEEM_MAX_PER_PASS"
+    )
+
     # Admin
     admin_token: str = Field(
         default="dev-admin-token",
