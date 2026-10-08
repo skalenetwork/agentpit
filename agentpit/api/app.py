@@ -81,7 +81,9 @@ log = logging.getLogger(__name__)
 # The full resolution loop and the fast pin-resolve loop both run auto-redeem
 # off-thread; serialize them so they can't redeem the same position concurrently
 # (a race that double-logged the payout — phantom collateral from the apUSD
-# delta — even though on-chain only one redeem actually transferred).
+# delta — even though on-chain only one redeem actually transferred). It also
+# keeps polymarket_sync's revert backoff to one thread. A pass holds it for at
+# most AGENTPIT_AUTO_REDEEM_MAX_PER_PASS claims, about two blocks each.
 _redeem_lock = threading.Lock()
 _LEADERBOARD_TICK_SECONDS = 2
 
@@ -154,7 +156,7 @@ def _run_resolution_cycle(
     redeemed = 0
     if settings.auto_redeem_enabled:
         with _redeem_lock:
-            redeemed = auto_redeem_resolved_markets(db, admin)
+            redeemed = auto_redeem_resolved_markets(db, admin, settings)
     return resolved, redeemed, scan_after
 
 
@@ -344,7 +346,7 @@ def _run_pin_resolve(
     redeemed = 0
     if settings.auto_redeem_enabled:
         with _redeem_lock:
-            redeemed = auto_redeem_resolved_markets(db, admin)
+            redeemed = auto_redeem_resolved_markets(db, admin, settings)
     return resolved, redeemed
 
 
