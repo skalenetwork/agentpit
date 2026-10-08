@@ -1,10 +1,12 @@
 from types import SimpleNamespace
 
 import pytest
+from eth_account import Account
 from web3 import Web3
 
 from agentpit.domain.exceptions import AdminGasPausedError
 from agentpit.onchain.chain_rpc import Web3ChainRpc
+from agentpit.onchain.tx_sender import TRANSFER_GAS
 from tests.fake_skaled import FakeFn, FakeSkaled, make_sender
 
 PRICE = 200_000          # FakeSkaled.fee[0]
@@ -87,6 +89,42 @@ def test_receipts_debit_the_cached_balance():
     sender.wait(sender.submit(FakeFn()), timeout=5)     # still ok; costs gas_limit * PRICE
     with pytest.raises(AdminGasPausedError):
         sender.submit(FakeFn())
+
+
+def test_a_mined_value_send_debits_its_value_as_well_as_its_gas():
+    """Every claim/split/merge top-up is a native transfer, so most of what the
+    admin spends is the value it sends, not the gas of sending it."""
+    chain = FakeSkaled()
+    sender, account, _ = make_sender(chain, stop_gas=100)
+    chain.balances[account.address] = 10**18
+    sender.refresh_gas_balance()
+    value = 7 * 10**15
+    sender.send_value(Account.create().address, value, timeout=5)
+    assert sender._admin_balance == 10**18 - value - TRANSFER_GAS * PRICE
+
+
+def test_a_batch_of_value_sends_debits_each_value():
+    chain = FakeSkaled()
+    sender, account, _ = make_sender(chain, stop_gas=100)
+    chain.balances[account.address] = 10**18
+    sender.refresh_gas_balance()
+    to = Account.create().address
+    results = sender.submit_values([(to, 3 * 10**15), (to, 5 * 10**15)])
+    assert all(not isinstance(r, Exception) for r in results)
+    sender.wait_all(results, timeout=5)  # type: ignore[arg-type]
+    assert sender._admin_balance == 10**18 - 8 * 10**15 - 2 * TRANSFER_GAS * PRICE
+
+
+def test_a_reverted_send_debits_its_gas_but_not_its_value():
+    """A reverted transaction hands its value back; only the gas is spent."""
+    chain = FakeSkaled()
+    sender, account, _ = make_sender(chain, stop_gas=100)
+    chain.balances[account.address] = 10**18
+    chain.revert = {0}
+    sender.refresh_gas_balance()
+    receipt = sender.send_value(Account.create().address, 7 * 10**15, timeout=5)
+    assert receipt["status"] == 0
+    assert sender._admin_balance == 10**18 - TRANSFER_GAS * PRICE
 
 
 def test_debit_ignores_receipts_without_gas_fields():

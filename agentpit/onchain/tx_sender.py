@@ -5,7 +5,7 @@ transactions in one block, provided the client hands them over without
 waiting for each receipt. The old `send_admin_tx` held one lock from the nonce
 read to the receipt, so the admin key landed exactly one transaction per block
 (~4.6 s each) and the market sync, user settlement (`matchOrders`), faucet and
-gas grants all queued behind one another.
+users' gas top-ups all queued behind one another.
 
 skaled behaviour this relies on (tag 5.2.0-beta.1, checked 2026-10-06):
 - `eth_getTransactionCount(addr, "pending")` is the COMMITTED nonce: queued
@@ -106,6 +106,7 @@ class _Entry:
     __slots__ = (
         "pending",
         "sent_at",
+        "value",
         "receipt",
         "superseded_by",
         "dropped",
@@ -113,9 +114,12 @@ class _Entry:
         "suspect_since",
     )
 
-    def __init__(self, pending: PendingTx, sent_at: float):
+    def __init__(self, pending: PendingTx, sent_at: float, value: int = 0):
         self.pending = pending
         self.sent_at = sent_at
+        # The native value the transaction sends (a gas top-up is all value);
+        # the breaker's cached balance loses it along with the gas.
+        self.value = value
         self.receipt: TxReceipt | None = None
         self.superseded_by: bytes | None = None
         self.dropped = False
@@ -137,7 +141,7 @@ class AdminTxSender:
     markets to `submit_many`, one JSON-RPC batch, so it lands in one or two
     blocks after one round trip.
 
-    The admin key pays for users' fills and grants, so the sender also keeps a
+    The admin key pays for users' fills and gas top-ups, so the sender also keeps a
     breaker on its balance (`alarm_gas`, `stop_gas`): below `stop_gas` every
     send but an `essential` one is refused before anything is broadcast.
     """
@@ -241,17 +245,23 @@ class AdminTxSender:
         if not essential:
             self.check_sponsored()
 
-    def _debit(self, receipt) -> None:
+    def _debit(self, receipt, value: int = 0) -> None:
         """Take a mined send's cost off the cached balance, so a burst between
-        two refreshes still trips the breaker. Fillers and receipts nobody
-        waits for are not debited; the next refresh corrects for them."""
+        two refreshes still trips the breaker: its gas, and the `value` it
+        sent (every gas top-up for a user is all value). A reverted
+        transaction hands its value back, so only its gas is taken. Fillers
+        and receipts nobody waits for are not debited; the next refresh
+        corrects for them."""
         used = receipt.get("gasUsed")
         price = receipt.get("effectiveGasPrice")
         if used is None or price is None:
             return
+        cost = int(used) * int(price)
+        if receipt.get("status") == 1:
+            cost += value
         with self._gas_lock:
             if self._admin_balance is not None:
-                self._admin_balance -= int(used) * int(price)
+                self._admin_balance -= cost
 
     # --- sending ----------------------------------------------------
 
@@ -474,6 +484,7 @@ class AdminTxSender:
         even connect (`failed_before_connecting`), the node never saw one, so
         the send was refused and its nonce stays free.
         """
+        value = int(base.get("value") or 0)  # kept on the entry for the breaker
         skips = 0
         resynced = fee_refreshed = False
         # Set by an unanswered send: (raw, tx_hash, nonce, that send's error).
@@ -504,13 +515,13 @@ class AdminTxSender:
             except Exception as exc:
                 error = exc
             else:
-                return self._accept(tx_hash, nonce)
+                return self._accept(tx_hash, nonce, value)
             kind = classify_send_error(error)
             if pinned is not None:
                 # The answer to a resend of pinned bytes.
                 never_connected = never_connected and failed_before_connecting(error)
                 if kind is SendError.DUPLICATE:
-                    return self._accept(tx_hash, nonce)
+                    return self._accept(tx_hash, nonce, value)
                 if (
                     kind is SendError.NONCE_TAKEN
                     and not waited
@@ -534,7 +545,7 @@ class AdminTxSender:
                     # already MINED is answered like this. Look for our receipt.
                     mined, committed = self._own_receipt(tx_hash)
                     if mined:
-                        return self._accept(tx_hash, nonce)
+                        return self._accept(tx_hash, nonce, value)
                     with self._state:
                         below = {
                             h
@@ -573,7 +584,7 @@ class AdminTxSender:
                 # nonce as used and keep watching the FIRST hash (stall
                 # healing marks it dropped if it never mines), and raise the
                 # first error.
-                self._accept(tx_hash, nonce)
+                self._accept(tx_hash, nonce, value)
                 raise pinned[3]
             if kind is SendError.TRANSPORT:
                 # No answer. A queued transaction is invisible to a lookup by
@@ -583,7 +594,7 @@ class AdminTxSender:
                 never_connected = failed_before_connecting(error)
                 continue
             if kind is SendError.DUPLICATE:
-                return self._accept(tx_hash, nonce)
+                return self._accept(tx_hash, nonce, value)
             if kind is SendError.NONCE_TAKEN and skips < self._max_skips:
                 # A restart or a second writer left a transaction on this
                 # nonce. Ours was refused, so the next nonce is free to try.
@@ -675,10 +686,10 @@ class AdminTxSender:
             }
         )
 
-    def _accept(self, tx_hash: bytes, nonce: int) -> PendingTx:
+    def _accept(self, tx_hash: bytes, nonce: int, value: int = 0) -> PendingTx:
         pending = PendingTx(tx_hash=tx_hash, nonce=nonce)
         with self._state:
-            self._entries[tx_hash] = _Entry(pending, self._clock())
+            self._entries[tx_hash] = _Entry(pending, self._clock(), value)
         # Never back: a batch may settle an early nonce after later ones (a
         # receipt lookup comes last), and every nonce up to the highest one
         # accepted is used. The single path moves the counter back on its
@@ -762,7 +773,8 @@ class AdminTxSender:
                         )
                     elif entry.receipt is not None:
                         results[tx_hash] = entry.receipt
-                        self._debit(entry.receipt)  # _state, then _gas_lock
+                        # _state, then _gas_lock
+                        self._debit(entry.receipt, entry.value)
                         del self._entries[tx_hash]
                     elif entry.dropped:
                         results[tx_hash] = TxDropped(
@@ -1167,15 +1179,21 @@ class _BatchSend:
         self._settle_refused(refused, answers)
         return self._results, self._stop  # type: ignore[return-value]
 
+    def _value(self, i: int) -> int:
+        """The native value item `i` sends."""
+        return int(self._items[i][0].get("value") or 0)
+
     def _take(self, i: int) -> None:
         self._counted[i] = True
-        self._results[i] = self._s._accept(self._hashes[i], self._first + i)
+        self._results[i] = self._s._accept(
+            self._hashes[i], self._first + i, self._value(i)
+        )
 
     def _unknowable(self, i: int, first_error: Exception) -> None:
         # Count the nonce and track the hash: it mines, or the stall healer
         # fills its nonce and reports it dropped.
         self._counted[i] = True
-        self._s._accept(self._hashes[i], self._first + i)
+        self._s._accept(self._hashes[i], self._first + i, self._value(i))
         self._results[i] = first_error
         self._stop = self._stop or first_error
 
