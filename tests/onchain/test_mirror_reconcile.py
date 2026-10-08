@@ -14,11 +14,19 @@ from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.web3_client import Web3Client
 from agentpit.services.order_service import OrderService
-from tests.onchain._helpers import create_market, fresh_client, register, unique_email
+from tests.onchain._helpers import (
+    HOUSE_TEST_GAS_FLOOR_WEI,
+    create_market,
+    fresh_client,
+    register,
+    unique_email,
+)
 
 
 def _rig():
-    s = Settings(liquidity_house_account_count=1)
+    s = Settings(
+        liquidity_house_account_count=1, liquidity_gas_floor_wei=HOUSE_TEST_GAS_FLOOR_WEI
+    )
     d = Deployment.load(s.deployment_path)
     w = Web3Client(s, d)
     admin = OnchainAdmin(w, Contracts(w.web3, d))

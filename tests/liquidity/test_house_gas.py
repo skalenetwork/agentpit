@@ -57,7 +57,7 @@ class _FakeOnchain:
         self.funded.append(("mint", address, amount_raw))
 
     def fund_gas(self, address, value_wei, *, timeout=30):
-        self.funded.append(("gas", address))
+        self.funded.append(("gas", address, value_wei))
 
     def grant_user_approvals(self, account, *, timeout=30):
         self.funded.append(("approvals", account))
@@ -137,6 +137,26 @@ def test_house_is_funded_by_one_mint_not_repeated_drips():
     assert len(mints) == 1
     assert mints[0][2] == settings.house_mint_raw
     assert not [c for c in calls if c[0] == "drip"]
+
+
+def test_a_new_house_account_is_funded_at_the_gas_floor():
+    """Gas for a new house account is the floor, not a user's signup grant.
+
+    Users get no grant any more: every transaction they sign is topped up to
+    exactly its need (`UserGasSponsor`). The house signs its own mirror splits
+    and needs a standing balance. The floor is enough to start on, and
+    `top_up_gas` lifts it to the target within one check interval.
+    """
+    from agentpit.config import Settings
+    from agentpit.liquidity.house_accounts import HouseAccountProvisioner
+
+    onchain = _FakeOnchain()
+    settings = Settings()
+    HouseAccountProvisioner(None, onchain, settings)._fund(_Key())  # noqa: SLF001
+
+    assert [c for c in onchain.funded if c[0] == "gas"] == [
+        ("gas", _Key.address, settings.liquidity_gas_floor_wei)
+    ]
 
 
 # --- the admin gas breaker ---------------------------------------------------

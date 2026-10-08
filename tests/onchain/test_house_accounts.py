@@ -5,10 +5,14 @@ from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.web3_client import Web3Client
 from tests.db_helpers import fresh_test_db
+from tests.onchain._helpers import HOUSE_TEST_GAS_FLOOR_WEI
 
 
 def _provisioner(count=3):
-    s = Settings(liquidity_house_account_count=count)
+    s = Settings(
+        liquidity_house_account_count=count,
+        liquidity_gas_floor_wei=HOUSE_TEST_GAS_FLOOR_WEI,
+    )
     d = Deployment.load(s.deployment_path)
     w = Web3Client(s, d)
     admin = OnchainAdmin(w, Contracts(w.web3, d))
@@ -27,7 +31,11 @@ def test_provision_creates_and_funds():
         # a $100k grant whether the house was minted, dripped, or funded by
         # accident, so the one test proving house funding would prove nothing.
         assert admin.usd_balance(u.eth_address) >= prov._settings.house_mint_raw
-        assert admin.native_balance(u.eth_address) > 0
+        # Gas: funded AT the floor, then the three approvals were paid out of
+        # it. They cost far less than 10**15 at anvil's near-zero base fee, so
+        # a lower balance means the account was funded with some other amount.
+        native = admin.native_balance(u.eth_address)
+        assert HOUSE_TEST_GAS_FLOOR_WEI - 10**15 < native <= HOUSE_TEST_GAS_FLOOR_WEI
 
 
 def test_provision_is_idempotent():

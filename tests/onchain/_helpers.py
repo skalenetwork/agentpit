@@ -162,3 +162,11 @@ def drain_native_balance(admin: OnchainAdmin, address: str) -> None:
     admin._client.web3.provider.make_request(  # noqa: SLF001
         "anvil_setBalance", [Web3.to_checksum_address(address), "0x0"]
     )
+
+
+# Gas a house account gets in the on-chain tests. They pass this floor instead
+# of the default 5 native. conftest truncates `users` before every test, so
+# test_house_accounts.py and test_mirror_reconcile.py provision a dozen new
+# house accounts per run, and the persistent anvil's admin pays for all of
+# them: ~60 native a run at the default floor, ~0.6 at this one.
+HOUSE_TEST_GAS_FLOOR_WEI = 5 * 10**16
