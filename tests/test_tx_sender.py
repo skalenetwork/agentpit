@@ -8,7 +8,7 @@ import pytest
 from eth_account import Account
 from web3.exceptions import TimeExhausted
 
-from agentpit.onchain.tx_sender import AdminTxSender, PendingTx
+from agentpit.onchain.tx_sender import TRANSFER_GAS, AdminTxSender, PendingTx
 from tests.fake_skaled import (
     CHAIN_ID,
     FakeClock,
@@ -128,7 +128,9 @@ def test_value_transfer_uses_21000_gas_and_no_estimate():
     receipt = sender.send_value(to, 123, timeout=10)
     assert receipt["status"] == 1
     tx = chain.accepted[-1]["tx"]
-    assert tx["gas"] == 21_000 and tx["value"] == 123
+    # Public: `UserGasSponsor` books each top-up it sends at this figure.
+    assert TRANSFER_GAS == 21_000
+    assert tx["gas"] == TRANSFER_GAS and tx["value"] == 123
     assert chain.estimate_calls == 0
 
 

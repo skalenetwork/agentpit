@@ -61,7 +61,9 @@ log = logging.getLogger(__name__)
 # Transactions per broadcast batch. `submit_many` also keeps a batch within
 # `max_in_flight`, since every one of them takes a slot.
 _SEND_BATCH = 100
-_TRANSFER_GAS = 21_000
+# A plain native-token transfer. Public: `UserGasSponsor` books each gas
+# top-up it sends at this figure.
+TRANSFER_GAS = 21_000
 # How long an estimate that reverted waits for our in-flight txs to land.
 _DRAIN_TIMEOUT_S = 60.0
 # Receipts nobody collected (their waiter timed out) are forgotten after this.
@@ -279,7 +281,7 @@ class AdminTxSender:
     ) -> PendingTx:
         """Broadcast a plain native-token transfer."""
         self._gate(essential)
-        return self._submit(_value_base(to, value_wei), _TRANSFER_GAS, 0)
+        return self._submit(_value_base(to, value_wei), TRANSFER_GAS, 0)
 
     def submit_many(
         self, calls: list[tuple[ContractFunction, int]], *, essential: bool = False
@@ -317,7 +319,7 @@ class AdminTxSender:
         items: list[tuple[dict, int] | Exception] = []
         for to, value_wei in transfers:
             try:
-                items.append((_value_base(to, value_wei), _TRANSFER_GAS))
+                items.append((_value_base(to, value_wei), TRANSFER_GAS))
             except Exception as exc:
                 items.append(exc)
         return self._submit_many(items)
@@ -909,7 +911,7 @@ class AdminTxSender:
         why: str = "stalled (the node lost the transaction)",
         level: int = logging.ERROR,
     ) -> PendingTx | None:
-        signed = self._sign(_filler_base(self.address), nonce, _TRANSFER_GAS)
+        signed = self._sign(_filler_base(self.address), nonce, TRANSFER_GAS)
         try:
             self._rpc.send_raw(bytes(signed.raw_transaction))
         except Exception as exc:
@@ -933,7 +935,7 @@ class AdminTxSender:
             return [self._send_filler(nonces[0])]
         fees = self._fee_params()
         base = _filler_base(self.address)
-        signed = [self._sign(base, n, _TRANSFER_GAS, fees) for n in nonces]
+        signed = [self._sign(base, n, TRANSFER_GAS, fees) for n in nonces]
         try:
             answers = self._rpc.send_raw_batch(
                 [bytes(s.raw_transaction) for s in signed]

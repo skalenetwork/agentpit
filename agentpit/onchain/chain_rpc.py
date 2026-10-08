@@ -104,6 +104,24 @@ def classify_send_error(exc: BaseException) -> SendError:
     return SendError.OTHER
 
 
+# What a node answers when the sender cannot pay `value + gasLimit x
+# maxFeePerGas`: skaled's wording (the one `SendError.BALANCE_LOW` reads), then
+# anvil's and geth's.
+_BALANCE_LOW = ("account balance is too low", "insufficient funds for gas")
+
+
+def is_balance_low(exc: BaseException) -> bool:
+    """Did the node refuse a send because the sender is short of gas money?
+
+    What `UserGasSponsor` resizes its top-up and retries on, on skaled and on
+    anvil alike. A separate predicate rather than anvil's wording added to
+    `SendError.BALANCE_LOW` on purpose: `AdminTxSender` resends a batch item
+    refused that way, and the change would alter its behaviour on anvil.
+    """
+    text = str(exc).lower()
+    return any(marker in text for marker in _BALANCE_LOW)
+
+
 def failed_before_connecting(exc: BaseException) -> bool:
     """Did this failed request provably never reach the node?
 
