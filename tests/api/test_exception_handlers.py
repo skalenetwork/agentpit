@@ -10,6 +10,8 @@ against a throwaway app so it doesn't need the full stack or a live chain.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -19,6 +21,9 @@ from agentpit.domain.exceptions import (
     BusinessRuleError,
     GasBudgetExceededError,
     InsufficientGasError,
+    NothingToClaimError,
+    TransactionInProgressError,
+    TransactionRevertedError,
 )
 
 
@@ -72,15 +77,70 @@ def _gas_stub_app() -> FastAPI:
 
 
 def test_admin_gas_paused_is_503():
+    """The breaker now also refuses gas top-ups for claims, splits, merges and
+    onboarding, so the wording no longer says it is trading that paused."""
     client = TestClient(_gas_stub_app(), raise_server_exceptions=False)
     r = client.get("/paused")
     assert r.status_code == 503
-    assert "paused" in r.json()["detail"]
+    assert r.json()["detail"] == (
+        "the platform's gas wallet is running low — try again later"
+    )
 
 
 def test_gas_budget_is_429_with_retry_after():
+    """Split and merge spend the same daily budget as fills, so the wording
+    says gas, not trading gas."""
     client = TestClient(_gas_stub_app(), raise_server_exceptions=False)
     r = client.get("/budget")
     assert r.status_code == 429
     assert r.headers["Retry-After"] == "123"
-    assert "00:00 UTC" in r.json()["detail"]
+    assert r.json()["detail"] == (
+        "this account has used its daily gas budget — it resets at 00:00 UTC"
+    )
+
+
+def _sponsor_stub_app() -> FastAPI:
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/in-progress")
+    def _in_progress():
+        raise TransactionInProgressError()
+
+    @app.get("/nothing")
+    def _nothing():
+        raise NothingToClaimError()
+
+    @app.get("/reverted")
+    def _reverted():
+        raise TransactionRevertedError("the claim transaction reverted on chain")
+
+    return app
+
+
+def test_a_held_transaction_lock_is_409_logged_at_info(caplog):
+    """A second claim, split or merge while one is still being sent for the
+    same account. Not a `BusinessRuleError` (400): nothing in the request is
+    wrong, and it may simply be retried. INFO: the lock refusing is the lock
+    working."""
+    caplog.set_level(logging.INFO, logger="agentpit.api.exception_handlers")
+    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
+    r = client.get("/in-progress")
+    assert r.status_code == 409
+    assert r.json() == {
+        "detail": "another transaction for this account is in progress — try again in a moment"
+    }
+    ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
+    assert [rec.levelno for rec in ours] == [logging.INFO]
+    assert not issubclass(TransactionInProgressError, BusinessRuleError)
+
+
+def test_nothing_to_claim_and_a_reverted_transaction_are_400():
+    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
+    r = client.get("/nothing")
+    assert (r.status_code, r.json()["detail"]) == (400, "nothing to claim")
+    r = client.get("/reverted")
+    assert (r.status_code, r.json()["detail"]) == (
+        400,
+        "the claim transaction reverted on chain",
+    )

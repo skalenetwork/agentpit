@@ -18,6 +18,7 @@ from agentpit.domain.exceptions import (
     InsufficientGasError,
     InvalidCredentialsError,
     NotFoundError,
+    TransactionInProgressError,
 )
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,15 @@ def register_exception_handlers(app: FastAPI) -> None:
             content={"detail": str(exc)},
             headers={"Retry-After": str(exc.retry_after)},
         )
+
+    @app.exception_handler(TransactionInProgressError)
+    async def _transaction_in_progress(
+        _: Request, exc: TransactionInProgressError
+    ) -> JSONResponse:
+        """The per-account transaction lock is held: a second claim, split or
+        merge while one is still being sent. The lock working, so INFO."""
+        log.info("per-account transaction lock refused a request: %s", exc)
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(AdminGasPausedError)
     async def _admin_gas_paused(_: Request, exc: AdminGasPausedError) -> JSONResponse:

@@ -394,8 +394,8 @@ Every fill is a `matchOrders` the platform pays gas for, so non-house accounts a
 
 - `400` `order is too small: the minimum is $1 (price × size)` — the collateral leg (price × size) must be at least $1 (`AGENTPIT_MIN_ORDER_NOTIONAL_MICRO`).
 - `400` `too many open orders: N are live and the limit is 200 — cancel some first` — `GTC`/`GTD` only, since `FOK`/`FAK` never rest. Orders left on markets that no longer trade don't count (`AGENTPIT_MAX_LIVE_ORDERS_PER_ACCOUNT`).
-- `429` `this account has used its daily trading gas budget — it resets at 00:00 UTC` — the gas its fills cost the platform today hit the daily budget (`AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT`). The `Retry-After` header is the seconds to 00:00 UTC. The refused placement leaves nothing behind (no order, no fill, no idempotency claim).
-- `503` `trading is paused: the platform's gas wallet is running low — try again later` — the platform's gas wallet is below its stop level. Not the caller's fault; retry later.
+- `429` `this account has used its daily gas budget — it resets at 00:00 UTC` — the gas its fills cost the platform today hit the daily budget (`AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT`). The `Retry-After` header is the seconds to 00:00 UTC. The refused placement leaves nothing behind (no order, no fill, no idempotency claim).
+- `503` `the platform's gas wallet is running low — try again later` — the platform's gas wallet is below its stop level. Not the caller's fault; retry later.
 
 ```bash
 curl -s -X POST http://localhost:8000/order \
