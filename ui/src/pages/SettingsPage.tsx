@@ -34,6 +34,10 @@ import { cn } from "@/lib/utils";
 
 export function SettingsPage() {
   const { user, setUser } = useAuth();
+  // The credits line under the address is hidden, not deleted: see
+  // `CreditsLine`. With this flag false it never renders, so `/me/credits`
+  // is never fetched from here either. Turning it back on is one word.
+  const showCredits = false;
   if (!user) return null;
   return (
     <section className="mx-auto max-w-5xl space-y-6">
@@ -58,7 +62,7 @@ export function SettingsPage() {
                 <p className="break-all font-mono text-sm text-muted-foreground">
                   {user.eth_address}
                 </p>
-                <CreditsLine />
+                {showCredits && <CreditsLine />}
               </div>
             </div>
             <AutoRedeemRow user={user} onUpdated={setUser} />
@@ -385,8 +389,13 @@ function DeleteAgentDialog({ agent, name, onClose }: AgentDialogProps) {
   );
 }
 
-/** What pays for a claim, under the address it belongs to — the address row
- *  is the wallet, and this is what's in it to spend on gas. */
+/** The wallet's native balance, under the address it belongs to.
+ *
+ *  Hidden (`showCredits` in `SettingsPage`). It used to be what paid for a
+ *  claim, so the user had to watch it. The platform now tops the wallet up to
+ *  exactly what each transaction needs just before sending it, which leaves
+ *  this an internal buffer of at most one transaction's gas: a number the
+ *  user cannot spend, refill or act on. */
 function CreditsLine() {
   const { data: credits } = useCredits();
   return (
@@ -609,8 +618,9 @@ function AutoRedeemRow({ user, onUpdated }: AutoRedeemRowProps) {
       <div className="flex-1">
         <p className="text-sm font-medium">Claim winnings automatically</p>
         <p className="text-xs text-muted-foreground">
-          Claiming costs a small amount of gas from this wallet. With this
-          off, you claim your winnings yourself.
+          Winnings are claimed for you shortly after a market resolves, and
+          claims are free. With this off, you claim them yourself from your
+          profile.
         </p>
       </div>
       <button

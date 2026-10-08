@@ -185,15 +185,17 @@ export function formatPnlPct(pct: number): string {
 
 const WEI_PER_NATIVE = 1_000_000_000_000_000_000n;
 
-/** Four decimals: the signup grant is 0.02 native (`signup_gas_grant_wei`),
- *  so two decimals rounds most real balances straight to "0.00" long before
- *  the wallet is actually out of gas. This is the smallest fixed precision
- *  that still shows life at that scale. */
+/** Four decimals: a wallet holds at most one transaction's gas. The server
+ *  tops it up to exactly what the next transaction needs and no more
+ *  (`UserGasSponsor`), and the largest such need, onboarding's three
+ *  approvals at ~167k gas, is ~0.008 native at SKALE Base's 47.6 gwei. Two
+ *  decimals would round every real balance to "0.00". This is the smallest
+ *  fixed precision that still shows life at that scale. */
 const CREDITS_DECIMALS = 4n;
 const CREDITS_SCALE = 10n ** CREDITS_DECIMALS;
 
 /** "0.0134" — a wei string (from `/me/credits`) as a native-coin figure,
- *  precise enough to stay useful at the signup-grant's own scale.
+ *  precise enough to stay useful at the scale of one transaction's gas.
  *
  *  BigInt arithmetic throughout, never `Number`: the whole point of sending
  *  wei as a string is that it can exceed Number's safe integer range, and
