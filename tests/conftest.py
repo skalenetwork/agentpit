@@ -1,9 +1,41 @@
 import os
+import re
+from pathlib import Path
+
+import psycopg
+from psycopg import sql
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _default_test_dsn() -> str:
+    """`agentpit_test`, except in a linked git worktree, which gets its own
+    `agentpit_test_<worktree>` (created on first use). Every test TRUNCATEs
+    every table first, so sessions in parallel worktrees sharing one database
+    wipe each other's rows mid-run."""
+    # A linked worktree's .git is a file pointing back at the main repo; the
+    # main checkout (and CI's actions/checkout) has a .git directory.
+    if not (_REPO_ROOT / ".git").is_file():
+        return "postgresql:///agentpit_test"
+    suffix = re.sub(r"[^a-z0-9_]", "_", _REPO_ROOT.name.lower())
+    name = f"agentpit_test_{suffix}"[:63]  # Postgres's identifier limit
+    with psycopg.connect("postgresql:///postgres", autocommit=True) as admin:
+        found = admin.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (name,)
+        ).fetchone()
+        if not found:
+            try:
+                admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+            except psycopg.errors.DuplicateDatabase:
+                pass  # a concurrent run in the same worktree created it first
+    return f"postgresql:///{name}"
+
 
 # Tests run against a real local Postgres (the suite already requires anvil +
 # the deployed exchange — no off-mode). Each test gets a clean DB via TRUNCATE
 # and its own DbSession pool, overridden onto the shared app.
-os.environ.setdefault("AGENTPIT_DATABASE_URL", "postgresql:///agentpit_test")
+if "AGENTPIT_DATABASE_URL" not in os.environ:
+    os.environ["AGENTPIT_DATABASE_URL"] = _default_test_dsn()
 os.environ.setdefault("AGENTPIT_POOL_MIN_SIZE", "0")  # leaked create_app pools hold 0 conns
 os.environ.setdefault("AGENTPIT_POOL_MAX_IDLE", "5")  # shed idle connections fast in tests
 os.environ.setdefault("SYNC", "false")
@@ -16,7 +48,6 @@ os.environ.setdefault("LIQUIDITY_ENGINE", "false")
 os.environ.setdefault("AGENTPIT_LEADERBOARD_ENABLED", "false")
 os.environ.setdefault("JWT_SECRET", "test-only-secret")
 
-import psycopg
 import pytest
 
 from agentpit.api.deps import (
