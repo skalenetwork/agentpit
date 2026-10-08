@@ -28,7 +28,7 @@ from contextlib import contextmanager
 import psycopg_pool
 import pytest
 import requests
-from web3.exceptions import TimeExhausted, Web3RPCError
+from web3.exceptions import BadResponseFormat, TimeExhausted, Web3RPCError
 
 from agentpit.api.deps import get_position_service
 from agentpit.config import Settings
@@ -527,6 +527,54 @@ def test_a_sent_transaction_nobody_heard_back_about_stays_pending(action, error,
     assert _pending(db) == [(sponsor.hashes[0], user.api_key, kind, mid, details)]
     assert _rows(db, user) == []
     warnings = [r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and sponsor.hashes[0] in warnings[0].getMessage()
+
+
+def _http_error(status: int) -> requests.HTTPError:
+    response = requests.Response()
+    response.status_code = status
+    return requests.HTTPError(f"{status} Error", response=response)
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+@pytest.mark.parametrize(
+    "error",
+    [
+        # What the receipt poll can raise once `send_raw_transaction` has
+        # returned: the node holds the transaction, so none of these says it
+        # will not mine, whatever `classify_send_error` makes of the text.
+        pytest.param(Web3RPCError("rate limit exceeded"), id="receipt-rpc-error"),
+        pytest.param(_http_error(429), id="receipt-429-after-the-retries"),
+        pytest.param(
+            BadResponseFormat("no result in the response"), id="malformed-body"
+        ),
+        pytest.param(Web3RPCError("transaction already known"), id="node-holds-it"),
+    ],
+)
+def test_an_error_after_the_node_took_the_transaction_stays_pending(
+    action, error, caplog
+):
+    """Not every error that is neither a receipt timeout nor a transport error
+    is an answer about the transaction. The receipt poll runs after the
+    broadcast was accepted, and a JSON-RPC error on it, a 429 that outlives
+    the provider's retries or a body that does not parse leave the transaction
+    in the node, free to mine. Deleting its row would lose the history row and
+    lift the duplicate guard at once, so a client retry splits twice. The row
+    stays, and the caller hears 503, "do not repeat it"."""
+    caplog.set_level(logging.WARNING, logger="agentpit.services.position_service")
+    db, user, mid, chain = _ready(action)
+    sponsor = _FakeSponsor(fail=error)  # one signature: nothing was refused
+
+    with pytest.raises(TransactionPendingError, match="do not repeat it") as caught:
+        _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert caught.value.__cause__ is error
+    kind, details = _INTENT[action]
+    assert _pending(db) == [(sponsor.hashes[0], user.api_key, kind, mid, details)]
+    assert _rows(db, user) == []
+    warnings = [
+        r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.WARNING
+    ]
     assert len(warnings) == 1 and sponsor.hashes[0] in warnings[0].getMessage()
 
 

@@ -2,7 +2,6 @@ import logging
 import time
 
 from web3.contract.contract import ContractFunction
-from web3.exceptions import TimeExhausted
 from web3.types import TxReceipt
 
 from agentpit.datastructures.market_state import MarketState
@@ -17,20 +16,63 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
+    AdminGasPausedError,
+    GasTopUpTimeoutError,
     InsufficientBalanceError,
+    InsufficientGasError,
     MarketNotFoundError,
     MarketStateError,
     NothingToClaimError,
     TransactionInProgressError,
     TransactionPendingError,
+    TransactionRevertedError,
 )
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.chain_rpc import SendError, classify_send_error
+from agentpit.onchain.tx_sender import TxDropped
 from agentpit.services.gas_sponsor import SponsorKind, UserGasSponsor
 from agentpit.services.pending_user_txs import in_flight_since
 from agentpit.utils.parse import hex2bytes
 
 log = logging.getLogger(__name__)
+
+# What `eth_sendRawTransaction` can answer to say the node did not take the
+# transaction (`classify_send_error`). DUPLICATE is not one of them: the node
+# already holds that very transaction.
+_REFUSED_AT_IMPORT = frozenset(
+    {
+        SendError.FEE_LOW,
+        SendError.BALANCE_LOW,
+        SendError.NONCE_TAKEN,
+        SendError.NONCE_INVALID,
+        SendError.QUEUE_FULL,
+    }
+)
+# What the sponsor raises once a signed transaction can no longer mine: it
+# mined and reverted, the retry was refused for want of balance, or the retry's
+# top-up could not be sent (the last three), after the node had refused the
+# first signature.
+_ANSWERS = (
+    TransactionRevertedError,
+    InsufficientGasError,
+    GasTopUpTimeoutError,
+    AdminGasPausedError,
+    TxDropped,
+)
+
+
+def _nothing_can_mine(exc: BaseException) -> bool:
+    """Is `exc`, raised after a transaction was signed, an answer that says it
+    can no longer mine? Only these are: the node refused it at import, or it
+    mined and reverted (see `_REFUSED_AT_IMPORT` and `_ANSWERS`).
+
+    Anything else leaves it unknown, and the caller must treat it as one that
+    may mine. That is not only a receipt timeout and a transport error. The
+    receipt poll runs after the node took the transaction, so a JSON-RPC error
+    on it, a 429 that outlives the provider's retries or a body that does not
+    parse say nothing about the transaction, and `classify_send_error` (made
+    for a failed broadcast) files them under OTHER."""
+    return isinstance(exc, _ANSWERS) or classify_send_error(exc) in _REFUSED_AT_IMPORT
 
 
 def _partition(market) -> list[int]:
@@ -57,9 +99,10 @@ class PositionService:
     recorded before it is broadcast: an intent row in `pending_user_txs`
     (`agentpit.services.pending_user_txs`), with the type, market and details
     its history row will have. Once the receipt is in, that row becomes the
-    history row, in one statement. A refusal or a revert deletes it. A
-    transaction whose outcome is unknown (no receipt in time, no answer to the
-    broadcast) keeps it and raises `TransactionPendingError` (503); the
+    history row, in one statement. An answer that says it cannot mine (a
+    refusal at import, a revert) deletes it. A transaction whose outcome is
+    unknown (no receipt in time, no answer to the broadcast, an error from the
+    receipt poll) keeps it and raises `TransactionPendingError` (503); the
     auto-redeem pass settles it from the chain later. Until then, another
     split, merge or claim by the same account on the same market is a 409, so
     a client retrying what it was told had failed does not do it twice.
@@ -220,13 +263,18 @@ class PositionService:
         first signature at import (its one resize-and-retry), so the first can
         never mine and its row is replaced. When the send fails:
 
-        - no receipt in time (`TimeExhausted`), or no answer to the broadcast
-          (`SendError.TRANSPORT`), once something was signed: it may mine yet.
-          The row stays, and `TransactionPendingError` (503) is raised.
-        - anything else is an answer: refused at import (402, a second fee
-          refusal, a failed top-up for the retry, any other refusal) or mined
-          and reverted. Nothing is pending any more, so the row goes and the
-          error propagates as it is.
+        - an answer that says it cannot mine (`_nothing_can_mine`): refused at
+          import (402, a second fee refusal, a nonce or queue refusal), a
+          failed top-up for the retry, or mined and reverted. Nothing is
+          pending any more, so the row goes and the error propagates as it is.
+        - anything else, once something was signed, is an unknown outcome: no
+          receipt in time (`TimeExhausted`), no answer to the broadcast
+          (`SendError.TRANSPORT`), or an error from the receipt poll after the
+          node took the transaction. It may mine yet. The row stays, and
+          `TransactionPendingError` (503) is raised. An error that is really a
+          refusal but is not recognised as one lands here too, which is safe:
+          the row only costs the account 409s on the market until the
+          auto-redeem pass drops it for want of a receipt.
 
         A failure before anything was signed leaves no row and propagates as
         it is. If the row cannot be written, the hook raises and nothing is
@@ -254,22 +302,19 @@ class PositionService:
         except Exception as exc:
             if not signed:
                 raise
-            if (
-                isinstance(exc, TimeExhausted)
-                or classify_send_error(exc) is SendError.TRANSPORT
-            ):
-                log.warning(
-                    "%s transaction %s of %s on market %s was sent and its "
-                    "outcome is unknown (%s); kept as pending",
-                    row_type,
-                    signed[-1],
-                    user.user_id,
-                    market_id,
-                    exc,
-                )
-                raise TransactionPendingError() from exc
-            self._forget(signed[-1])
-            raise
+            if _nothing_can_mine(exc):
+                self._forget(signed[-1])
+                raise
+            log.warning(
+                "%s transaction %s of %s on market %s was sent and its "
+                "outcome is unknown (%s); kept as pending",
+                row_type,
+                signed[-1],
+                user.user_id,
+                market_id,
+                exc,
+            )
+            raise TransactionPendingError() from exc
         if not signed:  # the sponsor signs every call it sends
             raise RuntimeError("the sponsor sent a transaction without its hash")
         return receipt, signed[-1]
