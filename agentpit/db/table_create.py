@@ -188,7 +188,7 @@ class TableCreate:
             # out (see `TableRead.get_key_export_state`).
             ("KEY_EXPORTED_AT", "BIGINT"),
             ("KEY_EXPORT_ATTEMPT_AT", "BIGINT"),
-            ("AUTO_REDEEM_ENABLED", "BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("AUTO_REDEEM_ENABLED", "BOOLEAN NOT NULL DEFAULT TRUE"),
             ("WORKOS_USER_ID", "TEXT"),
             ("OWNER_WORKOS_ID", "TEXT"),
             ("AGENT_APP", "TEXT"),
@@ -201,6 +201,15 @@ class TableCreate:
             conn.execute(
                 f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {col_type}"
             )
+        # Auto-redeem is on by default since claims became sponsored (owner
+        # decision 2026-10-08). The ADD COLUMN above never touches a column
+        # that already exists, so a database created under the old DEFAULT
+        # FALSE needs its default moved here. Only the default moves: rows
+        # already there keep what their owner chose, and the mainnet database
+        # starts empty, so there is nothing to migrate.
+        conn.execute(
+            "ALTER TABLE users ALTER COLUMN AUTO_REDEEM_ENABLED SET DEFAULT TRUE"
+        )
         # An account that arrived through Google has no password. Databases
         # created before this line have PASSWORD_HASH NOT NULL; dropping it is
         # idempotent, so this is safe on every run.

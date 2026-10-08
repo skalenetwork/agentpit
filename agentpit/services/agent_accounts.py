@@ -113,5 +113,4 @@ class AgentAccounts:
             agent_host=host,
             agent_client=client,
         )
-        TableWrite.set_auto_redeem(conn, user_id, True)
         return user_id

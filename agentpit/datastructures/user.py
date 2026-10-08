@@ -23,10 +23,12 @@ class User(BaseModel):
     # Google-only export control to a password account if a caller ever
     # forgot to pass it.
     has_password: bool
-    # No default either: a defaulted value fails OPEN here too -- it would
-    # start spending an account's gas on its behalf if a caller ever forgot
-    # to pass it. AUTO_REDEEM_ENABLED defaults FALSE at the column, so every
-    # existing account opts out until it says otherwise.
+    # No default either. The column is the one source of truth, and a model
+    # default could silently disagree with it if a caller ever forgot to pass
+    # it. AUTO_REDEEM_ENABLED defaults TRUE at the column (owner decision
+    # 2026-10-08): claims are sponsored, so the auto-redeem pass costs the
+    # account nothing. The Settings toggle remains for anyone who would rather
+    # claim by hand.
     auto_redeem: bool
     # The WorkOS AuthKit identity for this account, once it has one. Defaulted,
     # unlike the two above, because a missing value fails CLOSED here -- an
