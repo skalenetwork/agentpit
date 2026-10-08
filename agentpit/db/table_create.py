@@ -540,6 +540,36 @@ class TableCreate:
         )
 
     @staticmethod
+    def create_pending_user_txs_table(conn: psycopg.Connection) -> None:
+        """User-signed transactions (split, merge, claim) that were signed and
+        may be on their way to the chain, before anybody knows how they ended.
+
+        `PositionService` writes a row just before the broadcast, carrying the
+        TRANSACTION_TYPE, MARKET_ID and DETAILS (JSON) the `transactions` row
+        will have; a claim's DETAILS have no amount yet. Once the receipt is in,
+        one statement deletes the row and writes the `transactions` row
+        (`TableWrite.confirm_pending_user_tx`). A refusal or a revert deletes
+        it. A transaction whose receipt never came back keeps its row, and the
+        auto-redeem pass settles it later from the chain
+        (`reconcile_pending_user_txs`). CREATED_AT is unix seconds.
+
+        `transactions` and its readers are untouched: history shows a
+        transaction once it is known to have mined, never before.
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_user_txs (
+                TX_HASH          TEXT   PRIMARY KEY,
+                API_KEY          TEXT   NOT NULL,
+                TRANSACTION_TYPE TEXT   NOT NULL,
+                MARKET_ID        BIGINT,
+                DETAILS          TEXT,
+                CREATED_AT       BIGINT NOT NULL
+            )
+            """
+        )
+
+    @staticmethod
     def create_all_tables(conn: psycopg.Connection) -> None:
         # errors propagate; no exception handling here
         TableCreate.create_orders_table(conn)
@@ -556,3 +586,4 @@ class TableCreate:
         TableCreate.create_idempotency_keys_table(conn)
         TableCreate.create_auth_code_attempts_table(conn)
         TableCreate.create_sponsored_gas_table(conn)
+        TableCreate.create_pending_user_txs_table(conn)
