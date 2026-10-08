@@ -42,6 +42,7 @@ from agentpit.datastructures.split_position_request import (
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
+    AdminGasPausedError,
     GasTopUpTimeoutError,
     InsufficientBalanceError,
     InsufficientGasError,
@@ -51,6 +52,7 @@ from agentpit.domain.exceptions import (
     TransactionPendingError,
     TransactionRevertedError,
 )
+from agentpit.onchain.tx_sender import TxDropped
 from agentpit.services.gas_sponsor import UserGasSponsor
 from agentpit.services.pending_user_txs import _PENDING_TTL_SECONDS
 from agentpit.services.position_service import PositionService
@@ -553,7 +555,11 @@ def test_no_answer_before_anything_was_signed_is_no_pending_transaction(action):
             id="fee-low-twice",
         ),
         pytest.param(GasTopUpTimeoutError(), id="the-retrys-top-up-timed-out"),
-        pytest.param(Web3RPCError("nonce too low"), id="any-other-refusal"),
+        pytest.param(AdminGasPausedError(), id="the-retrys-top-up-is-paused"),
+        pytest.param(
+            TxDropped("its nonce went elsewhere"), id="the-retrys-top-up-dropped"
+        ),
+        pytest.param(Web3RPCError("nonce too low"), id="nonce-refusal"),
     ],
 )
 def test_a_transaction_the_node_refused_leaves_no_pending_row(action, error):
@@ -567,6 +573,36 @@ def test_a_transaction_the_node_refused_leaves_no_pending_row(action, error):
         _act(_service(db, chain, sponsor), action, user, mid)
 
     assert len(sponsor.hashes) == 2
+    assert _pending(db) == []
+    assert _rows(db, user) == []
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(
+            Web3RPCError("replacement transaction underpriced"), id="nonce-taken"
+        ),
+        pytest.param(Web3RPCError("nonce too low"), id="nonce-invalid"),
+        pytest.param(Web3RPCError("transaction queue is full"), id="queue-full"),
+        pytest.param(Web3RPCError("account balance is too low"), id="balance-low"),
+        pytest.param(
+            Web3RPCError("Transaction gas price lower than current eth_gasPrice"),
+            id="fee-low",
+        ),
+    ],
+)
+def test_a_refusal_at_import_leaves_no_pending_row(action, error):
+    """The answers that say the node did not take the transaction, on the
+    first signature already: its row goes."""
+    db, user, mid, chain = _ready(action)
+    sponsor = _FakeSponsor(fail=error)
+
+    with pytest.raises(Web3RPCError):
+        _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert len(sponsor.hashes) == 1
     assert _pending(db) == []
     assert _rows(db, user) == []
 
