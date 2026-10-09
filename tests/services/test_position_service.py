@@ -332,22 +332,26 @@ def test_the_payout_is_read_from_the_claims_receipt_for_the_claimant():
     ]
 
 
-def test_a_claim_that_mined_with_no_payout_after_the_gate_expected_one_is_warned_about(
-    caplog,
-):
+def test_a_claim_that_mined_with_no_payout_is_no_claim_and_leaves_no_row(caplog):
     """The gate computed a payout from the balances, yet the receipt names none
-    paid to the claimant (a payout-vector mismatch, a redeemer other than the
-    wallet). The REDEEM row is written as it always was, at zero, but the
-    surprise is logged with the market and the transaction, never the key."""
+    paid to the claimant (the tokens left between the gate and the block, a
+    payout-vector mismatch, a redeemer other than the wallet). A REDEEM row at
+    zero would be a claim that paid nothing, which the profile page reads as a
+    lost market, and auto-redeem would count it as a claim made. So there is
+    no row, the intent row goes, and the caller hears `NothingToClaimError`
+    (400). The surprise is still logged with the market and the transaction,
+    never the key."""
     caplog.set_level(logging.WARNING, logger=_LOGGER)
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(balances=(100_000_000, 0), usd=(5,))
     sponsor = _FakeSponsor(payout=0)
 
-    out = _service(db, chain, sponsor).redeem(user, mid)
+    with pytest.raises(NothingToClaimError, match="nothing to claim"):
+        _service(db, chain, sponsor).redeem(user, mid)
 
-    assert out.collateral_amount == 0
-    assert _redeem_amounts(db, user) == [0]
+    assert len(sponsor.hashes) == 1  # it did go out, and mined
+    assert _rows(db, user) == []
+    assert _pending(db) == []
     warnings = [
         r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.WARNING
     ]
@@ -412,7 +416,7 @@ def test_the_payout_weighs_each_balance_by_its_numerator(vector, balances, claim
     """payout = sum(balance_i * numerator_i // denominator), against the
     minimum (10_000, $0.01) inclusive."""
     db, user, mid = _setup(MarketState.RESOLVED)
-    sponsor = _FakeSponsor()
+    sponsor = _FakeSponsor(payout=1)
     service = _service(db, _FakeChain(vector=vector, balances=balances), sponsor)
     if claimed:
         service.redeem(user, mid)
@@ -445,7 +449,7 @@ def test_a_payout_of_zero_is_never_sent_whatever_the_minimum(minimum, balances):
 
 def test_the_minimum_comes_from_the_sponsor():
     db, user, mid = _setup(MarketState.RESOLVED)
-    sponsor = _FakeSponsor(min_claim_micro=1)
+    sponsor = _FakeSponsor(min_claim_micro=1, payout=1)
     _service(db, _FakeChain(balances=(1, 0)), sponsor).redeem(user, mid)
     assert len(sponsor.sent) == 1
 
@@ -466,7 +470,7 @@ def test_a_vector_the_caller_already_read_is_not_read_again():
     db, user, mid = _setup(MarketState.RESOLVED)
     # The chain's own vector would refuse; the pre-read one is what counts.
     chain = _FakeChain(vector=(0, [0, 0]), balances=(100_000_000, 0))
-    sponsor = _FakeSponsor()
+    sponsor = _FakeSponsor(payout=100_000_000)
     _service(db, chain, sponsor).redeem(user, mid, payout_vector=(1, [1, 0]))
     assert "payout_vector" not in chain.reads
     assert len(sponsor.sent) == 1

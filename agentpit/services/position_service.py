@@ -175,7 +175,9 @@ class PositionService:
         that is a `MarketStateError`. The gate runs inside the lock, so a
         concurrent claim cannot pass it while this one burns the same tokens.
         It runs a second time after the top-up, as the sponsor's
-        `before_send`, because the tokens can leave while the top-up mines.
+        `before_send`, because the tokens can leave while the top-up mines. A
+        claim that still mines with a payout of nothing writes no REDEEM row
+        and is `NothingToClaimError` too.
 
         The amount in the response and in the REDEEM row is the payout the
         chain reports in the claim's receipt (`OnchainAdmin.redeemed_payout`).
@@ -226,9 +228,13 @@ class PositionService:
             paid = self._onchain.redeemed_payout(receipt, user.eth_address)
             if paid <= 0:
                 # The gate expected `payout` (> 0), so a receipt with none
-                # paid to the claimant is a surprise: a payout vector that
-                # moved, or a redeemer other than the wallet. The REDEEM row
-                # is still written, at what the receipt says.
+                # paid to the claimant is a surprise: the tokens left after
+                # the last check, a payout vector that moved, or a redeemer
+                # other than the wallet. It is no claim: a REDEEM row at zero
+                # reads as a lost market on the profile page, and the
+                # auto-redeem pass would count it as a claim made. The gas
+                # was paid and stays booked. The intent row goes, and the
+                # caller hears what an empty claim always heard.
                 log.warning(
                     "claim transaction %s on market %s mined but paid the "
                     "claimant nothing; the gate expected %d",
@@ -236,6 +242,8 @@ class PositionService:
                     market_id,
                     payout,
                 )
+                self._forget(tx_hash)
+                raise NothingToClaimError()
             self._confirm(
                 user, "REDEEM", market_id, tx_hash, {"collateral_amount": paid}
             )
