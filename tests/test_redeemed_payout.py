@@ -23,12 +23,9 @@ _USD = Web3.to_checksum_address("0x" + "a5" * 20)
 _USER = Web3.to_checksum_address("0x" + "11" * 20)
 _OTHER = Web3.to_checksum_address("0x" + "22" * 20)
 _LOOKALIKE = Web3.to_checksum_address("0x" + "99" * 20)
-_PAYOUT_REDEMPTION = Web3.keccak(
-    text="PayoutRedemption(address,address,bytes32,bytes32,uint256[],uint256)"
-)
-_POSITION_SPLIT = Web3.keccak(
-    text="PositionSplit(address,address,bytes32,bytes32,uint256[],uint256)"
-)
+_ARGS = "(address,address,bytes32,bytes32,uint256[],uint256)"
+_PAYOUT_REDEMPTION = Web3.keccak(text="PayoutRedemption" + _ARGS)
+_POSITION_SPLIT = Web3.keccak(text="PositionSplit" + _ARGS)
 _TRANSFER = Web3.keccak(text="Transfer(address,address,uint256)")
 _HUNDRED = 100_000_000
 
@@ -64,17 +61,15 @@ def _redemption(index: int, redeemer: str, payout: int, *, address: str = _CTF) 
     return _log(index, topics, data, address=address)
 
 
-def _split(index: int, stakeholder: str, amount: int) -> dict:
-    topics = [_POSITION_SPLIT, _word(stakeholder), bytes(32), b"\xcd" * 32]
-    return _log(index, topics, encode(["address", "uint256[]", "uint256"], [_USD, [1, 2], amount]))
-
-
-def _transfer(index: int, to: str, amount: int) -> dict:
-    # An ERC-20 `Transfer`: the apUSD the claim paid out, another event on another contract.
-    topics = [_TRANSFER, _word(_CTF), _word(to)]
-    return _log(index, topics, encode(["uint256"], [amount]), address=_USD)
-
-
+# The CTF's other events are no payout, and nor is an ERC-20 `Transfer` of the apUSD the claim
+# paid out (another event on another contract).
+_SPLIT = _log(
+    0, [_POSITION_SPLIT, _word(_USER), bytes(32), b"\xcd" * 32],
+    encode(["address", "uint256[]", "uint256"], [_USD, [1, 2], _HUNDRED]),
+)
+_TRANSFER_LOG = _log(
+    0, [_TRANSFER, _word(_CTF), _word(_USER)], encode(["uint256"], [_HUNDRED]), address=_USD
+)
 _BROKEN = _log(0, [_PAYOUT_REDEMPTION, _word(_USER), _word(_USD), bytes(32)], b"\x01\x02")
 _BATCH = [_redemption(0, _OTHER, 70_000_000), _redemption(1, _USER, 30_000_000)]
 # The same event, not from the CTF.
@@ -85,7 +80,7 @@ _LOOKALIKE_PAYOUT = _redemption(0, _USER, 500_000_000, address=_LOOKALIKE)
     ("logs", "redeemer", "paid"),
     [
         pytest.param(
-            [_transfer(0, _USER, _HUNDRED), _redemption(1, _USER, _HUNDRED)], _USER, _HUNDRED,
+            [_TRANSFER_LOG, _redemption(1, _USER, _HUNDRED)], _USER, _HUNDRED,
             id="the-redeemers-payout",
         ),
         pytest.param([_redemption(0, _USER, 42_000_000)], _USER.lower(), 42_000_000, id="lower"),
@@ -99,7 +94,7 @@ _LOOKALIKE_PAYOUT = _redemption(0, _USER, 500_000_000, address=_LOOKALIKE)
             [_LOOKALIKE_PAYOUT, _redemption(1, _USER, _HUNDRED)], _USER, _HUNDRED,
             id="lookalike-adds-nothing",
         ),
-        pytest.param([_split(0, _USER, _HUNDRED)], _USER, 0, id="other-ctf-events"),
+        pytest.param([_SPLIT], _USER, 0, id="other-ctf-events"),
         pytest.param([], _USER, 0, id="no-logs"),
         # Right signature, wrong data: a mined claim must not raise over a log it cannot read.
         pytest.param(
