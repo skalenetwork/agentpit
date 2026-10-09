@@ -1,56 +1,17 @@
+"""Which chains count as disposable. Login re-onboarding on one is in tests/services/test_reonboard.py."""
+
 import logging
 
 from agentpit.api.app import _warn_if_simulated_on_durable_chain
-from agentpit.auth.jwt import JwtCoder
 from agentpit.config import Settings
-from agentpit.db.table_read import TableRead
-from agentpit.db.table_write import TableWrite
 from agentpit.onchain.deployment import is_disposable_chain
-from agentpit.services.auth_service import AuthService
-from tests.db_helpers import fresh_test_db
-from tests.onboarding_fakes import OnboardingChain
-
-SKALE_BASE_TESTNET = 324705682
+from tests.onboarding_fakes import SKALE_BASE_TESTNET
 
 
 def test_only_anvil_is_disposable():
     assert is_disposable_chain(31337)
     assert not is_disposable_chain(SKALE_BASE_TESTNET)
     assert not is_disposable_chain(1187947933)
-
-
-class _EmptyWallets(OnboardingChain):
-    """A wiped chain: no wallet has ever sent from it, and every one is empty."""
-
-    def __init__(self, chain_id):
-        super().__init__(nonce=0)
-        self.chain_id = chain_id
-
-    def usd_balance(self, _a):
-        return 0
-
-
-def _reonboard(chain_id):
-    db = fresh_test_db()
-    settings = Settings(AGENTPIT_SIMULATED_CHAIN=True)
-    chain = _EmptyWallets(chain_id)
-    service = AuthService(db, JwtCoder(settings), chain, settings)  # type: ignore[arg-type]
-    with db.write() as conn:
-        user_id, _a, _k = TableWrite.create_user(conn, email=f"r{chain_id}@example.com", password_hash=None, handle=None)
-        TableWrite.mark_user_onboarded(conn, user_id)
-        user = TableRead.get_user_by_userid(conn, user_id)
-    service._maybe_reonboard(user)
-    return chain
-
-
-def test_login_reonboards_a_wiped_account_on_anvil():
-    chain = _reonboard(31337)
-    assert len(chain.funded) == 1 and chain.calls.count("send_as_user") == 3
-
-
-def test_login_never_reonboards_on_a_durable_chain_even_if_simulated_is_true():
-    chain = _reonboard(SKALE_BASE_TESTNET)
-    assert chain.funded == [] and chain.calls == []
 
 
 def test_startup_shouts_when_simulated_is_set_on_a_durable_chain(caplog):
