@@ -214,8 +214,7 @@ def test_queued_submitters_share_one_slot_deadline():
 
 
 # --- a value send with its own, shorter wait for a slot ---------------------
-# A gas top-up runs under the user's lock, so `OnchainAdmin.fund_gas` bounds the
-# whole send by the sponsor's timeout, not the sender's own 120 s slot wait.
+# A top-up runs under the user's lock: `fund_gas` bounds it by the sponsor's timeout.
 
 
 def _full_pipeline(**kw):

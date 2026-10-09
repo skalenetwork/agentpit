@@ -6,8 +6,7 @@ from pydantic import ValidationError
 
 from agentpit.config import Settings
 
-# (env var, `Settings` attribute, the owner's default, an override as the env
-# spells it, as parsed)
+# (env var, `Settings` attribute, the owner's default, an env override, as parsed)
 _KNOBS = [
     ("AGENTPIT_SPONSOR_USER_GAS", "sponsor_user_gas", True, "false", False),
     ("AGENTPIT_MAX_TOPUP_GAS", "max_topup_gas", 1_000_000, "250000", 250_000),

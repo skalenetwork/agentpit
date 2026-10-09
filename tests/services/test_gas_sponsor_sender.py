@@ -5,8 +5,7 @@
 sender's in-flight slots, stall healing or receipt polling. `_Admin` is an
 `OnchainAdmin` whose `fund_gas` is the real one, with just enough of the rest to
 run the sponsor; the sender's sleeps are the fake chain's virtual clock, so 30 s
-cost milliseconds. Numbers: price 200,000 wei, an estimate of 100,000 gas (a
-limit of 120,000), 80,000 gas used per mined user call.
+cost milliseconds.
 """
 
 from collections import defaultdict
@@ -83,16 +82,15 @@ class _Admin(OnchainAdmin):
 def _setup(**sender_kw):
     chain = FakeSkaled()
     sender, _, clock = make_sender(chain, max_in_flight=4, **sender_kw)
-    return chain, sender, clock, _Admin(chain, sender)
+    db = fresh_test_db()
+    return chain, sender, clock, _Admin(chain, sender), db, _user(db)
 
 
 @pytest.mark.parametrize(("kind", "standing"), [("claim", 0), ("split", RESERVED)])
 def test_a_full_pipeline_fails_the_top_up_within_the_sponsors_timeout(kind, standing):
     # Waiting for a slot used to take the sender's own 120 s first, then up to
     # 30 s more for the receipt, all with the user's lock held.
-    chain, sender, clock, admin = _setup(mine_on_sleep=False, slot_timeout=120)
-    db = fresh_test_db()
-    user = _user(db)
+    chain, sender, clock, admin, db, user = _setup(mine_on_sleep=False, slot_timeout=120)
     other = Account.create().address
     for _ in range(4):  # four transfers nothing mines: every slot is taken
         sender.submit_value(other, 1)
@@ -125,9 +123,7 @@ def test_a_top_up_the_node_lost_is_a_retryable_503_and_the_next_send_funds_once(
     # The node said OK to the top-up and never queued it. The sender fills the
     # nonce with a gap filler and reports `TxDropped`; the sponsor answers "busy,
     # try again" (503) and, as nothing mined, hands a split's reservation back.
-    chain, _, _, admin = _setup(stall_after=5)
-    db = fresh_test_db()
-    user = _user(db)
+    chain, _, _, admin, db, user = _setup(stall_after=5)
     chain.lose.add(0)  # the first transaction the admin sends
 
     error = _send(db, user, admin, kind, raises=GasTopUpTimeoutError)

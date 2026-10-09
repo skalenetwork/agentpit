@@ -1,12 +1,9 @@
-"""`UserGasSponsor` against a fake chain and the real test database.
-
-`_Chain` is just enough `OnchainAdmin` for the sponsor; the budget rows are real
-`sponsored_gas` rows, because the reservation's refusal is one SQL statement.
-Numbers: price 1,000 wei, an estimate of 100,000 gas (a limit of 120,000 after
-the 20% pad, a need of 120,000,000 wei), 80,000 gas used per mined call.
+"""`UserGasSponsor` against a fake chain and the real test database: the budget
+rows are real `sponsored_gas` rows, because the reservation's refusal is one SQL
+statement. Numbers: price 1,000 wei, an estimate of 100,000 gas (a limit of
+120,000 after the 20% pad, a need of 120,000,000 wei), 80,000 gas per mined call.
 """
 
-import functools
 import logging
 import secrets
 import time
@@ -67,8 +64,7 @@ def _never_connected() -> requests.ConnectionError:
 
 
 class _Call:
-    """A contract call: `estimate_gas` records the fields it is given, and the
-    fake chain mines it with `status` at 80,000 gas."""
+    """A contract call: `estimate_gas` records the fields it gets; mined at `status`."""
 
     def __init__(self, name="redeem", estimate=100_000, *, status=1):
         self.name, self.estimate, self.status = name, estimate, status
@@ -173,8 +169,7 @@ def _refused_once(message=SKALED_FEE_LOW, *, calls=1, **kwargs) -> _Chain:
 
 
 def _settings(**overrides) -> Settings:
-    """Every value these tests depend on, explicitly: a developer's .env must
-    not move a ceiling or a budget under them."""
+    """Every value the tests use, explicit: a developer's .env must not move them."""
     return Settings(
         **{
             "AGENTPIT_SPONSOR_USER_GAS": True,
@@ -224,8 +219,7 @@ def _send(
     db, user, chain, kind="claim", calls=None, *, raises=None, match=None,
     on_signed=None, before_send=None, **settings,
 ):  # fmt: skip
-    """Send `calls` (one redeem by default) under the user's lock. With `raises`,
-    expect that error and return it, else return the receipts."""
+    """Send under the user's lock; with `raises`, expect that error and return it."""
     sponsor = _sponsor(db, chain, **settings)
     expected = pytest.raises(raises, match=match) if raises else nullcontext()
     with expected as caught, sponsor.locked(user):
@@ -247,7 +241,7 @@ def user(db):
 
 @pytest.fixture
 def send(db, user):
-    return functools.partial(_send, db, user)
+    return lambda *args, **kwargs: _send(db, user, *args, **kwargs)
 
 
 @pytest.fixture
