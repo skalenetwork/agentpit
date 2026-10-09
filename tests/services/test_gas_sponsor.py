@@ -11,6 +11,7 @@ import logging
 import secrets
 import time
 from collections import Counter
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
@@ -80,19 +81,18 @@ class _Call:
 
 class _Chain:
     """Just enough `OnchainAdmin` for `UserGasSponsor`. `prices` and `balances`
-    answer successive reads (the last repeats); `refusals` are raised by the
-    next sends in turn, `fund_errors` by the next top-ups (after the transfer is
-    recorded as sent), None letting that one mine; `paused` makes `fund_gas`
-    raise `AdminGasPausedError`. Every send is signed first: its hash is
-    recorded in `signed` and handed to `on_signed` before it can be refused.
-    There is deliberately no `check_sponsored`: a wallet that needs no top-up
-    must not meet the breaker at all.
+    answer successive reads (the last repeats); `refusals` and `fund_errors` are
+    raised by the next sends / top-ups in turn (a top-up's after its transfer is
+    recorded as sent), None letting one mine; `paused` makes `fund_gas` raise
+    `AdminGasPausedError`. Every send is signed first: its hash goes to `signed`
+    and `on_signed` before it can be refused. There is deliberately no
+    `check_sponsored`: a wallet needing no top-up must not meet the breaker.
 
     `fault_at=(kind, n)` makes the n-th (from 1) chain call of kind "price",
-    "estimate", "balance", "fund" or "send" raise `fault`: a send fails once it
-    is signed (as `send_user_tx` signs before the broadcast), a top-up before it
-    is sent. `after` then lists every chain call made once it fired, `mined`
-    counts the sends that came back with a receipt."""
+    "estimate", "balance", "fund" or "send" raise `fault`: a send fails once
+    signed (as `send_user_tx` signs before the broadcast), a top-up before it is
+    sent. Then `after` lists every later chain call and `mined` counts the sends
+    that came back with a receipt."""
 
     def __init__(
         self, *, prices=(1_000,), balances=(0,), refusals=(), paused=False,
@@ -166,11 +166,12 @@ class _Chain:
         return [e[1:] for e in self.events if e[0] == "send"]
 
 
-def _refused_once(message=SKALED_FEE_LOW, **kwargs) -> _Chain:
+def _refused_once(message=SKALED_FEE_LOW, *, calls=1, **kwargs) -> _Chain:
     """The first send is refused as `message`; the re-sizing then sees a price
     of 1,500 and a wallet that holds exactly the first top-up."""
     refusals = [_refused(message)]
-    return _Chain(prices=(1_000, 1_500), balances=(0, NEED), refusals=refusals, **kwargs)
+    balances = (0, calls * NEED)
+    return _Chain(prices=(1_000, 1_500), balances=balances, refusals=refusals, **kwargs)
 
 
 def _settings(**overrides) -> Settings:
@@ -228,19 +229,12 @@ def _send(
     """Send `calls` (one redeem by default) under the user's lock. With `raises`,
     expect that error and return it, else return the receipts."""
     sponsor = _sponsor(db, chain, **settings)
-
-    def run():
-        with sponsor.locked(user):
-            return sponsor.send(  # type: ignore[arg-type]
-                user, calls or [_Call()], kind,
-                on_signed=on_signed, before_send=before_send,
-            )  # fmt: skip
-
-    if raises is None:
-        return run()
-    with pytest.raises(raises, match=match) as caught:
-        run()
-    return caught.value
+    expected = pytest.raises(raises, match=match) if raises else nullcontext()
+    with expected as caught, sponsor.locked(user):
+        receipts = sponsor.send(  # type: ignore[arg-type]
+            user, calls or [_Call()], kind, on_signed=on_signed, before_send=before_send
+        )
+    return caught.value if raises else receipts
 
 
 @pytest.fixture
@@ -279,6 +273,13 @@ def test_top_up_is_need_minus_balance_and_mines_before_the_send(send):
     assert [r["status"] for r in receipts] == [1]
 
 
+def test_a_covered_wallet_gets_no_top_up_and_never_meets_the_breaker(send, used):
+    chain = _Chain(balances=(NEED,), paused=True)  # the breaker guards top-ups only
+    send(chain)
+    assert chain.events == [("balance",), ("send", *SEND)]  # no fund, no breaker
+    assert used() == 80_000  # booked without a transfer
+
+
 def test_one_top_up_covers_every_call(send):
     # Onboarding's three approvals, at the gas the anvil probe measured.
     chain = _Chain()
@@ -292,16 +293,8 @@ def test_one_top_up_covers_every_call(send):
     ]
 
 
-def test_a_covered_wallet_gets_no_top_up_and_never_meets_the_breaker(send, used):
-    chain = _Chain(balances=(NEED,), paused=True)  # the breaker guards top-ups only
-    send(chain)
-    assert chain.funded == []
-    assert chain.sends == [SEND]
-    assert used() == 80_000  # booked without a transfer
-
-
 @pytest.mark.parametrize("kind", ["claim", "split"])
-def test_a_top_up_over_the_ceiling_raises_unsent(send, used, kind, caplog):
+def test_the_top_up_ceiling_is_inclusive(send, used, kind, caplog):
     chain = _Chain()
     send(chain, kind, raises=RuntimeError, match="ceiling", AGENTPIT_MAX_TOPUP_GAS=100_000)
     assert chain.funded == [] and chain.sends == []
@@ -310,11 +303,7 @@ def test_a_top_up_over_the_ceiling_raises_unsent(send, used, kind, caplog):
         r.levelno == logging.ERROR and r.name == "agentpit.services.gas_sponsor"
         for r in caplog.records
     )
-
-
-def test_a_top_up_at_the_ceiling_is_allowed(send):
-    chain = _Chain()
-    send(chain, AGENTPIT_MAX_TOPUP_GAS=120_000)
+    send(chain, kind, AGENTPIT_MAX_TOPUP_GAS=120_000)
     assert chain.funded == [NEED]
 
 
@@ -714,13 +703,11 @@ def test_a_revert_raises_after_it_is_booked(send, used, kind):
 
 # --- the failure matrix -----------------------------------------------------
 # Every chain call `_send_sponsored` makes was made to fail once with each kind
-# of error in `_FAULTS`, for a claim, a split and onboarding: the reads that size
-# it, the reservation, the top-up, each send, and after a fee refusal the
-# re-sizing reads, the retry's top-up and the retry. Whatever fails where, the
-# lock is free afterwards, nothing goes out after the failure, the error is the
-# documented one, and a split's reservation goes back exactly when nothing it
-# paid for can still mine. Of those 360 cells the 112 kept in `_CELLS` failed
-# before the sponsor followed these rules; the other 248 held already.
+# of error in `_FAULTS`, for a claim, a split and onboarding. Whatever fails
+# where, the lock is free afterwards, nothing goes out after the failure, the
+# error is the documented one, and a split's reservation goes back exactly when
+# nothing it paid for can still mine. Of those 360 cells the 112 kept in
+# `_CELLS` failed before the sponsor followed these rules; the other 248 held.
 
 _FAULTS = {
     "runtime": lambda: RuntimeError("boom"),
@@ -751,11 +738,7 @@ _CELLS = {
         "fund1": ["interrupt"],
         "send1": ["runtime", "never-connected", "db", "interrupt"],
     },
-    ("retry", "claim"): {
-        **_RE_SIZING,
-        "fund2": _RETRY_TOP_UP_FAULTS,
-        "send2": ["fee-low"],
-    },
+    ("retry", "claim"): {**_RE_SIZING, "fund2": _RETRY_TOP_UP_FAULTS, "send2": ["fee-low"]},
     ("retry", "split"): {
         **_RE_SIZING,
         "fund2": [*_RETRY_TOP_UP_FAULTS, "interrupt"],
@@ -763,14 +746,11 @@ _CELLS = {
     },
     ("retry", "onboarding"): {
         "price2": _RESIZE_FAULTS,
-        "estimate4": _RESIZE_FAULTS,
-        "estimate5": _RESIZE_FAULTS,
-        "estimate6": _RESIZE_FAULTS,
+        **{f"estimate{n}": _RESIZE_FAULTS for n in (4, 5, 6)},
         "balance2": _RESIZE_FAULTS,
         "fund2": _RETRY_TOP_UP_FAULTS,
         "send2": ["fee-low"],
-        "send3": ["fee-low", "balance-low"],
-        "send4": ["fee-low", "balance-low"],
+        **{f"send{n}": ["fee-low", "balance-low"] for n in (3, 4)},
     },
 }
 # The errors that answer the caller in place of the error itself, and the
@@ -836,15 +816,11 @@ def _status_of(exc: Exception) -> int:
 )
 def test_every_failure_point_is_handled(db, user, used, scenario, kind, point, fault):
     calls = [_Call(f"call{i}") for i in range(3 if kind == "onboarding" else 1)]
-    retry = {
-        "prices": (1_000, 1_500),
-        "balances": (0, len(calls) * NEED),
-        "refusals": [_refused(SKALED_FEE_LOW)],
-    }
-    chain = _Chain(
-        fault_at=_point(point),
-        fault=_FAULTS[fault](),
-        **(retry if scenario == "retry" else {}),
+    faulty = {"fault_at": _point(point), "fault": _FAULTS[fault]()}
+    chain = (
+        _refused_once(calls=len(calls), **faulty)
+        if scenario == "retry"
+        else _Chain(**faulty)
     )
     raised: BaseException | None = None
     try:
