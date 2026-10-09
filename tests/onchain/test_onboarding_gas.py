@@ -14,12 +14,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.onchain.tx_sender import TRANSFER_GAS
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
-from tests.onchain._helpers import (
-    _auth_service,
-    assert_approvals_set,
-    fresh_client,
-    register,
-)
+from tests.onchain._helpers import _auth_service, assert_approvals_set, fresh_client, register
 
 
 def _record_top_ups(monkeypatch, client) -> list[tuple[str, int]]:
@@ -36,7 +31,7 @@ def _record_top_ups(monkeypatch, client) -> list[tuple[str, int]]:
     return sent
 
 
-def _assert_onboarded_on_one_exact_top_up(client, address: str, api_key: str, top_ups) -> None:
+def _assert_one_exact_top_up(client, address, api_key, top_ups) -> None:
     overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
     admin, settings = overrides[get_onchain_admin](), overrides[get_settings]()
 
@@ -64,9 +59,10 @@ def test_a_new_account_onboards_on_one_exact_top_up_and_no_grant(monkeypatch):
     top_ups = _record_top_ups(monkeypatch, client)
 
     body = register(client)
+    user = body["user"]
 
-    assert body["user"]["onboarded_at"] is not None
-    _assert_onboarded_on_one_exact_top_up(client, body["user"]["eth_address"], body["api_key"], top_ups)
+    assert user["onboarded_at"] is not None
+    _assert_one_exact_top_up(client, user["eth_address"], body["api_key"], top_ups)
 
 
 def test_a_new_api_agent_onboards_the_same_way(monkeypatch):
@@ -74,7 +70,8 @@ def test_a_new_api_agent_onboards_the_same_way(monkeypatch):
     top_ups = _record_top_ups(monkeypatch, client)
     db = client.app.dependency_overrides[get_db_session]()  # type: ignore[attr-defined]
 
-    agent = AgentAccounts(db, _auth_service(client)._onboard_new_account).create_api_agent("user_onboarding_gas")
+    onboard = _auth_service(client)._onboard_new_account
+    agent = AgentAccounts(db, onboard).create_api_agent("user_onboarding_gas")
 
     assert agent.onboarded_at is not None
-    _assert_onboarded_on_one_exact_top_up(client, agent.eth_address, agent.api_key, top_ups)
+    _assert_one_exact_top_up(client, agent.eth_address, agent.api_key, top_ups)
