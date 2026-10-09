@@ -8,8 +8,8 @@ import logging
 import secrets
 import time
 from collections import Counter
-from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from unittest.mock import Mock
 
 import psycopg
