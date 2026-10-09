@@ -173,6 +173,7 @@ class UserGasSponsor:
         kind: SponsorKind,
         *,
         on_signed: OnSigned | None = None,
+        before_send: Callable[[], None] | None = None,
     ) -> list[TxReceipt]:
         """Top `user` up to exactly what `calls` need, then send them in order,
         signed by the user's key. Must be called inside `locked(user)`.
@@ -229,15 +230,28 @@ class UserGasSponsor:
         after the node refused it at import (its one resize-and-retry: each
         call has its own), so a second hash for the same `i` means the first
         can never mine.
+
+        `before_send()` is the caller's last check, called once the wallet is
+        funded (after the top-up, if one was needed) and before the first user
+        transaction is signed. The top-up takes a block or several, and what
+        the caller checked before calling can change in that window: a market
+        resolves, tokens leave the wallet. It is called once, not again for the
+        resized retry of a refused call. If it raises, nothing is sent and
+        nothing of the user's can mine: only the top-up's transfer, which did
+        go out, is booked, a split/merge's reservation goes back, and its error
+        propagates as it is. The kill switch off has no top-up, and it is
+        called all the same.
         """
         # A cheap guard against a caller that forgot the lock. It cannot tell
         # which thread holds it, but a lock nobody holds is a sure bug.
         if not _lock_for(user.eth_address).locked():
             raise RuntimeError("UserGasSponsor.send must run inside locked(user)")
         if kind != "onboarding" and not self._settings.sponsor_user_gas:
-            receipts = self._send_unsponsored(user, calls, on_signed)
+            receipts = self._send_unsponsored(user, calls, on_signed, before_send)
         else:
-            receipts = self._send_sponsored(user, calls, kind, on_signed)
+            receipts = self._send_sponsored(
+                user, calls, kind, on_signed, before_send
+            )
         for receipt in receipts:
             if receipt["status"] != 1:
                 tx_hash = receipt.get("transactionHash")
@@ -260,14 +274,20 @@ class UserGasSponsor:
         calls: list[ContractFunction],
         kind: SponsorKind,
         on_signed: OnSigned | None,
+        before_send: Callable[[], None] | None,
     ) -> list[TxReceipt]:
-        """Size, reserve, top up, send, book (spec §1 steps 2-6)."""
+        """Size, reserve, top up, check, send, book (spec §1 steps 2-6)."""
         price, limits, shortfall = self._size(user, calls)
         reserved, day = self._reserve(user, kind, limits)
         paid = _Paid()
         try:
             if shortfall:
                 self._top_up(user, shortfall, paid)
+            if before_send is not None:
+                # Nothing is out when it raises (`paid.unseen` is clear), so
+                # the booking below refunds the reservation and keeps only the
+                # transfers of the top-ups that mined.
+                before_send()
             retried = False  # whether call i has had its one resize-and-retry
             i = 0
             while i < len(calls):
@@ -322,13 +342,18 @@ class UserGasSponsor:
         user: User,
         calls: list[ContractFunction],
         on_signed: OnSigned | None,
+        before_send: Callable[[], None] | None,
     ) -> list[TxReceipt]:
         """The kill switch is off: send at the current price from the wallet as
         it stands. No balance read, no reservation, no top-up, no booking,
         because the admin pays nothing. A wallet that cannot pay gets 402 at
         once; the retry exists only to top up again, and that is switched off.
+        The caller's last check runs after the estimates, just before the first
+        signature.
         """
         price, limits = self._limits(user, calls)
+        if before_send is not None:
+            before_send()
         receipts: list[TxReceipt] = []
         for i, (fn, gas) in enumerate(zip(calls, limits)):
             try:

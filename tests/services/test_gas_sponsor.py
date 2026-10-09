@@ -33,6 +33,8 @@ from agentpit.domain.exceptions import (
     GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientGasError,
+    MarketStateError,
+    NothingToClaimError,
     TransactionInProgressError,
     TransactionRevertedError,
 )
@@ -206,10 +208,14 @@ def _spend(db, user, gas: int) -> None:
         TableWrite.add_sponsored_gas(conn, user.api_key, _today(), gas)
 
 
-def _send(db, chain, user, calls, kind, *, on_signed=None, **settings):
+def _send(
+    db, chain, user, calls, kind, *, on_signed=None, before_send=None, **settings
+):
     sponsor = UserGasSponsor(db, chain, _settings(**settings))  # type: ignore[arg-type]
     with sponsor.locked(user):
-        return sponsor.send(user, calls, kind, on_signed=on_signed)  # type: ignore[arg-type]
+        return sponsor.send(  # type: ignore[arg-type]
+            user, calls, kind, on_signed=on_signed, before_send=before_send
+        )
 
 
 # --- settings ---------------------------------------------------------------
@@ -495,6 +501,135 @@ def test_no_hook_is_the_default():
     with sponsor.locked(user):
         sponsor.send(user, [_Call()], "claim")  # type: ignore[list-item]
     assert len(chain.signed) == 1
+
+
+# --- the last check before the first signature -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("balance", "events"),
+    [
+        pytest.param(
+            0,
+            [
+                ("balance",),
+                ("fund", NEED),
+                ("hook",),
+                ("send", "redeem", 120_000, 1_000),
+            ],
+            id="after-a-top-up",
+        ),
+        pytest.param(
+            NEED,
+            [("balance",), ("hook",), ("send", "redeem", 120_000, 1_000)],
+            id="no-top-up-needed",
+        ),
+    ],
+)
+def test_before_send_runs_after_the_top_up_and_before_the_first_signature(
+    balance, events
+):
+    """The world can change while the top-up mines: a market resolves, tokens
+    move. The caller's last check runs once the wallet is funded and before
+    anything is signed, so a call that no longer makes sense costs the admin
+    the top-up and nothing more."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(balances=(balance,))
+    receipts = _send(
+        db,
+        chain,
+        user,
+        [_Call()],
+        "claim",
+        before_send=lambda: chain.events.append(("hook",)),
+    )
+    assert chain.events == events
+    assert [r["status"] for r in receipts] == [1]
+
+
+@pytest.mark.parametrize("kind", ["claim", "split"])
+@pytest.mark.parametrize(
+    ("balance", "booked"),
+    [
+        pytest.param(0, TRANSFER_GAS, id="the-top-up-went-out"),
+        pytest.param(NEED, 0, id="no-top-up-was-needed"),
+    ],
+)
+def test_a_before_send_that_raises_sends_nothing_and_books_only_the_transfer(
+    kind, balance, booked
+):
+    """Nothing is signed, so nothing of the user's can mine: a split's
+    reservation goes back in full, and only the top-up's transfer, which did
+    go out, stays booked. The caller's own error propagates as it is, and the
+    lock is free afterwards."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(balances=(balance,))
+    error = NothingToClaimError()
+
+    def refuse():
+        raise error
+
+    with pytest.raises(NothingToClaimError) as caught:
+        _send(db, chain, user, [_Call()], kind, before_send=refuse)
+
+    assert caught.value is error
+    assert chain.sends == [] and chain.signed == []
+    assert _used(db, user) == booked
+    with UserGasSponsor(db, chain, _settings()).locked(user):  # type: ignore[arg-type]
+        pass
+
+
+def test_before_send_is_not_asked_again_for_a_resized_retry():
+    """It guards the first signature. The retry after a refusal at import is
+    the same call at a new size, signed a moment later, and is not re-checked."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(
+        prices=(1_000, 1_500), balances=(0, NEED), refusals=[_refused(SKALED_FEE_LOW)]
+    )
+    asked: list[int] = []
+    _send(db, chain, user, [_Call()], "claim", before_send=lambda: asked.append(1))
+    assert len(chain.sends) == 2
+    assert asked == [1]
+
+
+def test_before_send_runs_with_the_kill_switch_off_too():
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain()
+    _send(
+        db,
+        chain,
+        user,
+        [_Call()],
+        "split",
+        before_send=lambda: chain.events.append(("hook",)),
+        AGENTPIT_SPONSOR_USER_GAS=False,
+    )
+    assert chain.events == [("hook",), ("send", "redeem", 120_000, 1_000)]
+
+
+def test_a_before_send_that_raises_with_the_kill_switch_off_sends_nothing():
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain()
+
+    def refuse():
+        raise MarketStateError("split only runs on ACTIVE markets")
+
+    with pytest.raises(MarketStateError):
+        _send(
+            db,
+            chain,
+            user,
+            [_Call()],
+            "split",
+            before_send=refuse,
+            AGENTPIT_SPONSOR_USER_GAS=False,
+        )
+    assert chain.sends == [] and chain.signed == []
 
 
 # --- the per-user lock ------------------------------------------------------
