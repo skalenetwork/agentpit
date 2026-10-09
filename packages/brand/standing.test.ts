@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { Call } from "./api";
 import { isActive, rankLabel, recordCalls } from "./standing";
 
-const call = (pnl: number): Call => ({ title: "Will it rain?", icon: null, category: "Weather", outcome: "Yes", entry: 0.4, exit: 1, pnl, url: null, eventTitle: null, endDate: null, resolvedAt: null, winner: null });
+const call = (pnl: number): Call => ({ title: "Will it rain?", icon: null, category: "Weather", outcome: "Yes", entry: 0.4, exit: 1, pnl, url: null, eventTitle: null, endDate: null, resolvedAt: null, winner: null, kickoff: null, trading: null });
 
 test("the top three get a medal, the rest a place, the unranked their progress", () => {
   expect(rankLabel(1, 19, 50)).toEqual({ kind: "medal", place: 1, text: "#1 of 19" });
