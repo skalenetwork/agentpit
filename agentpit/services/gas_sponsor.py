@@ -39,6 +39,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
+    DomainError,
     GasBudgetExceededError,
     GasPriceMovedError,
     GasTopUpTimeoutError,
@@ -218,7 +219,9 @@ class UserGasSponsor:
         balance is answered by one resize-and-retry of that call. If the node
         refuses the retry too, neither signature can mine and the reservation
         goes back: a second balance refusal is `InsufficientGasError` (402),
-        a second fee refusal `GasPriceMovedError` (503, "try again").
+        a second fee refusal `GasPriceMovedError` (503, "try again"). A
+        re-sizing that fails before the retry is signed leaves nothing in
+        flight either, and is `GasTopUpTimeoutError` (503, see `_resize`).
 
         `on_signed(i, tx_hash)` is called each time call `i` is signed, before
         its transaction is broadcast, so the caller can record a transaction
@@ -297,10 +300,7 @@ class UserGasSponsor:
                         user.user_id,
                         exc,
                     )
-                    price, rest, shortfall = self._size(user, calls[i:])
-                    limits[i:] = rest
-                    if shortfall:
-                        self._top_up(user, shortfall, paid)
+                    price = self._resize(user, calls, i, limits, paid)
                     continue
                 paid.unseen = False
                 paid.receipts.append(receipt)
@@ -448,6 +448,43 @@ class UserGasSponsor:
             raise
         paid.unseen = False
         paid.topups += 1
+
+    def _resize(
+        self,
+        user: User,
+        calls: list[ContractFunction],
+        i: int,
+        limits: list[int],
+        paid: _Paid,
+    ) -> int:
+        """After the node refused call `i` at import: size calls `i` onwards
+        again, top the wallet up to the new need, and return the new price.
+        `limits` is updated in place.
+
+        The refused transaction can never run and its retry is not signed
+        yet, so nothing of the user's is in flight while this runs. A failure
+        here, of a read or of the top-up, is therefore raised as
+        `GasTopUpTimeoutError` (503, "try again"): an answer, which
+        `PositionService` drops the refused transaction's pending row for.
+        Raised as it is, a read error would pass for a transaction whose
+        outcome nobody knows. The ceiling's `RuntimeError` goes the same way;
+        `_size` has logged it at ERROR already. A paused breaker stays
+        `AdminGasPausedError`. The booking is decided as anywhere else: a
+        failed read leaves nothing unseen and the reservation goes back, a
+        top-up that got no answer may still mine and keeps it."""
+        try:
+            price, rest, shortfall = self._size(user, calls[i:])
+        except Exception as exc:
+            raise GasTopUpTimeoutError() from exc
+        limits[i:] = rest
+        if shortfall:
+            try:
+                self._top_up(user, shortfall, paid)
+            except DomainError:
+                raise  # already an answer: busy or paused, both 503
+            except Exception as exc:
+                raise GasTopUpTimeoutError() from exc
+        return price
 
     def _send_one(
         self,

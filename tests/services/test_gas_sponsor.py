@@ -764,6 +764,32 @@ def test_an_interrupt_after_the_broadcast_keeps_the_reservation_and_frees_the_lo
     assert _used(db, user) == 120_000 + TRANSFER_GAS
 
 
+def test_a_failed_read_while_re_sizing_is_a_retryable_503_with_nothing_in_flight():
+    """The node refused the split at import (its fee was low), and the read
+    of the new price then got no answer. The refused transaction can never
+    mine and the retry was never signed, so nothing is in flight: the caller
+    gets `GasTopUpTimeoutError` (503, "try again"), which `PositionService`
+    reads as an answer and drops the pending row for, and the reservation goes
+    back. Only the first top-up's transfer is booked."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(refusals=[_refused(SKALED_FEE_LOW)])
+    prices = iter([1_000])
+
+    def gas_price() -> int:
+        price = next(prices, None)
+        if price is None:
+            raise requests.ReadTimeout("read timed out")
+        return price
+
+    chain.gas_price = gas_price  # type: ignore[method-assign]
+    with pytest.raises(GasTopUpTimeoutError) as caught:
+        _send(db, chain, user, [_Call()], "split")
+    assert isinstance(caught.value.__cause__, requests.ReadTimeout)
+    assert len(chain.sends) == 1
+    assert _used(db, user) == TRANSFER_GAS
+
+
 def test_a_definite_refusal_hands_a_split_reservation_back():
     """The counterpart: the node answered and refused ("nonce too low"), so the
     transaction provably never ran. Only the top-up's transfer, which did go
