@@ -158,14 +158,10 @@ def _run_resolution_cycle(
 
 
 def _run_redeem_pass(db: DbSession, admin: OnchainAdmin, settings: Settings) -> int:
-    """What both resolution loops do after resolving: the auto-redeem pass, or
-    with the global switch off just the settling of pending user transactions.
-
-    The auto-redeem pass reconciles `pending_user_txs` first itself, so it is
-    not done twice. With auto-redeem disabled nothing else would: a claim or
-    split whose receipt never came back would sit pending for good and never
-    reach the history. A reconcile failure is logged and never breaks the loop;
-    its rows are tried again next pass. Returns the holder redemptions made.
+    """What both resolution loops do after resolving: the auto-redeem pass
+    (which settles pending user transactions first), or with the global switch
+    off just that settling, so nothing sits pending for good. A reconcile
+    failure is logged and never breaks the loop. Returns the redemptions made.
     """
     with _redeem_lock:
         if settings.auto_redeem_enabled:

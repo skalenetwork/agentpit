@@ -202,11 +202,9 @@ class TableCreate:
                 f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {col_type}"
             )
         # Auto-redeem is on by default since claims became sponsored (owner
-        # decision 2026-10-08). The ADD COLUMN above never touches a column
-        # that already exists, so a database created under the old DEFAULT
-        # FALSE needs its default moved here. Only the default moves: rows
-        # already there keep what their owner chose, and the mainnet database
-        # starts empty, so there is nothing to migrate.
+        # decision 2026-10-08). ADD COLUMN above skips an existing column, so
+        # an older database's DEFAULT FALSE is moved here; existing rows keep
+        # what their owner chose.
         conn.execute(
             "ALTER TABLE users ALTER COLUMN AUTO_REDEEM_ENABLED SET DEFAULT TRUE"
         )
@@ -544,17 +542,12 @@ class TableCreate:
         """User-signed transactions (split, merge, claim) that were signed and
         may be on their way to the chain, before anybody knows how they ended.
 
-        `PositionService` writes a row just before the broadcast, carrying the
-        TRANSACTION_TYPE, MARKET_ID and DETAILS (JSON) the `transactions` row
-        will have; a claim's DETAILS have no amount yet. Once the receipt is in,
-        one statement deletes the row and writes the `transactions` row
-        (`TableWrite.confirm_pending_user_tx`). A refusal or a revert deletes
-        it. A transaction whose receipt never came back keeps its row, and the
-        auto-redeem pass settles it later from the chain
-        (`reconcile_pending_user_txs`). CREATED_AT is unix seconds.
-
-        `transactions` and its readers are untouched: history shows a
-        transaction once it is known to have mined, never before.
+        Each row carries the TRANSACTION_TYPE, MARKET_ID and DETAILS (JSON) its
+        `transactions` row will have (a claim's without an amount yet), and
+        becomes that row once the receipt is in
+        (`TableWrite.confirm_pending_user_tx`); see
+        `agentpit.services.pending_user_txs`. CREATED_AT is unix seconds.
+        History shows a transaction only once it is known to have mined.
         """
         conn.execute(
             """
