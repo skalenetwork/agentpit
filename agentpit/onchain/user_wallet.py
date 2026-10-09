@@ -13,6 +13,10 @@ from agentpit.onchain.chain_rpc import (
 )
 from agentpit.onchain.web3_client import Web3Client
 
+# The pad on a user transaction's gas estimate, also what `UserGasSponsor` and
+# the house's approvals are sized with.
+GAS_BUFFER_PCT = 20
+
 
 def send_user_tx(
     client: Web3Client,
@@ -20,7 +24,7 @@ def send_user_tx(
     fn: ContractFunction,
     *,
     timeout: int = 30,
-    gas_buffer_pct: int = 20,
+    gas_buffer_pct: int = GAS_BUFFER_PCT,
     gas: int | None = None,
     max_fee: int | None = None,
     on_signed: Callable[[str], None] | None = None,
@@ -30,25 +34,19 @@ def send_user_tx(
     Each user has their own nonce stream, so unlike the admin key's it needs no
     shared sender.
 
-    `gas` and `max_fee` are for a caller that has already sized the
-    transaction and topped the wallet up to exactly `gas x max_fee`
-    (`UserGasSponsor`). `gas` is then the gas limit as given, and nothing is
-    estimated again: that would be one more ~0.5 s RPC on SKALE, and an
-    answer that could disagree with what was funded. `max_fee` is then the
-    maxFeePerGas, with no tip. Either one left out is worked out here, as it
-    always was.
+    `gas` and `max_fee` are for a caller that has sized the transaction and
+    funded exactly `gas x max_fee` (`UserGasSponsor`): used as given, with no
+    tip and no second estimate (a ~0.5 s RPC on SKALE whose answer could
+    disagree with what was funded). Either one left out is worked out here.
 
-    `on_signed` is called with the transaction's hash ("0x" and lowercase hex,
-    the hash its receipt will carry) once it is signed and before it is
-    broadcast, so a caller can record it before it can possibly mine
-    (`PositionService` writes its pending row there). If the hook raises,
-    nothing is broadcast.
+    `on_signed` gets the transaction's hash ("0x" and lowercase hex) once it
+    is signed and before the broadcast, so a caller can record it before it
+    can mine. If the hook raises, nothing is broadcast.
 
-    An error from here that passes `failed_before_connecting` means the
-    transaction never reached the node: the nonce read or the broadcast
-    could not connect. A receipt poll that cannot connect is raised as
-    `ReceiptUnreachable` instead: by then the node has the transaction, and
-    it may mine.
+    An error that passes `failed_before_connecting` means the transaction
+    never reached the node. A receipt poll that cannot connect is raised as
+    `ReceiptUnreachable` instead: the node has the transaction, and it may
+    mine.
     """
     web3 = client.web3
     nonce = web3.eth.get_transaction_count(user_account.address, "pending")
@@ -118,16 +116,9 @@ def fund_user_with_native(
     timeout: int = 30,
     slot_timeout: float | None = None,
 ) -> TxReceipt:
-    """Send `value_wei` native tokens from admin to user_address.
-
-    Reached through `OnchainAdmin.fund_gas`: `UserGasSponsor` uses it to top a
-    user's wallet up to exactly what their next transactions need, and the
-    house gas loop to keep the house accounts above their floor. There is no
-    signup grant any more.
-
-    `slot_timeout` is `AdminTxSender.send_value`'s: it caps the wait for a free
-    admin transaction slot and makes `timeout` cover that wait too.
-    """
+    """Send `value_wei` native tokens from admin to user_address, through
+    `OnchainAdmin.fund_gas`: `UserGasSponsor`'s top-ups and the house gas
+    loop. `slot_timeout` is `AdminTxSender.send_value`'s."""
     return client.admin_sender.send_value(
         user_address, value_wei, timeout=timeout, slot_timeout=slot_timeout
     )
