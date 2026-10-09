@@ -1,9 +1,6 @@
-"""One account, one collateral grant, on the real faucet.
-
-The unit matrix in tests/services/test_onboarding_one_drip.py proves the rule
-on a fake chain. Here `Faucet.drip` really mints, with no per-address guard:
-the first onboarding fails after the drip (its gas top-up times out), and the
-retry must leave the wallet holding the grant, not twice the grant.
+"""One account, one collateral grant, on the real faucet (fake-chain matrix: tests/services/
+test_onboarding_one_drip.py): `Faucet.drip` mints with no per-address guard, so a retry after
+an onboarding that failed once the drip landed (its top-up timed out) must hold one grant.
 """
 
 import pytest
@@ -23,9 +20,7 @@ def _world():
 
 
 def test_the_deployment_grant_is_what_the_faucet_drips():
-    """`signup_grant_raw`, from the deployment file, is the figure the drip
-    guard compares a balance with, while the faucet's amount is baked into the
-    contract: onboarding is only right while they agree."""
+    """The drip guard's `signup_grant_raw` (deployment file) must equal the faucet's amount."""
     _, _, admin = _world()
 
     assert admin.signup_grant_raw == admin._contracts.faucet.functions.amount().call()  # noqa: SLF001

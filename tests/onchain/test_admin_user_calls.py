@@ -1,7 +1,6 @@
 """What `UserGasSponsor` is built from, against the real contracts: the user-signed
 call builders on `OnchainAdmin`, and the reads and send it sizes a top-up with.
-The sponsor promises to top the wallet up to exactly what the calls need, then
-send them; these pin the facts that promise stands on.
+Its promise is "top up to exactly what the calls need, then send"; these pin the facts it stands on.
 """
 
 import secrets
@@ -15,14 +14,12 @@ from web3.exceptions import Web3RPCError
 from agentpit.onchain.admin import _MAX_UINT256, OnchainAdmin
 from agentpit.onchain.chain_rpc import is_balance_low
 from agentpit.onchain.ctf_ids import binary_market_ids
-from tests.onchain._helpers import assert_approvals_set, local_admin
+from tests.onchain import _helpers as h
 
 HOLDER = "0x9D22FB092E79515611e8380026583929F88815b9"
 
 
-@pytest.fixture
-def admin() -> OnchainAdmin:
-    return local_admin()
+admin = h.admin  # the shared fixture
 
 
 def _condition(admin: OnchainAdmin) -> tuple[bytes, bytes, list[int]]:
@@ -72,8 +69,7 @@ def test_an_unreported_condition_reads_no_numerators():
 
 
 def test_an_estimate_carries_no_fee_fields():
-    """With a gasPrice or maxFeePerGas in it, anvil refuses to estimate for a
-    zero-balance sender, and a sponsored wallet is empty when it is sized."""
+    """A gasPrice/maxFeePerGas in the estimate makes anvil refuse the (empty) sponsored wallet."""
     fn = MagicMock()
     fn.estimate_gas.return_value = 46_487
     admin = OnchainAdmin(client=None, contracts=None)  # type: ignore[arg-type]
@@ -84,12 +80,9 @@ def test_an_estimate_carries_no_fee_fields():
 
 @pytest.mark.parametrize(
     ("payouts", "expected"),
-    [
-        pytest.param([1, 0], (1, [1, 0]), id="yes-wins"),
-        pytest.param([0, 1], (1, [0, 1]), id="no-wins"),
-        # The denominator is the numerators' sum: each side of a 50/50 pays half.
-        pytest.param([1, 1], (2, [1, 1]), id="split-resolution"),
-    ],
+    # The denominator is the numerators' sum: each side of a 50/50 pays half.
+    [([1, 0], (1, [1, 0])), ([0, 1], (1, [0, 1])), ([1, 1], (2, [1, 1]))],
+    ids=["yes-wins", "no-wins", "split-resolution"],
 )
 def test_payout_vector_before_and_after_report_payouts(admin, payouts, expected):
     question_id, condition_id, _tokens = _condition(admin)
@@ -113,8 +106,7 @@ def test_an_empty_wallet_can_be_estimated(admin):
 
 
 def test_a_claim_with_nothing_to_claim_still_estimates(admin):
-    """redeemPositions succeeds with zero holdings, so the chain never refuses a
-    worthless claim and the sponsor has to gate it before paying for it."""
+    """`redeemPositions` succeeds with zero holdings: the sponsor must gate a worthless claim."""
     question_id, condition_id, _tokens = _condition(admin)
     admin.report_payouts(question_id, [1, 0])
 
@@ -167,9 +159,7 @@ def test_one_wei_short_of_gas_times_price_is_a_balance_refusal(admin):
 
 
 def test_a_reverted_call_is_mined_and_returned(admin):
-    """With the limit given nothing is estimated, so a call the contract rejects
-    is mined, paid for and handed back with status 0: the sponsor books its gas
-    and raises; it never sees an exception here."""
+    """Given a limit nothing is estimated: a rejected call is mined, paid for, returned status 0."""
     _question_id, condition_id, _tokens = _condition(admin)  # not reported
     wallet = Account.create()
     gas, price = 100_000, admin.gas_price()
@@ -195,8 +185,7 @@ def test_approval_calls_are_the_three_onboarding_approvals_in_order(admin):
 
 
 def test_one_exact_top_up_pays_for_all_three_approvals(admin):
-    """Onboarding without a grant: one top-up sized for the three calls
-    together, then the three sent back to back from it."""
+    """Onboarding without a grant: one top-up sized for all three calls, sent back to back."""
     wallet = Account.create()
     calls = admin.approval_calls()
     limits = [_sized(admin, fn, wallet.address) for fn in calls]
@@ -209,7 +198,7 @@ def test_one_exact_top_up_pays_for_all_three_approvals(admin):
     ]
 
     assert [r["status"] for r in receipts] == [1, 1, 1]
-    assert_approvals_set(admin, wallet.address)
+    h.assert_approvals_set(admin, wallet.address)
     assert admin.native_balance(wallet.address) <= need
 
 
@@ -220,7 +209,7 @@ def test_grant_user_approvals_still_sets_every_approval(admin):
     receipts = admin.grant_user_approvals(house)
 
     assert [r["status"] for r in receipts] == [1, 1, 1]
-    assert_approvals_set(admin, house.address)
+    h.assert_approvals_set(admin, house.address)
 
 
 def test_split_merge_and_redeem_calls_move_collateral_and_tokens(admin):
@@ -260,9 +249,7 @@ def test_user_split_position_still_splits_for_a_self_funded_wallet(admin):
 
 
 def test_the_hash_is_handed_over_after_signing_and_before_the_broadcast(admin):
-    """`on_signed` gets the transaction's own hash, the one its receipt will
-    carry, while the chain has not seen it yet: what `PositionService` writes
-    its intent row under before anything can mine."""
+    """`on_signed` gets the receipt's hash before the chain has seen it: the intent row's key."""
     wallet, fn, gas, price = _staged(admin)
     seen: list[tuple[str, int, object]] = []
 
@@ -277,8 +264,7 @@ def test_the_hash_is_handed_over_after_signing_and_before_the_broadcast(admin):
 
 
 def test_a_hook_that_raises_stops_the_broadcast(admin):
-    """An intent row that could not be written must not leave a transaction on
-    its way that nothing records."""
+    """An intent row that could not be written must not leave a transaction unrecorded."""
     wallet, fn, gas, price = _staged(admin)
 
     def on_signed(_tx_hash: str) -> None:
