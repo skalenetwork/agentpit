@@ -1,21 +1,16 @@
-"""`PositionService` decides what reaches `UserGasSponsor`.
+"""`PositionService` decides what reaches `UserGasSponsor` (the chain and the sponsor are fakes).
 
-The sponsor tops a wallet up before every split, merge and claim, so the admin
-pays for whatever this service lets through. These tests pin the gate in
-front of it with fakes for the chain and the sponsor: a claim with nothing
-worth claiming, or on a market the chain has not resolved, never reaches
-`send`; every chain read runs inside the user's lock; and a row is written only
-after the sponsor reports success. A claim is logged at the payout its receipt
-reports, whatever the wallet's balance did meanwhile. tests/onchain/
-test_sponsored_positions.py proves the same against anvil.
+The sponsor tops a wallet up before every split, merge and claim, so the admin pays for whatever
+this service lets through: a claim with nothing worth claiming, or on a market the chain has not
+resolved, never reaches `send`; every chain read runs inside the user's lock; a row is written
+only after the sponsor reports success; a claim is logged at the payout its receipt reports.
 
-Every transaction the sponsor signs gets an intent row in `pending_user_txs`
-before it is broadcast. Once its receipt is in, the row becomes the
-SPLIT / MERGE / REDEEM row; a refusal or a revert removes it; and when nobody
-knows how the transaction ended (no receipt in time, no answer to the
-broadcast) it stays, the caller gets `TransactionPendingError` (503), and the
-auto-redeem pass settles it later. tests/onchain/test_pending_user_txs.py
-proves that against anvil.
+Every transaction the sponsor signs gets an intent row in `pending_user_txs` before it is
+broadcast. Once its receipt is in, the row becomes the SPLIT / MERGE / REDEEM row; a refusal or a
+revert removes it; when nobody knows how it ended (no receipt in time, no answer to the
+broadcast) it stays, the caller gets `TransactionPendingError` (503), and the auto-redeem pass
+settles it later. tests/onchain/test_sponsored_positions.py and test_pending_user_txs.py prove
+the same against anvil.
 """
 
 from __future__ import annotations
@@ -23,7 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 
 import psycopg_pool
 import pytest
@@ -64,15 +61,21 @@ _LOGGER = "agentpit.services.position_service"
 _CONDITION = "0x" + "ab" * 32
 _CID = bytes.fromhex(_CONDITION[2:])
 _YES, _NO = "7001", "7002"
+_ACTIONS = ["split", "merge", "redeem"]
+# What each action's intent row carries: the final row's type and details, with no amount yet
+# for a claim (the receipt has not said what it paid).
+_INTENT = {
+    "split": ("SPLIT", {"amount": 40_000_000}),
+    "merge": ("MERGE", {"amount": 40_000_000}),
+    "redeem": ("REDEEM", {}),
+}
 
 
 class _FakeChain:
-    """The reads `PositionService` gates on, and call builders that return
-    plain tuples, so a test sees exactly which call went to the sponsor.
-    `reads` records every chain read, in order. `redeemed_payout` reads the
-    figure off the receipt the sponsor returned, as the real one decodes it
-    from the receipt's logs, and remembers whose payout it was asked for.
-    An exception among the `usd` answers is raised by that read."""
+    """The reads `PositionService` gates on, and call builders that return plain tuples, so a
+    test sees exactly which call went to the sponsor. `reads` records every read, in order. An
+    exception among the `usd` answers is raised by that read. `redeemed_payout` reads the figure
+    off the receipt, as the real one decodes it, and remembers whose payout it was asked for."""
 
     def __init__(self, *, vector=(1, [1, 0]), balances=(0, 0), usd=(0,)):
         self.vector = vector
@@ -115,57 +118,36 @@ class _FakeChain:
         return ("mergePositions", condition_id, partition, amount)
 
 
+@dataclass
 class _FakeSponsor:
-    """Records each `send` as (calls, kind, whether the lock was held).
-    `busy` makes `locked` refuse as a held lock does; `fail` is raised from
-    `send` after it is recorded, as a reverted transaction is. Each receipt it
-    returns carries `payout`, what the fake chain reads back as the claim's
-    `PayoutRedemption`. A `log` is appended to by every `send`, so a test can
-    tell which chain reads came before it and which after.
+    """Records each `send` as (calls, kind, whether the lock was held). `busy` makes `locked`
+    refuse as a held lock does; `fail` is raised from `send` after it is recorded, as a reverted
+    transaction is, or before anything is signed with `fail_unsigned` (a failed read or top-up).
+    Each receipt carries `payout`, what the fake chain reads back. `log` gets "send" appended by
+    every `send`, so a test can tell which chain reads came before it and which after.
 
-    Each call is signed `signs` times before `fail` (2: refused at import and
-    signed again at the new size, as the real sponsor's one retry does), and
-    every hash goes to `on_signed` and into `hashes`. With `fail_unsigned`,
-    `fail` is raised before anything is signed: a failed read or top-up.
-    `during_send` runs once the calls are signed, while their transactions
-    would be on their way. `during_top_up` runs where the real top-up would
-    mine, the window in which the world can change; the `before_send` it is
-    given runs right after it, as the real sponsor's does, and anything it
-    raises stops the send before anything is signed."""
+    Each call is signed `signs` times before `fail` (2: refused at import and signed again at
+    the new size, as the real sponsor's one retry does); every hash goes to `on_signed` and
+    `hashes`. `during_send` runs once the calls are signed. `during_top_up` runs where the real
+    top-up would mine, the window in which the world can change; `before_send` follows it, as
+    the real sponsor's does, and anything it raises stops the send before anything is signed."""
 
-    def __init__(
-        self,
-        *,
-        busy=False,
-        fail=None,
-        min_claim_micro=10_000,
-        payout=0,
-        log=None,
-        signs=1,
-        fail_unsigned=False,
-        during_send=None,
-        during_top_up=None,
-    ):
-        self._busy = busy
-        self._fail = fail
-        self._min = min_claim_micro
-        self._payout = payout
-        self._log = log
-        self._signs = signs
-        self._fail_unsigned = fail_unsigned
-        self._during_send = during_send
-        self._during_top_up = during_top_up
-        self.held = False
-        self.sent: list[tuple[list, str, bool]] = []
-        self.hashes: list[str] = []
-
-    @property
-    def min_claim_micro(self) -> int:
-        return self._min
+    busy: bool = False
+    fail: Exception | None = None
+    min_claim_micro: int = 10_000
+    payout: int = 0
+    log: list | None = None
+    signs: int = 1
+    fail_unsigned: bool = False
+    during_send: Callable[[], None] | None = None
+    during_top_up: Callable[[], None] | None = None
+    held: bool = field(default=False, init=False)
+    sent: list[tuple[list, str, bool]] = field(default_factory=list, init=False)
+    hashes: list[str] = field(default_factory=list, init=False)
 
     @contextmanager
     def locked(self, user):
-        if self._busy:
+        if self.busy:
             raise TransactionInProgressError()
         self.held = True
         try:
@@ -175,30 +157,28 @@ class _FakeSponsor:
 
     def send(self, user, calls, kind, *, on_signed=None, before_send=None):
         self.sent.append((calls, kind, self.held))
-        if self._log is not None:
-            self._log.append("send")
-        if self._fail is not None and self._fail_unsigned:
-            raise self._fail
-        if self._during_top_up is not None:
-            self._during_top_up()
+        if self.log is not None:
+            self.log.append("send")
+        if self.fail is not None and self.fail_unsigned:
+            raise self.fail
+        if self.during_top_up is not None:
+            self.during_top_up()
         if before_send is not None:
             before_send()
-        for i, _call in enumerate(calls):
-            for _ in range(self._signs):
-                tx_hash = "0x%064x" % (len(self.hashes) + 1)
-                self.hashes.append(tx_hash)
+        for i in range(len(calls)):
+            for _ in range(self.signs):
+                self.hashes.append("0x%064x" % (len(self.hashes) + 1))
                 if on_signed is not None:
-                    on_signed(i, tx_hash)
-        if self._during_send is not None:
-            self._during_send()
-        if self._fail is not None:
-            raise self._fail
-        return [{"status": 1, "payout": self._payout} for _ in calls]
+                    on_signed(i, self.hashes[-1])
+        if self.during_send is not None:
+            self.during_send()
+        if self.fail is not None:
+            raise self.fail
+        return [{"status": 1, "payout": self.payout} for _ in calls]
 
 
 def _setup(state: MarketState):
-    """A user and one binary market (YES=7001, NO=7002), left ACTIVE or
-    resolved to YES in the database."""
+    """A user and one binary market (YES=7001, NO=7002), ACTIVE or resolved to YES."""
     db = fresh_test_db()
     with db.write() as conn:
         user_id, _acct, _key = TableWrite.create_user(
@@ -217,12 +197,18 @@ def _setup(state: MarketState):
             is_polygon_market=False,
         )
         if state == MarketState.RESOLVED:
-            TableWrite.resolve_market(
-                conn, market_id=market.market_id, winning_outcome_index=0
-            )
+            TableWrite.resolve_market(conn, market_id=market.market_id, winning_outcome_index=0)
         user = TableRead.get_user_by_userid(conn, user_id)
     assert user is not None
     return db, user, market.market_id
+
+
+def _ready(action):
+    """A user, a market in the state `action` needs, and a chain on which `action` passes its
+    checks: 100 of each token and 100 apUSD."""
+    db, user, mid = _setup(MarketState.RESOLVED if action == "redeem" else MarketState.ACTIVE)
+    chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(100_000_000,))
+    return db, user, mid, chain
 
 
 def _service(db, chain, sponsor) -> PositionService:
@@ -230,51 +216,38 @@ def _service(db, chain, sponsor) -> PositionService:
 
 
 def _rows(db, user) -> list[str]:
+    query = "SELECT TRANSACTION_TYPE FROM transactions WHERE API_KEY = %s"
     with db.read() as conn:
-        return [
-            r["TRANSACTION_TYPE"]
-            for r in conn.execute(
-                "SELECT TRANSACTION_TYPE FROM transactions WHERE API_KEY = %s",
-                (user.api_key,),
-            ).fetchall()
-        ]
+        return [r["TRANSACTION_TYPE"] for r in conn.execute(query, (user.api_key,)).fetchall()]
 
 
 def _redeem_amounts(db, user) -> list[int]:
     """`collateral_amount` of each REDEEM row, as the profile page reads it."""
+    query = "SELECT DETAILS FROM transactions WHERE API_KEY = %s AND TRANSACTION_TYPE = 'REDEEM'"
     with db.read() as conn:
-        return [
-            json.loads(r["DETAILS"])["collateral_amount"]
-            for r in conn.execute(
-                "SELECT DETAILS FROM transactions "
-                "WHERE API_KEY = %s AND TRANSACTION_TYPE = 'REDEEM'",
-                (user.api_key,),
-            ).fetchall()
-        ]
+        rows = conn.execute(query, (user.api_key,)).fetchall()
+    return [json.loads(r["DETAILS"])["collateral_amount"] for r in rows]
 
 
 def _pending(db) -> list[tuple[str, str, str, int | None, dict]]:
     """Every intent row: (hash, api key, type, market, details)."""
     with db.read() as conn:
-        return [
-            (r.tx_hash, r.api_key, r.transaction_type, r.market_id, r.details)
-            for r in TableRead.list_pending_user_txs(conn)
-        ]
+        rows = TableRead.list_pending_user_txs(conn)
+    return [(r.tx_hash, r.api_key, r.transaction_type, r.market_id, r.details) for r in rows]
 
 
 def _write_pending(db, user, market_id, *, age: int, tx_hash="0x" + "cd" * 32):
     with db.write() as conn:
         TableWrite.insert_pending_user_tx(
-            conn, tx_hash, user.api_key, "REDEEM", market_id, {},
-            created_at=int(time.time()) - age,
+            conn, tx_hash, user.api_key, "REDEEM", market_id, {}, created_at=int(time.time()) - age
         )
 
 
-def _act(service, action, user, market_id):
+def _act(service, action, user, market_id, amount=40_000_000):
     if action == "split":
-        return service.split(user, market_id, SplitPositionRequest(amount=40_000_000))
+        return service.split(user, market_id, SplitPositionRequest(amount=amount))
     if action == "merge":
-        return service.merge(user, market_id, MergePositionRequest(amount=40_000_000))
+        return service.merge(user, market_id, MergePositionRequest(amount=amount))
     return service.redeem(user, market_id)
 
 
@@ -518,26 +491,6 @@ def test_a_reverted_transaction_writes_no_row(action):
 
 
 # --- the intent row ------------------------------------------------------------
-
-_ACTIONS = ["split", "merge", "redeem"]
-# What each action's intent row carries: the final row's type and details,
-# with no amount yet for a claim (the receipt has not said what it paid).
-_INTENT = {
-    "split": ("SPLIT", {"amount": 40_000_000}),
-    "merge": ("MERGE", {"amount": 40_000_000}),
-    "redeem": ("REDEEM", {}),
-}
-
-
-def _ready(action):
-    """A user, a market in the state `action` needs, and a chain on which
-    `action` passes its checks: 100 of each token and 100 apUSD."""
-    db, user, mid = _setup(
-        MarketState.RESOLVED if action == "redeem" else MarketState.ACTIVE
-    )
-    chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(100_000_000,))
-    return db, user, mid, chain
-
 
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_the_intent_row_is_written_before_the_send_and_becomes_the_row(action):
