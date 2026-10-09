@@ -73,12 +73,11 @@ class OnchainAdmin:
     ) -> TxReceipt:
         """Send `value_wei` native coin to `user_address` and wait for it.
 
-        Takes `timeout` seconds at most, the wait for a free admin transaction
-        slot included: a top-up runs while the user's lock is held (and, in
-        auto-redeem, `_redeem_lock`), so a full pipeline must not hold them for
-        the sender's own 120 s before the receipt wait even starts. A full
-        pipeline therefore raises `TimeExhausted` after about `timeout`, with
-        nothing broadcast.
+        `timeout` bounds the whole call, the wait for a free admin slot
+        included: a top-up runs under the user's lock (and in auto-redeem
+        `_redeem_lock`), which must not wait out the sender's own 120 s. A full
+        pipeline raises `TimeExhausted` after about `timeout`, with nothing
+        broadcast.
         """
         return fund_user_with_native(
             self._client,
@@ -92,12 +91,7 @@ class OnchainAdmin:
         self, user_account: LocalAccount, *, timeout: int = 30
     ) -> tuple[TxReceipt, TxReceipt, TxReceipt]:
         """Send `approval_calls` from `user_account`, which pays its own gas.
-
-        House accounts only: the house signs its own approvals from the
-        balance its floor/target loop keeps funded. A user or agent wallet
-        holds no gas of its own, so it onboards through `UserGasSponsor`,
-        which tops it up to exactly what `approval_calls` need and sends them
-        with `send_as_user`.
+        House accounts only; users and agents onboard through `UserGasSponsor`.
         """
         rcpt_a, rcpt_b, rcpt_c = [
             send_user_tx(self._client, user_account, fn, timeout=timeout)
@@ -107,10 +101,8 @@ class OnchainAdmin:
 
     # --- user-signed calls ------------------------------------------
     #
-    # Built here, sized, funded and sent by `UserGasSponsor`: it estimates
-    # each call with `estimate_user_gas`, prices it at `gas_price`, tops the
-    # wallet up to exactly that, then sends with `send_as_user`. A builder
-    # only builds; nothing reaches the chain until the sponsor sends.
+    # Built here; sized (`estimate_user_gas`, `gas_price`), funded and sent
+    # (`send_as_user`) by `UserGasSponsor`.
 
     def approval_calls(self) -> list[ContractFunction]:
         """The three one-time approvals every trading account needs, in order.
@@ -149,13 +141,10 @@ class OnchainAdmin:
     def redeem_call(
         self, condition_id: bytes, partition: list[int]
     ) -> ContractFunction:
-        """redeemPositions over every index set in `partition`.
-
-        Pass the whole partition, losers included, so losing tokens burn in
-        the same transaction instead of lingering as worthless balances. The
-        CTF pays `msg.sender` only, and it succeeds with zero holdings: the
-        chain never refuses a worthless claim, so a sponsored one is gated on
-        `payout_vector` and `ctf_balances` before it is sent.
+        """redeemPositions over every index set in `partition`; pass the whole
+        partition so losing tokens burn in the same transaction. It pays
+        `msg.sender` only and succeeds with zero holdings, so a sponsored claim
+        is gated on `payout_vector` and `ctf_balances` before it is sent.
         """
         return self._contracts.ctf.functions.redeemPositions(
             self._contracts.usd.address, _ZERO_BYTES32, condition_id, partition
@@ -170,21 +159,17 @@ class OnchainAdmin:
     def estimate_user_gas(self, fn: ContractFunction, address: str) -> int:
         """Gas `fn` needs when `address` sends it, on committed state.
 
-        No fee fields, on purpose. A sponsored wallet is usually empty when
-        it is sized, and anvil answers "gas required exceeds allowance: 0" to
-        an estimate that carries a `gasPrice` or `maxFeePerGas` from a
-        zero-balance sender. Without them, anvil and skaled both estimate an
-        empty wallet's call.
+        No fee fields, on purpose: a sponsored wallet is usually empty when it
+        is sized, and anvil answers "gas required exceeds allowance: 0" to a
+        zero-balance sender's estimate that carries one.
         """
         return fn.estimate_gas({"from": Web3.to_checksum_address(address)})
 
     def transaction_count(self, address: str) -> int:
         """How many transactions `address` has had mined: its "latest" nonce.
-
-        Incoming transfers do not count, so a wallet that has only ever been
-        topped up reads 0. That separates "this chain never saw the account's
-        approvals" (a wiped anvil) from "the account spent its gas down to
-        near zero", which with exact top-ups is every healthy wallet.
+        Incoming transfers do not count, so 0 means the chain never saw the
+        account's approvals (a wiped anvil), unlike a near-zero balance, which
+        exact top-ups leave in every healthy wallet.
         """
         return self._client.web3.eth.get_transaction_count(
             Web3.to_checksum_address(address), "latest"
@@ -201,17 +186,13 @@ class OnchainAdmin:
         on_signed: Callable[[str], None] | None = None,
     ) -> TxReceipt:
         """Send `fn` from `user_account` with exactly the gas limit and price
-        its top-up paid for; wait for the receipt.
+        its top-up paid for, and return the receipt whatever its status.
 
-        Neither is worked out again: another estimate is one more ~0.5 s
-        round trip on SKALE, and a higher limit or price than the top-up
-        covered is refused at import, because skaled checks
-        `gasLimit × maxFeePerGas` against the balance. Returns the receipt
-        whatever its status: with the limit given nothing is estimated, so a
-        call that reverts is mined and paid for instead of refused up front.
-
-        `on_signed` gets the transaction's hash before it is broadcast
-        (`send_user_tx`).
+        Neither is worked out again: a higher limit or price than the top-up
+        covered is refused at import (skaled checks `gasLimit × maxFeePerGas`
+        against the balance). With no estimate, a call that reverts is mined
+        and paid for rather than refused up front. `on_signed` is
+        `send_user_tx`'s.
         """
         return send_user_tx(
             self._client,
@@ -224,10 +205,9 @@ class OnchainAdmin:
         )
 
     def transaction_receipt(self, tx_hash: str) -> TxReceipt | None:
-        """The receipt of `tx_hash`, or None while the chain has none: not
-        mined yet, or never going to be. How the pending-transaction
-        reconciler learns how a user transaction ended after its sender
-        stopped waiting for it."""
+        """The receipt of `tx_hash`, or None while the chain has none (not
+        mined yet, or never going to be): what the pending-transaction
+        reconciler settles by."""
         try:
             return self._client.web3.eth.get_transaction_receipt(HexStr(tx_hash))
         except TransactionNotFound:
@@ -391,11 +371,9 @@ class OnchainAdmin:
 
     @property
     def signup_grant_raw(self) -> int:
-        """What one `faucet_drip` mints, in raw apUSD: the figure the faucet was
-        deployed with (`scripts/deploy_exchange.sh` passes it to the contract and
-        writes it to the deployment file). Read from the file, so no RPC
-        round-trip; `Faucet.amount` is immutable on chain, so the two cannot
-        drift unless the file is edited by hand."""
+        """What one `faucet_drip` mints, in raw apUSD, read from the deployment
+        file `scripts/deploy_exchange.sh` wrote (no RPC). `Faucet.amount` is
+        immutable on chain, so the two cannot drift."""
         return self._client.deployment.signup_grant_raw
 
     def usd_balance(self, address: str) -> int:
@@ -439,20 +417,14 @@ class OnchainAdmin:
 
     def redeemed_payout(self, receipt: TxReceipt, redeemer: str) -> int:
         """What the claim in `receipt` paid `redeemer`, in raw apUSD: the sum of
-        the `payout` of every `PayoutRedemption` the ConditionalTokens contract
-        emitted for that address, 0 when the receipt has none.
+        the `payout` of the CTF's `PayoutRedemption` events for that address
+        (compared case-insensitively), 0 when there are none. Reads nothing
+        from the chain.
 
-        This is the amount of a claim. A difference of two apUSD balance reads
-        is not: fills, mints and transfers move that balance without the user's
-        lock while the claim is in flight, so the difference can come out
-        larger than the payout, or negative. The event reports what
-        `redeemPositions` paid, whatever else happened to the wallet.
-
-        The redeemer is compared case-insensitively. Only logs emitted by the
-        CTF itself count: `process_receipt` decodes by the event's signature
-        alone, so a lookalike contract's log would otherwise read as ours. Other
-        accounts' redemptions in the same receipt are not the redeemer's.
-        Reads nothing from the chain.
+        Not a difference of two balance reads: fills, mints and transfers move
+        the balance without the user's lock while the claim is in flight. Only
+        the CTF's own logs count, since `process_receipt` decodes by the
+        event's signature alone and a lookalike contract's log would match.
         """
         ctf = self._contracts.ctf
         ours = ctf.address.lower()
@@ -468,18 +440,13 @@ class OnchainAdmin:
     def payout_vector(
         self, condition_id: bytes, outcome_count: int = 2
     ) -> tuple[int, list[int]]:
-        """(payoutDenominator, [payoutNumerators(cid, i) for every outcome]).
+        """(payoutDenominator, [payoutNumerators(cid, i) for every outcome]),
+        the vector the claim gate prices a claim with.
 
-        A claim pays `Σ balance_i × num_i // den`, and that sum is the gate in
-        front of every sponsored claim. It is read from the CTF, not taken from
-        the database's RESOLVED: a market can be RESOLVED in the database
-        before (or without) its `reportPayouts` being mined, and
-        redeemPositions reverts until it is ("result for condition not
-        received yet").
-
-        `den == 0` means not reported: every numerator is zero, so none is
-        read. Otherwise the numerators go in one JSON-RPC batch, one round
-        trip however many outcomes, as in `read_market_states`.
+        Read from the CTF rather than trusting the database's RESOLVED, which
+        can come before (or without) `reportPayouts` mining; redeemPositions
+        reverts until it has. `den == 0` means not reported, and no numerator
+        is read; otherwise they come in one JSON-RPC batch.
         """
         ctf = self._contracts.ctf.functions
         den = int(ctf.payoutDenominator(condition_id).call())
