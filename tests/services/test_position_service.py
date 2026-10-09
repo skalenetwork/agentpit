@@ -28,6 +28,7 @@ from contextlib import contextmanager
 import psycopg_pool
 import pytest
 import requests
+from urllib3.exceptions import MaxRetryError, NewConnectionError
 from web3.exceptions import BadResponseFormat, TimeExhausted, Web3RPCError
 
 from agentpit.api.deps import get_position_service
@@ -43,6 +44,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
+    GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientBalanceError,
     InsufficientGasError,
@@ -638,6 +640,7 @@ def test_no_answer_before_anything_was_signed_is_no_pending_transaction(action):
             Web3RPCError("Transaction gas price lower than current eth_gasPrice"),
             id="fee-low-twice",
         ),
+        pytest.param(GasPriceMovedError(), id="fee-low-twice-503"),
         pytest.param(GasTopUpTimeoutError(), id="the-retrys-top-up-timed-out"),
         pytest.param(AdminGasPausedError(), id="the-retrys-top-up-is-paused"),
         pytest.param(
@@ -684,6 +687,28 @@ def test_a_refusal_at_import_leaves_no_pending_row(action, error):
     sponsor = _FakeSponsor(fail=error)
 
     with pytest.raises(Web3RPCError):
+        _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert len(sponsor.hashes) == 1
+    assert _pending(db) == []
+    assert _rows(db, user) == []
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_a_broadcast_that_never_reached_the_node_leaves_no_pending_row(action):
+    """The connect itself was refused (`failed_before_connecting`): the node
+    never saw the transaction, so it cannot mine and nothing is pending. The
+    row goes and the error is what it is, instead of a 503 "do not repeat it"
+    and 409s on the market until the auto-redeem pass drops the row."""
+    db, user, mid, chain = _ready(action)
+    error = requests.ConnectionError(
+        MaxRetryError(
+            None, "/", NewConnectionError(None, "Failed to establish a new connection")
+        )
+    )
+    sponsor = _FakeSponsor(fail=error)
+
+    with pytest.raises(requests.ConnectionError):
         _act(_service(db, chain, sponsor), action, user, mid)
 
     assert len(sponsor.hashes) == 1

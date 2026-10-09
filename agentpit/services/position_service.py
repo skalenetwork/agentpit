@@ -17,6 +17,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
+    GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientBalanceError,
     InsufficientGasError,
@@ -28,7 +29,7 @@ from agentpit.domain.exceptions import (
     TransactionRevertedError,
 )
 from agentpit.onchain.admin import OnchainAdmin
-from agentpit.onchain.chain_rpc import SendError, classify_send_error
+from agentpit.onchain.chain_rpc import cannot_mine
 from agentpit.onchain.tx_sender import TxDropped
 from agentpit.services.gas_sponsor import SponsorKind, UserGasSponsor
 from agentpit.services.pending_user_txs import in_flight_since
@@ -36,25 +37,14 @@ from agentpit.utils.parse import hex2bytes
 
 log = logging.getLogger(__name__)
 
-# What `eth_sendRawTransaction` can answer to say the node did not take the
-# transaction (`classify_send_error`). DUPLICATE is not one of them: the node
-# already holds that very transaction.
-_REFUSED_AT_IMPORT = frozenset(
-    {
-        SendError.FEE_LOW,
-        SendError.BALANCE_LOW,
-        SendError.NONCE_TAKEN,
-        SendError.NONCE_INVALID,
-        SendError.QUEUE_FULL,
-    }
-)
 # What the sponsor raises once a signed transaction can no longer mine: it
-# mined and reverted, the retry was refused for want of balance, or the retry's
-# top-up could not be sent (the last three), after the node had refused the
-# first signature.
+# mined and reverted, the retry was refused (for want of balance, or for its
+# fee again), or the retry's top-up could not be sized or sent (the last
+# three), after the node had refused the first signature.
 _ANSWERS = (
     TransactionRevertedError,
     InsufficientGasError,
+    GasPriceMovedError,
     GasTopUpTimeoutError,
     AdminGasPausedError,
     TxDropped,
@@ -63,8 +53,9 @@ _ANSWERS = (
 
 def _nothing_can_mine(exc: BaseException) -> bool:
     """Is `exc`, raised after a transaction was signed, an answer that says it
-    can no longer mine? Only these are: the node refused it at import, or it
-    mined and reverted (see `_REFUSED_AT_IMPORT` and `_ANSWERS`).
+    can no longer mine? Only these are: the node refused it at import, the
+    broadcast never reached the node (`chain_rpc.cannot_mine`, the test the
+    sponsor books by too), or one of the sponsor's `_ANSWERS`.
 
     Anything else leaves it unknown, and the caller must treat it as one that
     may mine. That is not only a receipt timeout and a transport error. The
@@ -72,7 +63,7 @@ def _nothing_can_mine(exc: BaseException) -> bool:
     on it, a 429 that outlives the provider's retries or a body that does not
     parse say nothing about the transaction, and `classify_send_error` (made
     for a failed broadcast) files them under OTHER."""
-    return isinstance(exc, _ANSWERS) or classify_send_error(exc) in _REFUSED_AT_IMPORT
+    return isinstance(exc, _ANSWERS) or cannot_mine(exc)
 
 
 def _partition(market) -> list[int]:
@@ -276,8 +267,9 @@ class PositionService:
         never mine and its row is replaced. When the send fails:
 
         - an answer that says it cannot mine (`_nothing_can_mine`): refused at
-          import (402, a second fee refusal, a nonce or queue refusal), a
-          failed top-up for the retry, or mined and reverted. Nothing is
+          import (402, a second fee refusal's `GasPriceMovedError`, a nonce or
+          queue refusal), a broadcast that never reached the node, a retry
+          whose re-sizing or top-up failed, or mined and reverted. Nothing is
           pending any more, so the row goes and the error propagates as it is.
         - anything else, once something was signed, is an unknown outcome: no
           receipt in time (`TimeExhausted`), no answer to the broadcast

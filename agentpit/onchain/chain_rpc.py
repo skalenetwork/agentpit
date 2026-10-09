@@ -152,6 +152,39 @@ def failed_before_connecting(exc: BaseException) -> bool:
     return isinstance(wrapped, ConnectTimeoutError)
 
 
+# What `eth_sendRawTransaction` can answer to say the node did not take the
+# transaction. DUPLICATE is not one of them: the node already holds that very
+# transaction.
+_REFUSED_AT_IMPORT = frozenset(
+    {
+        SendError.FEE_LOW,
+        SendError.BALANCE_LOW,
+        SendError.NONCE_TAKEN,
+        SendError.NONCE_INVALID,
+        SendError.QUEUE_FULL,
+    }
+)
+
+
+def cannot_mine(exc: BaseException) -> bool:
+    """Does this failed send prove that its transaction can never mine?
+
+    Only two kinds of failure do: the node refused it at import
+    (`_REFUSED_AT_IMPORT`, or anvil's and geth's balance-low wording,
+    `is_balance_low`), or the request never reached the node
+    (`failed_before_connecting`). Anything else may have left it in the node:
+    no answer to the broadcast, a duplicate, or an error from a receipt poll,
+    which runs once the node has taken it. `UserGasSponsor` and
+    `PositionService` both decide with this whether a user transaction may
+    still be in flight.
+    """
+    return (
+        classify_send_error(exc) in _REFUSED_AT_IMPORT
+        or is_balance_low(exc)
+        or failed_before_connecting(exc)
+    )
+
+
 class BatchUnanswered(ConnectionError):
     """A batch of sends whose answer cannot be placed item by item: cut
     short, unreadable, or not pairing one to one with the requests. The node
