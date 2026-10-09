@@ -117,8 +117,8 @@ def fund_user_with_native(
     slot_timeout: float | None = None,
 ) -> TxReceipt:
     """Send `value_wei` native tokens from admin to user_address, through
-    `OnchainAdmin.fund_gas`: `UserGasSponsor`'s top-ups and the house gas
-    loop. `slot_timeout` is `AdminTxSender.send_value`'s."""
+    `OnchainAdmin.fund_gas`: `UserGasSponsor`'s top-ups and house
+    provisioning. `slot_timeout` is `AdminTxSender.send_value`'s."""
     return client.admin_sender.send_value(
         user_address, value_wei, timeout=timeout, slot_timeout=slot_timeout
     )

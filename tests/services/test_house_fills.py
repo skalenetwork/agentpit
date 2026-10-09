@@ -350,11 +350,38 @@ def test_a_sweeper_fill_over_the_daily_budget_is_skipped_and_the_order_rests(hou
     order = _place(svc, agent, "101", "BUY", "0.55", "4", kind="GTC")
     _spend_today(db, agent, 1_000_000)
     _ask(book, "0.55", "5")
+    takes = []
+    svc._take = lambda *args: takes.append(args)
 
     svc.sweep()
 
-    assert (_row(db, order.orderID), _counts(db), book.used) == (
+    assert (_row(db, order.orderID), _counts(db), book.used, takes) == (
         ("live", 4_000_000),
         (1, 0),
         {},
+        [],
     )
+
+
+def test_a_breaker_that_trips_mid_pass_stops_the_rest_of_that_pass(house_book):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    book = house_book("101", asks=(("0.6", "5"),))
+    svc = _service(db)
+    first = _place(svc, agent, "101", "BUY", "0.55", "2", kind="GTC")
+    second = _place(svc, agent, "101", "BUY", "0.55", "2", kind="GTC")
+    _ask(book, "0.55", "5")
+    settle = svc._settle
+
+    def settle_then_trip(*args, **kwargs):
+        settle(*args, **kwargs)
+        svc._onchain.check_sponsored = _paused
+
+    svc._settle = settle_then_trip
+
+    svc.sweep()
+
+    assert sorted(_row(db, o.orderID) for o in (first, second)) == [
+        ("live", 2_000_000),
+        ("matched", 0),
+    ]

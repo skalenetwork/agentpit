@@ -715,6 +715,11 @@ def redeem_resolved_markets(
                 continue
             except TransactionInProgressError:
                 attempts -= 1
+                log.info(
+                    "Claim for %s on market %s waits for a transaction in progress",
+                    user.eth_address,
+                    market.market_id,
+                )
             except TransactionPendingError as exc:
                 log.warning(
                     "Claim for %s on market %s is pending: %s",

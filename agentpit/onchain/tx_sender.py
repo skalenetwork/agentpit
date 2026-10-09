@@ -252,11 +252,10 @@ class AdminTxSender:
             self.check_sponsored()
 
     def _debit(self, receipt, value: int = 0) -> None:
-        """Take a mined send's cost off the cached balance, so a burst between
-        two refreshes still trips the breaker: its gas, plus the `value` it
-        sent unless it reverted (a gas top-up is all value). Fillers and
-        receipts nobody waits for are not debited; the next refresh corrects
-        for them."""
+        """Take a mined send's cost off the cached balance when its receipt is
+        recorded, waited for or not, so a burst between two refreshes still
+        trips the breaker: its gas, plus the `value` it sent unless it
+        reverted (a gas top-up is all value)."""
         used = receipt.get("gasUsed")
         price = receipt.get("effectiveGasPrice")
         if used is None or price is None:
@@ -816,8 +815,6 @@ class AdminTxSender:
                         )
                     elif entry.receipt is not None:
                         results[tx_hash] = entry.receipt
-                        # _state, then _gas_lock
-                        self._debit(entry.receipt, entry.value)
                         del self._entries[tx_hash]
                     elif entry.dropped:
                         results[tx_hash] = TxDropped(
@@ -946,6 +943,7 @@ class AdminTxSender:
             if receipt is not None:
                 entry.receipt = receipt
                 entry.done_at = now
+                self._debit(receipt, entry.value)
                 return
             if entry.suspect_since is None:
                 entry.suspect_since = now
@@ -1059,9 +1057,10 @@ class AdminTxSender:
                 return
             with self._state:
                 for entry, receipt in pairs:
-                    if receipt is not None:
+                    if receipt is not None and entry.receipt is None:
                         entry.receipt = receipt
                         entry.done_at = now
+                        self._debit(receipt, entry.value)
                 # Until nothing changes: a lost filler can itself have been
                 # superseded by a later one (original -> filler -> filler).
                 changed = True

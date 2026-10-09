@@ -337,6 +337,7 @@ def test_a_failed_claim_counts_toward_the_cap(world):
 @pytest.mark.parametrize(
     ("exc", "level"),
     [
+        pytest.param(errors.TransactionInProgressError(), "INFO", id="lock-held"),
         pytest.param(errors.AdminGasPausedError(), "WARNING", id="breaker-paused"),
         pytest.param(errors.InsufficientGasError("dry"), "WARNING", id="not-sponsored"),
         pytest.param(errors.GasTopUpTimeoutError(), "WARNING", id="top-up-timed-out"),

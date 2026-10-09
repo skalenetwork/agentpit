@@ -257,15 +257,15 @@ class OrderService:
     def sweep(self) -> None:
         if feed.HOUSE is None:
             return
-        try:
-            self._onchain.check_sponsored()
-        except AdminGasPausedError:
-            return
+        now = int(time.time())
+        budget = self._settings.daily_sponsored_gas_per_account
         with self._db.read() as conn:
             rows = conn.execute(
                 "SELECT ORDER_ID, API_KEY, TOKEN_ID, SIDE, PRICE, REMAINING_AMOUNT "
-                f"FROM orders WHERE {TableRead.LIVE_ORDER} ORDER BY CREATED_AT",
-                (int(time.time()),),
+                f"FROM orders WHERE {TableRead.LIVE_ORDER} AND API_KEY NOT IN "
+                "(SELECT API_KEY FROM sponsored_gas "
+                "WHERE %s > 0 AND DAY = %s AND GAS_USED >= %s) ORDER BY CREATED_AT",
+                (now, budget, now // _SECONDS_PER_DAY, budget),
             ).fetchall()
         for row in rows:
             quote = feed.quote(row["TOKEN_ID"])
@@ -281,6 +281,7 @@ class OrderService:
             ):
                 continue
             try:
+                self._onchain.check_sponsored()
                 with market_lock(ref.market_id):
                     with self._db.write() as conn:
                         if (
@@ -305,6 +306,8 @@ class OrderService:
                     rep.use(fresh["API_KEY"], match.takes)
                 self._settle(agent_order, agent_signature, match, wait=False)
                 touch(fresh["MAKER"])
+            except AdminGasPausedError:
+                return
             except GasBudgetExceededError:
                 continue
             except Exception:
