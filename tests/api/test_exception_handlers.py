@@ -12,22 +12,13 @@ from __future__ import annotations
 
 import logging
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agentpit.api.exception_handlers import register_exception_handlers
-from agentpit.domain.exceptions import (
-    AdminGasPausedError,
-    BusinessRuleError,
-    GasBudgetExceededError,
-    GasPriceMovedError,
-    GasTopUpTimeoutError,
-    InsufficientGasError,
-    NothingToClaimError,
-    TransactionInProgressError,
-    TransactionPendingError,
-    TransactionRevertedError,
-)
+from agentpit.domain import exceptions as errors
+from agentpit.domain.exceptions import BusinessRuleError, InsufficientGasError
 
 
 def _stub_app() -> FastAPI:
@@ -64,149 +55,72 @@ def test_plain_business_rule_errors_still_map_to_400():
     assert resp.json()["detail"] == "something else entirely"
 
 
-def _gas_stub_app() -> FastAPI:
+def _get(exc: Exception):
     app = FastAPI()
     register_exception_handlers(app)
 
-    @app.get("/paused")
-    def _paused():
-        raise AdminGasPausedError()
+    @app.get("/raises")
+    def _raises():
+        raise exc
 
-    @app.get("/budget")
-    def _budget():
-        raise GasBudgetExceededError(retry_after=123)
-
-    return app
+    return TestClient(app, raise_server_exceptions=False).get("/raises")
 
 
-def test_admin_gas_paused_is_503():
-    """The breaker now also refuses gas top-ups for claims, splits, merges and
-    onboarding, so the wording no longer says it is trading that paused."""
-    client = TestClient(_gas_stub_app(), raise_server_exceptions=False)
-    r = client.get("/paused")
-    assert r.status_code == 503
-    assert r.json()["detail"] == (
-        "the platform's gas wallet is running low — try again later"
-    )
+_PAUSED = "the platform's gas wallet is running low — try again later"
+_BUDGET = "this account has used its daily gas budget — it resets at 00:00 UTC"
+_IN_PROGRESS = "another transaction for this account is in progress — try again in a moment"
+_BUSY = "the platform is busy — try again in a moment"
+_PENDING = (
+    "the transaction was sent but is not confirmed yet — it will "
+    "appear in your history once it lands; do not repeat it"
+)
+_PRICE_MOVED = "the network fee rose while sending — try again in a moment"
+_REVERTED = "the claim transaction reverted on chain"
+_RETRY = {"Retry-After": "123"}
 
 
-def test_gas_budget_is_429_with_retry_after():
-    """Split and merge spend the same daily budget as fills, so the wording
-    says gas, not trading gas."""
-    client = TestClient(_gas_stub_app(), raise_server_exceptions=False)
-    r = client.get("/budget")
-    assert r.status_code == 429
-    assert r.headers["Retry-After"] == "123"
-    assert r.json()["detail"] == (
-        "this account has used its daily gas budget — it resets at 00:00 UTC"
-    )
+@pytest.mark.parametrize(
+    ("exc", "status", "detail", "headers"),
+    [
+        # The breaker also refuses top-ups for claims, splits, merges and onboarding.
+        (errors.AdminGasPausedError(), 503, _PAUSED, {}),
+        # Split and merge spend the same daily budget as fills: gas, not trading gas.
+        (errors.GasBudgetExceededError(retry_after=123), 429, _BUDGET, _RETRY),
+        (errors.NothingToClaimError(), 400, "nothing to claim", {}),
+        (errors.TransactionRevertedError(_REVERTED), 400, _REVERTED, {}),
+    ],
+    ids=["admin-gas-paused", "gas-budget", "nothing-to-claim", "reverted"],
+)
+def test_gas_and_claim_errors_map_to_their_status_detail_and_headers(
+    exc, status, detail, headers
+):
+    r = _get(exc)
+    assert (r.status_code, r.json()["detail"]) == (status, detail)
+    for name, value in headers.items():
+        assert r.headers[name] == value
 
 
-def _sponsor_stub_app() -> FastAPI:
-    app = FastAPI()
-    register_exception_handlers(app)
-
-    @app.get("/in-progress")
-    def _in_progress():
-        raise TransactionInProgressError()
-
-    @app.get("/nothing")
-    def _nothing():
-        raise NothingToClaimError()
-
-    @app.get("/reverted")
-    def _reverted():
-        raise TransactionRevertedError("the claim transaction reverted on chain")
-
-    @app.get("/busy")
-    def _busy():
-        raise GasTopUpTimeoutError()
-
-    @app.get("/price-moved")
-    def _price_moved():
-        raise GasPriceMovedError()
-
-    @app.get("/pending")
-    def _pending():
-        raise TransactionPendingError()
-
-    return app
-
-
-def test_a_held_transaction_lock_is_409_logged_at_info(caplog):
-    """A second claim, split or merge while one is still being sent for the
-    same account. Not a `BusinessRuleError` (400): nothing in the request is
-    wrong, and it may simply be retried. INFO: the lock refusing is the lock
-    working."""
+@pytest.mark.parametrize(
+    ("exc", "status", "detail", "level"),
+    [
+        # Nothing in the request is wrong and it may be retried: the lock working.
+        (errors.TransactionInProgressError(), 409, _IN_PROGRESS, "INFO"),
+        # Our side is congested, not the bare 500 an uncaught `TimeExhausted` was.
+        (errors.GasTopUpTimeoutError(), 503, _BUSY, "WARNING"),
+        # It may well mine, so the caller is told not to repeat it.
+        (errors.TransactionPendingError(), 503, _PENDING, "WARNING"),
+        # Underpriced twice: the fee is still climbing, not a bare `Web3RPCError` 500.
+        (errors.GasPriceMovedError(), 503, _PRICE_MOVED, "WARNING"),
+    ],
+    ids=["lock-held", "top-up-timed-out", "outcome-unknown", "gas-price-moved"],
+)
+def test_a_refusal_on_our_side_is_logged_and_not_a_business_rule_error(
+    caplog, exc, status, detail, level
+):
     caplog.set_level(logging.INFO, logger="agentpit.api.exception_handlers")
-    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
-    r = client.get("/in-progress")
-    assert r.status_code == 409
-    assert r.json() == {
-        "detail": "another transaction for this account is in progress — try again in a moment"
-    }
+    r = _get(exc)
+    assert r.status_code == status
+    assert r.json() == {"detail": detail}
     ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
-    assert [rec.levelno for rec in ours] == [logging.INFO]
-    assert not issubclass(TransactionInProgressError, BusinessRuleError)
-
-
-def test_nothing_to_claim_and_a_reverted_transaction_are_400():
-    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
-    r = client.get("/nothing")
-    assert (r.status_code, r.json()["detail"]) == (400, "nothing to claim")
-    r = client.get("/reverted")
-    assert (r.status_code, r.json()["detail"]) == (
-        400,
-        "the claim transaction reverted on chain",
-    )
-
-
-def test_a_gas_top_up_that_timed_out_is_503_logged_at_warning(caplog):
-    """The admin's top-up got no receipt in time (or never found a free admin
-    transaction slot): our side is congested, nothing the caller did is wrong,
-    and the same request may succeed in a moment. 503 and WARNING, like the
-    breaker -- not the bare 500 an uncaught `TimeExhausted` used to be."""
-    caplog.set_level(logging.INFO, logger="agentpit.api.exception_handlers")
-    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
-    r = client.get("/busy")
-    assert r.status_code == 503
-    assert r.json() == {"detail": "the platform is busy — try again in a moment"}
-    ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
-    assert [rec.levelno for rec in ours] == [logging.WARNING]
-    assert not issubclass(GasTopUpTimeoutError, BusinessRuleError)
-
-
-def test_a_transaction_whose_outcome_is_unknown_is_503_logged_at_warning(caplog):
-    """The user's transaction went out and its receipt did not come back in
-    time, or the node never answered the broadcast. It may well mine, so the
-    caller is told not to repeat it: the pending row puts it in their history
-    once it lands. Not a bare 500: nothing failed that the caller could see."""
-    caplog.set_level(logging.INFO, logger="agentpit.api.exception_handlers")
-    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
-    r = client.get("/pending")
-    assert r.status_code == 503
-    assert r.json() == {
-        "detail": "the transaction was sent but is not confirmed yet — it will "
-        "appear in your history once it lands; do not repeat it"
-    }
-    ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
-    assert [rec.levelno for rec in ours] == [logging.WARNING]
-    assert not issubclass(TransactionPendingError, BusinessRuleError)
-
-
-def test_a_gas_price_that_moved_twice_is_503_logged_at_warning(caplog):
-    """The node refused a user's transaction as underpriced, and refused the
-    re-sized retry too: the fee is still climbing. Nothing is in flight and
-    the same request goes through once it settles, so 503 and WARNING like
-    the other congestion on our side -- not the bare 500 the raw
-    `Web3RPCError` used to be."""
-    caplog.set_level(logging.INFO, logger="agentpit.api.exception_handlers")
-    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
-    r = client.get("/price-moved")
-    assert r.status_code == 503
-    assert r.json() == {
-        "detail": "the network fee rose while sending — try again in a moment"
-    }
-    ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
-    assert [rec.levelno for rec in ours] == [logging.WARNING]
-    assert not issubclass(GasPriceMovedError, BusinessRuleError)
+    assert [rec.levelname for rec in ours] == [level]
+    assert not issubclass(type(exc), BusinessRuleError)
