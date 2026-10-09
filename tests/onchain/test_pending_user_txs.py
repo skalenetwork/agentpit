@@ -1,13 +1,10 @@
 """A split or claim that mined after we stopped waiting for it, on anvil.
 
-`send_as_user` sends for real, then raises as if the answer had been lost. The
-caller gets 503 "not confirmed yet" and the intent row stays; a retry is a 409
-(not a second split, nor "nothing to claim" for a paid claim); and
-`reconcile_pending_user_txs` writes the history row at the exact payout. Unit
-cases: tests/services/test_position_service.py and test_pending_user_txs.py.
+`send_as_user` sends for real, then raises as if the answer had been lost. The caller
+gets 503 "not confirmed yet" and the intent row stays; a retry is a 409 (not a second
+split, nor "nothing to claim" for a paid claim); `reconcile_pending_user_txs` writes the
+history row at the exact payout. Unit cases: tests/services/test_position_service.py.
 """
-
-from __future__ import annotations
 
 import pytest
 import requests

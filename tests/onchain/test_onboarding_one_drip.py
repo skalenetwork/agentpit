@@ -44,8 +44,7 @@ def test_a_retry_after_a_failed_onboarding_leaves_exactly_one_grant(monkeypatch)
 
     monkeypatch.setattr(admin, "fund_gas", fund_gas_once_late)
 
-    # Which error the caller sees is the unit tests' business; this one is
-    # about what the chain holds afterwards.
+    # Which error the caller sees is the unit tests' business; this is about what the chain holds.
     with pytest.raises((GasTopUpTimeoutError, OnboardingError)):
         service._onboard_new_account(user_id, acct)
     assert admin.usd_balance(acct.address) == grant  # the drip landed before the top-up failed

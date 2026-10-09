@@ -299,6 +299,7 @@ def test_a_claim_that_mines_with_no_payout_writes_no_row(admin, db, monkeypatch)
     h.resolve_yes(db, admin, pm)
     h.drain_native_balance(admin, user.eth_address)
     me, real = user.eth_address.lower(), admin.ctf_balances
+    # Nothing real can empty the wallet between the re-check and the block, so lie about it.
     monkeypatch.setattr(
         admin,
         "ctf_balances",

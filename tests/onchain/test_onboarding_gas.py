@@ -30,14 +30,12 @@ def _assert_one_exact_top_up(client, address, api_key, top_ups) -> None:
     assert len(mine) == 1, mine
     need = mine[0]
     assert 0 < need <= settings.max_topup_gas * admin.gas_price()
-    # The wallet started empty, so the top-up was the whole need; the approvals
-    # spent part of it and nothing was added afterwards.
+    # The wallet started empty: the top-up was the whole need, the approvals spent part of it.
     assert admin.native_balance(address) <= need
     # Exactly the three approvals went out from the wallet, and they are set.
     assert admin.transaction_count(address) == 3
     h.assert_approvals_set(admin, address)
-    # The top-up and the approvals are on the account's daily row (measured
-    # 46,487 / 46,487 / 45,996 gas for the approvals on anvil).
+    # The top-up and the approvals are on the daily row (approvals measured ~46k gas each).
     booked = h.sponsored_gas(overrides[get_db_session](), api_key)
     assert TRANSFER_GAS + 3 * 21_000 < booked < TRANSFER_GAS + 3 * 60_000
 
