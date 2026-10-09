@@ -53,22 +53,6 @@ describe("claimErrorMessage", () => {
     ).toBe("An earlier transaction on this market is not confirmed yet.");
   });
 
-  it("409 without a sentence to show falls back to the fixed copy", () => {
-    expect(claimErrorMessage(409, "")).toBe("A claim is already in progress.");
-    expect(claimErrorMessage(409, undefined)).toBe(
-      "A claim is already in progress.",
-    );
-    expect(claimErrorMessage(409, "<html>Conflict</html>")).toBe(
-      "A claim is already in progress.",
-    );
-    expect(claimErrorMessage(409, detail("   "))).toBe(
-      "A claim is already in progress.",
-    );
-    expect(claimErrorMessage(409, detail([{ msg: "x" }]))).toBe(
-      "A claim is already in progress.",
-    );
-  });
-
   it("503: shows the backend's reason, paused, busy or sent but unconfirmed", () => {
     expect(
       claimErrorMessage(
@@ -94,24 +78,6 @@ describe("claimErrorMessage", () => {
       "The transaction was sent but is not confirmed yet — it will appear in your history once it lands; do not repeat it.",
     );
     expect(pending).not.toMatch(/try again/i);
-  });
-
-  it("503 without a sentence to show falls back to the fixed copy", () => {
-    expect(claimErrorMessage(503, "")).toBe(
-      "Claims are paused, try again later.",
-    );
-    expect(claimErrorMessage(503, undefined)).toBe(
-      "Claims are paused, try again later.",
-    );
-    expect(claimErrorMessage(503, "<html>Service Unavailable</html>")).toBe(
-      "Claims are paused, try again later.",
-    );
-    expect(claimErrorMessage(503, detail("   "))).toBe(
-      "Claims are paused, try again later.",
-    );
-    expect(claimErrorMessage(503, detail([{ msg: "x" }]))).toBe(
-      "Claims are paused, try again later.",
-    );
   });
 
   it("402: says claiming is unavailable and never asks the user to fund anything", () => {

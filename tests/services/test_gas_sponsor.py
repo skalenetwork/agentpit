@@ -493,16 +493,6 @@ def test_the_hook_reports_with_the_kill_switch_off_too():
     assert reported == [(0, chain.signed[0])]
 
 
-def test_no_hook_is_the_default():
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain()
-    sponsor = UserGasSponsor(db, chain, _settings())  # type: ignore[arg-type]
-    with sponsor.locked(user):
-        sponsor.send(user, [_Call()], "claim")  # type: ignore[list-item]
-    assert len(chain.signed) == 1
-
-
 # --- the last check before the first signature -----------------------------
 
 

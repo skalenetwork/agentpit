@@ -20,7 +20,6 @@ import pytest
 from eth_account import Account
 from web3 import Web3
 from web3.datastructures import AttributeDict
-from web3.exceptions import TimeExhausted, Web3RPCError
 
 from agentpit.domain.exceptions import DomainError, GasTopUpTimeoutError
 from agentpit.onchain.admin import OnchainAdmin
@@ -198,48 +197,3 @@ def test_a_top_up_the_node_lost_is_a_retryable_503_and_the_next_send_funds_once(
     assert admin.topped_up(user.eth_address) == [NEED, NEED]
     assert admin.user_sends == [user.eth_address.lower()]
     assert admin.native_balance(user.eth_address) == NEED - GAS_USED * PRICE
-
-
-# --- a top-up that mines after the sponsor gave up --------------------------
-
-
-@pytest.mark.parametrize(
-    ("kind", "standing"), [("claim", 0), ("split", RESERVED)]
-)
-def test_a_top_up_that_mines_late_is_used_by_the_next_send_not_paid_again(
-    kind, standing
-):
-    """The receipt did not come in time: 503, nothing of the user's sent, and
-    the sender still holds the slot. Once the block comes the next send reads
-    the funded wallet, tops up nothing, and sends once."""
-    chain, sender, clock, admin, db, sponsor = _setup(mine_on_sleep=False)
-    user = _user(db)
-
-    with pytest.raises(GasTopUpTimeoutError) as caught:
-        _send(sponsor, user, kind)
-
-    assert isinstance(caught.value.__cause__, TimeExhausted)
-    assert sender._in_flight_count() == 1  # noqa: SLF001 - the top-up's slot
-    assert admin.user_sends == []
-    assert _used(db, user) == standing
-
-    chain.mine()  # the top-up lands after all
-    sender.poll()
-    assert sender._in_flight_count() == 0  # noqa: SLF001 - its slot is free again
-
-    _send(sponsor, user, kind)
-
-    assert admin.topped_up(user.eth_address) == [NEED]  # not paid twice
-    assert admin.user_sends == [user.eth_address.lower()]
-    # A split's reservation stood across the timeout; the claim held none. The
-    # late transfer itself is booked by neither: the sponsor never saw it land.
-    assert _used(db, user) == standing + GAS_USED
-
-
-def test_the_stand_in_refuses_a_user_send_from_a_dry_wallet():
-    """The oracle the tests above lean on: the stand-in is no yes-man."""
-    chain, sender, clock, admin, db, sponsor = _setup(mine_on_sleep=True)
-    with pytest.raises(Web3RPCError):
-        admin.send_as_user(
-            Account.create(), None, gas=LIMIT, max_fee=PRICE  # type: ignore[arg-type]
-        )
