@@ -107,6 +107,32 @@ def test_a_mined_transaction_becomes_its_history_row():
     assert _pending_hashes(db) == []
 
 
+def test_a_claim_that_mined_with_no_payout_is_dropped_without_a_row(caplog):
+    """A claim whose request lost its answer and which then mined at a payout
+    of zero (its tokens had left, say) is no claim: the same rule as a claim
+    confirmed on the spot, which writes no REDEEM row at zero. The row would
+    read as a lost market on the profile page."""
+    caplog.set_level(logging.WARNING, logger=_LOGGER)
+    db = fresh_test_db()
+    _pend(db, 1, "REDEEM", {})
+    _pend(db, 2, "SPLIT", {"amount": 40_000_000})
+    chain = _Chain(
+        {
+            _hash(1): {"status": 1, "from": _REDEEMER, "payout": 0},
+            _hash(2): {"status": 1, "from": _REDEEMER},
+        }
+    )
+
+    assert reconcile_pending_user_txs(db, chain) == 1  # type: ignore[arg-type]
+
+    assert _history(db) == [("SPLIT", 7, {"amount": 40_000_000})]
+    assert _pending_hashes(db) == []
+    warnings = [
+        r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1 and _hash(1) in warnings[0].getMessage()
+
+
 def test_a_reverted_transaction_is_dropped_without_a_row():
     db = fresh_test_db()
     _pend(db, 1, "REDEEM", {})

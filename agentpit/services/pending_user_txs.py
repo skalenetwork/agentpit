@@ -56,6 +56,8 @@ def reconcile_pending_user_txs(db: DbSession, admin: OnchainAdmin) -> int:
       CTF paid its sender (`OnchainAdmin.redeemed_payout`), as for a claim
       confirmed on the spot.
     - Reverted (status 0): deleted, and no row, as for a revert seen at once.
+    - A claim that mined and paid nothing: deleted, and no row, as for a
+      claim that is seen to pay nothing at once.
     - No receipt and older than `_PENDING_TTL_SECONDS`: deleted, as lost.
     - No receipt yet: left for the next pass.
 
@@ -113,7 +115,20 @@ def _settle(db: DbSession, admin: OnchainAdmin, row: PendingUserTx, now: int) ->
     details = dict(row.details)
     if row.transaction_type == "REDEEM":
         # The claim's sender is the redeemer `PayoutRedemption` names.
-        details["collateral_amount"] = admin.redeemed_payout(receipt, receipt["from"])
+        paid = admin.redeemed_payout(receipt, receipt["from"])
+        if paid <= 0:
+            # Mined, and paid nothing (its tokens had left): no claim was made,
+            # the rule for a claim confirmed on the spot, which writes no row.
+            with db.write() as conn:
+                TableWrite.delete_pending_user_tx(conn, row.tx_hash)
+            logger.warning(
+                "pending REDEEM transaction %s on market %s mined but paid the "
+                "claimant nothing; dropped without a history row",
+                row.tx_hash,
+                row.market_id,
+            )
+            return 0
+        details["collateral_amount"] = paid
     with db.write() as conn:
         confirmed = TableWrite.confirm_pending_user_tx(conn, row.tx_hash, details)
     if confirmed:
