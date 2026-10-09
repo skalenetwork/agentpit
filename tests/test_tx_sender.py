@@ -214,10 +214,8 @@ def test_queued_submitters_share_one_slot_deadline():
 
 
 # --- a value send with its own, shorter wait for a slot ---------------------
-#
-# A gas top-up runs while the user's lock is held, so `OnchainAdmin.fund_gas`
-# bounds the whole send by the sponsor's timeout instead of letting the slot
-# wait take the sender's own 120 s first.
+# A gas top-up runs under the user's lock, so `OnchainAdmin.fund_gas` bounds the
+# whole send by the sponsor's timeout, not the sender's own 120 s slot wait.
 
 
 def _full_pipeline(**kw):
@@ -230,21 +228,22 @@ def _full_pipeline(**kw):
     return chain, sender, clock, to
 
 
-def test_a_value_send_can_cap_its_own_slot_wait():
-    chain, sender, clock, to = _full_pipeline(slot_timeout=120)
+@pytest.mark.parametrize(
+    ("slot_timeout", "kw", "waited"),
+    [
+        pytest.param(120, {"slot_timeout": 5}, 5, id="its-own-cap"),
+        pytest.param(7, {}, 7, id="the-senders-own"),
+    ],
+)
+def test_a_value_send_waits_for_a_slot_as_long_as_its_slot_timeout(
+    slot_timeout, kw, waited
+):
+    chain, sender, clock, to = _full_pipeline(slot_timeout=slot_timeout)
     started = clock()
-    with pytest.raises(TimeExhausted, match="after 5s"):
-        sender.submit_value(to, 1, slot_timeout=5)
-    assert 5 <= clock() - started < 6  # not the sender's 120 s
+    with pytest.raises(TimeExhausted, match=f"after {waited}s"):
+        sender.submit_value(to, 1, **kw)
+    assert waited <= clock() - started < waited + 1  # not the sender's 120 s
     assert len(chain.accepted) == 2  # the refused submit took no nonce
-
-
-def test_without_a_slot_timeout_the_senders_own_applies():
-    chain, sender, clock, to = _full_pipeline(slot_timeout=7)
-    started = clock()
-    with pytest.raises(TimeExhausted, match="after 7s"):
-        sender.submit_value(to, 1)
-    assert 7 <= clock() - started < 8
 
 
 def test_send_value_stops_waiting_for_a_slot_at_its_slot_timeout():
@@ -257,27 +256,20 @@ def test_send_value_stops_waiting_for_a_slot_at_its_slot_timeout():
 
 
 def test_the_slot_wait_counts_against_a_value_sends_timeout():
-    """A slot that frees after 20 s leaves 10 s of the 30 for the receipt, and
-    nothing mines after that, so the call gives up at 30 s, not at 50."""
+    # A slot that frees after 20 s leaves 10 s of the 30 for the receipt, and
+    # nothing mines after that, so the call gives up at 30 s, not at 50.
     chain = FakeSkaled()
-    clock = FakeClock()
-    started = clock()
-    mined: list[int] = []
+    sender, _, clock = _sender(
+        chain, mine_on_sleep=False, max_in_flight=1, slot_timeout=120
+    )
+    started, advance, mined = clock(), clock.advance, []
 
-    def sleep(seconds):
-        clock.advance(seconds)
+    def advance_and_mine_once(seconds):
+        advance(seconds)
         if not mined and clock() - started >= 20:
             mined.append(chain.mine())  # the first transfer lands, once
 
-    sender = AdminTxSender(
-        chain,
-        Account.create(),
-        CHAIN_ID,
-        clock=clock,
-        sleep=sleep,
-        max_in_flight=1,
-        slot_timeout=120,
-    )
+    clock.advance = advance_and_mine_once
     to = Account.create().address
     sender.submit_value(to, 1)  # takes the one slot
 
