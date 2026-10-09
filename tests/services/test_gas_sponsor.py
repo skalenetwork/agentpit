@@ -142,9 +142,7 @@ class _Chain:
             raise error
         return {"status": 1, "gasUsed": TRANSFER_GAS}
 
-    def send_as_user(
-        self, user_account, fn, *, gas: int, max_fee: int, timeout=30, on_signed=None
-    ):
+    def send_as_user(self, _account, fn, *, gas, max_fee, on_signed=None, **_):
         self.events.append(("send", fn.name, gas, max_fee))
         self.signed.append("0x%064x" % (len(self.signed) + 1))
         if on_signed is not None:
@@ -259,8 +257,6 @@ def used(db, user):
 
 
 # --- sizing and the one resize-and-retry ------------------------------------
-
-
 def test_min_claim_micro_comes_from_settings(db):
     assert _sponsor(db).min_claim_micro == 10_000
     assert _sponsor(db, AGENTPIT_MIN_CLAIM_MICRO=25_000).min_claim_micro == 25_000
@@ -402,8 +398,6 @@ def test_any_other_refusal_propagates_without_a_retry(send):
 
 
 # --- the signing hook, the last check before it, and the per-user lock ------
-
-
 def test_each_call_reports_its_index_and_hash_as_it_is_signed(send):
     chain, reported = _Chain(), []
     calls = [_Call("a"), _Call("b"), _Call("c")]
@@ -475,10 +469,7 @@ def test_before_send_runs_after_the_top_up_before_signing(send, chain, events):
 def test_a_failing_before_send(db, user, send, used, kind, balance, booked, settings):
     # Nothing is signed: a split's reservation goes back, a top-up's transfer stays.
     chain, error = _Chain(balances=(balance,)), NothingToClaimError()
-
-    def refuse():
-        raise error
-
+    refuse = Mock(side_effect=error)
     refused = send(chain, kind, before_send=refuse, raises=NothingToClaimError, **settings)
     assert refused is error
     assert chain.sends == [] and chain.signed == []
@@ -531,8 +522,6 @@ def test_sending_outside_the_lock_is_a_bug(db, user):
 
 
 # --- the breaker, the daily budget and the kill switch ----------------------
-
-
 @pytest.mark.parametrize("kind", ["claim", "split"])
 def test_a_paused_breaker_with_a_top_up_needed_is_503(send, used, kind):
     chain = _Chain(paused=True)
@@ -599,8 +588,6 @@ def test_kill_switch_never_stops_onboarding(send, used):
 
 
 # --- failures around the send: the reservation and the lock -----------------
-
-
 @pytest.mark.parametrize(
     ("error", "booked"),
     [
@@ -676,10 +663,8 @@ def test_a_failed_read_while_re_sizing_is_a_retryable_503(send, used):
 
 
 def test_a_booking_failure_never_fails_the_action(send, monkeypatch, caplog):
-    def _broken(*_a, **_k):
-        raise RuntimeError("database gone")
-
-    monkeypatch.setattr(TableWrite, "add_sponsored_gas", _broken)
+    broken = Mock(side_effect=RuntimeError("database gone"))
+    monkeypatch.setattr(TableWrite, "add_sponsored_gas", broken)
     receipts = send(_Chain())
     assert [r["status"] for r in receipts] == [1]
     assert "booking sponsored gas failed" in caplog.text
