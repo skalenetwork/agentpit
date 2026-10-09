@@ -1,5 +1,6 @@
 import logging
 import time
+from collections.abc import Callable
 
 from web3.contract.contract import ContractFunction
 from web3.types import TxReceipt
@@ -119,7 +120,16 @@ class PositionService:
             )
             details = {"amount": payload.amount}
             _receipt, tx_hash = self._send_recorded(
-                user, call, "split", "SPLIT", market_id, details
+                user,
+                call,
+                "split",
+                "SPLIT",
+                market_id,
+                details,
+                # The market was checked before the lock, and the top-up in
+                # front of the split can take a while: read it again once the
+                # wallet is funded, before anything is signed.
+                before_send=lambda: self._require_active_market(market_id),
             )
             self._confirm(user, "SPLIT", market_id, tx_hash, details)
         return self._snapshot(user, market, locked=payload.amount)
@@ -257,10 +267,14 @@ class PositionService:
         row_type: str,
         market_id: int,
         details: dict,
+        *,
+        before_send: Callable[[], None] | None = None,
     ) -> tuple[TxReceipt, str]:
         """`sponsor.send` of one call, with its intent row written just before
         each broadcast. Returns the receipt and the hash the row is under, for
-        `_confirm`.
+        `_confirm`. `before_send` is the sponsor's: the last check, after the
+        top-up and before anything is signed. What it raises propagates as it
+        is, with no row written.
 
         The sponsor signs a call a second time only after the node refused the
         first signature at import (its one resize-and-retry), so the first can
@@ -302,7 +316,9 @@ class PositionService:
             signed.append(tx_hash)
 
         try:
-            (receipt,) = self._sponsor.send(user, [call], kind, on_signed=on_signed)
+            (receipt,) = self._sponsor.send(
+                user, [call], kind, on_signed=on_signed, before_send=before_send
+            )
         except Exception as exc:
             if not signed:
                 raise

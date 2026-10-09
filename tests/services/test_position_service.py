@@ -128,7 +128,10 @@ class _FakeSponsor:
     every hash goes to `on_signed` and into `hashes`. With `fail_unsigned`,
     `fail` is raised before anything is signed: a failed read or top-up.
     `during_send` runs once the calls are signed, while their transactions
-    would be on their way."""
+    would be on their way. `during_top_up` runs where the real top-up would
+    mine, the window in which the world can change; the `before_send` it is
+    given runs right after it, as the real sponsor's does, and anything it
+    raises stops the send before anything is signed."""
 
     def __init__(
         self,
@@ -141,6 +144,7 @@ class _FakeSponsor:
         signs=1,
         fail_unsigned=False,
         during_send=None,
+        during_top_up=None,
     ):
         self._busy = busy
         self._fail = fail
@@ -150,6 +154,7 @@ class _FakeSponsor:
         self._signs = signs
         self._fail_unsigned = fail_unsigned
         self._during_send = during_send
+        self._during_top_up = during_top_up
         self.held = False
         self.sent: list[tuple[list, str, bool]] = []
         self.hashes: list[str] = []
@@ -168,12 +173,16 @@ class _FakeSponsor:
         finally:
             self.held = False
 
-    def send(self, user, calls, kind, *, on_signed=None):
+    def send(self, user, calls, kind, *, on_signed=None, before_send=None):
         self.sent.append((calls, kind, self.held))
         if self._log is not None:
             self._log.append("send")
         if self._fail is not None and self._fail_unsigned:
             raise self._fail
+        if self._during_top_up is not None:
+            self._during_top_up()
+        if before_send is not None:
+            before_send()
         for i, _call in enumerate(calls):
             for _ in range(self._signs):
                 tx_hash = "0x%064x" % (len(self.hashes) + 1)
@@ -795,6 +804,46 @@ def test_a_claims_row_is_written_before_the_balance_is_read_again():
 
     assert _redeem_amounts(db, user) == [100_000_000]
     assert _pending(db) == []
+
+
+# --- the world changes between the gate and the send --------------------------
+
+
+def _set_state(db, market_id: int, state: MarketState) -> None:
+    with db.write() as conn:
+        if state == MarketState.RESOLVED:  # a resolved market names its winner
+            TableWrite.resolve_market(
+                conn, market_id=market_id, winning_outcome_index=0
+            )
+        else:
+            conn.execute(
+                "UPDATE markets SET MARKET_STATE = %s WHERE MARKET_ID = %s",
+                (state.value, market_id),
+            )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [MarketState.RESOLVED, MarketState.CANCELLED],
+)
+def test_a_split_on_a_market_that_stopped_trading_during_the_top_up_is_refused(state):
+    """`split` checks that the market is ACTIVE before it takes the lock, and the
+    top-up that follows can take a block or several. A market resolved or
+    cancelled in that window would take a split after all: a pair whose loser
+    is worthless and whose winner is claimable. The sponsor's `before_send`
+    reads the market again once the wallet is funded, and nothing is signed."""
+    db, user, mid = _setup(MarketState.ACTIVE)
+    chain = _FakeChain(usd=(100_000_000,))
+    sponsor = _FakeSponsor(during_top_up=lambda: _set_state(db, mid, state))
+
+    with pytest.raises(MarketStateError, match="split only runs on ACTIVE markets"):
+        _service(db, chain, sponsor).split(
+            user, mid, SplitPositionRequest(amount=40_000_000)
+        )
+
+    assert sponsor.hashes == []
+    assert _pending(db) == []
+    assert _rows(db, user) == []
 
 
 # --- an earlier transaction still pending -------------------------------------
