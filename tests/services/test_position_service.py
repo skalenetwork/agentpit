@@ -607,58 +607,41 @@ def test_a_claims_row_is_written_before_the_balance_is_read_again():
 # --- the world changes between the gate and the send --------------------------
 
 
-def _set_state(db, market_id: int, state: MarketState) -> None:
-    with db.write() as conn:
-        if state == MarketState.RESOLVED:  # a resolved market names its winner
-            TableWrite.resolve_market(
-                conn, market_id=market_id, winning_outcome_index=0
-            )
-        else:
-            conn.execute(
-                "UPDATE markets SET MARKET_STATE = %s WHERE MARKET_ID = %s",
-                (state.value, market_id),
-            )
-
-
-@pytest.mark.parametrize(
-    "state",
-    [MarketState.RESOLVED, MarketState.CANCELLED],
-)
+# `split` checks ACTIVE before the lock and the top-up that follows can take blocks: a market
+# resolved or cancelled meanwhile would take a split after all. `before_send` reads it again.
+@pytest.mark.parametrize("state", [MarketState.RESOLVED, MarketState.CANCELLED])
 def test_a_split_on_a_market_that_stopped_trading_during_the_top_up_is_refused(state):
-    """`split` checks that the market is ACTIVE before it takes the lock, and the
-    top-up that follows can take a block or several. A market resolved or
-    cancelled in that window would take a split after all: a pair whose loser
-    is worthless and whose winner is claimable. The sponsor's `before_send`
-    reads the market again once the wallet is funded, and nothing is signed."""
     db, user, mid = _setup(MarketState.ACTIVE)
     chain = _FakeChain(usd=(100_000_000,))
-    sponsor = _FakeSponsor(during_top_up=lambda: _set_state(db, mid, state))
+
+    def market_stops_trading():
+        with db.write() as conn:
+            if state == MarketState.RESOLVED:  # a resolved market names its winner
+                TableWrite.resolve_market(conn, market_id=mid, winning_outcome_index=0)
+            else:
+                conn.execute(
+                    "UPDATE markets SET MARKET_STATE = %s WHERE MARKET_ID = %s",
+                    (state.value, mid),
+                )
+
+    sponsor = _FakeSponsor(during_top_up=market_stops_trading)
 
     with pytest.raises(MarketStateError, match="split only runs on ACTIVE markets"):
-        _service(db, chain, sponsor).split(
-            user, mid, SplitPositionRequest(amount=40_000_000)
-        )
+        _act(_service(db, chain, sponsor), "split", user, mid)
 
     assert sponsor.hashes == []
     assert _pending(db) == []
     assert _rows(db, user) == []
 
 
+# The gate ran before the top-up; a resting SELL filled or a transfer out meanwhile would let
+# `redeemPositions` mine a payout of nothing at the admin's expense. `before_send` gates again.
 @pytest.mark.parametrize(
     "balances",
-    [
-        pytest.param((0, 0), id="every-token-left"),
-        pytest.param((0, 100_000_000), id="only-the-loser-is-left"),
-        pytest.param((9_999, 0), id="dust-below-a-cent"),
-    ],
+    [(0, 0), (0, 100_000_000), (9_999, 0)],
+    ids=["every-token-left", "only-the-loser-is-left", "dust-below-a-cent"],
 )
 def test_a_claim_whose_tokens_left_during_the_top_up_is_refused(balances):
-    """The gate ran before the top-up. A resting SELL filled meanwhile, or a
-    transfer out, can leave a position that would pay less than the minimum,
-    and `redeemPositions` would then mine a payout of nothing at the admin's
-    expense. The sponsor's `before_send` runs the gate again once the wallet
-    is funded: the claim is refused as it would have been up front, and
-    nothing is signed."""
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(balances=(100_000_000, 0), usd=(5,))
 
@@ -683,11 +666,10 @@ def test_the_pending_ttl_is_ten_minutes():
     assert _PENDING_TTL_SECONDS == 600
 
 
+# A retry of a split whose answer was lost would split twice: until the first is settled (or the
+# ttl passes) a split, merge or claim on the same market is a 409, refused before any chain read.
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_a_pending_transaction_on_the_market_refuses_another_before_any_read(action):
-    """A retry of a split whose answer was lost would split twice. Until the
-    first is settled (or ten minutes have passed), a split, merge or claim on
-    the same market is a 409, refused inside the lock before any chain read."""
     db, user, mid, chain = _ready(action)
     _write_pending(db, user, mid, age=_PENDING_TTL_SECONDS - 5)
     sponsor = _FakeSponsor()
@@ -720,36 +702,23 @@ def test_an_expired_or_unrelated_pending_row_refuses_nothing(action):
 # --- split / merge -------------------------------------------------------------
 
 
-def test_a_split_is_sent_under_the_lock_and_logged():
+@pytest.mark.parametrize(
+    ("action", "amount", "usd", "call", "attr"),
+    [
+        pytest.param("split", 40_000_000, (100_000_000,), "splitPosition", "collateral_amount"),
+        pytest.param("merge", 15_000_000, (0,), "mergePositions", "amount"),
+    ],
+)
+def test_a_split_or_merge_is_sent_under_the_lock_and_logged(action, amount, usd, call, attr):
     db, user, mid = _setup(MarketState.ACTIVE)
-    chain = _FakeChain(balances=(40_000_000, 40_000_000), usd=(100_000_000,))
+    chain = _FakeChain(balances=(40_000_000, 40_000_000), usd=usd)
     sponsor = _FakeSponsor()
 
-    out = _service(db, chain, sponsor).split(
-        user, mid, SplitPositionRequest(amount=40_000_000)
-    )
+    out = _act(_service(db, chain, sponsor), action, user, mid, amount)
 
-    assert sponsor.sent == [
-        ([("splitPosition", _CID, [1, 2], 40_000_000)], "split", True)
-    ]
-    assert out.collateral_amount == 40_000_000
-    assert _rows(db, user) == ["SPLIT"]
-
-
-def test_a_merge_is_sent_under_the_lock_and_logged():
-    db, user, mid = _setup(MarketState.ACTIVE)
-    chain = _FakeChain(balances=(40_000_000, 40_000_000))
-    sponsor = _FakeSponsor()
-
-    out = _service(db, chain, sponsor).merge(
-        user, mid, MergePositionRequest(amount=15_000_000)
-    )
-
-    assert sponsor.sent == [
-        ([("mergePositions", _CID, [1, 2], 15_000_000)], "merge", True)
-    ]
-    assert out.amount == 15_000_000
-    assert _rows(db, user) == ["MERGE"]
+    assert sponsor.sent == [([(call, _CID, [1, 2], amount)], action, True)]
+    assert getattr(out, attr) == amount
+    assert _rows(db, user) == [action.upper()]
 
 
 @pytest.mark.parametrize(
@@ -773,8 +742,8 @@ def test_a_split_or_merge_without_the_funds_sends_nothing(action, balances, usd)
 
 
 def test_the_dependency_sponsors_with_the_apps_settings():
-    """The route's service carries a sponsor built from the app's settings,
-    so AGENTPIT_MIN_CLAIM_MICRO and the kill switch reach every request."""
+    # The route's service carries a sponsor built from the app's settings, so
+    # AGENTPIT_MIN_CLAIM_MICRO and the kill switch reach every request.
     service = get_position_service(
         fresh_test_db(), object(), Settings(min_claim_micro=42)  # type: ignore[arg-type]
     )
