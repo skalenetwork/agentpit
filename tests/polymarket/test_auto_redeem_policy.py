@@ -23,6 +23,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
+    GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientGasError,
     NothingToClaimError,
@@ -342,15 +343,23 @@ def test_a_failed_claim_counts_toward_the_cap(claims):
         (AdminGasPausedError(), logging.WARNING),
         (InsufficientGasError("wallet balance too low"), logging.WARNING),
         (GasTopUpTimeoutError(), logging.WARNING),
+        (GasPriceMovedError(), logging.WARNING),
     ],
-    ids=["lock-held", "breaker-paused", "not-sponsored", "top-up-timed-out"],
+    ids=[
+        "lock-held",
+        "breaker-paused",
+        "not-sponsored",
+        "top-up-timed-out",
+        "gas-price-moved",
+    ],
 )
 def test_an_expected_refusal_skips_the_holder_quietly_and_keeps_the_market_open(
     claims, caplog, exc, level
 ):
     """A held lock (they are claiming by hand), a paused gas breaker, a dry
-    wallet while sponsoring is switched off, or a top-up that timed out:
-    retried later, and logged without a traceback. The pin loop runs a pass every 20 s; a traceback per
+    wallet while sponsoring is switched off, a top-up that timed out, or a fee
+    that rose twice while the claim went out: retried later, and logged
+    without a traceback. The pin loop runs a pass every 20 s; a traceback per
     holder each time would bury the failures that need one."""
     _calls, outcomes = claims
     db, chain = fresh_test_db(), _Chain()

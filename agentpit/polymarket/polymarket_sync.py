@@ -17,6 +17,7 @@ from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
+    GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientGasError,
     MarketStateError,
@@ -1477,8 +1478,9 @@ def auto_redeem_resolved_markets(
     (`TransactionPendingError`) keeps the market open too, without a backoff:
     its pending row keeps the holder out until it is settled.
 
-    One whose top-up the gas breaker refused or timed out, or whose dry
-    wallet the sponsor would not fund (kill switch off), or whose claim
+    One whose top-up the gas breaker refused or timed out, or whose claim
+    the node refused twice as the fee rose (`GasPriceMovedError`), or whose
+    dry wallet the sponsor would not fund (kill switch off), or whose claim
     failed unexpectedly, is left alone for `_REFUSED_BACKOFF_SECONDS`; one
     whose claim mined and reverted for an hour. The backoff keeps a failure
     that repeats from spending the cap on the same holders every pass. A
@@ -1656,6 +1658,7 @@ def auto_redeem_resolved_markets(
                 AdminGasPausedError,
                 InsufficientGasError,
                 GasTopUpTimeoutError,
+                GasPriceMovedError,
             ) as exc:
                 back_off(key, _REFUSED_BACKOFF_SECONDS)
                 logger.warning(
