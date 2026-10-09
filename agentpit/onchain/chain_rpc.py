@@ -159,6 +159,17 @@ class BatchUnanswered(ConnectionError):
     identical batch goes out once more."""
 
 
+class ReceiptUnreachable(ConnectionError):
+    """The node took a transaction, then could not be reached for its receipt.
+
+    `send_user_tx` raises it in place of a receipt poll that failed to
+    connect, which `failed_before_connecting` would read as a broadcast that
+    never reached the node: the transaction may well mine. A builtin
+    `ConnectionError`, not a requests one, so `classify_send_error` calls it
+    TRANSPORT (an outcome nobody knows) and `failed_before_connecting` says
+    False. The poll's own error is its `__cause__`."""
+
+
 class BatchRefused(Exception):
     """The node answered a whole batch with one error object, without looking
     at any item: skaled does this to a batch above 128 requests."""

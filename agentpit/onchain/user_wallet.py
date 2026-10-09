@@ -6,7 +6,11 @@ from eth_account.signers.local import LocalAccount
 from web3.contract.contract import ContractFunction
 from web3.types import TxReceipt
 
-from agentpit.onchain.chain_rpc import current_fee_params
+from agentpit.onchain.chain_rpc import (
+    ReceiptUnreachable,
+    current_fee_params,
+    failed_before_connecting,
+)
 from agentpit.onchain.web3_client import Web3Client
 
 
@@ -39,6 +43,12 @@ def send_user_tx(
     broadcast, so a caller can record it before it can possibly mine
     (`PositionService` writes its pending row there). If the hook raises,
     nothing is broadcast.
+
+    An error from here that passes `failed_before_connecting` means the
+    transaction never reached the node: the nonce read or the broadcast
+    could not connect. A receipt poll that cannot connect is raised as
+    `ReceiptUnreachable` instead: by then the node has the transaction, and
+    it may mine.
     """
     web3 = client.web3
     nonce = web3.eth.get_transaction_count(user_account.address, "pending")
@@ -68,7 +78,15 @@ def send_user_tx(
     if on_signed is not None:
         on_signed("0x" + bytes(signed.hash).hex())
     tx_hash = web3.eth.send_raw_transaction(signed.raw_transaction)
-    return web3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
+    try:
+        return web3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
+    except Exception as exc:
+        if failed_before_connecting(exc):
+            raise ReceiptUnreachable(
+                f"the node took the transaction but its receipt poll could not "
+                f"connect: {exc}"
+            ) from exc
+        raise
 
 
 def send_admin_tx(
