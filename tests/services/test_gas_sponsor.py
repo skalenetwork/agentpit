@@ -86,33 +86,55 @@ class _Chain:
     raise `AdminGasPausedError`. Every send is signed first: its hash is
     recorded in `signed` and handed to `on_signed` before it can be refused.
     There is deliberately no `check_sponsored`: a wallet that needs no top-up
-    must not meet the breaker at all."""
+    must not meet the breaker at all.
 
-    # The real one: what it hands `estimate_gas` is under test.
-    estimate_user_gas = OnchainAdmin.estimate_user_gas
+    `fault_at=(kind, n)` makes the n-th (from 1) chain call of kind "price",
+    "estimate", "balance", "fund" or "send" raise `fault`: a send fails once it
+    is signed (as `send_user_tx` signs before the broadcast), a top-up before it
+    is sent. `after` then lists every chain call made once it fired, `mined`
+    counts the sends that came back with a receipt."""
 
     def __init__(
         self, *, prices=(1_000,), balances=(0,), refusals=(), paused=False,
-        during_send=None, fund_errors=(),
+        during_send=None, fund_errors=(), fault_at=None, fault=None,
     ):  # fmt: skip
         self.prices, self.balances = list(prices), list(balances)
         self.refusals, self.fund_errors = list(refusals), list(fund_errors)
         self.paused, self.during_send = paused, during_send
+        self.fault_at, self.fault = fault_at, fault
         self.events: list[tuple] = []
         self.signed: list[str] = []
+        self.counts: Counter[str] = Counter()
+        self.fired, self.mined = False, 0
+        self.after: list[str] = []
+
+    def _tick(self, name: str) -> None:
+        if self.fired:
+            self.after.append(name)
+        self.counts[name] += 1
+        if (name, self.counts[name]) == self.fault_at:
+            self.fired = True
+            raise self.fault
 
     @staticmethod
     def _next(values: list[int]) -> int:
         return values.pop(0) if len(values) > 1 else values[0]
 
     def gas_price(self) -> int:
+        self._tick("price")
         return self._next(self.prices)
 
+    def estimate_user_gas(self, fn, address: str) -> int:
+        self._tick("estimate")  # then the real one: what it hands `estimate_gas`
+        return OnchainAdmin.estimate_user_gas(self, fn, address)  # type: ignore[arg-type]
+
     def native_balance(self, address: str) -> int:
+        self._tick("balance")
         self.events.append(("balance",))
         return self._next(self.balances)
 
     def fund_gas(self, address: str, value_wei: int, *, timeout: int = 30):
+        self._tick("fund")
         if self.paused:
             raise AdminGasPausedError()
         self.events.append(("fund", value_wei))
@@ -127,10 +149,12 @@ class _Chain:
         self.signed.append("0x%064x" % (len(self.signed) + 1))
         if on_signed is not None:
             on_signed(self.signed[-1])
+        self._tick("send")
         if self.during_send is not None:
             self.during_send()
         if self.refusals and (refusal := self.refusals.pop(0)) is not None:
             raise refusal
+        self.mined += 1
         return {"status": fn.status, "gasUsed": 80_000, "transactionHash": b"\x01" * 32}
 
     @property
@@ -240,7 +264,7 @@ def used(db, user):
     return lambda who=user: _used(db, who)
 
 
-# --- sizing -----------------------------------------------------------------
+# --- sizing and the one resize-and-retry ------------------------------------
 
 
 def test_min_claim_micro_comes_from_settings(db):
@@ -299,9 +323,6 @@ def test_estimates_carry_no_fee_fields(send, user):
     call = _Call()
     send(_Chain(), calls=[call])
     assert call.estimated_with == [{"from": Web3.to_checksum_address(user.eth_address)}]
-
-
-# --- one resize-and-retry ---------------------------------------------------
 
 
 def test_fee_too_low_is_retried_once_at_the_new_price(send, used):
@@ -392,7 +413,7 @@ def test_any_other_refusal_propagates_without_a_retry(send):
     assert len(chain.sends) == 1
 
 
-# --- the signing hook and the last check before the first signature --------
+# --- the signing hook, the last check before it, and the per-user lock ------
 
 
 def test_each_call_reports_its_index_and_hash_as_it_is_signed(send):
@@ -479,9 +500,6 @@ def test_a_failing_before_send(db, user, send, used, kind, balance, booked, sett
     assert used() == booked
     with _sponsor(db, chain).locked(user):  # the lock is free
         pass
-
-
-# --- the per-user lock ------------------------------------------------------
 
 
 def test_a_held_lock_refuses_another_request(db, user):
@@ -704,51 +722,6 @@ def test_a_revert_raises_after_it_is_booked(send, used, kind):
 # paid for can still mine. Of those 360 cells the 112 kept in `_CELLS` failed
 # before the sponsor followed these rules; the other 248 held already.
 
-
-class _FaultyChain(_Chain):
-    """`_Chain` whose `at`-th chain call raises `fault`: `at` is (kind, n), the
-    n-th call from 1 of "price", "estimate", "balance", "fund" or "send". A send
-    fails once it is signed (as `send_user_tx` signs before the broadcast), a
-    top-up before it is sent. `after` lists every chain call made once the fault
-    fired; `mined` counts the sends that came back with a receipt."""
-
-    def __init__(self, at: tuple[str, int], fault: BaseException, **kwargs):
-        super().__init__(during_send=lambda: self.tick("send"), **kwargs)
-        self.at, self.fault = at, fault
-        self.counts: Counter[str] = Counter()
-        self.fired, self.mined = False, 0
-        self.after: list[str] = []
-
-    def tick(self, name: str) -> None:
-        if self.fired:
-            self.after.append(name)
-        self.counts[name] += 1
-        if (name, self.counts[name]) == self.at:
-            self.fired = True
-            raise self.fault
-
-    def gas_price(self) -> int:
-        self.tick("price")
-        return super().gas_price()
-
-    def estimate_user_gas(self, fn, address: str) -> int:
-        self.tick("estimate")
-        return OnchainAdmin.estimate_user_gas(self, fn, address)  # type: ignore[arg-type]
-
-    def native_balance(self, address: str) -> int:
-        self.tick("balance")
-        return super().native_balance(address)
-
-    def fund_gas(self, address: str, value_wei: int, *, timeout: int = 30):
-        self.tick("fund")
-        return super().fund_gas(address, value_wei, timeout=timeout)
-
-    def send_as_user(self, *args, **kwargs):
-        receipt = super().send_as_user(*args, **kwargs)
-        self.mined += 1
-        return receipt
-
-
 _FAULTS = {
     "runtime": lambda: RuntimeError("boom"),
     "timeout": lambda: TimeExhausted("no receipt in 30s"),
@@ -766,6 +739,7 @@ _RESIZE_FAULTS = [
 _RETRY_TOP_UP_FAULTS = [
     "runtime", "never-connected", "read-timeout", "fee-low", "balance-low", "db",
 ]  # fmt: skip
+_RE_SIZING = {"price2": _RESIZE_FAULTS, "estimate2": _RESIZE_FAULTS, "balance2": _RESIZE_FAULTS}
 # {(scenario, kind): {point: faults}}. A point is the n-th chain call of its
 # kind, from 1, in the order `_send_sponsored` makes them. In "retry" the node
 # refuses the first send for its fee: "price2", "estimate2" (onboarding:
@@ -778,16 +752,12 @@ _CELLS = {
         "send1": ["runtime", "never-connected", "db", "interrupt"],
     },
     ("retry", "claim"): {
-        "price2": _RESIZE_FAULTS,
-        "estimate2": _RESIZE_FAULTS,
-        "balance2": _RESIZE_FAULTS,
+        **_RE_SIZING,
         "fund2": _RETRY_TOP_UP_FAULTS,
         "send2": ["fee-low"],
     },
     ("retry", "split"): {
-        "price2": _RESIZE_FAULTS,
-        "estimate2": _RESIZE_FAULTS,
-        "balance2": _RESIZE_FAULTS,
+        **_RE_SIZING,
         "fund2": [*_RETRY_TOP_UP_FAULTS, "interrupt"],
         "send2": ["runtime", "never-connected", "fee-low", "db", "interrupt"],
     },
@@ -871,8 +841,10 @@ def test_every_failure_point_is_handled(db, user, used, scenario, kind, point, f
         "balances": (0, len(calls) * NEED),
         "refusals": [_refused(SKALED_FEE_LOW)],
     }
-    chain = _FaultyChain(
-        _point(point), _FAULTS[fault](), **(retry if scenario == "retry" else {})
+    chain = _Chain(
+        fault_at=_point(point),
+        fault=_FAULTS[fault](),
+        **(retry if scenario == "retry" else {}),
     )
     raised: BaseException | None = None
     try:
