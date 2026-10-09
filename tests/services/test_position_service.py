@@ -40,16 +40,9 @@ from agentpit.datastructures.split_position_request import (
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
-    AdminGasPausedError,
-    GasPriceMovedError,
-    GasTopUpTimeoutError,
-    InsufficientBalanceError,
-    InsufficientGasError,
-    MarketStateError,
-    NothingToClaimError,
-    TransactionInProgressError,
-    TransactionPendingError,
-    TransactionRevertedError,
+    AdminGasPausedError, GasPriceMovedError, GasTopUpTimeoutError, InsufficientBalanceError,
+    InsufficientGasError, MarketStateError, NothingToClaimError, TransactionInProgressError,
+    TransactionPendingError, TransactionRevertedError,
 )
 from agentpit.onchain.tx_sender import TxDropped
 from agentpit.services.gas_sponsor import UserGasSponsor
@@ -123,14 +116,12 @@ class _FakeSponsor:
     """Records each `send` as (calls, kind, whether the lock was held). `busy` makes `locked`
     refuse as a held lock does; `fail` is raised from `send` after it is recorded, as a reverted
     transaction is, or before anything is signed with `fail_unsigned` (a failed read or top-up).
-    Each receipt carries `payout`, what the fake chain reads back. `log` gets "send" appended by
-    every `send`, so a test can tell which chain reads came before it and which after.
-
-    Each call is signed `signs` times before `fail` (2: refused at import and signed again at
-    the new size, as the real sponsor's one retry does); every hash goes to `on_signed` and
-    `hashes`. `during_send` runs once the calls are signed. `during_top_up` runs where the real
-    top-up would mine, the window in which the world can change; `before_send` follows it, as
-    the real sponsor's does, and anything it raises stops the send before anything is signed."""
+    Each receipt carries `payout`, what the fake chain reads back; `log` gets "send" appended by
+    every `send`, to order it among the chain reads. Each call is signed `signs` times before
+    `fail` (2: refused at import, signed again at the new size, as the real sponsor's one retry
+    does); every hash goes to `on_signed` and `hashes`. `during_send` runs once the calls are
+    signed; `during_top_up` where the real top-up would mine (the window in which the world can
+    change), followed by `before_send`, whose exception stops the send before anything is signed."""
 
     busy: bool = False
     fail: Exception | None = None
@@ -258,7 +249,7 @@ def test_a_winning_claim_is_sent_under_the_lock_and_logged(caplog):
     caplog.set_level(logging.WARNING, logger=_LOGGER)
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(100_000_005,))
-    sponsor = _FakeSponsor(payout=100_000_000)
+    sponsor = _FakeSponsor(payout=100_000_000, log=chain.reads)
 
     out = _service(db, chain, sponsor).redeem(user, mid)
 
@@ -268,15 +259,17 @@ def test_a_winning_claim_is_sent_under_the_lock_and_logged(caplog):
     assert out.new_usdc_balance == 100_000_005
     assert _rows(db, user) == ["REDEEM"]
     assert _redeem_amounts(db, user) == [100_000_000]
-    # The payout is read from the claim's receipt, for the claimant, and a payout there is no
-    # surprise to log.
+    # The payout comes off the claim's receipt, for the claimant, and logs no warning.
     assert chain.payout_reads == [({"status": 1, "payout": 100_000_000}, user.eth_address)]
     assert [r for r in caplog.records if r.name == _LOGGER] == []
+    # The new balance is one fresh read after the send and none before it.
+    sent_at = chain.reads.index("send")
+    assert "usd_balance" not in chain.reads[:sent_at]
+    assert chain.reads[sent_at:].count("usd_balance") == 1
 
 
 # The wallet's apUSD moves while a claim is in flight (a fill, a mint, a transfer out), so a
-# difference of two balance reads would credit or debit the claim; the receipt's
-# `PayoutRedemption` is the figure, for the response and the REDEEM row alike.
+# balance difference would misstate it: the receipt's `PayoutRedemption` is the figure.
 @pytest.mark.parametrize(
     "usd",
     [(5, 70_000_005), (5, 107_000_005), (5, 5)],
@@ -294,11 +287,9 @@ def test_the_claim_is_the_payout_in_the_receipt_whatever_the_balance_did(usd):
 
 
 def test_a_claim_that_mined_with_no_payout_is_no_claim_and_leaves_no_row(caplog):
-    # The gate computed a payout, yet the receipt names none paid to the claimant (the tokens
-    # left in between, a payout-vector mismatch...). A REDEEM row at zero would read as a lost
-    # market and auto-redeem would count a claim made: so no row, the intent row goes, and the
-    # caller hears `NothingToClaimError` (400). The surprise is logged with the market and the
-    # transaction, never the key.
+    # The receipt names no payout to the claimant: a REDEEM row at zero would read as a lost
+    # market, so no row, the intent row goes, the caller hears 400, and the surprise is logged
+    # with the market and the transaction, never the key.
     caplog.set_level(logging.WARNING, logger=_LOGGER)
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(balances=(100_000_000, 0), usd=(5,))
@@ -318,21 +309,7 @@ def test_a_claim_that_mined_with_no_payout_is_no_claim_and_leaves_no_row(caplog)
     assert user.api_key not in message
 
 
-def test_the_new_balance_is_one_fresh_read_after_the_claim_and_none_before():
-    db, user, mid = _setup(MarketState.RESOLVED)
-    chain = _FakeChain(balances=(100_000_000, 0), usd=(250_000_000,))
-    sponsor = _FakeSponsor(payout=100_000_000, log=chain.reads)
-
-    out = _service(db, chain, sponsor).redeem(user, mid)
-
-    sent_at = chain.reads.index("send")
-    assert "usd_balance" not in chain.reads[:sent_at]
-    assert chain.reads[sent_at:].count("usd_balance") == 1
-    assert out.new_usdc_balance == 250_000_000
-
-
-# The setting is validated to be at least 1, but the gate does not lean on it: a claim that
-# pays nothing is pure admin gas, so it is refused even if the minimum were 0.
+# The gate does not lean on the minimum being >= 1: a claim that pays nothing is pure admin gas.
 @pytest.mark.parametrize(
     ("balances", "minimum"),
     [
@@ -354,18 +331,19 @@ def test_nothing_worth_claiming_never_reaches_the_sponsor(balances, minimum):
     assert _rows(db, user) == []
 
 
-# payout = sum(balance_i * numerator_i // denominator), against the minimum (10_000: $0.01).
+# payout = sum(balance_i * numerator_i // denominator), against the sponsor's minimum, inclusive.
 @pytest.mark.parametrize(
-    ("vector", "balances", "claimed"),
+    ("vector", "balances", "minimum", "claimed"),
     [
-        pytest.param((1, [1, 0]), (10_000, 0), True, id="exactly-the-minimum"),
-        pytest.param((2, [1, 1]), (15_000, 5_000), True, id="even-split-reaching-it"),
-        pytest.param((2, [1, 1]), (15_000, 4_999), False, id="even-split-a-micro-short"),
+        pytest.param((1, [1, 0]), (10_000, 0), 10_000, True, id="exactly-the-minimum"),
+        pytest.param((2, [1, 1]), (15_000, 5_000), 10_000, True, id="even-split-reaching-it"),
+        pytest.param((2, [1, 1]), (15_000, 4_999), 10_000, False, id="even-split-a-micro-short"),
+        pytest.param((1, [1, 0]), (1, 0), 1, True, id="the-minimum-comes-from-the-sponsor"),
     ],
 )
-def test_the_payout_weighs_each_balance_by_its_numerator(vector, balances, claimed):
+def test_the_payout_weighs_each_balance_by_its_numerator(vector, balances, minimum, claimed):
     db, user, mid = _setup(MarketState.RESOLVED)
-    sponsor = _FakeSponsor(payout=1)
+    sponsor = _FakeSponsor(min_claim_micro=minimum, payout=1)
     service = _service(db, _FakeChain(vector=vector, balances=balances), sponsor)
     if claimed:
         service.redeem(user, mid)
@@ -376,16 +354,9 @@ def test_the_payout_weighs_each_balance_by_its_numerator(vector, balances, claim
         assert sponsor.sent == []
 
 
-def test_the_minimum_comes_from_the_sponsor():
-    db, user, mid = _setup(MarketState.RESOLVED)
-    sponsor = _FakeSponsor(min_claim_micro=1, payout=1)
-    _service(db, _FakeChain(balances=(1, 0)), sponsor).redeem(user, mid)
-    assert len(sponsor.sent) == 1
-
-
 def test_a_market_the_chain_has_not_resolved_is_refused_without_a_send():
-    # RESOLVED in the database, no `reportPayouts` on chain: `redeemPositions` would revert,
-    # after the admin had paid for the top-up in front of it.
+    # RESOLVED in the database, no `reportPayouts` on chain: the redeem would revert after the
+    # admin paid for the top-up.
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(vector=(0, [0, 0]), balances=(100_000_000, 0))
     sponsor = _FakeSponsor()
@@ -406,8 +377,7 @@ def test_a_vector_the_caller_already_read_is_not_read_again():
 
 
 def test_a_market_the_database_has_not_resolved_is_refused_before_the_lock():
-    # Checked before the lock, so a busy account still hears the real reason, and nothing
-    # touches the chain.
+    # Checked before the lock, so a busy account still hears the real reason.
     db, user, mid = _setup(MarketState.ACTIVE)
     chain = _FakeChain()
     with pytest.raises(MarketStateError, match="not resolved yet"):
@@ -418,8 +388,7 @@ def test_a_market_the_database_has_not_resolved_is_refused_before_the_lock():
 # --- every action --------------------------------------------------------------
 
 
-# The pre-checks and the claim gate live inside the lock: a second request for the same
-# account is a 409, not a race against the first.
+# The pre-checks and the claim gate live inside the lock: a second request is a 409.
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_a_held_lock_refuses_before_any_chain_read(action):
     db, user, mid, chain = _ready(action)
@@ -452,11 +421,9 @@ def _http_error(status: int) -> requests.HTTPError:
     return requests.HTTPError(f"{status} Error", response=response)
 
 
-# It may mine yet: the row stays for the auto-redeem pass, nothing is written to the history now,
-# and the caller hears 503 "do not repeat it", not a 500. That includes what the receipt poll can
-# raise once `send_raw_transaction` has returned (the node holds the transaction, so none of
-# these says it will not mine, whatever `classify_send_error` makes of the text): deleting the
-# row would lose the history row and lift the duplicate guard, so a client retry splits twice.
+# It may mine yet: the row stays for the auto-redeem pass and the caller hears 503 "do not repeat
+# it". That includes what the receipt poll raises after the broadcast was accepted (the node holds
+# the transaction): deleting the row would lift the duplicate guard, so a retry splits twice.
 @pytest.mark.parametrize("action", _ACTIONS)
 @pytest.mark.parametrize(
     "error",
@@ -492,9 +459,8 @@ _NEVER_CONNECTED = requests.ConnectionError(  # `failed_before_connecting`
 )
 
 
-# The node holds no transaction of the user's, so no row is left. `signed` is how many
-# signatures went out: none (a read or a top-up got no answer), one, or two (refused at import and
-# signed again at the new size, or never sent because the retry's top-up failed).
+# The node holds no transaction of the user's, so no row is left. `signed` is the signatures that
+# went out: none (a read or top-up got no answer), one, or two (refused, then signed again).
 @pytest.mark.parametrize("action", _ACTIONS)
 @pytest.mark.parametrize(
     ("error", "signed"),
@@ -531,8 +497,7 @@ def test_a_transaction_the_node_never_took_leaves_no_pending_row(action, error, 
     assert _rows(db, user) == []
 
 
-# The sponsor signs a call again only after the node refused it, so the first hash can never
-# mine: its row goes as the second one's is written.
+# A call is signed again only after a refusal: the first row goes as the second is written.
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_a_resized_retry_replaces_the_refused_signatures_row(action):
     db, user, mid, chain = _ready(action)
@@ -548,8 +513,7 @@ def test_a_resized_retry_replaces_the_refused_signatures_row(action):
     assert _rows(db, user) == [_INTENT[action][0]]
 
 
-# The auto-redeem pass can settle the intent row while the request still waits for the same
-# receipt: whoever confirms second finds the row gone and writes nothing.
+# Auto-redeem may settle the row while the request waits for the receipt: the second writes nothing.
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_a_transaction_confirmed_meanwhile_is_not_logged_twice(action):
     db, user, mid, chain = _ready(action)
@@ -568,9 +532,8 @@ def test_a_transaction_confirmed_meanwhile_is_not_logged_twice(action):
     assert _pending(db) == []
 
 
-# It mined, and the history row could not be written (the pool timed out): the intent row is
-# still there for the auto-redeem pass, the caller hears what it would for an unknown outcome,
-# and the log says whose transaction it was.
+# It mined but the history row could not be written (pool timeout): the intent row stays for the
+# auto-redeem pass, the caller hears the unknown-outcome error, and the log says whose it was.
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_a_mined_transaction_whose_row_cannot_be_written_stays_pending(action, monkeypatch, caplog):
     db, user, mid, chain = _ready(action)
@@ -607,8 +570,7 @@ def test_a_claims_row_is_written_before_the_balance_is_read_again():
 # --- the world changes between the gate and the send --------------------------
 
 
-# `split` checks ACTIVE before the lock and the top-up that follows can take blocks: a market
-# resolved or cancelled meanwhile would take a split after all. `before_send` reads it again.
+# The top-up takes blocks: a market resolved or cancelled meanwhile must not take a split.
 @pytest.mark.parametrize("state", [MarketState.RESOLVED, MarketState.CANCELLED])
 def test_a_split_on_a_market_that_stopped_trading_during_the_top_up_is_refused(state):
     db, user, mid = _setup(MarketState.ACTIVE)
@@ -634,8 +596,7 @@ def test_a_split_on_a_market_that_stopped_trading_during_the_top_up_is_refused(s
     assert _rows(db, user) == []
 
 
-# The gate ran before the top-up; a resting SELL filled or a transfer out meanwhile would let
-# `redeemPositions` mine a payout of nothing at the admin's expense. `before_send` gates again.
+# A fill or transfer during the top-up must not let `redeemPositions` mine a payout of nothing.
 @pytest.mark.parametrize(
     "balances",
     [(0, 0), (0, 100_000_000), (9_999, 0)],
@@ -666,8 +627,8 @@ def test_the_pending_ttl_is_ten_minutes():
     assert _PENDING_TTL_SECONDS == 600
 
 
-# A retry of a split whose answer was lost would split twice: until the first is settled (or the
-# ttl passes) a split, merge or claim on the same market is a 409, refused before any chain read.
+# A retry of a split whose answer was lost would split twice: until it settles (or the ttl
+# passes) any action on the same market is a 409, before any chain read.
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_a_pending_transaction_on_the_market_refuses_another_before_any_read(action):
     db, user, mid, chain = _ready(action)
