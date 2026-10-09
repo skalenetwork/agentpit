@@ -19,6 +19,8 @@ interface Props {
 const { cards, days, more } = Astro.props;
 const short = (title: string) => title.split(" (")[0].replace(/\?$/, "");
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", signDisplay: "exceptZero" });
+const large = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", minimumFractionDigits: 0, maximumFractionDigits: 1, signDisplay: "exceptZero" });
+const signed = (value: number) => (Math.abs(value) < 1000 ? money : large).format(value).replace("-", "−");
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const sum = (bets: readonly CardBet[], of: (bet: CardBet) => number) => bets.reduce((total, bet) => total + of(bet), 0);
 const ticket = (card: Card, bets: readonly CardBet[]) => {
@@ -126,7 +128,7 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
                           </p>
                         </div>
                         <p class="paid">Staked {usd.format(seat.stake)}</p>
-                        <p class:list={["pl", tone(seat.pnl)]}>{money.format(seat.pnl).replace("-", "−")}</p>
+                        <p class:list={["pl", tone(seat.pnl)]}>{signed(seat.pnl)}</p>
                       </Fragment>
                     ) : (
                       <Fragment>
