@@ -208,6 +208,7 @@ class PositionService:
             self._confirm(
                 user, "REDEEM", market_id, tx_hash, {"collateral_amount": paid}
             )
+            # Read after the row is written, so a failed read cannot lose it.
             new_balance = self._onchain.usd_balance(user.eth_address)
         return RedeemPositionResponse(
             market_id=market.market_id,
