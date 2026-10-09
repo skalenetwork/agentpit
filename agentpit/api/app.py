@@ -75,6 +75,7 @@ from agentpit.services.agent_desk import AgentDesk
 from agentpit.services.auth_service import AuthService
 from agentpit.services.event_service import EventService
 from agentpit.services.leaderboard_service import LeaderboardService, drain, touch_holders
+from agentpit.services.pending_user_txs import reconcile_pending_user_txs
 
 log = logging.getLogger(__name__)
 
@@ -153,11 +154,30 @@ def _run_resolution_cycle(
             scan_after = slice_[-1].market_id
         else:
             scan_after = 0
-    redeemed = 0
-    if settings.auto_redeem_enabled:
-        with _redeem_lock:
-            redeemed = auto_redeem_resolved_markets(db, admin, settings)
-    return resolved, redeemed, scan_after
+    return resolved, _run_redeem_pass(db, admin, settings), scan_after
+
+
+def _run_redeem_pass(db: DbSession, admin: OnchainAdmin, settings: Settings) -> int:
+    """What both resolution loops do after resolving: the auto-redeem pass, or
+    with the global switch off just the settling of pending user transactions.
+
+    The auto-redeem pass reconciles `pending_user_txs` first itself, so it is
+    not done twice. With auto-redeem disabled nothing else would: a claim or
+    split whose receipt never came back would sit pending for good and never
+    reach the history. A reconcile failure is logged and never breaks the loop;
+    its rows are tried again next pass. Returns the holder redemptions made.
+    """
+    with _redeem_lock:
+        if settings.auto_redeem_enabled:
+            return auto_redeem_resolved_markets(db, admin, settings)
+        try:
+            reconcile_pending_user_txs(db, admin)
+        except Exception:
+            log.exception(
+                "pending user transactions could not be settled; tried again "
+                "next pass"
+            )
+        return 0
 
 
 async def _resolution_mirror_loop(
@@ -343,11 +363,7 @@ def _run_pin_resolve(
             if ids
             else 0
         )
-    redeemed = 0
-    if settings.auto_redeem_enabled:
-        with _redeem_lock:
-            redeemed = auto_redeem_resolved_markets(db, admin, settings)
-    return resolved, redeemed
+    return resolved, _run_redeem_pass(db, admin, settings)
 
 
 async def _pin_resolve_loop(

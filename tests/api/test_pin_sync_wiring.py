@@ -79,8 +79,12 @@ def test_run_pin_resolve_returns_only_resolved_and_redeemed(monkeypatch):
         seen["redeem_settings"] = settings
         return 2
 
+    reconciled = []
     monkeypatch.setattr(app_mod, "mirror_polymarket_resolutions", fake_mirror)
     monkeypatch.setattr(app_mod, "auto_redeem_resolved_markets", fake_redeem)
+    monkeypatch.setattr(
+        app_mod, "reconcile_pending_user_txs", lambda db, admin: reconciled.append(1)
+    )
 
     settings = _FakeResolveSettings()
     result = app_mod._run_pin_resolve(
@@ -89,6 +93,58 @@ def test_run_pin_resolve_returns_only_resolved_and_redeemed(monkeypatch):
 
     assert result == (1, 2)
     assert seen["redeem_settings"] is settings
+    # The auto-redeem pass reconciles first itself; not twice.
+    assert reconciled == []
     # Scoped to the just-ended windows, not a whole-table scan.
     assert seen["market_ids"] == {7}
     assert seen["ids_conn"] == "CONN"
+
+
+class _FakeDisabledSettings(_FakeSettings):
+    auto_redeem_enabled = False
+
+
+def _disabled_pin_resolve(monkeypatch, reconcile):
+    monkeypatch.setattr(app_mod, "ended_unresolved_window_ids", lambda *a: [7])
+    monkeypatch.setattr(
+        app_mod, "mirror_polymarket_resolutions", lambda conn, admin, **kw: 1
+    )
+    redeem_calls = []
+    monkeypatch.setattr(
+        app_mod,
+        "auto_redeem_resolved_markets",
+        lambda db, admin, settings: redeem_calls.append(1) or 5,
+    )
+    monkeypatch.setattr(app_mod, "reconcile_pending_user_txs", reconcile)
+    result = app_mod._run_pin_resolve(
+        _FakeDb(), admin="ADMIN", settings=_FakeDisabledSettings()  # type: ignore[arg-type]
+    )
+    return result, redeem_calls
+
+
+def test_run_pin_resolve_reconciles_on_its_own_when_redeem_disabled(monkeypatch):
+    """The pin loop is the fast one, so a claim that mined unseen is settled
+    within a pass even when the global auto-redeem switch is off."""
+    seen = []
+
+    def reconcile(db, admin):
+        seen.append((db.__class__.__name__, admin, app_mod._redeem_lock.locked()))
+        return 0
+
+    result, redeem_calls = _disabled_pin_resolve(monkeypatch, reconcile)
+
+    assert result == (1, 0)
+    assert redeem_calls == []
+    assert seen == [("_FakeDb", "ADMIN", True)]
+
+
+def test_a_reconcile_that_fails_does_not_break_the_pin_resolve(monkeypatch, caplog):
+    def reconcile(db, admin):
+        raise RuntimeError("database gone")
+
+    result, _ = _disabled_pin_resolve(monkeypatch, reconcile)
+
+    assert result == (1, 0)
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and errors[0].exc_info is not None
+    assert not app_mod._redeem_lock.locked()
