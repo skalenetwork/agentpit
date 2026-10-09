@@ -212,7 +212,8 @@ class AuthService:
         """Drip the account's collateral, then set its three exchange approvals.
 
         The approvals are signed by the account's own key, so its wallet must
-        hold their gas first. There is no signup grant any more:
+        hold their gas first. There is no signup gas grant any more (the
+        collateral drip below is a different thing):
         `UserGasSponsor` tops the wallet up to exactly what the three calls
         need and sends them. It does so even with AGENTPIT_SPONSOR_USER_GAS
         off -- without it no account or agent could ever be created.
@@ -266,8 +267,9 @@ class AuthService:
         on every login. Failures here are logged but never block login — the
         user can still authenticate and see errors at trade time.
 
-        Each repair is a full collateral drip, so it only ever runs where the
-        chain is meant to be thrown away: `simulated_chain=False` turns it off,
+        A repair drips collateral (a full grant, but only to a wallet that
+        holds less than the grant, see `_run_onboarding`), so it only ever runs
+        where the chain is meant to be thrown away: `simulated_chain=False` turns it off,
         and so does a chain id that is not a disposable one. (The house account
         does not rely on this path at all — it is kept above a gas floor by the
         mirror's top-up loop.)
