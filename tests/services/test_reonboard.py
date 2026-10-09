@@ -19,8 +19,7 @@ from tests.onboarding_fakes import SKALE_BASE_TESTNET, OnboardingChain, onboardi
 
 
 class _WipedChain(OnboardingChain):
-    """Every wallet reads empty, as after a chain reset -- or, with a nonce
-    above zero, as after an ordinary day of exact top-ups."""
+    """Every wallet reads empty: a chain reset, or with a nonce above 0 an ordinary day of exact top-ups."""
 
     deployment_id = "test-deployment"
 
@@ -73,15 +72,10 @@ class _StaleNonce(_WipedChain):
         super().__init__(nonce=0)
         self.holding = threading.Event()  # the first reader has its zero
         self.release = threading.Event()
-        self._reads = 0
-        self._reads_guard = threading.Lock()
 
     def transaction_count(self, address):
         value = super().transaction_count(address)
-        with self._reads_guard:
-            self._reads += 1
-            first = self._reads == 1
-        if first:
+        if not self.holding.is_set():  # the first read only: the other sign-in starts once it is set
             self.holding.set()
             assert self.release.wait(10), "the second sign-in never finished"
         return value

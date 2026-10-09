@@ -71,18 +71,18 @@ class _FlakyChain(OnboardingChain):
 
 _APPROVALS = OnboardingChain().approval_calls()
 
-_FAULTS = [
-    pytest.param("fund_gas", "late", id="top-up-mines-after-its-timeout"),
-    pytest.param("fund_gas", "paused", id="breaker-paused"),
-    *[
-        pytest.param(approval, how, id=f"approval-{i + 1}-{how}")
-        for i, approval in enumerate(_APPROVALS)
-        for how in ("reverted", "read_timeout", "cannot_pay")
+@pytest.mark.parametrize(
+    ("fault", "how"),
+    [
+        pytest.param("fund_gas", "late", id="top-up-mines-after-its-timeout"),
+        pytest.param("fund_gas", "paused", id="breaker-paused"),
+        *[
+            pytest.param(approval, how, id=f"approval-{i + 1}-{how}")
+            for i, approval in enumerate(_APPROVALS)
+            for how in ("reverted", "read_timeout", "cannot_pay")
+        ],
     ],
-]
-
-
-@pytest.mark.parametrize(("fault", "how"), _FAULTS)
+)
 def test_a_failed_onboarding_retried_on_the_same_chain_grants_once(fault, how):
     chain = _FlakyChain(fault, how)
     o = onboarding(chain)

@@ -136,9 +136,7 @@ def test_an_api_agent_that_cannot_be_funded_is_not_left_behind():
         pytest.param(AdminGasPausedError(), id="breaker-refused"),
         pytest.param(InsufficientGasError("the wallet could not pay for its onboarding"), id="wallet-could-not-pay"),
         pytest.param(GasTopUpTimeoutError(), id="top-up-timed-out"),
-        # The fee rose twice while its approvals were being sent: a 503 "try
-        # again", like a top-up that timed out, so the half-made agent goes too.
-        pytest.param(GasPriceMovedError(), id="gas-price-moved"),
+        pytest.param(GasPriceMovedError(), id="gas-price-moved"),  # the fee rose twice: a 503 like a timeout
     ],
 )
 def test_an_api_agent_refused_by_the_chain_is_not_left_behind(error):
