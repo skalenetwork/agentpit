@@ -188,7 +188,7 @@ class TableCreate:
             # out (see `TableRead.get_key_export_state`).
             ("KEY_EXPORTED_AT", "BIGINT"),
             ("KEY_EXPORT_ATTEMPT_AT", "BIGINT"),
-            ("AUTO_REDEEM_ENABLED", "BOOLEAN NOT NULL DEFAULT FALSE"),
+            ("AUTO_REDEEM_ENABLED", "BOOLEAN NOT NULL DEFAULT TRUE"),
             ("WORKOS_USER_ID", "TEXT"),
             ("OWNER_WORKOS_ID", "TEXT"),
             ("AGENT_APP", "TEXT"),
@@ -201,6 +201,13 @@ class TableCreate:
             conn.execute(
                 f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {col_type}"
             )
+        # Auto-redeem is on by default since claims became sponsored (owner
+        # decision 2026-10-08). ADD COLUMN above skips an existing column, so
+        # an older database's DEFAULT FALSE is moved here; existing rows keep
+        # what their owner chose.
+        conn.execute(
+            "ALTER TABLE users ALTER COLUMN AUTO_REDEEM_ENABLED SET DEFAULT TRUE"
+        )
         # An account that arrived through Google has no password. Databases
         # created before this line have PASSWORD_HASH NOT NULL; dropping it is
         # idempotent, so this is safe on every run.
@@ -511,11 +518,13 @@ class TableCreate:
 
     @staticmethod
     def create_sponsored_gas_table(conn: psycopg.Connection) -> None:
-        """Gas the admin paid for the fills each account took, per UTC day.
+        """Gas the admin paid for each account, per UTC day: the fills it took,
+        plus the top-ups and transactions `UserGasSponsor` sent for it.
 
         One row per account per day, DAY being unix seconds // 86_400, GAS_USED
-        the sum of the receipts' gasUsed. The rows are tiny and nothing reads
-        a past day, so there is no cleanup job.
+        the sum of the receipts' gasUsed (a top-up counts as its 21,000-gas
+        transfer). The rows are tiny and nothing reads a past day, so there is
+        no cleanup job.
         """
         conn.execute(
             """
@@ -524,6 +533,31 @@ class TableCreate:
                 DAY      INTEGER NOT NULL,
                 GAS_USED BIGINT  NOT NULL DEFAULT 0,
                 PRIMARY KEY (API_KEY, DAY)
+            )
+            """
+        )
+
+    @staticmethod
+    def create_pending_user_txs_table(conn: psycopg.Connection) -> None:
+        """User-signed transactions (split, merge, claim) that were signed and
+        may be on their way to the chain, before anybody knows how they ended.
+
+        Each row carries the TRANSACTION_TYPE, MARKET_ID and DETAILS (JSON) its
+        `transactions` row will have (a claim's without an amount yet), and
+        becomes that row once the receipt is in
+        (`TableWrite.confirm_pending_user_tx`); see
+        `agentpit.services.pending_user_txs`. CREATED_AT is unix seconds.
+        History shows a transaction only once it is known to have mined.
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_user_txs (
+                TX_HASH          TEXT   PRIMARY KEY,
+                API_KEY          TEXT   NOT NULL,
+                TRANSACTION_TYPE TEXT   NOT NULL,
+                MARKET_ID        BIGINT,
+                DETAILS          TEXT,
+                CREATED_AT       BIGINT NOT NULL
             )
             """
         )
@@ -545,3 +579,4 @@ class TableCreate:
         TableCreate.create_idempotency_keys_table(conn)
         TableCreate.create_auth_code_attempts_table(conn)
         TableCreate.create_sponsored_gas_table(conn)
+        TableCreate.create_pending_user_txs_table(conn)

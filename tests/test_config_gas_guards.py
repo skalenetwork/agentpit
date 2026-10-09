@@ -34,3 +34,19 @@ def test_env_overrides(monkeypatch):
     s = _settings(monkeypatch, AGENTPIT_MIN_ORDER_NOTIONAL_MICRO="0", AGENTPIT_ADMIN_GAS_STOP_GAS="7")
     assert s.min_order_notional_micro == 0
     assert s.admin_gas_stop_gas == 7
+
+
+def test_the_signup_gas_grant_is_gone_and_an_old_env_file_still_loads(
+    tmp_path, monkeypatch
+):
+    """Users get exact per-transaction top-ups now, so the grant setting was
+    deleted. A deployment's env file written before that still names it, and
+    that file must load rather than fail on an unknown key."""
+    monkeypatch.delenv("AGENTPIT_SIGNUP_GAS_GRANT_WEI", raising=False)
+    env = tmp_path / ".env"
+    env.write_text("AGENTPIT_SIGNUP_GAS_GRANT_WEI=20000000000000000\n")
+
+    s = Settings(_env_file=str(env))
+
+    assert "signup_gas_grant_wei" not in Settings.model_fields
+    assert not hasattr(s, "signup_gas_grant_wei")

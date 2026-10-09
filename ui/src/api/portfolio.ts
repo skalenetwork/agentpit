@@ -88,10 +88,12 @@ export interface CreditsBalance {
   credits_wei: string;
 }
 
-/** The wallet's native balance — what pays for a transaction, as a wei
- *  string. It stays a string end to end so the caller's own formatter
- *  (`formatCredits`) does the arithmetic; wei overflows `Number`'s safe
- *  integer range for any account that has been topped up a few times. */
+/** The wallet's native balance, as a wei string: the gas buffer the server
+ *  tops up to exactly what each transaction needs. Nothing shows it today
+ *  (the Credits tile and line are hidden). It stays a string end to end so
+ *  the caller's own formatter (`formatCredits`) does the arithmetic; wei
+ *  overflows `Number`'s safe integer range for any account that has been
+ *  topped up a few times. */
 export async function getCredits(): Promise<string> {
   const r = await apiFetch<CreditsBalance>("/me/credits");
   return r.credits_wei;

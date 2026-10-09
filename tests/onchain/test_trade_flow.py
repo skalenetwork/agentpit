@@ -8,7 +8,7 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-from tests.onchain._helpers import ADMIN_HDR, hdr, register
+from tests.onchain._helpers import ADMIN_HDR, fund_direct_sends, hdr, register
 
 
 def _hdr(token: str) -> dict[str, str]:
@@ -87,6 +87,7 @@ def test_match_settles_on_chain():
     with db.read() as conn:
         user_b = TableRead.get_user_by_email(conn, b_email)
     cond = bytes.fromhex(market["condition_id"]["value"][2:])
+    fund_direct_sends(client, user_b.eth_address)
     admin.user_split_position(user_b.eth_key, cond, 200_000_000)
 
     a_pre_usd = admin.usd_balance(ea)
@@ -185,6 +186,9 @@ def test_reverted_settlement_fails_the_order(monkeypatch):
         user_a = TableRead.get_user_by_email(conn, a_email)
         user_b = TableRead.get_user_by_email(conn, b_email)
     assert user_a is not None and user_b is not None
+    # B splits and A revokes its allowance below, both signed as the user.
+    fund_direct_sends(client, user_a.eth_address)
+    fund_direct_sends(client, user_b.eth_address)
     cond = bytes.fromhex(market["condition_id"]["value"][2:])
     admin.user_split_position(user_b.eth_key, cond, 200_000_000)
 

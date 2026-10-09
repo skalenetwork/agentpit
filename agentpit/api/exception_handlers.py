@@ -15,12 +15,26 @@ from agentpit.domain.exceptions import (
     BusinessRuleError,
     FeatureDisabledError,
     GasBudgetExceededError,
+    GasPriceMovedError,
+    GasTopUpTimeoutError,
     InsufficientGasError,
     InvalidCredentialsError,
     NotFoundError,
+    TransactionInProgressError,
+    TransactionPendingError,
 )
 
 log = logging.getLogger(__name__)
+
+
+def _warn_503(what: str):
+    """A handler that logs `what` at WARNING and answers 503 with the detail."""
+
+    async def handler(_: Request, exc: Exception) -> JSONResponse:
+        log.warning("%s: %s", what, exc)
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    return handler
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -67,11 +81,30 @@ def register_exception_handlers(app: FastAPI) -> None:
             headers={"Retry-After": str(exc.retry_after)},
         )
 
+    @app.exception_handler(TransactionInProgressError)
+    async def _transaction_in_progress(
+        _: Request, exc: TransactionInProgressError
+    ) -> JSONResponse:
+        """The per-account transaction lock is held: a second claim, split or
+        merge while one is still being sent. The lock working, so INFO."""
+        log.info("per-account transaction lock refused a request: %s", exc)
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
     @app.exception_handler(AdminGasPausedError)
     async def _admin_gas_paused(_: Request, exc: AdminGasPausedError) -> JSONResponse:
         """Our wallet is low: an outage on our side, so 503 and WARNING."""
         log.warning("admin gas breaker refused a request: %s", exc)
         return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    # A user transaction refused or left unconfirmed by congestion on our side:
+    # nothing the caller did is wrong, so 503 and WARNING, like the breaker.
+    # The pending one's detail tells the caller not to repeat it.
+    for exc_type, what in (
+        (GasTopUpTimeoutError, "gas top-up timed out, a request was refused"),
+        (GasPriceMovedError, "the gas price moved twice, a request was refused"),
+        (TransactionPendingError, "a user transaction's outcome is unknown"),
+    ):
+        app.add_exception_handler(exc_type, _warn_503(what))
 
     # Registered ahead of the generic BusinessRuleError handler below it, but
     # order doesn't actually matter to Starlette's lookup -- it walks the

@@ -10,6 +10,7 @@ from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import AdminGasPausedError
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.deployment import is_disposable_chain
+from agentpit.onchain.user_wallet import GAS_BUFFER_PCT
 
 log = logging.getLogger(__name__)
 
@@ -77,13 +78,35 @@ class HouseAccountProvisioner:
         assert user is not None
         return user
 
+    def _approvals_need_wei(self, address: str) -> int:
+        """What the house's three approvals cost: each one's estimate plus the
+        pad `send_user_tx` adds, at the current price they go out with."""
+        gas = sum(
+            self._onchain.estimate_user_gas(fn, address) * (100 + GAS_BUFFER_PCT) // 100
+            for fn in self._onchain.approval_calls()
+        )
+        return gas * self._onchain.gas_price()
+
     def _fund(self, acct) -> None:
+        """Mint the collateral, fund the gas, send the approvals.
+
+        Funded to the floor, not the target: `top_up_gas` lifts it within one
+        check interval, and the target (100 native by default) on every
+        provisioning of the persistent local anvil, every test run included,
+        would drain the admin. Never less than the approvals need, though, or
+        a floor of 0 or a tiny one would fail startup.
+        """
         timeout = self._settings.tx_confirmations_timeout_s
         self._onchain.mint_to(
             acct.address, self._settings.house_mint_raw, timeout=timeout
         )
         self._onchain.fund_gas(
-            acct.address, self._settings.signup_gas_grant_wei, timeout=timeout
+            acct.address,
+            max(
+                self._settings.liquidity_gas_floor_wei,
+                self._approvals_need_wei(acct.address),
+            ),
+            timeout=timeout,
         )
         self._onchain.grant_user_approvals(acct, timeout=timeout)
 

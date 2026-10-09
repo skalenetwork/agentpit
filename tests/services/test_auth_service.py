@@ -36,17 +36,23 @@ class _UntouchedChain:
     nothing here should ever run -- and if the guard order changes, these
     tests say so instead of quietly taking a second of anvil round-trips."""
 
+    def transaction_count(self, *_args, **_kwargs):
+        raise AssertionError("login walked the chain for an un-onboarded row")
+
     def native_balance(self, *_args, **_kwargs):
         raise AssertionError("login walked the chain for an un-onboarded row")
 
     def fund_gas(self, *_args, **_kwargs):
-        raise AssertionError("login funded gas")
+        raise AssertionError("login topped up gas")
 
     def faucet_drip(self, *_args, **_kwargs):
         raise AssertionError("login dripped collateral")
 
-    def grant_user_approvals(self, *_args, **_kwargs):
-        raise AssertionError("login granted approvals")
+    def approval_calls(self, *_args, **_kwargs):
+        raise AssertionError("login built the approvals")
+
+    def send_as_user(self, *_args, **_kwargs):
+        raise AssertionError("login signed as the user")
 
 
 def _service() -> tuple[AuthService, DbSession]:

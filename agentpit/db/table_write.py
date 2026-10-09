@@ -97,8 +97,8 @@ class TableWrite:
         """Claim the right to onboard this row, atomically.
 
         The predicate and the stamp are one statement -- the idiom of
-        `claim_topup` -- so two parallel first sign-ins cannot
-        both find the row unclaimed and both send the gas grant. A claim older
+        `claim_topup` -- so two parallel first sign-ins cannot both find the
+        row unclaimed and both drip collateral and top the wallet up. A claim older
         than `stale_before` belongs to a process that died mid-onboarding and
         may be taken over. False when the row is onboarded, claimed, or gone.
         """
@@ -992,6 +992,61 @@ class TableWrite:
             """,
             (api_key, transaction_type, market_id, details_json),
         )
+
+    @staticmethod
+    def insert_pending_user_tx(
+        db: psycopg.Connection,
+        tx_hash: str,
+        api_key: str,
+        transaction_type: str,
+        market_id: int | None,
+        details: dict | None,
+        *,
+        created_at: int,
+    ) -> None:
+        """Record a signed user transaction before it is broadcast: the
+        `transactions` row it will become, keyed by its hash. See
+        `TableCreate.create_pending_user_txs_table`."""
+        db.execute(
+            "INSERT INTO pending_user_txs "
+            "(TX_HASH, API_KEY, TRANSACTION_TYPE, MARKET_ID, DETAILS, CREATED_AT) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (
+                tx_hash,
+                api_key,
+                transaction_type,
+                market_id,
+                json.dumps(details) if details else None,
+                created_at,
+            ),
+        )
+
+    @staticmethod
+    def delete_pending_user_tx(db: psycopg.Connection, tx_hash: str) -> bool:
+        """Forget a pending transaction that will never mine (refused, or long
+        lost) or mined and reverted. False when there was no such row."""
+        cur = db.execute("DELETE FROM pending_user_txs WHERE TX_HASH = %s", (tx_hash,))
+        return cur.rowcount > 0
+
+    @staticmethod
+    def confirm_pending_user_tx(
+        db: psycopg.Connection, tx_hash: str, details: dict | None
+    ) -> bool:
+        """The pending transaction mined: delete its row and write the
+        `transactions` row it stood for, with `details` (a claim's now carry
+        its amount). One statement, so the request that sent it and the
+        reconciler can both try, and exactly one writes the row: the second
+        finds the pending row gone, writes nothing, and gets False."""
+        cur = db.execute(
+            "WITH settled AS ("
+            "  DELETE FROM pending_user_txs WHERE TX_HASH = %s"
+            "  RETURNING API_KEY, TRANSACTION_TYPE, MARKET_ID"
+            ") "
+            "INSERT INTO transactions (API_KEY, TRANSACTION_TYPE, MARKET_ID, DETAILS) "
+            "SELECT API_KEY, TRANSACTION_TYPE, MARKET_ID, %s FROM settled",
+            (tx_hash, json.dumps(details) if details else None),
+        )
+        return cur.rowcount > 0
 
     @staticmethod
     def activate_market(db: psycopg.Connection, market_id: int) -> Market:

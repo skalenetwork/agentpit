@@ -222,9 +222,11 @@ def top_up_balance(user: CurrentUserDep, service: BalanceServiceDep) -> TopUpWir
 
 @router.get("/me/credits", response_model=CreditsWire)
 def get_me_credits(user: CurrentUserDep, admin: OnchainAdminDep) -> CreditsWire:
-    """The wallet's native balance -- what pays for a transaction.
+    """The wallet's native balance: the gas buffer `UserGasSponsor` tops up
+    to exactly what each transaction needs, so at most one transaction's gas.
 
-    A string because wei overflows JavaScript's safe integer range, and the
-    front end formats it rather than doing arithmetic on it.
+    The UI no longer shows it (its Credits tile and line are hidden); it stays
+    for API callers. A string because wei overflows JavaScript's safe integer
+    range, and the front end formats it rather than doing arithmetic on it.
     """
     return CreditsWire(credits_wei=str(admin.native_balance(user.eth_address)))

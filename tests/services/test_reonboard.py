@@ -1,32 +1,27 @@
-"""`_maybe_reonboard` and the accounts whose key is already out.
+"""`_maybe_reonboard`: what reads as a wiped chain, and who never gets the repair.
 
-Wallets are custodial and nobody can export a key any more, but some accounts
-did before the routes were removed, and KEY_EXPORTED_AT still marks them. For
-those a zero balance can mean the holder emptied the wallet on purpose, so the
-chain-wipe repair must never re-fund them.
-
-The pair below is what makes the lock test mean something: the same wiped,
-onboarded row IS re-funded when nothing was exported, so the second test fails
-if the lock goes away -- not just if the chain is unreachable.
+The signal is the wallet's nonce: onboarding sends three approvals from it, so
+an onboarded account the chain never saw send is one the chain forgot (the
+native balance stopped being a signal once exact top-ups made a near-empty
+wallet normal). Accounts that exported their key (KEY_EXPORTED_AT) never get
+the repair. Each refusal is paired with the repair on the same wiped chain
+without its gate, so it fails if the gate goes away.
 """
 
-from agentpit.auth.jwt import JwtCoder
+import logging
+import threading
+from contextlib import nullcontext
+
+import pytest
+
 from agentpit.config import Settings
-from agentpit.db.session import DbSession
-from agentpit.db.table_read import TableRead
-from agentpit.db.table_write import TableWrite
-from agentpit.services.auth_service import AuthService
+from tests.onboarding_fakes import SKALE_BASE_TESTNET, OnboardingChain, onboarding
 
 
-class _WipedChain:
-    """Every wallet reads empty, as after a chain reset; records what ran."""
+class _WipedChain(OnboardingChain):
+    """Every wallet reads empty: a chain reset, or with a nonce above 0 an ordinary day of exact top-ups."""
 
     deployment_id = "test-deployment"
-    # anvil: the repair only ever runs on a chain that can be wiped.
-    chain_id = 31337
-
-    def __init__(self):
-        self.calls: list[str] = []
 
     def native_balance(self, *_args, **_kwargs):
         self.calls.append("native_balance")
@@ -36,45 +31,74 @@ class _WipedChain:
         self.calls.append("usd_balance")
         return 0
 
-    def fund_gas(self, *_args, **_kwargs):
-        self.calls.append("fund_gas")
 
-    def faucet_drip(self, *_args, **_kwargs):
-        self.calls.append("faucet_drip")
+def _reonboard(*, exported_at=None, nonce=0, hold_lock=False, chain_id=31337) -> _WipedChain:
+    """Log in an onboarded account; `SIMULATED_CHAIN` is on whatever the chain."""
+    chain = _WipedChain(nonce=nonce, chain_id=chain_id)
+    o = onboarding(chain, Settings(AGENTPIT_SIMULATED_CHAIN=True))
+    user = o.mark_onboarded(exported_at)
+    with o.hold_lock() if hold_lock else nullcontext():
+        o.service._maybe_reonboard(user)
+    return chain
 
-    def grant_user_approvals(self, *_args, **_kwargs):
-        self.calls.append("grant_user_approvals")
+
+def test_a_wiped_wallet_only_we_hold_is_reonboarded():
+    chain = _reonboard()
+    assert len(chain.funded) == 1 and chain.calls.count("send_as_user") == 3
 
 
-def _reonboard(email: str, *, exported_at: int | None) -> list[str]:
-    settings = Settings().model_copy(update={"simulated_chain": True})
-    db = DbSession(settings.database_url)
-    chain = _WipedChain()
-    service = AuthService(db, JwtCoder(settings), chain, settings)
+@pytest.mark.parametrize(
+    ("kwargs", "calls"),
+    [
+        # The nonce is read and nothing else: no drip, no top-up, no approvals.
+        pytest.param({"nonce": 3}, ["transaction_count"], id="has-sent-however-empty"),
+        pytest.param({"exported_at": 1_700_000_000}, [], id="key-exported"),
+        pytest.param({"hold_lock": True}, ["transaction_count"], id="transaction-in-progress"),
+        pytest.param({"chain_id": SKALE_BASE_TESTNET}, [], id="durable-chain-even-if-simulated"),
+    ],
+)
+def test_the_repair_is_skipped(kwargs, calls, caplog):
+    with caplog.at_level(logging.INFO, logger="agentpit.services.auth_service"):
+        assert _reonboard(**kwargs).calls == calls
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]  # skipped, no traceback
+
+
+class _StaleNonce(_WipedChain):
+    """The first nonce read returns 0 and then waits: its caller holds a stale
+    zero while another sign-in re-onboards the same wallet (the nonce goes to 3
+    as the approvals mine)."""
+
+    def __init__(self) -> None:
+        super().__init__(nonce=0)
+        self.holding = threading.Event()  # the first reader has its zero
+        self.release = threading.Event()
+
+    def transaction_count(self, address):
+        value = super().transaction_count(address)
+        if not self.holding.is_set():  # the first read only: the other sign-in starts once it is set
+            self.holding.set()
+            assert self.release.wait(10), "the second sign-in never finished"
+        return value
+
+
+def test_a_late_reonboard_does_not_drip_or_approve_a_second_time():
+    # Two sign-ins both read a zero nonce and the slower one takes the lock only
+    # after the faster has finished: its zero is stale, and repeating the drip
+    # and the approvals would hand the account a second grant.
+    chain = _StaleNonce()
+    o = onboarding(chain, Settings(AGENTPIT_SIMULATED_CHAIN=True))
+    user = o.mark_onboarded()
+
+    slow = threading.Thread(target=o.service._maybe_reonboard, args=(user,))
+    slow.start()
     try:
-        with db.write() as conn:
-            user_id, _acct, _key = TableWrite.create_user(
-                conn, email=email, password_hash=None, handle=None
-            )
-            TableWrite.mark_user_onboarded(conn, user_id)
-            if exported_at is not None:
-                # Nothing writes this column any more; a pre-removal export
-                # is the only way a row has it.
-                conn.execute(
-                    "UPDATE users SET KEY_EXPORTED_AT = %s WHERE USER_ID = %s",
-                    (exported_at, user_id),
-                )
-        with db.read() as conn:
-            user = TableRead.get_user_by_userid(conn, user_id)
-        service._maybe_reonboard(user)
+        assert chain.holding.wait(10), "the first sign-in never read the nonce"
+        o.service._maybe_reonboard(user)  # the fast one runs to completion
+        assert chain._nonce == 3
     finally:
-        db.close()
-    return chain.calls
+        chain.release.set()
+        slow.join(10)
+    assert not slow.is_alive()
 
-
-def test_a_wiped_wallet_only_we_hold_is_refunded():
-    assert "fund_gas" in _reonboard("custodial@example.com", exported_at=None)
-
-
-def test_a_wallet_whose_key_was_exported_is_never_refunded():
-    assert _reonboard("exported@example.com", exported_at=1_700_000_000) == []
+    assert chain.calls.count("faucet_drip") == 1
+    assert chain.calls.count("send_as_user") == 3

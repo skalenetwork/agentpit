@@ -24,7 +24,7 @@ The core order endpoints exist today against `OrderService` (`POST /orders`, `DE
 
 ## 2. Market State Guard on `split_position` / `merge_positions`
 
-**Done, with one deliberate asymmetry.** `split_position` runs only on `ACTIVE` markets: in any other state it is a `400` `split only runs on ACTIVE markets` (after resolution a split would mint a pair whose winner is redeemable, a free way to manufacture claims). `merge_positions` runs in any state on purpose: it is user-paid (no admin gas) and is the only API way back from a YES+NO pair on a `CANCELLED` market, so requiring `ACTIVE` there would strand collateral. The guard is `PositionService._require_active_market` (`agentpit/services/position_service.py`).
+**Done, with one deliberate asymmetry.** `split_position` runs only on `ACTIVE` markets: in any other state it is a `400` `split only runs on ACTIVE markets` (after resolution a split would mint a pair whose winner is redeemable, a free way to manufacture claims). `merge_positions` runs in any state on purpose: it is the only API way back from a YES+NO pair on a `CANCELLED` market, so requiring `ACTIVE` there would strand collateral. Its gas is sponsored like split's and counts against the same daily per-account budget. The guard is `PositionService._require_active_market` (`agentpit/services/position_service.py`).
 
 ---
 

@@ -19,17 +19,19 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
-    AdminGasPausedError,
+    SPONSORED_GAS_REFUSALS,
     BusinessRuleError,
     FeatureDisabledError,
     InvalidCredentialsError,
     OnboardingError,
+    TransactionInProgressError,
     UserAlreadyExistsError,
     UserNotFoundError,
 )
 from agentpit.domain.handles import pick_handle
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.deployment import is_disposable_chain
+from agentpit.services.gas_sponsor import UserGasSponsor
 
 log = logging.getLogger(__name__)
 
@@ -204,37 +206,49 @@ class AuthService:
 
     # --- helpers --------------------------------------------------------
 
-    def _run_onboarding(self, user_account) -> None:
+    def _run_onboarding(self, user: User, *, only_if_unsent: bool = False) -> bool:
+        """Drip the account's collateral, then send its three exchange approvals
+        through `UserGasSponsor`, which tops the wallet up to exactly their gas
+        (even with AGENTPIT_SPONSOR_USER_GAS off: no account could be created
+        otherwise). Takes the row: the sponsor books the gas to its API key.
+
+        All of it runs under the user's transaction lock, so a held lock
+        refuses before the admin sends anything. The drip is the one step that
+        must not repeat (the faucet mints on every call), so it is skipped once
+        the wallet holds the grant: a retry after a failed top-up or approval
+        is not paid twice. The approvals and the top-up repeat harmlessly.
+
+        With `only_if_unsent`, nothing is done and False is returned when the
+        wallet has sent a transaction by now: `_maybe_reonboard` reads the
+        nonce before taking the lock. True: onboarding ran.
+        """
         timeout = self._settings.tx_confirmations_timeout_s
-        self._onchain.fund_gas(
-            user_account.address,
-            self._settings.signup_gas_grant_wei,
-            timeout=timeout,
-        )
-        self._onchain.faucet_drip(user_account.address, timeout=timeout)
-        self._onchain.grant_user_approvals(user_account, timeout=timeout)
+        sponsor = UserGasSponsor(self._db, self._onchain, self._settings)
+        with sponsor.locked(user):
+            if only_if_unsent and self._onchain.transaction_count(user.eth_address):
+                return False
+            if self._onchain.usd_balance(user.eth_address) < self._onchain.signup_grant_raw:
+                self._onchain.faucet_drip(user.eth_address, timeout=timeout)
+            sponsor.send(user, self._onchain.approval_calls(), "onboarding")
+        return True
 
     def _maybe_reonboard(self, user: User) -> None:
-        """Re-run onboarding for an already-onboarded user with zero native balance.
+        """Re-run onboarding for an onboarded user the chain has never seen send.
 
         Anvil's chain state is wiped on every restart while the DB persists, so a
-        user can end up logged in but unfunded. Native balance is the chain-wipe
-        signal: on a chain that gets reset it never drops to zero through normal
-        use (gas spent per tx is tiny relative to signup_gas_grant_wei). Failures
-        here are logged but never block login — the user can still authenticate
-        and see balance errors at trade time.
+        user can end up logged in with no collateral and no approvals. The
+        wallet's nonce is the chain-wipe signal: onboarding sends three
+        approvals, so zero means the chain forgot the account. (Not the native
+        balance: exact top-ups leave every healthy wallet near zero.) Failures
+        here are logged but never block login.
 
-        That reading only holds while the chain is disposable. On a durable chain
-        a zero balance means the account spent its gas, and re-granting on login
-        would be a treasury faucet anyone could drain on repeat, so
-        `simulated_chain=False` turns this off and the signup grant becomes once
-        per account. (The house account does not rely on this path at all — it is
-        kept above a gas floor by the mirror's top-up loop.)
+        A repair drips collateral, so it runs only where the chain is meant to
+        be thrown away: `simulated_chain` on and a disposable chain id. (The
+        house account is kept above a gas floor by the mirror's top-up loop.)
 
         A second lock sits beside the first: an account that exported its
         private key while export still existed never gets this repair, because
-        its key is out in the wild and a zero balance can also mean the holder
-        emptied the wallet on purpose. Wallets are custodial now, so no account
+        its key is out in the wild. Wallets are custodial now, so no account
         can newly enter that state, but the ones already in it stay there.
         """
         if not self._settings.simulated_chain:
@@ -242,32 +256,44 @@ class AuthService:
         with self._db.read() as conn:
             exported_at, _ = TableRead.get_key_export_state(conn, user.user_id)
         if exported_at is not None:
-            # While only we hold the key the only way to a zero balance is a
-            # chain wipe, which is what this repair is for. A key exported
-            # before export was removed can still empty the wallet
-            # deliberately, and every login would be another free grant.
+            # An exported key signs without us: whatever this wallet shows is
+            # not ours to repair, and every login would be another free drip.
             return
         if self._onchain is None or user.onboarded_at is None:
             return
         # `simulated_chain` is only a claim about the chain; the chain id is the
         # fact. A flag left on after a move to a durable chain would otherwise
-        # turn every zero-balance login into a free gas grant.
+        # re-onboard every account that has not yet sent from its wallet there.
         if not is_disposable_chain(self._onchain.chain_id):
             return
         try:
-            native = self._onchain.native_balance(user.eth_address)
+            sent = self._onchain.transaction_count(user.eth_address)
         except Exception as exc:
-            log.warning("chain balance check failed for %s: %s", user.user_id, exc)
+            log.warning("chain nonce check failed for %s: %s", user.user_id, exc)
             return
-        if native > 0:
+        if sent > 0:
             return
         log.info(
-            "user %s has zero native balance — re-running onboarding "
-            "(chain likely reset)",
+            "user %s has never sent from its wallet on this chain — re-running "
+            "onboarding (chain likely reset)",
             user.user_id,
         )
         try:
-            self._run_onboarding(user.eth_key)
+            # The nonce is read again under the lock: a sign-in that got the
+            # lock first may have done the repair already.
+            if not self._run_onboarding(user, only_if_unsent=True):
+                log.info(
+                    "re-onboarding %s skipped: its wallet has sent since the check",
+                    user.user_id,
+                )
+                return
+        except TransactionInProgressError:
+            # Not a failure worth a traceback: the next sign-in looks again.
+            log.info(
+                "re-onboarding %s skipped: a transaction is in progress",
+                user.user_id,
+            )
+            return
         except Exception:
             log.exception("re-onboarding failed for %s", user.user_id)
             return
@@ -305,10 +331,11 @@ class AuthService:
 
         Both signup paths call this and neither does the work inline. Two copies
         would drift -- one gains a step the other does not -- and the difference
-        surfaces months later as an account that cannot trade.
+        surfaces months later as an account that cannot trade. Agents come
+        through here too, as `AgentAccounts`' `Onboard` callable.
 
         The row is claimed first (`claim_onboarding`), so two parallel calls
-        for one account send the gas grant once and the loser is told to retry.
+        for one account drip and top up once and the loser is told to retry.
         """
         now = int(time.time())
         with self._db.write() as conn:
@@ -325,17 +352,29 @@ class AuthService:
             raise OnboardingError(
                 "this account is already being set up — try again in a moment"
             )
+        # The row, not just `acct`: the sponsor books the gas to its API key.
+        with self._db.read() as conn:
+            user = TableRead.get_user_by_userid(conn, user_id)
+        if user is None:
+            raise UserNotFoundError()
         # On-chain onboarding happens *outside* the DB transaction so we don't
         # hold the write lock for ~1s of network round-trips.
         try:
-            self._run_onboarding(acct)
-        except AdminGasPausedError:
-            # Not wrapped: a 503 "try again later", not an OnboardingError (400,
-            # or MCP's "still being set up") and not a traceback per sign-in.
-            # The claim goes back all the same: the retry the 503 asks for must
-            # not find the row held.
+            self._run_onboarding(user)
+        except SPONSORED_GAS_REFUSALS:
+            # Not wrapped: a 503 "try again later" or a 402, not an
+            # OnboardingError (400, or MCP's "still being set up") and not a
+            # traceback per sign-in. The claim goes back so the retry finds the
+            # row free; it does not drip again (`_run_onboarding`).
             self._release_onboarding_claim(user_id)
             raise
+        except TransactionInProgressError as exc:
+            # In practice a request whose claim went stale while it was still
+            # sending: a lost claim by another name, so the same answer.
+            self._release_onboarding_claim(user_id)
+            raise OnboardingError(
+                "this account is already being set up — try again in a moment"
+            ) from exc
         except Exception as exc:
             log.exception("on-chain onboarding failed for user %s", user_id)
             self._release_onboarding_claim(user_id)

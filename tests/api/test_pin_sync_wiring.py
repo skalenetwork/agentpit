@@ -1,5 +1,7 @@
 from contextlib import contextmanager
 
+import pytest
+
 import agentpit.api.app as app_mod
 
 
@@ -74,15 +76,63 @@ def test_run_pin_resolve_returns_only_resolved_and_redeemed(monkeypatch):
         seen["market_ids"] = market_ids
         return 1
 
+    def fake_redeem(db, admin, settings):
+        seen["redeem_settings"] = settings
+        return 2
+
+    reconciled = []
     monkeypatch.setattr(app_mod, "ended_unresolved_window_ids", fake_ids)
     monkeypatch.setattr(app_mod, "mirror_polymarket_resolutions", fake_mirror)
-    monkeypatch.setattr(app_mod, "auto_redeem_resolved_markets", lambda db, admin: 2)
+    monkeypatch.setattr(app_mod, "auto_redeem_resolved_markets", fake_redeem)
+    monkeypatch.setattr(
+        app_mod, "reconcile_pending_user_txs", lambda db, admin: reconciled.append(1)
+    )
 
+    settings = _FakeResolveSettings()
     result = app_mod._run_pin_resolve(
-        _FakeDb(), admin="ADMIN", settings=_FakeResolveSettings()  # type: ignore[arg-type]
+        _FakeDb(), admin="ADMIN", settings=settings  # type: ignore[arg-type]
     )
 
     assert result == (1, 2)
+    assert seen["redeem_settings"] is settings
+    assert reconciled == []  # the auto-redeem pass reconciles first itself
     # Scoped to the just-ended windows, not a whole-table scan.
     assert seen["market_ids"] == {7}
     assert seen["ids_conn"] == "CONN"
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["reconciles", "reconcile-fails"])
+def test_a_disabled_redeem_pin_resolve_reconciles_itself(monkeypatch, caplog, fails):
+    """The pin loop is the fast one: a claim that mined unseen is settled within a
+    pass even with the global switch off."""
+    monkeypatch.setattr(app_mod, "ended_unresolved_window_ids", lambda *a: [7])
+    monkeypatch.setattr(
+        app_mod, "mirror_polymarket_resolutions", lambda conn, admin, **kw: 1
+    )
+    redeem_calls, seen = [], []
+    monkeypatch.setattr(
+        app_mod,
+        "auto_redeem_resolved_markets",
+        lambda db, admin, settings: redeem_calls.append(1) or 5,
+    )
+
+    def reconcile(db, admin):
+        seen.append((db.__class__.__name__, admin, app_mod._redeem_lock.locked()))
+        if fails:
+            raise RuntimeError("database gone")
+        return 0
+
+    monkeypatch.setattr(app_mod, "reconcile_pending_user_txs", reconcile)
+
+    settings = _FakeResolveSettings()
+    settings.auto_redeem_enabled = False
+    result = app_mod._run_pin_resolve(
+        _FakeDb(), admin="ADMIN", settings=settings  # type: ignore[arg-type]
+    )
+
+    assert result == (1, 0)
+    assert redeem_calls == []
+    assert seen == [("_FakeDb", "ADMIN", True)]
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == int(fails) and all(r.exc_info is not None for r in errors)
+    assert not app_mod._redeem_lock.locked()

@@ -25,6 +25,7 @@ from agentpit.onchain.chain_rpc import (
     Web3ChainRpc,
     classify_send_error,
     failed_before_connecting,
+    is_balance_low,
 )
 from agentpit.onchain.tx_sender import (
     _OWN_RECEIPT_LOOKUPS,
@@ -117,6 +118,46 @@ def test_classify_skaled_queue_full_and_balance_low():
         )
         is SendError.BALANCE_LOW
     )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # skaled (libweb3jsonrpc/Eth.cpp)
+        "Account balance is too low (balance < value + gas * gas price).",
+        # anvil, as web3 7 renders its -32003 answer (read off the node
+        # 2026-10-08; tests/onchain/test_gas_price.py checks it live)
+        "{'code': -32003, 'message': 'Insufficient funds for gas * price + value'}",
+        # geth
+        "insufficient funds for gas * price + value: have 0 want 55784400000000",
+    ],
+)
+def test_is_balance_low_reads_skaled_and_anvil(message):
+    assert is_balance_low(FakeRpcError(message))
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        FakeRpcError("Transaction gas price lower than current eth_gasPrice."),
+        FakeRpcError("Invalid transaction nonce."),
+        FakeRpcError("execution reverted"),
+        requests.ConnectionError(),
+    ],
+)
+def test_is_balance_low_is_false_for_every_other_answer(exc):
+    assert not is_balance_low(exc)
+
+
+def test_anvil_wording_stays_out_of_send_error_balance_low():
+    """A separate predicate on purpose: `AdminTxSender` resends a batch item
+    refused BALANCE_LOW on a later nonce, and folding anvil's wording into
+    that kind would change the admin sender's behaviour on anvil."""
+    anvil = FakeRpcError(
+        "{'code': -32003, 'message': 'Insufficient funds for gas * price + value'}"
+    )
+    assert is_balance_low(anvil)
+    assert classify_send_error(anvil) is SendError.OTHER
 
 
 @pytest.mark.parametrize(

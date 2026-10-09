@@ -104,6 +104,21 @@ def classify_send_error(exc: BaseException) -> SendError:
     return SendError.OTHER
 
 
+# What a node answers when the sender cannot pay `value + gasLimit x
+# maxFeePerGas`: skaled's wording (the one `SendError.BALANCE_LOW` reads), then
+# anvil's and geth's.
+_BALANCE_LOW = ("account balance is too low", "insufficient funds for gas")
+
+
+def is_balance_low(exc: BaseException) -> bool:
+    """Did the node refuse a send because the sender is short of gas money?
+    What `UserGasSponsor` re-tops-up on. Not anvil's wording added to
+    `SendError.BALANCE_LOW`, which would change how `AdminTxSender` resends a
+    batch item on anvil."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _BALANCE_LOW)
+
+
 def failed_before_connecting(exc: BaseException) -> bool:
     """Did this failed request provably never reach the node?
 
@@ -134,11 +149,51 @@ def failed_before_connecting(exc: BaseException) -> bool:
     return isinstance(wrapped, ConnectTimeoutError)
 
 
+# What `eth_sendRawTransaction` can answer to say the node did not take the
+# transaction. DUPLICATE is not one of them: the node already holds that very
+# transaction.
+_REFUSED_AT_IMPORT = frozenset(
+    {
+        SendError.FEE_LOW,
+        SendError.BALANCE_LOW,
+        SendError.NONCE_TAKEN,
+        SendError.NONCE_INVALID,
+        SendError.QUEUE_FULL,
+    }
+)
+
+
+def cannot_mine(exc: BaseException) -> bool:
+    """Does this failed send prove that its transaction can never mine? Only
+    a refusal at import or a request that never reached the node does.
+    Anything else (no answer, a duplicate, a receipt-poll error) may have left
+    it in the node. How `UserGasSponsor` and `PositionService` decide whether
+    a user transaction may still be in flight.
+    """
+    return (
+        classify_send_error(exc) in _REFUSED_AT_IMPORT
+        or is_balance_low(exc)
+        or failed_before_connecting(exc)
+    )
+
+
 class BatchUnanswered(ConnectionError):
     """A batch of sends whose answer cannot be placed item by item: cut
     short, unreadable, or not pairing one to one with the requests. The node
     may hold any of them, so it counts as no answer at all (TRANSPORT): the
     identical batch goes out once more."""
+
+
+class ReceiptUnreachable(ConnectionError):
+    """The node took a transaction, then could not be reached for its receipt.
+
+    Raised by `send_user_tx` so a poll's connect error does not read as a
+    broadcast that never reached the node (`failed_before_connecting`): the
+    transaction may well mine. A builtin `ConnectionError`, so
+    `classify_send_error` calls it TRANSPORT. The poll's error is its
+    `__cause__`. Keep it off `requests.ConnectionError`: for those,
+    `failed_before_connecting` follows `__cause__`, and the pending row of a
+    transaction that can still mine would be dropped."""
 
 
 class BatchRefused(Exception):

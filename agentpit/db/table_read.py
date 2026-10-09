@@ -49,6 +49,18 @@ class DailyClose(BaseModel):
     deposited: int
 
 
+class PendingUserTx(BaseModel):
+    """A `pending_user_txs` row: a signed user transaction whose outcome is not
+    known yet, and the `transactions` row it becomes once it mines."""
+
+    tx_hash: str
+    api_key: str
+    transaction_type: str
+    market_id: int | None
+    details: dict
+    created_at: int
+
+
 def _excluded_lower(excluded: "Iterable[str] | None") -> "list[str]":
     """Normalise an excluded-category list for SQL: lowercased, blanks dropped.
 
@@ -1673,13 +1685,47 @@ class TableRead:
 
     @staticmethod
     def sponsored_gas_used(db: psycopg.Connection, api_key: str, day: int) -> int:
-        """Gas the admin has paid for this account's fills on `day`
-        (unix seconds // 86_400); 0 when it has none."""
+        """Gas the admin has paid for this account on `day` (unix seconds //
+        86_400): its fills, plus the top-ups and transactions `UserGasSponsor`
+        sent for it; 0 when it has none."""
         row = db.execute(
             "SELECT GAS_USED FROM sponsored_gas WHERE API_KEY = %s AND DAY = %s",
             (api_key, day),
         ).fetchone()
         return int(row["GAS_USED"]) if row else 0
+
+    @staticmethod
+    def list_pending_user_txs(db: psycopg.Connection) -> list[PendingUserTx]:
+        """Every pending user transaction, oldest first. The table holds only
+        transactions nobody has heard back about, so it stays tiny."""
+        rows = db.execute(
+            "SELECT TX_HASH, API_KEY, TRANSACTION_TYPE, MARKET_ID, DETAILS, CREATED_AT "
+            "FROM pending_user_txs ORDER BY CREATED_AT, TX_HASH"
+        ).fetchall()
+        return [
+            PendingUserTx(
+                tx_hash=r["TX_HASH"],
+                api_key=r["API_KEY"],
+                transaction_type=r["TRANSACTION_TYPE"],
+                market_id=r["MARKET_ID"],
+                details=json.loads(r["DETAILS"]) if r["DETAILS"] else {},
+                created_at=r["CREATED_AT"],
+            )
+            for r in rows
+        ]
+
+    @staticmethod
+    def has_pending_user_tx(
+        db: psycopg.Connection, api_key: str, market_id: int, *, since: int
+    ) -> bool:
+        """Does this account have a transaction on this market, created at or
+        after `since`, whose outcome is still unknown?"""
+        row = db.execute(
+            "SELECT 1 FROM pending_user_txs "
+            "WHERE API_KEY = %s AND MARKET_ID = %s AND CREATED_AT >= %s LIMIT 1",
+            (api_key, market_id, since),
+        ).fetchone()
+        return row is not None
 
     @staticmethod
     def non_bot_api_keys(db: psycopg.Connection, api_keys: list[str]) -> set[str]:

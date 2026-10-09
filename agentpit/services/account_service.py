@@ -95,9 +95,16 @@ class _LivePricing:
 class AccountService:
     """Public-by-address account reads (positions / value / activity)."""
 
-    def __init__(self, db: DbSession, onchain: OnchainAdmin):
+    def __init__(
+        self, db: DbSession, onchain: OnchainAdmin, *, min_claim_micro: int = 10_000
+    ):
+        # Below this, a won position is shown as won but offers no Claim:
+        # `PositionService.redeem` refuses it with 400 "nothing to claim"
+        # (AGENTPIT_MIN_CLAIM_MICRO, $0.01). The default matches the setting,
+        # for the tests and scripts that build this without a Settings.
         self._db = db
         self._onchain = onchain
+        self._min_claim_micro = min_claim_micro
 
     def list_positions(
         self, eth_address: str, market: list[str] | None = None
@@ -137,12 +144,15 @@ class AccountService:
                     continue
                 tokens = mkt.erc1155_tokens
                 size = bal / 1_000_000
-                redeemable = (
-                    mkt.market_state == MarketState.RESOLVED
-                    and mkt.resolved_outcome == idx
-                )
-                avg_price = self._avg_fill_price(conn, user.api_key, token_id)
                 settled = mkt.market_state == MarketState.RESOLVED
+                won = settled and mkt.resolved_outcome == idx
+                # Claimable only at or above the claim minimum. Below it,
+                # `PositionService.redeem` answers 400 "nothing to claim", so
+                # a Claim button on a dust row could only fail. The price
+                # below comes from `won`, not from this: won dust still shows
+                # at $1, in the closed bucket as a win, never as a loss.
+                redeemable = won and bal >= self._min_claim_micro
+                avg_price = self._avg_fill_price(conn, user.api_key, token_id)
                 # A won outcome pays exactly $1 a share, and a resolved
                 # losing outcome pays exactly $0. Either way the market
                 # has no live book any more, so `_live_pricing` would fall
@@ -150,7 +160,7 @@ class AccountService:
                 # at whatever it last changed hands for -- and nothing is
                 # sellable, for want of anything to sell into.
                 if settled:
-                    cur_price = 1.0 if redeemable else 0.0
+                    cur_price = 1.0 if won else 0.0
                     sellable = Sellable(0.0, 0.0)
                 else:
                     pricing = self._live_pricing(conn, token_id, bal)

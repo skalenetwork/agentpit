@@ -140,11 +140,12 @@ class AuthKitService:
             #
             # `repair=False` for a related reason and a practical one. A
             # refresh runs about every 300 seconds with nobody watching, and
-            # both branches of `_repair` are chain work: onboarding funds gas,
-            # drips collateral and sends three approvals, and `_reonboard`
-            # reads a balance off the chain first. Every request the page has
-            # in flight is queued behind the shared refresh while that runs,
-            # and an onboarding that failed once will most likely fail again.
+            # both branches of `_repair` are chain work: onboarding drips
+            # collateral, tops the wallet up and sends three approvals, and
+            # `_reonboard` reads the wallet's nonce off the chain first. Every
+            # request the page has in flight is queued behind the shared
+            # refresh while that runs, and an onboarding that failed once will
+            # most likely fail again.
             # The repair is not lost -- the next sign_in performs it, with a
             # person at the screen who is already paying that second.
             user=self._resolve_account(session, create=False, repair=False),

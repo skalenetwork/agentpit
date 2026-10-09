@@ -75,13 +75,16 @@ from agentpit.services.agent_desk import AgentDesk
 from agentpit.services.auth_service import AuthService
 from agentpit.services.event_service import EventService
 from agentpit.services.leaderboard_service import LeaderboardService, drain, touch_holders
+from agentpit.services.pending_user_txs import reconcile_pending_user_txs
 
 log = logging.getLogger(__name__)
 
 # The full resolution loop and the fast pin-resolve loop both run auto-redeem
 # off-thread; serialize them so they can't redeem the same position concurrently
 # (a race that double-logged the payout — phantom collateral from the apUSD
-# delta — even though on-chain only one redeem actually transferred).
+# delta — even though on-chain only one redeem actually transferred). It also
+# keeps polymarket_sync's claim backoff to one thread. A pass holds it for at
+# most AGENTPIT_AUTO_REDEEM_MAX_PER_PASS claims, about two blocks each.
 _redeem_lock = threading.Lock()
 _LEADERBOARD_TICK_SECONDS = 2
 
@@ -151,11 +154,26 @@ def _run_resolution_cycle(
             scan_after = slice_[-1].market_id
         else:
             scan_after = 0
-    redeemed = 0
-    if settings.auto_redeem_enabled:
-        with _redeem_lock:
-            redeemed = auto_redeem_resolved_markets(db, admin)
-    return resolved, redeemed, scan_after
+    return resolved, _run_redeem_pass(db, admin, settings), scan_after
+
+
+def _run_redeem_pass(db: DbSession, admin: OnchainAdmin, settings: Settings) -> int:
+    """What both resolution loops do after resolving: the auto-redeem pass
+    (which settles pending user transactions first), or with the global switch
+    off just that settling, so nothing sits pending for good. A reconcile
+    failure is logged and never breaks the loop. Returns the redemptions made.
+    """
+    with _redeem_lock:
+        if settings.auto_redeem_enabled:
+            return auto_redeem_resolved_markets(db, admin, settings)
+        try:
+            reconcile_pending_user_txs(db, admin)
+        except Exception:
+            log.exception(
+                "pending user transactions could not be settled; tried again "
+                "next pass"
+            )
+        return 0
 
 
 async def _resolution_mirror_loop(
@@ -341,11 +359,7 @@ def _run_pin_resolve(
             if ids
             else 0
         )
-    redeemed = 0
-    if settings.auto_redeem_enabled:
-        with _redeem_lock:
-            redeemed = auto_redeem_resolved_markets(db, admin)
-    return resolved, redeemed
+    return resolved, _run_redeem_pass(db, admin, settings)
 
 
 async def _pin_resolve_loop(
@@ -433,8 +447,8 @@ def _warn_if_simulated_on_durable_chain(settings: Settings, chain_id: int) -> No
     `is_disposable_chain`), but it is still a wrong config worth a loud line."""
     if settings.simulated_chain and not is_disposable_chain(chain_id):
         log.error(
-            "AGENTPIT_SIMULATED_CHAIN=true is IGNORED on chain %d: re-granting gas "
-            "on login is only for a disposable anvil (%d). Set it to false.",
+            "AGENTPIT_SIMULATED_CHAIN=true is IGNORED on chain %d: re-running "
+            "onboarding on login is only for a disposable anvil (%d). Set it to false.",
             chain_id, ANVIL_CHAIN_ID,
         )
 
@@ -579,7 +593,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             leaderboard_service = LeaderboardService(
                 db_session,
                 onchain_admin,
-                AccountService(db_session, onchain_admin),
+                AccountService(
+                    db_session, onchain_admin, min_claim_micro=settings.min_claim_micro
+                ),
                 settings,
             )
             leaderboard_task = asyncio.create_task(

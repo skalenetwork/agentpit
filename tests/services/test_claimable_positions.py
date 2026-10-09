@@ -63,11 +63,21 @@ class _StubOnchain:
         return [self._balances.get(str(t), 0) for t in token_ids]
 
 
-def _make_position(email: str, seed: str, *, resolved_outcome: int | None, held_idx: int):
+def _make_position(
+    email: str,
+    seed: str,
+    *,
+    resolved_outcome: int | None,
+    held_idx: int,
+    balance: int = 100_000_000,
+    min_claim_micro: int = 10_000,
+):
     """A user who bought 100 shares of one outcome token @ $0.40, in a market
-    that is either left ACTIVE or resolved to `resolved_outcome`.
+    that is either left ACTIVE or resolved to `resolved_outcome`, and who still
+    holds `balance` micro-shares of it on chain.
 
-    Returns the single `PositionWire` `list_positions` produces for it.
+    Returns the single `PositionWire` `list_positions` produces for it, read by
+    a service whose claim minimum is `min_claim_micro`.
     """
     db = fresh_test_db()
     # `list_positions` does `int(token_id)`, so these must parse as ints --
@@ -105,8 +115,10 @@ def _make_position(email: str, seed: str, *, resolved_outcome: int | None, held_
                 conn, market_id=m.market_id, winning_outcome_index=resolved_outcome
             )
 
-    onchain = _StubOnchain({held_tok: 100_000_000})
-    out = AccountService(db, onchain=onchain).list_positions(acct.address)  # type: ignore[arg-type]
+    onchain = _StubOnchain({held_tok: balance})
+    out = AccountService(
+        db, onchain=onchain, min_claim_micro=min_claim_micro  # type: ignore[arg-type]
+    ).list_positions(acct.address)
     assert len(out) == 1
     return out[0]
 
@@ -146,3 +158,46 @@ def test_the_losing_side_of_a_resolved_market_is_not_claimable(losing_position):
     assert losing_position.redeemable is False
     assert losing_position.curPrice == 0.0
     assert losing_position.currentValue == 0.0
+
+
+@pytest.fixture
+def won_dust_position():
+    """Won, but holding less than the $0.01 claim minimum."""
+    return _make_position(
+        "dust@x.com", "cp4", resolved_outcome=0, held_idx=0, balance=9_999
+    )
+
+
+def test_won_dust_is_priced_as_a_win_but_offers_no_claim(won_dust_position):
+    """Below the minimum, `PositionService.redeem` answers 400 "nothing to
+    claim", so a Claim button here could only fail. The row is still a win:
+    settled, priced at $1, and sorted into the closed bucket as won, never as
+    a loss."""
+    p = won_dust_position
+    assert p.settled is True
+    assert p.redeemable is False
+    assert p.curPrice == 1.0
+    assert p.currentValue == pytest.approx(p.size)
+
+
+def test_a_win_of_exactly_the_minimum_is_claimable():
+    p = _make_position(
+        "edge@x.com", "cp5", resolved_outcome=0, held_idx=0, balance=10_000
+    )
+    assert p.redeemable is True
+    assert p.curPrice == 1.0
+
+
+def test_the_minimum_is_the_one_the_service_was_given():
+    """The view must use the configured minimum, the one the claim itself
+    enforces, and not a constant of its own."""
+    p = _make_position(
+        "raised@x.com",
+        "cp6",
+        resolved_outcome=0,
+        held_idx=0,
+        balance=100_000_000,
+        min_claim_micro=100_000_001,
+    )
+    assert p.redeemable is False
+    assert p.curPrice == 1.0

@@ -20,7 +20,6 @@ import {
   useTopUp,
   useTopUpStatus,
   topUpButtonState,
-  claimPositionRequest,
 } from "@/api/portfolio";
 import { ApiError } from "@/api/client";
 import {
@@ -37,9 +36,9 @@ import {
   sortPositions,
 } from "@/lib/sortPositions";
 import type { PositionColumn, PositionSort } from "@/lib/sortPositions";
+import { ClaimButton } from "@/components/ClaimButton";
 import { Sparkline } from "@/components/Sparkline";
 import { avatarUrl } from "@/lib/avatar";
-import { claimErrorMessage } from "@/lib/claimError";
 import {
   formatCredits,
   formatCreditsExact,
@@ -118,7 +117,11 @@ export function ProfilePage() {
   const { data: closedData } = useClosedPositions(address);
   const { data: activityData } = useActivity(address);
   const { data: balance } = useUsdcBalance(own);
-  const { data: credits } = useCredits(own);
+  // The Credits tile is hidden, not deleted: with exact gas top-ups the
+  // native balance is an internal buffer of at most one transaction's gas,
+  // nothing the user spends or refills. False also skips `/me/credits`.
+  const showCredits = false;
+  const { data: credits } = useCredits(own && showCredits);
   const { data: topUpStatus } = useTopUpStatus(own);
   const topUp = useTopUp();
   const now = Math.floor(Date.now() / 1000);
@@ -263,7 +266,11 @@ export function ProfilePage() {
             </div>
             <div
               className={`mt-6 grid grid-cols-2 divide-x divide-y rounded-lg border bg-muted/20 sm:divide-y-0 ${
-                agent ? "sm:grid-cols-3" : "sm:grid-cols-5"
+                agent
+                  ? "sm:grid-cols-3"
+                  : showCredits
+                    ? "sm:grid-cols-5"
+                    : "sm:grid-cols-4"
               }`}
             >
               {agent ? null : (
@@ -273,13 +280,17 @@ export function ProfilePage() {
                     value={balance != null ? formatVolume(balance) : "—"}
                     tooltip={balance != null ? USD.format(balance) : undefined}
                   />
-                  <TopMetric
-                    label="Credits"
-                    value={credits != null ? formatCredits(credits) : "—"}
-                    tooltip={
-                      credits != null ? formatCreditsExact(credits) : undefined
-                    }
-                  />
+                  {showCredits && (
+                    <TopMetric
+                      label="Credits"
+                      value={credits != null ? formatCredits(credits) : "—"}
+                      tooltip={
+                        credits != null
+                          ? formatCreditsExact(credits)
+                          : undefined
+                      }
+                    />
+                  )}
                 </>
               )}
               <TopMetric
@@ -765,61 +776,6 @@ function SellButton({
       onClick={() => sell.mutate()}
     >
       {sell.isPending ? "Selling…" : "Sell"}
-    </Button>
-  );
-}
-
-/** Collects a won-but-unclaimed position. The row itself carries the
- *  `conditionId` — never a market id — which is why `/positions/claim`
- *  resolves it rather than taking one directly. */
-function ClaimButton({
-  conditionId,
-  userAddress,
-}: {
-  conditionId: string;
-  userAddress: string;
-}) {
-  const queryClient = useQueryClient();
-  const claim = useMutation({
-    mutationFn: () => claimPositionRequest(conditionId),
-    onSuccess: () => {
-      toast.success("Claimed.");
-      void queryClient.invalidateQueries({
-        queryKey: ["positions", userAddress],
-      });
-      // The claimed position becomes a closed one -- Biggest Win, P/L and
-      // Predictions all read off `closedPositions`, and without this they'd
-      // sit stale (still counting the position as open/unclaimed) until
-      // whatever next natural refetch happens to invalidate it.
-      void queryClient.invalidateQueries({
-        queryKey: ["closed-positions", userAddress],
-      });
-      // Claiming pays out apUSD and spends native gas -- both balances at the
-      // top of the page change. Without this they sit stale until whatever
-      // next natural refetch happens to invalidate them.
-      void queryClient.invalidateQueries({
-        queryKey: ["balance-allowance", "COLLATERAL"],
-      });
-      void queryClient.invalidateQueries({ queryKey: ["credits"] });
-    },
-    onError: (err) => {
-      const message =
-        err instanceof ApiError
-          ? claimErrorMessage(err.status, userAddress)
-          : "Failed to claim.";
-      toast.error(message);
-    },
-  });
-
-  return (
-    <Button
-      size="sm"
-      variant="outline"
-      className="shrink-0"
-      disabled={claim.isPending}
-      onClick={() => claim.mutate()}
-    >
-      {claim.isPending ? "Claiming…" : "Claim"}
     </Button>
   );
 }

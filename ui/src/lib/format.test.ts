@@ -190,11 +190,11 @@ describe("formatCredits", () => {
     expect(formatCredits("")).toBe("—");
   });
 
-  it("stays useful at the signup grant's own scale, where two decimals used to read 0.00", () => {
-    // 0.02 native signup grant minus the three onboarding approvals
-    // (~0.0066 native): a real, still-claimable balance that a two-decimal
-    // display flattened to "0.00", indistinguishable from actually empty.
-    expect(formatCredits("13400000000000000")).toBe("0.0134");
+  it("stays useful at the scale of one transaction's gas, where two decimals read 0.00", () => {
+    // A wallet holds at most one transaction's gas: onboarding's ~167k gas at
+    // 47.6 gwei is ~0.0079 native. A two-decimal display would flatten that
+    // to "0.00", indistinguishable from actually empty.
+    expect(formatCredits("7949000000000000")).toBe("0.0079");
   });
 });
 

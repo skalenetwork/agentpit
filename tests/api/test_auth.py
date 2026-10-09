@@ -81,6 +81,17 @@ def test_me_returns_current_user(sign_in):
         assert "eth_key" not in resp.text
 
 
+def test_a_new_account_is_opted_into_auto_redeem(sign_in):
+    """A human signing up for the first time collects winnings without
+    visiting Settings. Claims are sponsored, so this costs them nothing. The
+    agent path has its own check in tests/services/test_agent_accounts.py."""
+    with TestClient(app) as client:
+        token = sign_in(client, "autoredeem@example.com")["access_token"]
+        resp = client.get("/me", headers=_hdr(token))
+        assert resp.status_code == 200
+        assert resp.json()["auto_redeem"] is True
+
+
 def test_me_rejects_invalid_token():
     with TestClient(app) as client:
         resp = client.get("/me", headers=_hdr("not.a.real.jwt"))

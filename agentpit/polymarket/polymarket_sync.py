@@ -5,22 +5,35 @@ using TableWrite.create_market.
 
 import logging
 import json
+import time
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
 from agentpit.common import check_state
+from agentpit.config import Settings
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
-from agentpit.domain.exceptions import MarketStateError
+from agentpit.domain.exceptions import (
+    SPONSORED_GAS_REFUSALS,
+    MarketStateError,
+    NothingToClaimError,
+    TransactionInProgressError,
+    TransactionPendingError,
+    TransactionRevertedError,
+)
 from agentpit.onchain.admin import OnchainAdmin
+from agentpit.services.pending_user_txs import (
+    in_flight_since,
+    reconcile_pending_user_txs,
+)
 from agentpit.polymarket.category_resolver import category_rank, resolve_category
 from agentpit.polymarket.tag_taxonomy import normalize_slug
 from agentpit.datastructures.event import Event
 from agentpit.polymarket.conditional_token_framework import ConditionalTokenFramework
 from agentpit.services.market_service import prepare_market_on_chain, prepare_markets_on_chain
-from agentpit.utils.parse import _iso_to_unix
+from agentpit.utils.parse import _iso_to_unix, hex2bytes
 from py_clob_client.http_helpers.helpers import get
 
 from agentpit.db.table_write import TableWrite
@@ -1382,91 +1395,236 @@ def mirror_polymarket_resolutions(
     return resolved_count
 
 
-def auto_redeem_resolved_markets(db, admin: OnchainAdmin) -> int:
-    """Redeem every holder of each RESOLVED, not-yet-fully-redeemed market.
+# A claim that failed is left alone for a while, so a failure that repeats
+# cannot spend every pass's cap on the same first holders in key order (the
+# house's own claims among the ones never reached). Keyed by (user_id,
+# market_id), valued by the time.monotonic() it may go again. Module-level
+# because a pass builds its services afresh; app.py runs every pass under
+# `_redeem_lock`, so one thread at a time.
+#
+# A claim that mined and reverted costs gas every time and should not happen
+# after the on-chain gate.
+_REVERT_BACKOFF_SECONDS = 3600
+# Refused or not sent (breaker paused, wallet not funded, top-up timed out,
+# something unexpected): it may well go out soon and costs little to retry.
+_REFUSED_BACKOFF_SECONDS = 900
+_claim_backoff_until: dict[tuple[str, int], float] = {}
+
+
+def auto_redeem_resolved_markets(
+    db, admin: OnchainAdmin, settings: Settings
+) -> int:
+    """Claim for every holder owed a claim on each RESOLVED, not-yet-fully-
+    redeemed market. Returns the number of holder redemptions performed.
 
     `db` is a DbSession (not a raw connection) because PositionService manages
-    its own read/write connections. For each candidate market, scans the
-    participant accounts (trades + split/merge, including the house bot),
-    redeems any that opted in and hold a nonzero on-chain token balance using
-    their custodial key, and flags the market FULLY_REDEEMED once no holder
-    remains.
+    its own read/write connections. The pass first settles the user
+    transactions whose outcome nobody saw (`reconcile_pending_user_txs`), so a
+    split or claim that mined unseen is in the history before any balance is
+    read. Then each market's payout vector is read once, and each
+    participant's balances once (trades + split/merge, including the house
+    bot, plus anyone with a transaction on it in flight).
 
-    A holder who has not set AUTO_REDEEM_ENABLED is skipped outright, and a
-    market with such a holder still sitting on tokens never gets marked
-    FULLY_REDEEMED -- the winnings do not move or expire, they just wait for
-    that account to claim them itself. Bot accounts (`User.is_bot`) are the
-    exception: they are always redeemed regardless of the flag, since a bot
-    has no one to ask for consent and no interface to ask from -- the house's
-    own accounts (e.g. the liquidity mirror) would otherwise sit on winning
-    tokens and locked collateral in every resolved market forever, and
-    `still_held` below would never let FULLY_REDEEMED get set.
+    A participant is claimed for, through `UserGasSponsor`, when they are a bot
+    or opted in (AUTO_REDEEM_ENABLED) and `redeemPositions` would pay them at
+    least the claim minimum (read through the sponsor, so the claim gate uses
+    the same number). Bots need no opt-in: a bot has no one to ask for
+    consent, and the house's own accounts would otherwise hold every resolved
+    market open forever. FULLY_REDEEMED is set once nobody is owed the
+    minimum, so dust and losing tokens do not hold a market open; an opted-out
+    holder who is owed does, since they may switch the toggle back on.
 
-    The holder pays their own gas for the redeem — the house no longer tops
-    anyone up here. A holder without enough native balance simply fails this
-    pass and is retried on the next one; that's correct, because the
-    winnings stay theirs on-chain either way, held by the resolved market
-    until they have gas to claim them.
+    At most `auto_redeem_max_per_pass` claim attempts are made (attempts, as a
+    refused claim spent reads and a reverted one gas); the market the pass
+    stopped in and every later one wait for the next pass. Each claim takes
+    about two blocks under `_redeem_lock`, which both resolution loops wait on.
 
-    Returns the number of holder redemptions performed.
+    A holder whose lock is held, who has a transaction on the market in
+    flight, or who is backing off is skipped without counting toward the cap
+    and keeps the market open. A failed claim backs off for
+    `_REFUSED_BACKOFF_SECONDS`, or `_REVERT_BACKOFF_SECONDS` if it reverted;
+    one whose outcome is unknown does not, as its pending row keeps the holder
+    out until it is settled. Expected refusals log without a traceback. A
+    market whose chain reads fail is logged and left open.
     """
-    from agentpit.services.position_service import PositionService
+    from agentpit.services.gas_sponsor import UserGasSponsor
+    from agentpit.services.position_service import PositionService, claimable_payout
 
-    svc = PositionService(db, admin)
+    sponsor = UserGasSponsor(db, admin, settings)
+    svc = PositionService(db, admin, sponsor)
+    minimum = sponsor.min_claim_micro
+    cap = settings.auto_redeem_max_per_pass
+    now = time.monotonic()
+    for expired in [k for k, until in _claim_backoff_until.items() if until <= now]:
+        del _claim_backoff_until[expired]
+
+    try:
+        reconcile_pending_user_txs(db, admin)
+    except Exception:
+        logger.exception(
+            "auto-redeem: pending user transactions could not be settled; "
+            "tried again next pass"
+        )
+
     redeemed = 0
+    attempts = 0
     with db.read() as conn:
         markets = TableRead.list_resolved_unredeemed_markets(conn)
+        cutoff = in_flight_since(int(time.time()))
+        # (api_key, market_id) of every transaction still on its way.
+        in_flight = {
+            (row.api_key, row.market_id)
+            for row in TableRead.list_pending_user_txs(conn)
+            if row.created_at >= cutoff
+        }
 
     for market in markets:
-        token_strs = [t for t, _ in market.erc1155_tokens]
-        token_ints = [int(t) for t in token_strs]
-        with db.read() as conn:
-            api_keys = TableRead.list_participant_api_keys_for_market(
-                conn, market.market_id, token_strs
+        try:
+            token_strs = [t for t, _ in market.erc1155_tokens]
+            token_ints = [int(t) for t in token_strs]
+            with db.read() as conn:
+                api_keys = TableRead.list_participant_api_keys_for_market(
+                    conn, market.market_id, token_strs
+                )
+            api_keys |= {k for k, m in in_flight if m == market.market_id}
+            vector = None
+            if api_keys:
+                vector = admin.payout_vector(
+                    hex2bytes(market.condition_id.value), len(token_ints)
+                )
+        except Exception:
+            # One bad row or one RPC error must not stop every later market
+            # from being claimed. It stays open and is read again next pass.
+            logger.exception(
+                "auto-redeem: market %s could not be read; retried next pass",
+                market.market_id,
             )
+            continue
+        if vector is None:
+            # Nobody ever traded or split it, so nobody can be owed anything.
+            with db.write() as conn:
+                TableWrite.mark_fully_redeemed(conn, market.market_id)
+            continue
 
-        any_error = False
-        for api_key in api_keys:
+        den, nums = vector
+        if den == 0:
+            # RESOLVED here without a reportPayouts on chain (the admin resolve
+            # route does exactly that): nobody can be paid yet.
+            logger.debug(
+                "auto-redeem: market %s has no payout on chain yet",
+                market.market_id,
+            )
+            continue
+
+        still_owed = False
+        # Sorted so a capped pass takes holders in the same order every time.
+        for api_key in sorted(api_keys):
             with db.read() as conn:
                 user = TableRead.get_user_by_api_key(conn, api_key)
             if user is None:
                 continue
-            if not (user.is_bot or user.auto_redeem):
-                # Settlement is still theirs to trigger. The winnings do not
-                # move or expire; they wait behind a button. A bot has no one
-                # to ask for consent and no interface to ask from, so the
-                # opt-in does not reach the house's own accounts.
-                continue
-            if not any(
-                admin.ctf_balance(user.eth_address, tid) > 0 for tid in token_ints
-            ):
-                continue
-            try:
-                svc.redeem(user, market.market_id)
-                redeemed += 1
-            except Exception:
-                logger.exception(
-                    "auto-redeem failed for %s on market %s",
+            if (api_key, market.market_id) in in_flight:
+                logger.info(
+                    "auto-redeem: %s has a transaction on market %s whose "
+                    "outcome is not known yet; retried next pass",
                     user.eth_address,
                     market.market_id,
                 )
-                any_error = True
-
-        if any_error:
-            continue  # leave FULLY_REDEEMED unset; retried next pass
-
-        still_held = False
-        for api_key in api_keys:
-            with db.read() as conn:
-                user = TableRead.get_user_by_api_key(conn, api_key)
-            if user is None:
+                still_owed = True
                 continue
-            if any(
-                admin.ctf_balance(user.eth_address, tid) > 0 for tid in token_ints
-            ):
-                still_held = True
+            try:
+                balances = admin.ctf_balances(user.eth_address, token_ints)
+            except Exception:
+                # Probably the node, not the holder: stop reading this market
+                # for this pass instead of one traceback per holder.
+                logger.exception(
+                    "auto-redeem: balances of %s on market %s could not be "
+                    "read; the market is retried next pass",
+                    user.eth_address,
+                    market.market_id,
+                )
+                still_owed = True
                 break
-        if not still_held:
+            if not claimable_payout(balances, den, nums, minimum):
+                # Nothing, only the losing side, or dust: a claim would be
+                # pure admin gas, and nothing here is worth keeping open for.
+                continue
+            if not (user.is_bot or user.auto_redeem):
+                # Opted out: the claim is theirs to make.
+                still_owed = True
+                continue
+            key = (user.user_id, market.market_id)
+            if _claim_backoff_until.get(key, 0.0) > now:
+                still_owed = True
+                continue
+            if attempts >= cap:
+                logger.info(
+                    "auto-redeem: %d claims this pass; market %s onwards waits "
+                    "for the next",
+                    cap,
+                    market.market_id,
+                )
+                return redeemed
+            attempts += 1
+            try:
+                svc.redeem(user, market.market_id, payout_vector=vector)
+                redeemed += 1
+                continue
+            except NothingToClaimError:
+                # The gate re-read under the holder's lock found less than
+                # this scan did: they claimed by hand in between.
+                logger.info(
+                    "auto-redeem: %s already claimed market %s",
+                    user.eth_address,
+                    market.market_id,
+                )
+                continue
+            except TransactionInProgressError:
+                # Refused at the lock, before any read or gas, so the attempt
+                # is given back: held locks first in key order would otherwise
+                # use the cap up on every pass.
+                attempts -= 1
+                logger.info(
+                    "auto-redeem: %s has a transaction in progress; market %s "
+                    "is retried next pass",
+                    user.eth_address,
+                    market.market_id,
+                )
+            except TransactionPendingError as exc:
+                logger.warning(
+                    "auto-redeem: claim for %s on market %s was sent and its "
+                    "outcome is unknown (%s); settled by a later pass",
+                    user.eth_address,
+                    market.market_id,
+                    exc,
+                )
+            except (*SPONSORED_GAS_REFUSALS, TransactionRevertedError) as exc:
+                reverted = isinstance(exc, TransactionRevertedError)
+                seconds = (
+                    _REVERT_BACKOFF_SECONDS if reverted else _REFUSED_BACKOFF_SECONDS
+                )
+                _claim_backoff_until[key] = time.monotonic() + seconds
+                logger.warning(
+                    "auto-redeem: claim for %s on market %s %s (%s); "
+                    "not retried for %d s",
+                    user.eth_address,
+                    market.market_id,
+                    "reverted" if reverted else "not sent",
+                    exc,
+                    seconds,
+                )
+            except Exception:
+                _claim_backoff_until[key] = time.monotonic() + _REFUSED_BACKOFF_SECONDS
+                logger.exception(
+                    "auto-redeem failed for %s on market %s; not retried "
+                    "for %d s",
+                    user.eth_address,
+                    market.market_id,
+                    _REFUSED_BACKOFF_SECONDS,
+                )
+            still_owed = True
+
+        if not still_owed:
             with db.write() as conn:
                 TableWrite.mark_fully_redeemed(conn, market.market_id)
 
