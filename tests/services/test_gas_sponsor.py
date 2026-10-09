@@ -15,6 +15,7 @@ import time
 
 import pytest
 import requests
+from urllib3.exceptions import MaxRetryError, NewConnectionError
 from web3 import Web3
 from web3.exceptions import TimeExhausted, Web3RPCError
 
@@ -707,6 +708,59 @@ def test_a_transport_error_after_the_broadcast_keeps_the_reservation():
     chain = _Chain(refusals=[requests.ConnectionError("connection reset by peer")])
     with pytest.raises(requests.ConnectionError):
         _send(db, chain, user, [_Call()], "split")
+    assert _used(db, user) == 120_000 + TRANSFER_GAS
+
+
+def _never_connected() -> requests.ConnectionError:
+    """What requests raises when the connect itself was refused: the request
+    never reached the node (`chain_rpc.failed_before_connecting`)."""
+    return requests.ConnectionError(
+        MaxRetryError(
+            None, "/", NewConnectionError(None, "Failed to establish a new connection")
+        )
+    )
+
+
+def test_a_send_that_never_reached_the_node_hands_the_reservation_back():
+    """The broadcast failed to connect at all, so the node never saw the
+    split: nothing can mine, and the reservation goes back like a refusal's.
+    Kept, it stranded the whole limit for the day on every attempt during an
+    RPC outage. The top-up did mine, so its transfer stays booked. The error
+    itself propagates as it is."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(refusals=[_never_connected()])
+    with pytest.raises(requests.ConnectionError):
+        _send(db, chain, user, [_Call()], "split")
+    assert _used(db, user) == TRANSFER_GAS
+
+
+def test_an_unrecognised_error_after_the_broadcast_keeps_the_reservation():
+    """An error from `send_as_user` that is neither a receipt timeout, nor a
+    transport error, nor a refusal at import: here a JSON-RPC error from the
+    receipt poll, which runs once the node has taken the transaction. It may
+    well mine, so the reservation stands, as `PositionService` keeps the
+    split pending for the same error."""
+    db = fresh_test_db()
+    user = _user(db)
+    chain = _Chain(refusals=[Web3RPCError("rate limit exceeded")])
+    with pytest.raises(Web3RPCError):
+        _send(db, chain, user, [_Call()], "split")
+    assert _used(db, user) == 120_000 + TRANSFER_GAS
+
+
+def test_an_interrupt_after_the_broadcast_keeps_the_reservation_and_frees_the_lock():
+    """A `KeyboardInterrupt` (or any `BaseException`) while the split's
+    transaction may already be out: it is re-raised as it is, the lock is
+    free, and the reservation stands, since the split may still mine."""
+    db = fresh_test_db()
+    user = _user(db)
+    sponsor = UserGasSponsor(db, _Chain(refusals=[KeyboardInterrupt()]), _settings())  # type: ignore[arg-type]
+    with pytest.raises(KeyboardInterrupt):
+        with sponsor.locked(user):
+            sponsor.send(user, [_Call()], "split")  # type: ignore[list-item]
+    with sponsor.locked(user):
+        pass
     assert _used(db, user) == 120_000 + TRANSFER_GAS
 
 

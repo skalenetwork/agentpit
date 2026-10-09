@@ -47,7 +47,12 @@ from agentpit.domain.exceptions import (
     TransactionRevertedError,
 )
 from agentpit.onchain.admin import OnchainAdmin
-from agentpit.onchain.chain_rpc import SendError, classify_send_error, is_balance_low
+from agentpit.onchain.chain_rpc import (
+    SendError,
+    cannot_mine,
+    classify_send_error,
+    is_balance_low,
+)
 from agentpit.onchain.tx_sender import TRANSFER_GAS, TxDropped
 
 log = logging.getLogger(__name__)
@@ -95,6 +100,31 @@ def _call_hook(
     if on_signed is None:
         return None
     return lambda tx_hash: on_signed(index, tx_hash)
+
+
+class _Paid:
+    """What one sponsored send has had the admin pay for so far, for `_book`:
+    the top-ups that mined and the receipts of the calls.
+
+    `unseen` is set while a top-up or a user transaction is out and its
+    outcome is not known, and cleared once it is: by its receipt, or by an
+    answer that says it can never run. Whatever stops the send while it is
+    set, an error or a `BaseException` such as `KeyboardInterrupt`, leaves
+    something that may still mine, so the booking keeps the reservation.
+    Whatever stops it while it is clear (a read, or an answer) leaves nothing
+    in flight, and the reservation goes back."""
+
+    def __init__(self) -> None:
+        self.topups = 0
+        self.receipts: list[TxReceipt] = []
+        self.unseen = False
+
+    @property
+    def gas(self) -> int:
+        """Each mined top-up's transfer plus every receipt's gasUsed."""
+        return self.topups * TRANSFER_GAS + sum(
+            int(r.get("gasUsed") or 0) for r in self.receipts
+        )
 
 
 class UserGasSponsor:
@@ -173,10 +203,16 @@ class UserGasSponsor:
         so it is no timeout: it is the same retryable `GasTopUpTimeoutError`
         (503), but like a paused breaker it hands the reservation back.
 
-        A user transaction that got no answer at all (a transport error after
-        the broadcast, `SendError.TRANSPORT`) may have mined, so it books like
-        a receipt timeout: the reservation stands. The error propagates as it
-        is.
+        A user transaction is in flight from its broadcast until an answer says
+        how it ended. Stopped before that, by no receipt in time, no answer to
+        the broadcast, an error from the receipt poll, any other error that is
+        not a refusal, or a `BaseException` such as `KeyboardInterrupt`, it
+        may still mine, so it books like a receipt timeout: the reservation
+        stands. Only a refusal at import, a broadcast that never reached the
+        node (both `chain_rpc.cannot_mine`, the test `PositionService` keeps
+        its pending row by) and `TxDropped` say it can never run; then the
+        reservation goes back, less the transfers of the top-ups that mined.
+        The error propagates as it is (`TxDropped` as `GasTopUpTimeoutError`).
 
         The node refusing a call at import for its fee or for the wallet's
         balance is answered by one resize-and-retry of that call. If the node
@@ -225,23 +261,22 @@ class UserGasSponsor:
         """Size, reserve, top up, send, book (spec §1 steps 2-6)."""
         price, limits, shortfall = self._size(user, calls)
         reserved, day = self._reserve(user, kind, limits)
-        receipts: list[TxReceipt] = []
-        topups = 0
-        timed_out = False
+        paid = _Paid()
         try:
             if shortfall:
-                self._top_up(user, shortfall)
-                topups += 1
+                self._top_up(user, shortfall, paid)
             retried = False  # whether call i has had its one resize-and-retry
             i = 0
             while i < len(calls):
+                paid.unseen = True  # from its broadcast on, it may mine unseen
                 try:
-                    receipts.append(
-                        self._send_one(
-                            user, calls[i], limits[i], price, _call_hook(on_signed, i)
-                        )
+                    receipt = self._send_one(
+                        user, calls[i], limits[i], price, _call_hook(on_signed, i)
                     )
                 except Exception as exc:
+                    # Only an answer that it can never run settles it; any
+                    # other error may have left it in the node to mine.
+                    paid.unseen = not (isinstance(exc, TxDropped) or cannot_mine(exc))
                     balance_low = is_balance_low(exc)
                     if (
                         not balance_low
@@ -265,39 +300,22 @@ class UserGasSponsor:
                     price, rest, shortfall = self._size(user, calls[i:])
                     limits[i:] = rest
                     if shortfall:
-                        self._top_up(user, shortfall)
-                        topups += 1
+                        self._top_up(user, shortfall, paid)
                     continue
+                paid.unseen = False
+                paid.receipts.append(receipt)
                 i += 1
                 # Each call gets its own retry: the fee can rise again between
                 # onboarding's approvals, and a shared one would abort the
                 # batch with the first approvals already mined.
                 retried = False
         except TxDropped as exc:
-            # The top-up's nonce went to a gap filler or another writer's
-            # transaction: it never ran and never will, so this is no timeout
-            # and the reservation is refunded. It answers like one, because to
-            # the caller it is the same: our side is busy, try again. Raised
-            # from a handler, so the clause below does not catch it.
+            # The node lost a user transaction: it never ran and never will.
+            # The same "busy, try again" answer as for a lost top-up.
             raise GasTopUpTimeoutError() from exc
-        except (TimeExhausted, GasTopUpTimeoutError):
-            # No receipt in time, for a top-up or for a user transaction: it
-            # may still mine, so the booking must not refund the reservation.
-            timed_out = True
-            raise
-        except Exception as exc:
-            # No answer to a broadcast (a reset, a proxy's 502): the node may
-            # hold the transaction and mine it, the same unknown as a timeout.
-            # Any other failure is an answer, and a refusal ran nothing.
-            if classify_send_error(exc) is SendError.TRANSPORT:
-                timed_out = True
-            raise
         finally:
-            gas = topups * TRANSFER_GAS + sum(
-                int(r.get("gasUsed") or 0) for r in receipts
-            )
-            self._book(user, kind, gas, reserved, day, timed_out=timed_out)
-        return receipts
+            self._book(user, kind, paid.gas, reserved, day, unseen=paid.unseen)
+        return paid.receipts
 
     def _send_unsponsored(
         self,
@@ -394,15 +412,22 @@ class UserGasSponsor:
             )
         return gas, day
 
-    def _top_up(self, user: User, shortfall: int) -> None:
+    def _top_up(self, user: User, shortfall: int, paid: _Paid) -> None:
         """Send `shortfall` and wait for it to mine: skaled checks the balance
         at import, against committed state. A sponsored admin send, so a paused
         breaker refuses it (`AdminGasPausedError`, 503). Only a wallet that
         needs a top-up meets the breaker; a funded one proceeds while paused.
         `TimeExhausted` (no receipt in time, or no free admin slot) becomes
-        `GasTopUpTimeoutError` (503). `TxDropped` becomes one too, but in
-        `_send_sponsored`, which has to tell the two apart for the booking.
-        `send`'s docstring says what each does to the booking."""
+        `GasTopUpTimeoutError` (503), and so does `TxDropped`.
+
+        `paid.unseen` is set while the top-up is out. It stays set when no
+        answer came back (no receipt in time, a transport error, a
+        `BaseException` mid-wait): the top-up may still mine, so the booking
+        keeps the reservation. A failure to connect counts as no answer here,
+        because `AdminTxSender` re-raises its first copy's error even when a
+        resend of it may have got through. An answer (a paused breaker, a
+        refusal, `TxDropped`) clears it. `send`'s docstring says the rest."""
+        paid.unseen = True
         try:
             self._onchain.fund_gas(
                 user.eth_address,
@@ -411,6 +436,18 @@ class UserGasSponsor:
             )
         except TimeExhausted as exc:
             raise GasTopUpTimeoutError() from exc
+        except TxDropped as exc:
+            # Its nonce went to a gap filler or another writer's transaction:
+            # it never ran and never will, so this is no timeout. It answers
+            # like one, because to the caller it is the same: our side is
+            # busy, try again.
+            paid.unseen = False
+            raise GasTopUpTimeoutError() from exc
+        except Exception as exc:
+            paid.unseen = classify_send_error(exc) is SendError.TRANSPORT
+            raise
+        paid.unseen = False
+        paid.topups += 1
 
     def _send_one(
         self,
@@ -439,7 +476,7 @@ class UserGasSponsor:
         reserved: int,
         day: int,
         *,
-        timed_out: bool,
+        unseen: bool,
     ) -> None:
         """Book what the admin really paid on `day`, under the rules of
         `OrderService._book_sponsored_gas`.
@@ -447,9 +484,9 @@ class UserGasSponsor:
         `gas` is each mined top-up's transfer plus every receipt's gasUsed,
         reverted ones included. A split/merge is booked that minus its reservation: a
         refund when the estimate was high, all of it when nothing was sent.
-        After a receipt timeout (a top-up's or a user transaction's) nothing is
-        refunded, since the transaction may have mined unseen; only an overrun
-        is added. A timed-out top-up is not in `gas`, so it adds nothing.
+        When something may have mined unseen (`unseen`, see `_Paid`: a top-up
+        or a user transaction that got no answer) nothing is refunded; only
+        an overrun is added. Such a top-up is not in `gas`, so it adds nothing.
         Claims and onboarding reserved nothing and are booked in full. The
         house (`is_bot`) is never booked.
 
@@ -460,7 +497,7 @@ class UserGasSponsor:
         if user.is_bot:
             return
         delta = gas - reserved  # reserved is 0 for claims and onboarding
-        if timed_out:
+        if unseen:
             delta = max(delta, 0)
         if not delta:
             return
