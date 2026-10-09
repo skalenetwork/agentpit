@@ -83,7 +83,7 @@ log = logging.getLogger(__name__)
 # off-thread; serialize them so they can't redeem the same position concurrently
 # (a race that double-logged the payout — phantom collateral from the apUSD
 # delta — even though on-chain only one redeem actually transferred). It also
-# keeps polymarket_sync's revert backoff to one thread. A pass holds it for at
+# keeps polymarket_sync's claim backoff to one thread. A pass holds it for at
 # most AGENTPIT_AUTO_REDEEM_MAX_PER_PASS claims, about two blocks each.
 _redeem_lock = threading.Lock()
 _LEADERBOARD_TICK_SECONDS = 2
