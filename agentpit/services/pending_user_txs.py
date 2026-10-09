@@ -1,26 +1,18 @@
 """User transactions whose outcome nobody saw.
 
-A split, merge or claim is signed by the user's key, broadcast, and waited on
-(`UserGasSponsor.send`). The wait can end without an answer: the receipt does
-not come back in time (`TimeExhausted`), or the node never answers the
-broadcast (a transport error), or the receipt poll fails after the node took
-it. The transaction may mine all the same. Written only on success, its
-SPLIT / MERGE / REDEEM row would then be missing for good: the history loses
-it, auto-redeem's participant scan (trades plus SPLIT / MERGE rows) misses a
-holder whose only stake is that split, and a client that retries a split it
-was told had failed splits twice.
+A split, merge or claim can stop waiting without an answer (no receipt in
+time, no answer to the broadcast, a failed receipt poll) and mine all the
+same. Written only on success, its history row would then be missing for good:
+the history loses it, auto-redeem misses a holder whose only stake is that
+split, and a client retrying what it was told had failed splits twice.
 
 So `PositionService` writes an intent row in `pending_user_txs` just before
-each broadcast, and turns it into the history row once the receipt is in. A
-refusal or a revert deletes it. When the outcome stays unknown, the row stays:
-after a receipt timeout, an unanswered broadcast, a receipt-poll error, and
-any error not recognised as a refusal (safe, since an unrecognised refusal only
-costs the account 409s on the market until the row is dropped for want of a
-receipt). The caller gets `TransactionPendingError` (503), and a new split,
-merge or claim on that market is refused (409) while the row is younger than
-`_PENDING_TTL_SECONDS`. `reconcile_pending_user_txs` settles what is left from
-the chain: at the start of every auto-redeem pass, and on its own in both
-resolution loops when auto-redeem is switched off.
+each broadcast and turns it into the history row once the receipt is in; a
+refusal or a revert deletes it. An unknown outcome keeps it: the caller gets
+`TransactionPendingError` (503), and a new action on that market is a 409
+while the row is younger than `_PENDING_TTL_SECONDS`.
+`reconcile_pending_user_txs` settles the rest from the chain, at the start of
+every auto-redeem pass (or on its own when auto-redeem is off).
 """
 
 import logging
@@ -48,23 +40,15 @@ def in_flight_since(now: int) -> int:
 
 
 def reconcile_pending_user_txs(db: DbSession, admin: OnchainAdmin) -> int:
-    """Settle every pending user transaction from its receipt. Returns how many
-    history rows it wrote.
+    """Settle every pending user transaction from its receipt, the way the
+    sending request would have; returns how many history rows it wrote.
 
-    - Mined (status 1): its SPLIT / MERGE / REDEEM row is written and the
-      pending row deleted, in one statement. A claim's amount is what the
-      CTF paid its sender (`OnchainAdmin.redeemed_payout`), as for a claim
-      confirmed on the spot.
-    - Reverted (status 0): deleted, and no row, as for a revert seen at once.
-    - A claim that mined and paid nothing: deleted, and no row, as for a
-      claim that is seen to pay nothing at once.
-    - No receipt and older than `_PENDING_TTL_SECONDS`: deleted, as lost.
-    - No receipt yet: left for the next pass.
-
-    The request that sent a transaction may confirm it at the same moment;
-    `TableWrite.confirm_pending_user_tx` lets exactly one of the two write the
-    row. An error on one row is logged with its traceback and that row is
-    tried again next pass; the others are settled all the same.
+    Mined: the row becomes its history row (a claim's amount is what the CTF
+    paid its sender). Reverted, a claim that paid nothing, or no receipt past
+    `_PENDING_TTL_SECONDS`: dropped with no history row. No receipt yet: left
+    for the next pass. `TableWrite.confirm_pending_user_tx` lets exactly one
+    of this and the sending request write the row. An error on one row is
+    logged and that row is tried again next pass.
     """
     with db.read() as conn:
         rows = TableRead.list_pending_user_txs(conn)
@@ -91,43 +75,21 @@ def _settle(db: DbSession, admin: OnchainAdmin, row: PendingUserTx, now: int) ->
     if receipt is None:
         if row.created_at >= in_flight_since(now):
             return 0
-        with db.write() as conn:
-            TableWrite.delete_pending_user_tx(conn, row.tx_hash)
-        logger.warning(
-            "pending %s transaction %s on market %s has had no receipt for "
-            "%d s; dropped as lost",
-            row.transaction_type,
-            row.tx_hash,
-            row.market_id,
-            now - row.created_at,
-        )
-        return 0
+        age = now - row.created_at
+        return _drop(db, row, "has had no receipt for %d s; dropped as lost", age)
     if receipt["status"] != 1:
-        with db.write() as conn:
-            TableWrite.delete_pending_user_tx(conn, row.tx_hash)
-        logger.warning(
-            "pending %s transaction %s on market %s mined and reverted; dropped",
-            row.transaction_type,
-            row.tx_hash,
-            row.market_id,
-        )
-        return 0
+        return _drop(db, row, "mined and reverted; dropped")
     details = dict(row.details)
     if row.transaction_type == "REDEEM":
         # The claim's sender is the redeemer `PayoutRedemption` names.
         paid = admin.redeemed_payout(receipt, receipt["from"])
         if paid <= 0:
-            # Mined, and paid nothing (its tokens had left): no claim was made,
-            # the rule for a claim confirmed on the spot, which writes no row.
-            with db.write() as conn:
-                TableWrite.delete_pending_user_tx(conn, row.tx_hash)
-            logger.warning(
-                "pending REDEEM transaction %s on market %s mined but paid the "
-                "claimant nothing; dropped without a history row",
-                row.tx_hash,
-                row.market_id,
+            # Its tokens had left: no claim was made, as for one seen at once.
+            return _drop(
+                db,
+                row,
+                "mined but paid the claimant nothing; dropped without a history row",
             )
-            return 0
         details["collateral_amount"] = paid
     with db.write() as conn:
         confirmed = TableWrite.confirm_pending_user_tx(conn, row.tx_hash, details)
@@ -140,3 +102,17 @@ def _settle(db: DbSession, admin: OnchainAdmin, row: PendingUserTx, now: int) ->
             row.market_id,
         )
     return int(confirmed)
+
+
+def _drop(db: DbSession, row: PendingUserTx, why: str, *args: object) -> int:
+    """Delete `row` with no history row, log `why`, and return 0."""
+    with db.write() as conn:
+        TableWrite.delete_pending_user_tx(conn, row.tx_hash)
+    logger.warning(
+        "pending %s transaction %s on market %s " + why,
+        row.transaction_type,
+        row.tx_hash,
+        row.market_id,
+        *args,
+    )
+    return 0
