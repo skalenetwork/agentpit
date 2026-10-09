@@ -136,7 +136,9 @@ def create_market(client: TestClient, question: str | None = None, *, state: str
     ).json()
 
 
-def position_service(db: DbSession, admin: OnchainAdmin, settings: Settings | None = None) -> PositionService:
+def position_service(
+    db: DbSession, admin: OnchainAdmin, settings: Settings | None = None
+) -> PositionService:
     """A PositionService wired as `deps.get_position_service` wires one, so a
     split, merge or claim from a test is sponsored as the API's would be."""
     return PositionService(db, admin, UserGasSponsor(db, admin, settings or Settings()))
@@ -195,12 +197,12 @@ def synced_market(db: DbSession, admin: OnchainAdmin) -> tuple[Market, dict]:
 
 def resolve_yes(db: DbSession, admin: OnchainAdmin, *pms: dict) -> None:
     """Mirror an upstream YES win for each of `pms`: `reportPayouts` on chain, then RESOLVED."""
-    won = {
-        pm["conditionId"]: dict(pm, closed=True, tokens=[dict(t, winner=i == 0) for i, t in enumerate(pm["tokens"])])
-        for pm in pms
-    }
+    upstream = {}
+    for pm in pms:
+        tokens = [dict(t, winner=(i == 0)) for i, t in enumerate(pm["tokens"])]
+        upstream[pm["conditionId"]] = dict(pm, closed=True, tokens=tokens)
     with db.write() as conn:
-        mirror_polymarket_resolutions(conn, admin, fetcher=won.get, now=9_999_999_999)
+        mirror_polymarket_resolutions(conn, admin, fetcher=upstream.get, now=9_999_999_999)
 
 
 def new_account(db: DbSession, *, auto_redeem: bool | None = None) -> User:
@@ -218,7 +220,7 @@ def new_account(db: DbSession, *, auto_redeem: bool | None = None) -> User:
     return user
 
 
-def onboarded_account(db: DbSession, admin: OnchainAdmin, *, auto_redeem: bool | None = None) -> User:
+def onboarded_account(db: DbSession, admin: OnchainAdmin, *, auto_redeem=None) -> User:
     """`new_account`, onboarded the way signup does it: the faucet's apUSD, then
     the three approvals sent after one sponsored top-up."""
     user = new_account(db, auto_redeem=auto_redeem)
@@ -233,7 +235,7 @@ def split(db: DbSession, admin: OnchainAdmin, user: User, market: Market, amount
     position_service(db, admin).split(user, market.market_id, SplitPositionRequest(amount=amount))
 
 
-def dry_winner(db: DbSession, admin: OnchainAdmin, amount: int = 100_000_000) -> tuple[Market, User]:
+def dry_winner(db: DbSession, admin: OnchainAdmin, amount=100_000_000) -> tuple[Market, User]:
     """`(market, user)`: `user` split `amount` on a market whose YES side has
     won since, and holds no native coin -- the claim that needs a top-up."""
     market, pm = synced_market(db, admin)
@@ -253,10 +255,9 @@ def send_as(admin: OnchainAdmin, user: User, fn) -> None:
 
 def give_tokens(admin: OnchainAdmin, sender: User, to: str, token_id: int, amount: int) -> None:
     """`sender` signs a transfer of `amount` of one outcome token to `to`."""
-    transfer = admin._contracts.ctf.functions.safeTransferFrom(  # noqa: SLF001
-        Web3.to_checksum_address(sender.eth_address), Web3.to_checksum_address(to), token_id, amount, b""
-    )
-    send_as(admin, sender, transfer)
+    ctf = admin._contracts.ctf  # noqa: SLF001
+    owner, recipient = Web3.to_checksum_address(sender.eth_address), Web3.to_checksum_address(to)
+    send_as(admin, sender, ctf.functions.safeTransferFrom(owner, recipient, token_id, amount, b""))
 
 
 def sponsored_gas(db: DbSession, user: User) -> int:
