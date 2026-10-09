@@ -91,7 +91,8 @@ class HouseAccountProvisioner:
         return gas * self._onchain.gas_price()
 
     def _fund(self, acct) -> None:
-        """Mint the collateral, fund the gas AT the floor, send the approvals.
+        """Mint the collateral, fund the gas with at least the floor (and
+        enough for its approvals), send the approvals.
 
         The floor, not the target. `top_up_gas` lifts the account to the
         target within one check interval anyway. Funding a fresh account

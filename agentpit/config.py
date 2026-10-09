@@ -448,12 +448,13 @@ class Settings(BaseSettings):
     # House gas. The mirror signs its own split transactions, so the account
     # spends gas continuously and no one-off amount lasts: production burned
     # the old signup grant in ~82 minutes and the mirror then failed silently.
-    # A new house account is funded AT the floor (`HouseAccountProvisioner.
-    # _fund`), and the top-up loop lifts it to the target within one check
-    # interval. A floor of 5 ETH is ~45 hours of headroom at the observed
-    # post-fix rate (0.111 ETH/h), so a refill is never urgent. Topping up is
-    # gas ONLY. The zero-balance path in HouseAccountProvisioner means "the
-    # chain was reset, re-onboard from scratch", and the two must stay apart.
+    # A new house account is funded with at least the floor, and enough for its
+    # approvals (`HouseAccountProvisioner._fund`), and the top-up loop lifts it
+    # to the target within one check interval. A floor of 5 ETH is ~45 hours of
+    # headroom at the observed post-fix rate (0.111 ETH/h), so a refill is
+    # never urgent. Topping up is gas ONLY. The zero-balance path in
+    # HouseAccountProvisioner means "the chain was reset, re-onboard from
+    # scratch", and the two must stay apart.
     liquidity_gas_floor_wei: int = Field(
         default=5 * 10**18, validation_alias="AGENTPIT_LIQUIDITY_GAS_FLOOR_WEI"
     )
