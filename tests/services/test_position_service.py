@@ -321,6 +321,42 @@ def test_the_payout_is_read_from_the_claims_receipt_for_the_claimant():
     ]
 
 
+def test_a_claim_that_mined_with_no_payout_after_the_gate_expected_one_is_warned_about(
+    caplog,
+):
+    """The gate computed a payout from the balances, yet the receipt names none
+    paid to the claimant (a payout-vector mismatch, a redeemer other than the
+    wallet). The REDEEM row is written as it always was, at zero, but the
+    surprise is logged with the market and the transaction, never the key."""
+    caplog.set_level(logging.WARNING, logger=_LOGGER)
+    db, user, mid = _setup(MarketState.RESOLVED)
+    chain = _FakeChain(balances=(100_000_000, 0), usd=(5,))
+    sponsor = _FakeSponsor(payout=0)
+
+    out = _service(db, chain, sponsor).redeem(user, mid)
+
+    assert out.collateral_amount == 0
+    assert _redeem_amounts(db, user) == [0]
+    warnings = [
+        r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert f"market {mid}" in message
+    assert sponsor.hashes[0] in message
+    assert user.api_key not in message
+
+
+def test_a_claim_with_a_payout_in_its_receipt_logs_no_warning(caplog):
+    caplog.set_level(logging.WARNING, logger=_LOGGER)
+    db, user, mid = _setup(MarketState.RESOLVED)
+    chain = _FakeChain(balances=(100_000_000, 0), usd=(5,))
+
+    _service(db, chain, _FakeSponsor(payout=100_000_000)).redeem(user, mid)
+
+    assert [r for r in caplog.records if r.name == _LOGGER] == []
+
+
 def test_the_new_balance_is_one_fresh_read_after_the_claim_and_none_before():
     """`new_usdc_balance` is what the wallet holds once the claim has landed.
     No balance is read before the send: nothing needs the old figure now."""

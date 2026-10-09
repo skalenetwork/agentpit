@@ -218,6 +218,18 @@ class PositionService:
             # be larger than the payout, or negative, and the profile page
             # reads a payout of zero or less as a lost market.
             paid = self._onchain.redeemed_payout(receipt, user.eth_address)
+            if paid <= 0:
+                # The gate expected `payout` (> 0), so a receipt with none
+                # paid to the claimant is a surprise: a payout vector that
+                # moved, or a redeemer other than the wallet. The REDEEM row
+                # is still written, at what the receipt says.
+                log.warning(
+                    "claim transaction %s on market %s mined but paid the "
+                    "claimant nothing; the gate expected %d",
+                    tx_hash,
+                    market_id,
+                    payout,
+                )
             self._confirm(
                 user, "REDEEM", market_id, tx_hash, {"collateral_amount": paid}
             )
