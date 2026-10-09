@@ -24,6 +24,7 @@ from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
     GasBudgetExceededError,
+    GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientGasError,
     TransactionInProgressError,
@@ -356,13 +357,24 @@ def test_a_second_balance_refusal_is_402(message):
     assert _used(db, user) == 2 * TRANSFER_GAS  # both top-ups were paid
 
 
-def test_a_second_fee_refusal_propagates_as_it_is():
+@pytest.mark.parametrize("kind", ["claim", "split"])
+def test_a_second_fee_refusal_is_a_retryable_503_and_hands_the_reservation_back(kind):
+    """The fee rose again between the re-sizing and the retry: the node
+    refused both signatures at import, so neither can mine. Not the raw
+    `Web3RPCError` (a 500) it used to propagate as: `GasPriceMovedError`
+    (503), "try again". Nothing is in flight, so a split's reservation goes
+    back; both top-ups mined, so their transfers stay booked."""
     db = fresh_test_db()
     user = _user(db)
     chain = _Chain(refusals=[_refused(SKALED_FEE_LOW), _refused(SKALED_FEE_LOW)])
-    with pytest.raises(Web3RPCError, match="eth_gasPrice"):
-        _send(db, chain, user, [_Call()], "claim")
+    with pytest.raises(GasPriceMovedError) as caught:
+        _send(db, chain, user, [_Call()], kind)
+    assert isinstance(caught.value.__cause__, Web3RPCError)
+    assert str(caught.value) == (
+        "the network fee rose while sending — try again in a moment"
+    )
     assert len(chain.sends) == 2
+    assert _used(db, user) == 2 * TRANSFER_GAS
 
 
 def test_each_call_gets_its_own_resize_and_retry():

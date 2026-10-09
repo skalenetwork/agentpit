@@ -40,6 +40,7 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     GasBudgetExceededError,
+    GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientGasError,
     TransactionInProgressError,
@@ -177,6 +178,12 @@ class UserGasSponsor:
         a receipt timeout: the reservation stands. The error propagates as it
         is.
 
+        The node refusing a call at import for its fee or for the wallet's
+        balance is answered by one resize-and-retry of that call. If the node
+        refuses the retry too, neither signature can mine and the reservation
+        goes back: a second balance refusal is `InsufficientGasError` (402),
+        a second fee refusal `GasPriceMovedError` (503, "try again").
+
         `on_signed(i, tx_hash)` is called each time call `i` is signed, before
         its transaction is broadcast, so the caller can record a transaction
         that may mine even if this never returns. A call is signed again only
@@ -244,7 +251,7 @@ class UserGasSponsor:
                     if retried:
                         if balance_low:
                             raise InsufficientGasError(_CANNOT_PAY) from exc
-                        raise
+                        raise GasPriceMovedError() from exc
                     # The price rose since sizing, or the balance read was
                     # stale: size what is left again and send once more. The
                     # reservation stays as it is; the booking below trues it up.
