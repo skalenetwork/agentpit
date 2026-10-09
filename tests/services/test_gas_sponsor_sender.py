@@ -22,15 +22,15 @@ from web3.datastructures import AttributeDict
 from agentpit.domain.exceptions import DomainError, GasTopUpTimeoutError
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.tx_sender import TRANSFER_GAS, AdminTxSender
+from tests.db_helpers import fresh_test_db
 from tests.fake_skaled import FakeSkaled, make_sender
-from tests.services.test_gas_sponsor import (  # noqa: F401  (fixtures)
+from tests.services.test_gas_sponsor import (
     SKALED_BALANCE_LOW,
     _refused,
     _send,
     _sponsor,
-    db,
-    used,
-    user,
+    _used,
+    _user,
 )
 
 PRICE = 200_000  # FakeSkaled.fee
@@ -92,12 +92,12 @@ def _setup(*, mine_on_sleep: bool, **sender_kw):
 
 
 @pytest.mark.parametrize(("kind", "standing"), [("claim", 0), ("split", RESERVED)])
-def test_a_full_pipeline_fails_the_top_up_within_the_sponsors_timeout(
-    db, user, used, kind, standing
-):
+def test_a_full_pipeline_fails_the_top_up_within_the_sponsors_timeout(kind, standing):
     # Waiting for a slot used to take the sender's own 120 s first, then up to
     # 30 s more for the receipt, all with the user's lock held.
     chain, sender, clock, admin = _setup(mine_on_sleep=False, slot_timeout=120)
+    db = fresh_test_db()
+    user = _user(db)
     other = Account.create().address
     for _ in range(4):  # four transfers nothing mines: every slot is taken
         sender.submit_value(other, 1)
@@ -113,7 +113,7 @@ def test_a_full_pipeline_fails_the_top_up_within_the_sponsors_timeout(
     with _sponsor(db, admin).locked(user):  # the lock is free
         pass
     # Nothing went out, so a split's reservation stands only as an over-count.
-    assert used() == standing
+    assert _used(db, user) == standing
 
 
 def test_the_sponsor_passes_its_timeout_as_the_slot_timeout():
@@ -127,20 +127,20 @@ def test_the_sponsor_passes_its_timeout_as_the_slot_timeout():
 
 
 @pytest.mark.parametrize("kind", ["claim", "split"])
-def test_a_top_up_the_node_lost_is_a_retryable_503_and_the_next_send_funds_once(
-    db, user, used, kind
-):
+def test_a_top_up_the_node_lost_is_a_retryable_503_and_the_next_send_funds_once(kind):
     # The node said OK to the top-up and never queued it. The sender fills the
     # nonce with a gap filler and reports `TxDropped`; the sponsor answers "busy,
     # try again" (503) and, as nothing mined, hands a split's reservation back.
     chain, _sender, _clock, admin = _setup(mine_on_sleep=True, stall_after=5)
+    db = fresh_test_db()
+    user = _user(db)
     chain.lose.add(0)  # the first transaction the admin sends
 
     error = _send(db, user, admin, kind, raises=GasTopUpTimeoutError)
 
     assert isinstance(error, DomainError)
     assert admin.user_sends == []
-    assert used() == 0  # nothing mined: a split's reservation is back
+    assert _used(db, user) == 0  # nothing mined: a split's reservation is back
     with _sponsor(db, admin).locked(user):  # and the lock is free
         pass
 
