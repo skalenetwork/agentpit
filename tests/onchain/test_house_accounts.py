@@ -7,32 +7,27 @@ from agentpit.onchain.web3_client import Web3Client
 from tests.db_helpers import fresh_test_db
 
 
-def _provisioner(count=3):
-    s = Settings(liquidity_house_account_count=count)
+def _provisioner():
+    s = Settings()
     d = Deployment.load(s.deployment_path)
     w = Web3Client(s, d)
     admin = OnchainAdmin(w, Contracts(w.web3, d))
-    return HouseAccountProvisioner(fresh_test_db(), admin, s), admin, d
+    return HouseAccountProvisioner(fresh_test_db(), admin, s), admin
 
 
 def test_provision_creates_and_funds():
-    prov, admin, _d = _provisioner(count=3)
-    users = prov.ensure_provisioned()
-    assert len(users) == 3
-    for u in users:
-        assert u.is_bot is True
-        assert u.onboarded_at is not None
-        # The house is funded by one mintTo of house_mint_raw, not by drips.
-        # Asserting against signup_grant_raw would be vacuous now: 1e24 clears
-        # a $100k grant whether the house was minted, dripped, or funded by
-        # accident, so the one test proving house funding would prove nothing.
-        assert admin.usd_balance(u.eth_address) >= prov._settings.house_mint_raw
-        assert admin.native_balance(u.eth_address) > 0
+    prov, admin = _provisioner()
+    u = prov.ensure_provisioned()
+    assert u.is_bot is True
+    assert u.onboarded_at is not None
+    # The house is funded by one mintTo of house_mint_raw, not by drips.
+    # Asserting against signup_grant_raw would be vacuous now: 1e24 clears
+    # a $100k grant whether the house was minted, dripped, or funded by
+    # accident, so the one test proving house funding would prove nothing.
+    assert admin.usd_balance(u.eth_address) >= prov._settings.house_mint_raw
+    assert admin.native_balance(u.eth_address) > 0
 
 
 def test_provision_is_idempotent():
-    prov, _admin, _d = _provisioner(count=3)
-    first = prov.ensure_provisioned()
-    second = prov.ensure_provisioned()
-    assert {u.email for u in first} == {u.email for u in second}
-    assert len(second) == 3  # no duplicates created
+    prov, _admin = _provisioner()
+    assert prov.ensure_provisioned().user_id == prov.ensure_provisioned().user_id

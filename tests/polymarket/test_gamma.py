@@ -13,12 +13,13 @@ def _market(state=MarketState.ACTIVE, outcome_label=None) -> Market:
         slug="will-it-rain",
         market_id=7,
         condition_id=ConditionId("0x" + "ab" * 32),
+        question_id="0x" + "cd" * 32,
         description="desc",
         erc1155_tokens=[("111", "Yes"), ("222", "No")],
         start_date=1_700_000_000,
         end_date=1_800_000_000,
         market_state=state,
-        resolved_outcome=0 if state == MarketState.RESOLVED else None,
+        payouts=(1, 0) if state == MarketState.RESOLVED else None,
         outcome_label=outcome_label,
     )
 
@@ -56,6 +57,13 @@ def test_to_gamma_market_closed_states():
         assert g.active is False
         assert g.closed is True
         assert g.acceptingOrders is False
+
+
+def test_a_resolved_market_prices_its_payouts():
+    won = to_gamma_market(_market(MarketState.RESOLVED))
+    split = to_gamma_market(_market(MarketState.RESOLVED).model_copy(update={"payouts": (1, 1)}))
+    assert (won.winner, won.outcomePrices) == ("Yes", '["1","0"]')
+    assert (split.winner, split.outcomePrices) == (None, '["0.5","0.5"]')
 
 
 def test_to_gamma_event_nests_markets():

@@ -1,7 +1,13 @@
+import asyncio
 import logging
+import threading
+import time
+from collections.abc import Callable
 
-from eth_utils import keccak
+import httpx
+
 from web3.contract.contract import ContractFunction
+from web3.exceptions import TimeExhausted
 
 from agentpit.datastructures.cancel_market_response import CancelMarketResponse
 from agentpit.datastructures.condition_id import ConditionId
@@ -11,13 +17,25 @@ from agentpit.datastructures.list_markets_response import (
     ListMarketsResponse,
     MarketStatsResponse,
 )
-from agentpit.datastructures.market import Market
+from agentpit.datastructures.market import Market, Payouts
+from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.resolve_market_request import ResolveMarketRequest
+from agentpit.polymarket.category_resolver import category_rank
 from agentpit.polymarket.gamma import to_gamma_market
+from agentpit.polymarket.polymarket_sync import (
+    RESOLUTION_BATCH,
+    UpstreamMarket,
+    bind_market_to_upstream_event,
+    clob_market,
+    fetch_markets,
+    resolutions,
+)
 from agentpit.polymarket.pricing import prices_for_markets
 from agentpit.db.session import DbSession
-from agentpit.db.table_read import TableRead
+from agentpit.db.table_read import EventFields, MarketFields, TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.common import check_state
+from agentpit.liquidity import feed
 from agentpit.domain.exceptions import (
     InvalidPaginationError,
     MarketNotFoundError,
@@ -25,8 +43,10 @@ from agentpit.domain.exceptions import (
 )
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.ctf_ids import binary_market_ids
-from agentpit.onchain.tx_sender import PendingTx, stops_sending
+from agentpit.onchain.tx_sender import PendingTx, TxDropped, stops_sending
 from agentpit.services.event_service import EventService
+from agentpit.services.leaderboard_service import touch_holders
+from agentpit.services.position_service import PositionService
 
 log = logging.getLogger(__name__)
 
@@ -50,8 +70,9 @@ class MarketService:
     def market_stats(self) -> MarketStatsResponse:
         with self._db.read() as conn:
             return MarketStatsResponse(
-                active=TableRead.count_active_markets(
+                active=TableRead.count_open_markets(
                     conn,
+                    feed.sided(),
                     excluded_categories=self._excluded_categories,
                     excluded_tags=self._excluded_tags,
                 )
@@ -116,8 +137,7 @@ class MarketService:
 
     def create_market(self, payload: CreateMarketRequest) -> Market:
         # Local creation runs on-chain prepareCondition + registerToken so that
-        # subsequent fills can settle. The Polymarket sync path supplies
-        # condition_id directly and skips this whole branch.
+        # subsequent fills can settle.
         if payload.condition_id is None and payload.outcome_labels is not None:
             self._prepare_market_on_chain(payload)
 
@@ -143,51 +163,94 @@ class MarketService:
     def _prepare_market_on_chain(self, payload: CreateMarketRequest) -> None:
         """Run prepareCondition + registerToken and back-fill payload fields."""
         condition_id, erc1155_tokens = prepare_market_on_chain(
-            self._onchain, payload.question, payload.outcome_labels or []
+            self._onchain,
+            bytes.fromhex(payload.question_id[2:]),
+            payload.outcome_labels or [],
         )
         payload.condition_id = condition_id
         payload.erc1155_tokens = erc1155_tokens
 
     def activate_market(self, market_id: int) -> Market:
-        with self._db.write() as conn:
-            try:
-                return TableWrite.activate_market(conn, market_id)
-            except ValueError as e:
-                raise MarketStateError(str(e)) from e
+        return self._transition(market_id, MarketState.DRAFT, MarketState.ACTIVE)
 
     def close_market(self, market_id: int) -> Market:
-        with self._db.write() as conn:
-            try:
-                return TableWrite.close_market(conn, market_id)
-            except ValueError as e:
-                raise MarketStateError(str(e)) from e
+        return self._transition(market_id, MarketState.ACTIVE, MarketState.CLOSED)
 
     def cancel_market(self, market_id: int) -> CancelMarketResponse:
-        with self._db.write() as conn:
-            try:
-                market, refunds_processed = TableWrite.cancel_market(conn, market_id)
-            except ValueError as e:
-                raise MarketStateError(str(e)) from e
+        state = self.get_market(market_id).market_state
+        if state in (MarketState.RESOLVED, MarketState.CANCELLED):
+            raise MarketStateError(
+                f"Market {market_id} is already {state.value.lower()}"
+            )
         return CancelMarketResponse(
-            market_id=market.market_id,
+            market_id=market_id,
             message="Market cancelled successfully",
-            refunds_processed=refunds_processed,
-            market=market,
+            refunds_processed=0,
+            market=self._transition(market_id, state, MarketState.CANCELLED),
         )
 
     def resolve_market(self, market_id: int, payload: ResolveMarketRequest) -> Market:
-        with self._db.write() as conn:
-            market = TableRead.read_market(conn, market_id)
-            if market is None:
-                raise MarketNotFoundError(market_id)
-            try:
-                return TableWrite.resolve_market(
-                    conn,
-                    market_id=market_id,
-                    winning_outcome_index=payload.winning_outcome_index,
-                )
-            except ValueError as e:
-                raise MarketStateError(str(e)) from e
+        market = self.get_market(market_id)
+        if market.market_state == MarketState.RESOLVED:
+            raise MarketStateError(f"Market {market_id} is already resolved")
+        if payload.winning_outcome_index > 1:
+            raise MarketStateError(
+                f"Invalid winning_outcome_index {payload.winning_outcome_index}: "
+                "a market has outcomes 0 and 1"
+            )
+        payouts: Payouts = (
+            int(payload.winning_outcome_index == 0),
+            int(payload.winning_outcome_index == 1),
+        )
+        pay_out(self._db, self._onchain, {market_id: payouts})
+        resolved = self.get_market(market_id)
+        if resolved.market_state != MarketState.RESOLVED:
+            raise MarketStateError(
+                f"Market {market_id} did not resolve (state {resolved.market_state.value}); "
+                "a market resolves from ACTIVE or CLOSED once its payouts are on chain"
+            )
+        return resolved
+
+    def _transition(
+        self, market_id: int, expected: MarketState, new: MarketState
+    ) -> Market:
+        if not transition(self._db, market_id, expected, new):
+            current = self.get_market(market_id).market_state.value
+            raise MarketStateError(
+                f"Market {market_id} is not in {expected.value} state (current: {current})"
+            )
+        return self.get_market(market_id)
+
+
+_market_locks: dict[int, threading.Lock] = {}
+
+
+def market_lock(market_id: int) -> threading.Lock:
+    return _market_locks.setdefault(market_id, threading.Lock())
+
+
+def transition(
+    db: DbSession,
+    market_id: int,
+    expected: MarketState,
+    new: MarketState,
+    payouts: Payouts | None = None,
+) -> bool:
+    check_state(new != MarketState.RESOLVED or payouts is not None)
+    with market_lock(market_id), db.write() as conn:
+        if not TableWrite.set_market_state(conn, market_id, expected, new, payouts):
+            return False
+        cancelled = TableWrite.cancel_all_market_orders(conn, market_id)
+    log.info(
+        "market %d %s -> %s, %d live orders cancelled",
+        market_id,
+        expected.value,
+        new.value,
+        cancelled,
+    )
+    if new == MarketState.RESOLVED:
+        touch_holders()
+    return True
 
 
 # A chunk of up to ~64 transactions; blocks come every 1-2 s under load.
@@ -198,16 +261,17 @@ class PreparedMarkets(list[tuple[ConditionId, list[tuple[str, str]]] | Exception
     """What `prepare_markets_on_chain` returns: one result per item, as a
     plain list, plus `stop`. `stop` is the first error of this chunk's sends
     that said the node is out of reach or no admin slot freed up
-    (`stops_sending`), or what `submit_many` raised. It is set even when the
-    market it hit shows another error (a failed registerToken is judged by
-    the chain read), so the sync can end its chain work for the pass."""
+    (`stops_sending`), what `submit_many` raised, or the first receipt wait
+    that timed out. It is set even when the market it hit shows another error
+    (a failed registerToken is judged by the chain read), so the sync can end
+    its chain work for the pass."""
 
     stop: Exception | None = None
 
 
 class _ConditionPlan:
     """On-chain work for one condition id, shared by every input that asked
-    for the same question."""
+    for the same question id."""
 
     def __init__(self, question_id: bytes, condition_id: bytes, tokens: list[int]):
         self.question_id = question_id
@@ -219,11 +283,11 @@ class _ConditionPlan:
 
 
 def prepare_markets_on_chain(
-    admin: OnchainAdmin, items: list[tuple[str, list[str]]]
+    admin: OnchainAdmin, items: list[tuple[bytes, list[str]]]
 ) -> PreparedMarkets:
     """Prepare many binary markets on the local CTF + Exchange at once.
 
-    For each `(question, outcome_labels)`: `prepareCondition` if the condition
+    For each `(question_id, outcome_labels)`: `prepareCondition` if the condition
     is new, `registerToken` if its tokens are not registered, then a check that
     both persisted. Ids are derived off-chain, chain state is read in JSON-RPC
     batches, and every transaction is broadcast before any receipt is awaited,
@@ -231,12 +295,12 @@ def prepare_markets_on_chain(
 
     Returns one result per item, in order: `(condition_id, [(token_id,
     label), ...])`, or the exception that market failed with. Identical
-    questions share one condition and get the same ids, as they always did.
+    question ids share one condition and get the same ids.
     Every transaction goes out in one `submit_many`: if it raises, every
     market still needing a transaction gets that exception; a failed
     prepareCondition fails its market. A failed state read raises for the
-    whole batch. The result's `stop` says whether the sends met an outage
-    (`PreparedMarkets`).
+    whole batch. The result's `stop` says whether the sends or their receipts
+    met an outage (`PreparedMarkets`).
     """
     results: list[tuple[ConditionId, list[tuple[str, str]]] | Exception | None] = [
         None
@@ -244,13 +308,12 @@ def prepare_markets_on_chain(
     plans: dict[bytes, _ConditionPlan] = {}
     oracle = admin.oracle_address
     collateral = admin.collateral_address
-    for i, (question, labels) in enumerate(items):
+    for i, (question_id, labels) in enumerate(items):
         if len(labels) != 2:
             results[i] = MarketStateError(
                 "exchange.registerToken only supports binary (YES/NO) markets"
             )
             continue
-        question_id = keccak(text=question)
         condition_id, tokens = binary_market_ids(oracle, collateral, question_id)
         plan = plans.setdefault(
             condition_id, _ConditionPlan(question_id, condition_id, tokens)
@@ -279,8 +342,9 @@ def _run_condition_plans(
     admin: OnchainAdmin, plans: list[_ConditionPlan]
 ) -> Exception | None:
     """Send, await and check every plan's transactions; each plan's error is
-    set on it. Returns the first send error that `stops_sending` (or what
-    `submit_many` raised), else None."""
+    set on it. Returns the first send error that `stops_sending`, what
+    `submit_many` raised, or the first receipt wait that timed out, else
+    None."""
     stop: Exception | None = None
     states = admin.read_market_states([(p.condition_id, p.tokens) for p in plans])
     calls: list[tuple[ContractFunction, int]] = []
@@ -342,11 +406,13 @@ def _run_condition_plans(
                     tx.nonce,
                     outcome,
                 )
+            if stop is None and isinstance(outcome, (TimeExhausted, TxDropped)):
+                stop = outcome
 
     todo = [p for p in plans if p.error is None]
     if not todo:
         return stop
-    # The chain state is the verdict, not the receipts, exactly as before:
+    # The chain state is the verdict, not the receipts:
     # registerToken reverts AlreadyRegistered when another path registered the
     # pair first, and a transaction that timed out here may still land (the
     # next sync pass then finds the market prepared and skips the sends).
@@ -372,14 +438,316 @@ def _run_condition_plans(
 
 
 def prepare_market_on_chain(
-    admin: OnchainAdmin, question: str, outcome_labels: list[str]
+    admin: OnchainAdmin, question_id: bytes, outcome_labels: list[str]
 ) -> tuple[ConditionId, list[tuple[str, str]]]:
     """Prepare one binary market on the local CTF + Exchange.
 
     `prepare_markets_on_chain` for a single item: used by local market
-    creation (`MarketService.create_market`) and the single-market sync path.
+    creation (`MarketService.create_market`).
     """
-    (result,) = prepare_markets_on_chain(admin, [(question, outcome_labels)])
+    (result,) = prepare_markets_on_chain(admin, [(question_id, outcome_labels)])
     if isinstance(result, Exception):
         raise result
     return result
+
+
+_CHAIN_SECONDS = 5.0
+_REDEEM_BUDGET = 10
+_RESOLVING_SECONDS = 900
+_CREATE_CHUNKS = 4
+
+
+class ChainTask:
+    def __init__(self, db: DbSession, admin: OnchainAdmin):
+        self._db = db
+        self._admin = admin
+        self._lock = threading.Lock()
+        self._admitted: dict[str, UpstreamMarket] = {}
+        self._resolved: dict[int, Payouts] = {}
+
+    def admit(self, markets: list[UpstreamMarket]) -> None:
+        with self._lock:
+            self._admitted.update((m.condition, m) for m in markets)
+
+    def resolve(self, market_id: int, payouts: Payouts) -> None:
+        with self._lock:
+            self._resolved[market_id] = payouts
+
+    async def run(self) -> None:
+        with httpx.Client(timeout=10) as data:
+            while True:
+                try:
+                    await asyncio.to_thread(self.run_once, data)
+                except Exception:
+                    log.exception("Chain task pass failed")
+                await asyncio.sleep(_CHAIN_SECONDS)
+
+    async def run_redeem(self) -> None:
+        while True:
+            try:
+                await asyncio.to_thread(
+                    redeem_resolved_markets, self._db, self._admin, _REDEEM_BUDGET
+                )
+            except Exception:
+                log.exception("Redeem pass failed")
+            await asyncio.sleep(_CHAIN_SECONDS)
+
+    def run_once(self, data: httpx.Client) -> None:
+        with self._lock:
+            admitted, self._admitted = list(self._admitted.values()), {}
+            resolved, self._resolved = self._resolved, {}
+        now = int(time.time())
+        with self._db.read() as conn:
+            ended = TableRead.ended_unresolved(
+                conn, now - _RESOLVING_SECONDS, now, RESOLUTION_BATCH
+            )
+        resolved |= {ended[c]: p for c, p in resolutions(data, list(ended)).items()}
+        pay_out(self._db, self._admin, resolved)
+        with self._db.read() as conn:
+            carried = TableRead.carried_condition_ids(
+                conn, [m.condition for m in admitted]
+            )
+        new = [m for m in admitted if m.condition not in carried]
+        cap = _CREATE_CHUNKS * self._admin.sync_chunk_size
+        with self._lock:
+            self._admitted = {m.condition: m for m in new[cap:]} | self._admitted
+        create_markets(self._db, self._admin, new[:cap])
+
+
+def create_markets(
+    db: DbSession, admin: OnchainAdmin, markets: list[UpstreamMarket]
+) -> list[Market]:
+    with db.read() as conn:
+        carried = TableRead.carried_condition_ids(conn, [m.condition for m in markets])
+    new = [m for m in markets if m.condition not in carried]
+    created: list[Market] = []
+    for start in range(0, len(new), admin.sync_chunk_size):
+        batch = new[start : start + admin.sync_chunk_size]
+        prepared = prepare_markets_on_chain(
+            admin, [(bytes.fromhex(m.condition[2:]), list(m.labels)) for m in batch]
+        )
+        for m, outcome in zip(batch, prepared, strict=True):
+            if isinstance(outcome, Exception):
+                if prepared.stop is None:
+                    log.warning(
+                        "Skip %r (%s: %s)", m.question, type(outcome).__name__, outcome
+                    )
+                continue
+            condition_id, tokens = outcome
+            try:
+                with db.write() as conn:
+                    market = TableWrite.create_market(
+                        conn,
+                        CreateMarketRequest(
+                            question=m.question,
+                            description=m.description,
+                            erc1155_tokens=tokens,
+                            slug=m.slug,
+                            start_date=m.start_date,
+                            end_date=m.end_date,
+                            polymarket_id=m.pm_id,
+                            polymarket_condition_id=m.condition,
+                            polymarket_yes_token_id=m.tokens[0],
+                            polymarket_no_token_id=m.tokens[1],
+                            condition_id=condition_id,
+                            question_id=m.condition,
+                            state=MarketState.ACTIVE,
+                            outcome_label=m.label,
+                            icon_url=m.icon,
+                        ),
+                        True,
+                    )
+                    bind_market_to_upstream_event(conn, market.market_id, m)
+            except Exception:
+                log.exception("Insert of %r failed", m.question)
+                continue
+            created.append(market)
+        if prepared.stop is not None:
+            log.warning(
+                "Chain step stopped (%s: %s); %d new markets left for the next pass",
+                type(prepared.stop).__name__,
+                prepared.stop,
+                len(new) - len(created),
+            )
+            break
+    if created:
+        log.info("Created %d markets", len(created))
+    return created
+
+
+def pay_out(db: DbSession, admin: OnchainAdmin, resolved: dict[int, Payouts]) -> None:
+    with db.read() as conn:
+        markets = [
+            m
+            for market_id in resolved
+            if (m := TableRead.read_market(conn, market_id)) is not None
+            and m.market_state in (MarketState.ACTIVE, MarketState.CLOSED)
+        ]
+    for start in range(0, len(markets), admin.sync_chunk_size):
+        batch = markets[start : start + admin.sync_chunk_size]
+        conditions = [bytes.fromhex(m.condition_id.value[2:]) for m in batch]
+        unpaid = [
+            m
+            for m, d in zip(batch, admin.payout_denominators(conditions), strict=True)
+            if d == 0
+        ]
+        if unpaid:
+            sent = admin.submit_many(
+                [
+                    admin.report_payouts_call(
+                        bytes.fromhex(m.question_id[2:]), resolved[m.market_id]
+                    )
+                    for m in unpaid
+                ]
+            )
+            admin.wait_all(
+                [tx for tx in sent if isinstance(tx, PendingTx)],
+                timeout=_PREPARE_WAIT_S,
+            )
+        for m, d in zip(batch, admin.payout_denominators(conditions), strict=True):
+            if d == 0:
+                log.warning("reportPayouts for market %s did not land", m.market_id)
+            else:
+                transition(
+                    db,
+                    m.market_id,
+                    m.market_state,
+                    MarketState.RESOLVED,
+                    resolved[m.market_id],
+                )
+
+
+def redeem_resolved_markets(db: DbSession, admin: OnchainAdmin, limit: int) -> int:
+    positions = PositionService(db, admin)
+    redeemed = 0
+    with db.read() as conn:
+        markets = TableRead.list_resolved_unredeemed_markets(conn, limit)
+    for market in markets:
+        tokens = [token for token, _ in market.erc1155_tokens]
+        with db.read() as conn:
+            users = [
+                TableRead.get_user_by_api_key(conn, api_key)
+                for api_key in TableRead.list_participant_api_keys_for_market(
+                    conn, market.market_id, tokens
+                )
+            ]
+        failed = False
+        for user in users:
+            if (
+                user is None
+                or not user.auto_redeem
+                or not any(
+                    admin.ctf_balances(user.eth_address, [int(t) for t in tokens])
+                )
+            ):
+                continue
+            try:
+                positions.redeem(user, market.market_id)
+                redeemed += 1
+            except Exception:
+                failed = True
+                log.exception(
+                    "auto-redeem failed for %s on market %s",
+                    user.eth_address,
+                    market.market_id,
+                )
+        if not failed:
+            with db.write() as conn:
+                TableWrite.mark_fully_redeemed(conn, market.market_id)
+    return redeemed
+
+
+def sweep(
+    db: DbSession, http: httpx.Client, resolve: Callable[[int, Payouts], None]
+) -> None:
+    with db.read() as conn:
+        carried = TableRead.list_carried(conn)
+    upstream = fetch_markets(http, [c.pm_condition for c in carried])
+    markets: list[tuple[int, MarketFields]] = []
+    tags: list[tuple[int, list[tuple[str, str]]]] = []
+    events: dict[int, EventFields] = {}
+    closed = reopened = resolving = 0
+    for c in carried:
+        m = upstream.get(c.pm_condition)
+        if m is None:
+            continue
+        fresh = MarketFields(
+            m.slug,
+            m.question,
+            m.description,
+            m.end_date,
+            m.icon,
+            m.label,
+            m.price_change_24h,
+        )
+        fields = c.fields._replace(
+            **{k: v for k, v in fresh._asdict().items() if v is not None}
+        )
+        if fields != c.fields:
+            markets.append((c.market_id, fields))
+        if frozenset(m.tags) != c.tags:
+            tags.append((c.market_id, list(m.tags)))
+        e = m.event
+        if (
+            c.event_id is not None
+            and c.event is not None
+            and e is not None
+            and e.polymarket_event_id == c.pm_event_id
+        ):
+            stored = events.get(c.event_id, c.event)
+            fresh_event = EventFields(
+                e.slug,
+                e.title,
+                e.icon_url,
+                e.start_date,
+                e.end_date,
+                e.volume_24hr,
+                e.volume,
+                e.liquidity,
+                e.competitive,
+                e.start_time,
+                e.game_id,
+                e.series_slug,
+                min(stored.category, m.category, key=category_rank),
+            )
+            event = stored._replace(
+                **{k: v for k, v in fresh_event._asdict().items() if v is not None}
+            )
+            if event != c.event:
+                events[c.event_id] = event
+        if c.state == MarketState.ACTIVE and (m.closed is True or m.accepting is False):
+            closed += transition(
+                db, c.market_id, MarketState.ACTIVE, MarketState.CLOSED
+            )
+        elif (
+            c.state == MarketState.CLOSED
+            and m.closed is False
+            and m.accepting is True
+            and (clob := clob_market(http, c.pm_condition)) is not None
+            and clob.accepting
+        ):
+            reopened += transition(
+                db, c.market_id, MarketState.CLOSED, MarketState.ACTIVE
+            )
+        if m.payouts is not None:
+            resolve(c.market_id, m.payouts)
+            resolving += 1
+    if markets or tags or events:
+        with db.write() as conn:
+            TableWrite.update_carried(conn, markets, list(events.items()))
+            for market_id, market_tags in tags:
+                TableWrite.replace_market_tags(
+                    conn, market_id=market_id, tags=market_tags
+                )
+    log.info(
+        "sweep: %d carried, %d missing upstream, %d markets, %d tag sets and %d events "
+        "refreshed, %d closed, %d reopened, %d resolving",
+        len(carried),
+        sum(c.pm_condition not in upstream for c in carried),
+        len(markets),
+        len(tags),
+        len(events),
+        closed,
+        reopened,
+        resolving,
+    )

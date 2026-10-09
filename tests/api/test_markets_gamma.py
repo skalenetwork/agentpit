@@ -8,6 +8,7 @@ from agentpit.api.main import app
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
+from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 
 
@@ -60,10 +61,12 @@ def test_a_resolved_market_names_its_winner_and_when(client_and_market):
     assert (before["winner"], before["resolvedAt"]) == (None, None)
     session = app.dependency_overrides[get_db_session]()
     with session.write() as conn:
-        resolved = TableWrite.resolve_market(conn, market.market_id, 1)
+        TableWrite.set_market_state(conn, market.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (0, 1))
+        resolved = TableRead.read_market(conn, market.market_id)
+    assert resolved is not None and resolved.resolved_at is not None
     g = client.get(f"/markets/{market.market_id}").json()
     assert (g["winner"], g["resolvedAt"]) == ("No", resolved.resolved_at)
-    assert resolved.resolved_at is not None
+    assert g["outcomePrices"] == '["0","1"]'
 
 
 def test_bridge_filter_by_condition_ids(client_and_market):

@@ -19,7 +19,10 @@ from agentpit.api.deps import (
     get_workos_client,
 )
 from agentpit.datastructures.register_request import RegisterRequest
+from agentpit.datastructures.user import User
 from agentpit.db.table_read import TableRead
+from agentpit.liquidity.house_accounts import HouseAccountProvisioner
+from agentpit.services.order_service import OrderService
 from agentpit.services.auth_service import AuthService
 
 # AGENTPIT_ADMIN_TOKEN is read at app startup by Settings; tests rely on
@@ -91,8 +94,8 @@ def register(client: TestClient, email: str | None = None) -> dict:
     }
 
 
-def create_market(client: TestClient, question: str | None = None) -> dict:
-    return client.post(
+def create_market(client: TestClient, question: str | None = None, *, active: bool = True) -> dict:
+    market = client.post(
         "/markets",
         json={
             "question": question or unique_question(),
@@ -101,3 +104,20 @@ def create_market(client: TestClient, question: str | None = None) -> dict:
         },
         headers=ADMIN_HDR,
     ).json()
+    if active:
+        return client.post(f"/markets/{market['market_id']}/activate", headers=ADMIN_HDR).json()
+    return market
+
+
+def house(client: TestClient) -> User:
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    return HouseAccountProvisioner(
+        overrides[get_db_session](),
+        overrides[get_onchain_admin](),
+        overrides[get_settings](),
+    ).ensure_provisioned()
+
+
+def order_service(client: TestClient) -> OrderService:
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    return OrderService(overrides[get_db_session](), overrides[get_onchain_admin]())

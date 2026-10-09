@@ -94,11 +94,11 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
     @apps.tool(
         resource_uri=CARD,
         title="Search markets",
-        description="Live markets with bids and asks on both sides, busiest first: slug, question, Polymarket url, closing time, and each outcome's bid and ask.",
+        description="Live markets with bids and asks on both sides, busiest first: slug, question, Polymarket url, closing time or a game's kickoff, and each outcome's bid and ask.",
         annotations=READ,
     )
     def search_markets(
-        query: Annotated[str | None, Field(description="Words to match in the question or event, e.g. 'bitcoin'. Omit for the busiest markets.")] = None,
+        query: Annotated[str | None, Field(description="Words to match in the question, event or league, e.g. 'bitcoin' or 'nfl'. Omit for the busiest markets.")] = None,
         limit: Annotated[SearchLimit, Field(description="1 to 20 markets, default 10.")] = 10,
     ) -> MarketList:
         return desk.search_markets(query, limit)
@@ -106,7 +106,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
     @apps.tool(
         resource_uri=CARD,
         title="Get market",
-        description="One market in full: question, Polymarket url, rules, status, closing time, winner, and per outcome the bid, ask, last price, 1-day change and 5 book levels a side.",
+        description="One market in full: question, Polymarket url, rules, status, closing time or a game's kickoff, winner, and per outcome the bid, ask, last price, 1-day change and 5 book levels a side.",
         annotations=READ,
     )
     def get_market(market: MarketSlug) -> MarketDetail:
@@ -155,7 +155,8 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
             "Simulated trade on AgentPit, a paper-trading exchange: paper money with no cash value, nothing real "
             "is bought, sold or paid. Buys or sells shares of one outcome; a share pays $1 of paper money if its outcome happens. "
             "Without limit_price the order fills now within 2 cents of the best price and the rest is dropped; "
-            "with limit_price any unfilled part rests on the book. Status is filled, partial, resting or unfilled. "
+            "with limit_price any unfilled part rests until Polymarket's price reaches it, then fills against the house. "
+            "Status is filled, partial, resting or unfilled. "
             "A trade that fills returns profile_url, your public page."
         ),
         annotations=TRADE,

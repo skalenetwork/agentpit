@@ -5,32 +5,19 @@ from tests.db_helpers import fresh_test_conn
 
 
 def _insert_market(conn, *, cid, state, end_date, tokens, fully=False) -> int:
-    # RESOLVED markets require a RESOLVED_OUTCOME per the Market domain invariant.
-    resolved_outcome = 1 if state == "RESOLVED" else None
+    # RESOLVED markets require PAYOUTS per the Market domain invariant.
+    payouts = [0, 1] if state == "RESOLVED" else None
     row = conn.execute(
         """
         INSERT INTO markets
-            (CONDITION_ID, QUESTION, SLUG, DESCRIPTION, ERC1155_TOKENS,
-             START_DATE, END_DATE, MARKET_STATE, FULLY_REDEEMED, RESOLVED_OUTCOME)
-        VALUES (%s, 'Q?', %s, 'd', %s, 100, %s, %s, %s, %s)
+            (CONDITION_ID, QUESTION_ID, QUESTION, SLUG, DESCRIPTION, ERC1155_TOKENS,
+             START_DATE, END_DATE, MARKET_STATE, FULLY_REDEEMED, PAYOUTS)
+        VALUES (%s, %s, 'Q?', %s, 'd', %s, 100, %s, %s, %s, %s)
         RETURNING MARKET_ID
         """,
-        (cid, cid, json.dumps(tokens), end_date, state, fully, resolved_outcome),
+        (cid, cid, cid, json.dumps(tokens), end_date, state, fully, payouts),
     ).fetchone()
     return row["MARKET_ID"]
-
-
-def test_list_unresolved_ended_markets():
-    conn = fresh_test_conn()
-    ended = _insert_market(conn, cid="0x01", state="ACTIVE", end_date=500,
-                           tokens=[["1", "YES"], ["2", "NO"]])
-    _insert_market(conn, cid="0x02", state="ACTIVE", end_date=5000,
-                   tokens=[["3", "YES"], ["4", "NO"]])  # not ended yet
-    _insert_market(conn, cid="0x03", state="RESOLVED", end_date=500,
-                   tokens=[["5", "YES"], ["6", "NO"]])  # already resolved
-
-    out = TableRead.list_unresolved_ended_markets(conn, now=1000)
-    assert [m.market_id for m in out] == [ended]
 
 
 def test_list_resolved_unredeemed_markets():
@@ -42,8 +29,9 @@ def test_list_resolved_unredeemed_markets():
     _insert_market(conn, cid="0x13", state="ACTIVE", end_date=500,
                    tokens=[["5", "YES"], ["6", "NO"]])  # not resolved
 
-    out = TableRead.list_resolved_unredeemed_markets(conn)
+    out = TableRead.list_resolved_unredeemed_markets(conn, 10)
     assert [m.market_id for m in out] == [open_resolved]
+    assert TableRead.list_resolved_unredeemed_markets(conn, 0) == []
 
 
 def test_list_participant_api_keys_for_market():

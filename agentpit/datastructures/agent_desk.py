@@ -23,6 +23,7 @@ class MarketCard(BaseModel):
     question: str
     url: str | None
     category: str | None
+    starts_at: datetime | None
     closes_at: datetime | None
     outcomes: list[Quote]
 
@@ -45,6 +46,7 @@ class MarketDetail(BaseModel):
     category: str | None
     rules: str
     status: str
+    starts_at: datetime | None
     closes_at: datetime | None
     winner: str | None
     outcomes: list[OutcomeBook]

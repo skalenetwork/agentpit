@@ -15,12 +15,14 @@ from agentpit.datastructures.split_position_request import SplitPositionRequest
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import InsufficientGasError
-from agentpit.polymarket.polymarket_sync import (
-    auto_redeem_resolved_markets,
-    create_polymarket_markets_if_needed,
-    mirror_polymarket_resolutions,
+from agentpit.polymarket.polymarket_sync import UpstreamMarket, parse
+from agentpit.services.market_service import (
+    create_markets,
+    pay_out,
+    redeem_resolved_markets,
 )
 from agentpit.services.position_service import PositionService
+from tests.chain_fakes import gamma_row
 
 
 def _build_admin_and_db():
@@ -59,31 +61,16 @@ def _onboard_user(db, admin, *, auto_redeem: bool = True):
         return TableRead.get_user_by_userid(conn, user_id)
 
 
-def _pm(question_suffix: str) -> dict:
-    return {
-        "id": int(secrets.token_hex(4), 16),
-        "conditionId": "0x" + secrets.token_hex(32),
-        "question": f"Auto redeem {question_suffix}?",
-        "description": "d",
-        "slug": f"auto-redeem-{question_suffix}",
-        "startDate": "2020-01-01T00:00:00Z",
-        "endDate": "2020-01-02T00:00:00Z",
-        "active": True,
-        "closed": False,
-        "tokens": [
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "Yes"},
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "No"},
-        ],
-    }
-
-
-def _resolved(pm: dict, winner_index: int) -> dict:
-    out = dict(pm)
-    out["closed"] = True
-    out["tokens"] = [
-        dict(t, winner=(i == winner_index)) for i, t in enumerate(pm["tokens"])
-    ]
-    return out
+def _pm(question_suffix: str) -> UpstreamMarket:
+    m = parse(
+        gamma_row(
+            question=f"Auto redeem {question_suffix}?",
+            startDate="2020-01-01T00:00:00Z",
+            endDate="2020-01-02T00:00:00Z",
+        )
+    )
+    assert isinstance(m, UpstreamMarket)
+    return m
 
 
 def _drain_native_balance(client, user_account) -> None:
@@ -103,8 +90,7 @@ def test_auto_redeem_pays_winner_and_flags_market():
     admin, db = _build_admin_and_db()
     pm = _pm(secrets.token_hex(4))
 
-    with db.write() as conn:
-        created = create_polymarket_markets_if_needed(conn, [pm], admin)
+    created = create_markets(db, admin, [pm])
     market = created[0]
     mid = market.market_id
     yes_token = int(market.erc1155_tokens[0][0])
@@ -119,13 +105,9 @@ def test_auto_redeem_pays_winner_and_flags_market():
     assert admin.ctf_balance(user.eth_address, yes_token) == split_amount
     assert admin.ctf_balance(user.eth_address, no_token) == split_amount
 
-    fake = _resolved(pm, winner_index=0)  # YES wins
-    with db.write() as conn:
-        mirror_polymarket_resolutions(
-            conn, admin, fetcher=lambda _cid: fake, now=9_999_999_999
-        )
+    pay_out(db, admin, {mid: (1, 0)})
 
-    redeemed = auto_redeem_resolved_markets(db, admin)
+    redeemed = redeem_resolved_markets(db, admin, 10)
     assert redeemed == 1
 
     bal_after = admin.usd_balance(user.eth_address)
@@ -140,19 +122,18 @@ def test_auto_redeem_pays_winner_and_flags_market():
     assert row.fully_redeemed is True
 
     # Idempotent: a second pass redeems nobody.
-    assert auto_redeem_resolved_markets(db, admin) == 0
+    assert redeem_resolved_markets(db, admin, 10) == 0
 
 
 def test_a_holder_who_has_not_opted_in_keeps_their_tokens():
     """The other half of the guarantee, proven against the real chain rather
     than a stub: a holder who never turned auto-redeem on is skipped
-    outright. Their tokens are not moved, their balance is not touched, and
-    the market is not flagged FULLY_REDEEMED -- the winnings just wait."""
+    outright. Their tokens are not moved and their balance is not touched;
+    the market is still done, since each one is auto-redeemed once."""
     admin, db = _build_admin_and_db()
     pm = _pm(secrets.token_hex(4))
 
-    with db.write() as conn:
-        created = create_polymarket_markets_if_needed(conn, [pm], admin)
+    created = create_markets(db, admin, [pm])
     market = created[0]
     mid = market.market_id
     yes_token = int(market.erc1155_tokens[0][0])
@@ -167,13 +148,9 @@ def test_a_holder_who_has_not_opted_in_keeps_their_tokens():
     assert admin.ctf_balance(user.eth_address, yes_token) == split_amount
     assert admin.ctf_balance(user.eth_address, no_token) == split_amount
 
-    fake = _resolved(pm, winner_index=0)  # YES wins
-    with db.write() as conn:
-        mirror_polymarket_resolutions(
-            conn, admin, fetcher=lambda _cid: fake, now=9_999_999_999
-        )
+    pay_out(db, admin, {mid: (1, 0)})
 
-    assert auto_redeem_resolved_markets(db, admin) == 0
+    assert redeem_resolved_markets(db, admin, 10) == 0
 
     # Nothing moved.
     assert admin.usd_balance(user.eth_address) == bal_before
@@ -184,7 +161,7 @@ def test_a_holder_who_has_not_opted_in_keeps_their_tokens():
         row = TableRead.read_market(conn, mid)
     assert row is not None
     assert row.market_state == MarketState.RESOLVED
-    assert row.fully_redeemed is False
+    assert row.fully_redeemed is True
 
 
 def test_claiming_with_no_gas_raises_a_domain_error_not_a_crash():
@@ -196,8 +173,7 @@ def test_claiming_with_no_gas_raises_a_domain_error_not_a_crash():
     admin, db = _build_admin_and_db()
     pm = _pm(secrets.token_hex(4))
 
-    with db.write() as conn:
-        created = create_polymarket_markets_if_needed(conn, [pm], admin)
+    created = create_markets(db, admin, [pm])
     market = created[0]
     mid = market.market_id
 
@@ -208,11 +184,7 @@ def test_claiming_with_no_gas_raises_a_domain_error_not_a_crash():
         user, mid, SplitPositionRequest(amount=split_amount)
     )
 
-    fake = _resolved(pm, winner_index=0)  # YES wins
-    with db.write() as conn:
-        mirror_polymarket_resolutions(
-            conn, admin, fetcher=lambda _cid: fake, now=9_999_999_999
-        )
+    pay_out(db, admin, {mid: (1, 0)})
 
     _drain_native_balance(admin._client, user.eth_key)  # noqa: SLF001
     assert admin.native_balance(user.eth_address) == 0

@@ -32,8 +32,8 @@ def _admin() -> OnchainAdmin:
     return OnchainAdmin(client, Contracts(client.web3, d))
 
 
-def _q(tag: str) -> str:
-    return f"Batch prepare {tag} {secrets.token_hex(6)}?"
+def _q(tag: str) -> bytes:
+    return keccak(text=f"Batch prepare {tag} {secrets.token_hex(6)}?")
 
 
 def _registered(admin, tokens) -> bool:
@@ -60,9 +60,7 @@ def test_batch_prepares_and_registers_every_new_market():
 def test_already_prepared_condition_only_gets_registered():
     admin = _admin()
     q = _q("prepared")
-    from eth_utils import keccak
-
-    admin.prepare_condition(admin.oracle_address, keccak(text=q), 2)
+    admin.prepare_condition(admin.oracle_address, q, 2)
     (result,) = prepare_markets_on_chain(admin, [(q, ["Yes", "No"])])
     assert not isinstance(result, Exception)
     assert _registered(admin, result[1])
@@ -213,7 +211,7 @@ def test_submit_many_raising_fails_every_market_that_needed_a_transaction():
     admin = _FakeAdmin(error=boom)
     ready_q = _q("ready")
     ready_cid, ready_tokens = binary_market_ids(
-        admin.oracle_address, admin.collateral_address, keccak(text=ready_q)
+        admin.oracle_address, admin.collateral_address, ready_q
     )
     admin.prepared.add(ready_cid)
     admin.registered.update(ready_tokens)
@@ -254,7 +252,7 @@ def _skaled_admin(**kw) -> tuple[SkaledAdmin, FakeSkaled]:
     return SkaledAdmin(chain, sender), chain
 
 
-def _items(n: int, tag: str) -> list[tuple[str, list[str]]]:
+def _items(n: int, tag: str) -> list[tuple[bytes, list[str]]]:
     return [(_q(f"{tag} {i}"), ["Yes", "No"]) for i in range(n)]
 
 
@@ -288,6 +286,13 @@ def test_no_free_admin_slot_reports_the_stop():
     assert results.stop is results[0]
 
 
+def test_receipts_that_time_out_report_the_stop():
+    admin, _ = _skaled_admin(mine_on_sleep=False)
+    results = prepare_markets_on_chain(admin, _items(2, "late"))
+    assert all(isinstance(r, MarketStateError) for r in results)
+    assert isinstance(results.stop, TimeExhausted)
+
+
 def test_a_register_only_market_lost_to_an_outage_reports_the_stop():
     """Its condition is prepared already, so its only transaction is the
     registerToken, whose failure the verdict read turns into a
@@ -295,7 +300,7 @@ def test_a_register_only_market_lost_to_an_outage_reports_the_stop():
     admin, chain = _skaled_admin()
     q = _q("register only")
     (prepared,) = admin.sender.submit_many(
-        [admin.prepare_condition_call(admin.oracle_address, keccak(text=q), 2)]
+        [admin.prepare_condition_call(admin.oracle_address, q, 2)]
     )
     admin.sender.wait(prepared, timeout=10)
     first = requests.ConnectionError("reset by peer")
@@ -303,7 +308,7 @@ def test_a_register_only_market_lost_to_an_outage_reports_the_stop():
     chain.send_errors.extend([first, requests.ConnectionError("again")])
     results = prepare_markets_on_chain(admin, [(q, ["Yes", "No"])])
     assert isinstance(results[0], MarketStateError)
-    assert results.stop is first
+    assert results.stop.__cause__ is first
 
 
 def test_a_market_refused_for_its_own_reason_reports_no_stop():

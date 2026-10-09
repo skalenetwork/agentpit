@@ -1,3 +1,5 @@
+import threading
+
 from web3.exceptions import Web3RPCError
 
 from agentpit.datastructures.market_state import MarketState
@@ -22,6 +24,7 @@ from agentpit.onchain.user_wallet import send_user_tx
 from agentpit.utils.parse import hex2bytes
 
 _ZERO_BYTES32 = b"\x00" * 32
+_redeem_lock = threading.Lock()
 
 
 def _is_insufficient_gas(exc: Web3RPCError) -> bool:
@@ -93,22 +96,23 @@ class PositionService:
         fn = self._onchain._contracts.ctf.functions.redeemPositions(
             usd_address, _ZERO_BYTES32, condition_id, partition
         )
-        pre_balance = self._onchain.usd_balance(user.eth_address)
-        try:
-            send_user_tx(self._onchain._client, user.eth_key, fn)  # noqa: SLF001
-        except Web3RPCError as exc:
-            if not _is_insufficient_gas(exc):
-                raise
-            raise InsufficientGasError(
-                "wallet balance too low to pay for this transaction's gas -- "
-                f"send credits to {user.eth_address} and try claiming again"
-            ) from exc
-        new_balance = self._onchain.usd_balance(user.eth_address)
-        with self._db.write() as conn:
-            TableWrite.log_transaction(
-                conn, user.api_key, "REDEEM", market_id,
-                {"collateral_amount": new_balance - pre_balance},
-            )
+        with _redeem_lock:
+            pre_balance = self._onchain.usd_balance(user.eth_address)
+            try:
+                send_user_tx(self._onchain._client, user.eth_key, fn)  # noqa: SLF001
+            except Web3RPCError as exc:
+                if not _is_insufficient_gas(exc):
+                    raise
+                raise InsufficientGasError(
+                    "wallet balance too low to pay for this transaction's gas -- "
+                    f"send credits to {user.eth_address} and try claiming again"
+                ) from exc
+            new_balance = self._onchain.usd_balance(user.eth_address)
+            with self._db.write() as conn:
+                TableWrite.log_transaction(
+                    conn, user.api_key, "REDEEM", market_id,
+                    {"collateral_amount": new_balance - pre_balance},
+                )
         return RedeemPositionResponse(
             market_id=market.market_id,
             collateral_amount=new_balance - pre_balance,

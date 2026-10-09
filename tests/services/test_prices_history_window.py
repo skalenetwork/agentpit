@@ -50,14 +50,9 @@ def svc() -> Any:
 
 def _print_at(svc, *, seconds_ago: int, price_micro: int) -> None:
     with svc._db.write() as conn:
-        tape.insert_mirrored_trade(
+        tape.insert_mirrored_trades(
             conn,
-            condition_id=COND,
-            local_token_id=TOKEN,
-            price_micro=price_micro,
-            size_micro=1_000_000,
-            side="BUY",
-            match_time_s=int(time.time()) - seconds_ago,
+            [(COND, TOKEN, TOKEN + "1", price_micro, 1_000_000, "BUY", int(time.time()) - seconds_ago)],
         )
 
 

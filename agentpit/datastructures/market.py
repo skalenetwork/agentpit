@@ -7,6 +7,8 @@ from agentpit.db.table_create import MarketState
 from agentpit.polymarket.conditional_token_framework import ConditionalTokenFramework
 from agentpit.utils.parse import is_hex256
 
+Payouts = tuple[int, int]
+
 
 class Market(BaseModel):
     question: str
@@ -17,11 +19,12 @@ class Market(BaseModel):
     polymarket_yes_token_id: Optional[str] = None
     polymarket_no_token_id: Optional[str] = None
     condition_id: ConditionId = None
+    question_id: str
     description: str
     erc1155_tokens: list[tuple[str, str]]
     start_date: int
     end_date: Optional[int | None]
-    resolved_outcome: Optional[int] = None
+    payouts: Payouts | None = None
     market_state: MarketState
     event_id: Optional[int] = None
     outcome_label: Optional[str] = None
@@ -29,6 +32,12 @@ class Market(BaseModel):
     fully_redeemed: bool = False
     price_change_24h: float | None = None
     resolved_at: int | None = None
+
+    @property
+    def winner(self) -> str | None:
+        if self.payouts is None or 0 not in self.payouts:
+            return None
+        return self.erc1155_tokens[1 - self.payouts.index(0)][1]
 
     @property
     def url(self) -> str | None:
@@ -39,7 +48,7 @@ class Market(BaseModel):
     def model_post_init(self, __context):
         check_state(
             self.market_state != MarketState.RESOLVED
-            or self.resolved_outcome is not None,
+            or self.payouts is not None,
             "Resolved market must have an outcome",
         )
         check_state(len(self.question) > 0, "Question must not be empty")

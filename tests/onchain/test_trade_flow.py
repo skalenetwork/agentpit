@@ -1,14 +1,24 @@
-"""Live anvil integration: register → market → split → match → settle on-chain.
+"""Live anvil integration: register → market → fill against the house → settle on-chain.
 
 Exercises the full happy path against a running anvil + deployed stack.
 """
 
-import secrets
+import time
 import uuid
+from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
-from tests.onchain._helpers import ADMIN_HDR, hdr, register
+from agentpit.api.deps import get_db_session, get_onchain_admin
+from agentpit.db.table_read import TableRead
+from tests.onchain._helpers import (
+    create_market,
+    fresh_client,
+    hdr,
+    house,
+    order_service,
+    register,
+)
 
 
 def _hdr(token: str) -> dict[str, str]:
@@ -45,173 +55,162 @@ def test_register_funds_user_and_grants_approvals():
     assert contracts.ctf.functions.isApprovedForAll(eth, deployment.exchange).call()
 
 
-def test_match_settles_on_chain():
-    from agentpit.api.app import create_app
-    from agentpit.config import Settings
-    from agentpit.db.session import DbSession
-    from agentpit.db.table_read import TableRead
-    from agentpit.onchain.admin import OnchainAdmin
-    from agentpit.onchain.contracts import Contracts
-    from agentpit.onchain.deployment import Deployment
-    from agentpit.onchain.web3_client import Web3Client
+def _micro(amount: str) -> int:
+    return int(Decimal(amount) * 1_000_000)
 
-    app = create_app()
-    client = TestClient(app)
 
-    a_email = _email()
-    b_email = _email()
-    ra = register(client, a_email)
-    rb = register(client, b_email)
-    ta, tb = ra["access_token"], rb["access_token"]
-    ea, eb = ra["user"]["eth_address"], rb["user"]["eth_address"]
+def _settled(svc, db, order_id: str) -> list[str]:
+    statuses = ["PENDING"]
+    for _ in range(50):
+        svc.settle_pending(int(time.time()) + 61)
+        with db.read() as conn:
+            statuses = [
+                r["STATUS"]
+                for r in conn.execute(
+                    "SELECT STATUS FROM trades WHERE TAKER_ORDER_ID = %s ORDER BY MATCH_TIME",
+                    (order_id,),
+                ).fetchall()
+            ]
+        if "PENDING" not in statuses:
+            break
+        time.sleep(0.2)
+    return statuses
 
-    market = client.post(
-        "/markets",
-        json={
-            "question": f"Live test {secrets.token_hex(4)}?",
-            "description": "YES if test passes",
-            "outcome_labels": ["YES", "NO"],
-        },
-        headers=ADMIN_HDR,
-    ).json()
-    yes_id = int(market["erc1155_tokens"][0][0])
 
-    # Give B some YES tokens via splitPosition so B can SELL.
-    settings = Settings()
-    d = Deployment.load(settings.deployment_path)
-    w = Web3Client(settings, d)
-    c = Contracts(w.web3, d)
-    admin = OnchainAdmin(w, c)
-    db = DbSession(settings.database_url)
+def _order_row(db, order_id: str) -> tuple[str, int]:
     with db.read() as conn:
-        user_b = TableRead.get_user_by_email(conn, b_email)
-    cond = bytes.fromhex(market["condition_id"]["value"][2:])
-    admin.user_split_position(user_b.eth_key, cond, 200_000_000)
+        r = conn.execute(
+            "SELECT STATUS, REMAINING_AMOUNT FROM orders WHERE ORDER_ID = %s",
+            (order_id,),
+        ).fetchone()
+    return r["STATUS"], r["REMAINING_AMOUNT"]
 
-    a_pre_usd = admin.usd_balance(ea)
-    b_pre_yes = admin.ctf_balance(eb, yes_id)
 
-    pa = client.post(
+def test_all_four_mappings_settle_against_the_house_to_the_micro(house_book):
+    client = fresh_client()
+    agent = register(client)
+    the_house = house(client)
+    admin = client.app.dependency_overrides[get_onchain_admin]()
+    market = create_market(client)
+    yes, no = (t for t, _ in market["erc1155_tokens"])
+    complement = {yes: no, no: yes}
+    house_book(
+        yes,
+        bids=(("0.40", "30"), ("0.39", "50.0000007")),
+        asks=(("0.60", "10"), ("0.61", "10"), ("0.62", "13.3333337")),
+        user=the_house,
+    )
+
+    def balances(address: str) -> dict[str, int]:
+        return {
+            "usd": admin.usd_balance(address),
+            yes: admin.ctf_balance(address, int(yes)),
+            no: admin.ctf_balance(address, int(no)),
+        }
+
+    fills = []
+    for token, side, price, size in (
+        (yes, "BUY", "0.62", 25),
+        (yes, "SELL", "0.39", 10),
+        (no, "BUY", "0.61", 20),
+        (no, "SELL", "0.37", 10),
+    ):
+        agent0, house0 = balances(agent["user"]["eth_address"]), balances(
+            the_house.eth_address
+        )
+        r = client.post(
+            "/order",
+            headers=hdr(agent["api_key"]),
+            json={
+                "token_id": token,
+                "side": side,
+                "price": price,
+                "size": size,
+                "order_type": "FAK",
+            },
+        ).json()
+        assert r["success"] and r["status"] == "matched", r
+        making, taking = _micro(r["makingAmount"]), _micro(r["takingAmount"])
+        agent1, house1 = balances(agent["user"]["eth_address"]), balances(
+            the_house.eth_address
+        )
+        if side == "BUY":
+            moved = (
+                {"usd": -making, token: taking},
+                {"usd": making - taking, complement[token]: taking},
+            )
+        else:
+            moved = ({"usd": taking, token: -making}, {"usd": -taking, token: making})
+        assert (
+            {k: agent1[k] - agent0[k] for k in agent1},
+            {k: house1[k] - house0[k] for k in house1},
+        ) == tuple({k: m.get(k, 0) for k in agent1} for m in moved), (token, side)
+        fills.append((r["makingAmount"], r["takingAmount"]))
+
+    assert fills == [
+        ("15.2", "25"),
+        ("10", "4"),
+        ("12", "20"),
+        ("8.333334", "3.166667"),
+    ]
+
+
+def test_a_resting_order_fills_to_exhaustion_over_several_sweeps(house_book):
+    client = fresh_client()
+    agent = register(client)
+    admin = client.app.dependency_overrides[get_onchain_admin]()
+    db = client.app.dependency_overrides[get_db_session]()
+    market = create_market(client)
+    yes = market["erc1155_tokens"][0][0]
+    book = house_book(yes, asks=(("0.5", "10"),), user=house(client))
+    svc = order_service(client)
+    usd0 = admin.usd_balance(agent["user"]["eth_address"])
+
+    placed = client.post(
         "/order",
-        headers=_hdr(ta),
-        json={
-            "token_id": market["erc1155_tokens"][0][0],
-            "side": "BUY",
-            "price": "0.6",
-            "size": 100,
-        },
+        headers=hdr(agent["api_key"]),
+        json={"token_id": yes, "side": "BUY", "price": "0.5", "size": 30},
     ).json()
-    assert pa["success"] and pa["status"] == "live"
+    assert (placed["status"], placed["takingAmount"]) == ("live", "10"), placed
+    for size, left in (("12", 8_000_000), ("15", 0)):
+        book.apply_price_change_entry(
+            {"asset_id": book.asset_id, "side": "SELL", "price": "0.5", "size": size}
+        )
+        svc.sweep()
+        assert _order_row(db, placed["orderID"])[1] == left
 
-    pb = client.post(
+    assert _settled(svc, db, placed["orderID"]) == ["CONFIRMED"] * 3
+    assert _order_row(db, placed["orderID"]) == ("matched", 0)
+    assert admin.ctf_balance(agent["user"]["eth_address"], int(yes)) == 30_000_000
+    assert admin.usd_balance(agent["user"]["eth_address"]) == usd0 - 15_000_000
+
+
+def test_an_underfunded_resting_buy_fails_and_its_remainder_is_cancelled(house_book):
+    client = fresh_client()
+    agent = register(client)
+    admin = client.app.dependency_overrides[get_onchain_admin]()
+    db = client.app.dependency_overrides[get_db_session]()
+    market = create_market(client)
+    yes = market["erc1155_tokens"][0][0]
+    book = house_book(yes, asks=(("0.6", "40"),), user=house(client))
+    svc = order_service(client)
+
+    placed = client.post(
         "/order",
-        headers=_hdr(tb),
-        json={
-            "token_id": market["erc1155_tokens"][0][0],
-            "side": "SELL",
-            "price": "0.6",
-            "size": 100,
-        },
+        headers=hdr(agent["api_key"]),
+        json={"token_id": yes, "side": "BUY", "price": "0.5", "size": 100},
     ).json()
-    assert pb["success"], pb
-    assert pb["status"] == "matched"
-    assert pb["makingAmount"] == "100"          # SELL taker gave 100 shares
-    assert pb["takingAmount"] == "60"           # received 60 apUSD (100 @ 0.6)
-    assert pb["transactionsHashes"]             # non-empty list
-    assert "filledSize" not in pb
+    assert placed["status"] == "live", placed
+    with db.read() as conn:
+        key = TableRead.get_user_by_api_key(conn, agent["api_key"]).eth_key
+    cash = admin.usd_balance(agent["user"]["eth_address"])
+    admin.user_split_position(
+        key, bytes.fromhex(market["condition_id"]["value"][2:]), cash - 10_000_000
+    )
+    book.apply_price_change_entry(
+        {"asset_id": book.asset_id, "side": "SELL", "price": "0.5", "size": "40"}
+    )
+    svc.sweep()
 
-    # Verify on-chain settlement: A paid 60M apUSD, received 100M YES tokens.
-    assert admin.usd_balance(ea) == a_pre_usd - 60_000_000
-    assert admin.ctf_balance(ea, yes_id) == 100_000_000
-    assert admin.ctf_balance(eb, yes_id) == b_pre_yes - 100_000_000
-
-    # /last-trade-price reflects the settled match: maker price 0.6, taker side SELL.
-    yes_token = market["erc1155_tokens"][0][0]
-    ltp = client.get(f"/last-trade-price?token_id={yes_token}").json()
-    assert ltp == {"price": "0.6", "side": "SELL"}
-
-
-def test_complementary_buys_mint_via_split():
-    """Two BUYs on opposite outcomes whose prices sum to >= 1.00 should match.
-
-    The off-chain matcher must detect the complement and the on-chain
-    CTFExchange must MINT a fresh pair via splitPosition, delivering YES
-    to the YES-buyer and NO to the NO-buyer.
-    """
-    from agentpit.api.app import create_app
-    from agentpit.config import Settings
-    from agentpit.onchain.admin import OnchainAdmin
-    from agentpit.onchain.contracts import Contracts
-    from agentpit.onchain.deployment import Deployment
-    from agentpit.onchain.web3_client import Web3Client
-
-    app = create_app()
-    client = TestClient(app)
-
-    a_email = _email()
-    b_email = _email()
-    ra = register(client, a_email)
-    rb = register(client, b_email)
-    ta, tb = ra["access_token"], rb["access_token"]
-    ea, eb = ra["user"]["eth_address"], rb["user"]["eth_address"]
-
-    market = client.post(
-        "/markets",
-        json={
-            "question": f"Complement test {secrets.token_hex(4)}?",
-            "description": "MINT match path",
-            "outcome_labels": ["YES", "NO"],
-        },
-        headers=ADMIN_HDR,
-    ).json()
-    yes_id = int(market["erc1155_tokens"][0][0])
-    no_id = int(market["erc1155_tokens"][1][0])
-
-    settings = Settings()
-    d = Deployment.load(settings.deployment_path)
-    w = Web3Client(settings, d)
-    c = Contracts(w.web3, d)
-    admin = OnchainAdmin(w, c)
-
-    a_pre_usd = admin.usd_balance(ea)
-    b_pre_usd = admin.usd_balance(eb)
-
-    # A: resting BUY YES @ 0.30, size 100 shares.
-    pa = client.post(
-        "/order",
-        headers=_hdr(ta),
-        json={
-            "token_id": market["erc1155_tokens"][0][0],
-            "side": "BUY",
-            "price": "0.3",
-            "size": 100,
-        },
-    ).json()
-    assert pa["success"] and pa["status"] == "live", pa
-
-    # B: incoming BUY NO @ 0.70, size 50 shares. Sum is 1.00 → should mint 50M.
-    pb = client.post(
-        "/order",
-        headers=_hdr(tb),
-        json={
-            "token_id": market["erc1155_tokens"][1][0],
-            "side": "BUY",
-            "price": "0.7",
-            "size": 50,
-        },
-    ).json()
-    assert pb["success"], pb
-    assert pb["status"] == "matched", pb
-    assert pb["makingAmount"] == "35"           # NO buyer paid 50 @ 0.70
-    assert pb["transactionsHashes"], pb
-
-    # A paid 50M * 0.30 = 15M apUSD; B paid 50M * 0.70 = 35M apUSD.
-    assert admin.usd_balance(ea) == a_pre_usd - 15_000_000
-    assert admin.usd_balance(eb) == b_pre_usd - 35_000_000
-    # MINT delivered 50M of each token to the respective buyer.
-    assert admin.ctf_balance(ea, yes_id) == 50_000_000
-    assert admin.ctf_balance(eb, no_id) == 50_000_000
-    # A's order remains live with 50 shares (50M base units) outstanding.
-    yes_token = market["erc1155_tokens"][0][0]
-    book = client.get(f"/book?token_id={yes_token}").json()
-    assert any(lvl["size"] == "50" for lvl in book["bids"]), book
+    assert _settled(svc, db, placed["orderID"]) == ["FAILED"]
+    assert _order_row(db, placed["orderID"]) == ("cancelled", 60_000_000)

@@ -69,8 +69,6 @@ def test_tags_hides_a_slug_below_the_threshold(client):
 
 def test_tags_returns_present_slugs_in_curated_order(client):
     # 10 crypto events and 10 politics events; politics leads NAV_SLUGS.
-    # Crypto rather than sports: `sports` is in `Settings.excluded_tags` by
-    # default, so it can no longer stand in for an ordinary tab.
     _seed(
         {f"s{i}": ["crypto"] for i in range(10)}
         | {f"p{i}": ["politics"] for i in range(10)}

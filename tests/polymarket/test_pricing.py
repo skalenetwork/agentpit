@@ -16,6 +16,7 @@ def _market() -> Market:
         slug="will-it-rain",
         market_id=7,
         condition_id=ConditionId("0x" + "ab" * 32),
+        question_id="0x" + "cd" * 32,
         description="desc",
         erc1155_tokens=[(_YES, "Yes"), (_NO, "No")],
         start_date=1_700_000_000,

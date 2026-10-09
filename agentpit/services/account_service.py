@@ -1,14 +1,14 @@
 import json
-import time
 from dataclasses import dataclass
 
 from agentpit.datastructures.activity_wire import ActivityWire
 from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
-from agentpit.datastructures.match_leg import legs_for_user
+from agentpit.datastructures.match_leg import MICRO, legs_for_user
 from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
+from agentpit.liquidity import feed
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.polymarket.format import price_to_float, size_to_float
 from agentpit.polymarket.resolve import ResolvedOutcome, resolve_by_token_id
@@ -60,9 +60,9 @@ def sellable_against_bids(
 ) -> Sellable:
     """Simulate the market sell of `size_micro` shares against `bids`.
 
-    `bids` is one `(price_micro, remaining_size_micro)` per live BUY order,
-    in any order. The order the ticket sends cannot fill below its price cap,
-    so levels under the floor are invisible to it however deep they are, and
+    `bids` is one `(price_micro, size_micro)` per bid level, in any order.
+    The order the ticket sends cannot fill below its price cap, so levels
+    under the floor are invisible to it however deep they are, and
     a position larger than the depth above the floor comes back short rather
     than resting on the book — the ticket cancels that remainder.
     """
@@ -137,33 +137,29 @@ class AccountService:
                     continue
                 tokens = mkt.erc1155_tokens
                 size = bal / 1_000_000
-                redeemable = (
-                    mkt.market_state == MarketState.RESOLVED
-                    and mkt.resolved_outcome == idx
-                )
+                redeemable = mkt.payouts is not None and mkt.payouts[idx] > 0
                 avg_price = self._avg_fill_price(conn, user.api_key, token_id)
                 settled = mkt.market_state == MarketState.RESOLVED
-                # A won outcome pays exactly $1 a share, and a resolved
-                # losing outcome pays exactly $0. Either way the market
-                # has no live book any more, so `_live_pricing` would fall
-                # through to the last trade print and show settled money
-                # at whatever it last changed hands for -- and nothing is
-                # sellable, for want of anything to sell into.
-                if settled:
-                    cur_price = 1.0 if redeemable else 0.0
+                # A resolved market has no live book any more, so
+                # `_live_pricing` would fall through to the last trade print
+                # and show settled money at whatever it last changed hands
+                # for -- and nothing is sellable, for want of anything to
+                # sell into.
+                opp_idx = 1 - idx if len(tokens) == 2 else idx
+                opp_token, opp_label = (
+                    tokens[opp_idx] if len(tokens) == 2 else (token_id, label)
+                )
+                if mkt.payouts is not None:
+                    cur_price = mkt.payouts[idx] / sum(mkt.payouts)
                     sellable = Sellable(0.0, 0.0)
                 else:
-                    pricing = self._live_pricing(conn, token_id, bal)
+                    pricing = self._live_pricing(conn, token_id, opp_token, bal)
                     cur_price = pricing.cur_price
                     sellable = pricing.sellable
                 initial_value = avg_price * size
                 current_value = cur_price * size
                 cash_pnl = current_value - initial_value
                 pct_pnl = (cash_pnl / initial_value * 100) if initial_value else 0.0
-                opp_idx = 1 - idx if len(tokens) == 2 else idx
-                opp_token, opp_label = (
-                    tokens[opp_idx] if len(tokens) == 2 else (token_id, label)
-                )
                 out.append(
                     PositionWire(
                         proxyWallet=eth_address,
@@ -201,8 +197,7 @@ class AccountService:
 
         Payout is the REDEEM collateral (ground truth, robust to MINT/MERGE,
         unlike per-token trade nets); cost basis is the user's net USDC into the
-        market across both outcomes; realized PnL = payout - cost. (Losing
-        positions leave no redeem and aren't reconstructed here yet.)"""
+        market across both outcomes; realized PnL = payout - cost."""
         with self._db.read() as conn:
             user = TableRead.get_user_by_eth_address(conn, eth_address)
             if user is None:
@@ -236,21 +231,23 @@ class AccountService:
             )
             for market_id, payout in payout_micro.items():
                 mkt = redeemed.get(market_id)
-                if mkt is None or mkt.resolved_outcome is None:
+                if mkt is None or mkt.payouts is None:
                     continue
                 tokens = mkt.erc1155_tokens
                 if len(tokens) != 2:
                     continue  # binary markets only for now
-                win_idx = mkt.resolved_outcome
+                payouts = mkt.payouts
+                if payouts[0] == payouts[1]:
+                    pos_idx = max((0, 1), key=lambda i: self._net_bought(conn, user.api_key, tokens[i][0]))
+                else:
+                    pos_idx = payouts.index(max(payouts) if payout > 0 else min(payouts))
+                cur_price = payouts[pos_idx] / sum(payouts)
                 if payout > 0:
-                    # Won: size + payout are the redeem (1 winning token == $1).
-                    pos_idx = win_idx
-                    size = size_to_float(payout)
+                    size = size_to_float(payout) / cur_price
                     value = payout / 1_000_000
                 else:
                     # Lost: held the losing outcome (redeemed for $0). Size comes
                     # from the user's net buys of that token.
-                    pos_idx = 1 - win_idx
                     net = self._net_bought(conn, user.api_key, tokens[pos_idx][0])
                     if net <= 0:
                         continue
@@ -274,7 +271,7 @@ class AccountService:
                         cashPnl=pnl,
                         percentPnl=pct,
                         totalBought=cost,
-                        curPrice=1.0 if payout > 0 else 0.0,
+                        curPrice=cur_price,
                         redeemable=False,
                         title=mkt.question,
                         slug=mkt.slug or "",
@@ -587,41 +584,21 @@ class AccountService:
         )
 
     @staticmethod
-    def _live_pricing(conn, token_id: str, size_micro: int) -> "_LivePricing":
-        """Book midpoint (fall back to last trade, else 0.5) AND what a market
-        sell of `size_micro` shares would fetch, from ONE read of the book.
-
-        Both answers want every live order for the token and the profile needs
-        both on every row, so the levels are walked here rather than fetched
-        twice per position.
+    def _live_pricing(
+        conn, token_id: str, opposite: str, size_micro: int
+    ) -> "_LivePricing":
+        """Book midpoint (fall back to the last print, then 1 - the opposite
+        token's last print, else 0.5) AND what a market sell of `size_micro`
+        shares would fetch, from ONE snapshot of Polymarket's book.
         """
-        rows = conn.execute(
-            "SELECT SIDE, PRICE, REMAINING_AMOUNT FROM orders WHERE TOKEN_ID = %s "
-            f"AND {TableRead.LIVE_ORDER}",
-            (token_id, int(time.time())),
-        ).fetchall()
-        # REMAINING_AMOUNT is nullable with no DEFAULT (`table_create.py`), and
-        # a row carrying none offers no depth to sell into.
-        bids = [
-            (int(r["PRICE"]), int(r["REMAINING_AMOUNT"] or 0))
-            for r in rows
-            if r["SIDE"] == "BUY"
-        ]
-        asks = [int(r["PRICE"]) for r in rows if r["SIDE"] == "SELL"]
-        sellable = sellable_against_bids(bids, size_micro)
-        if bids and asks:
-            mid = price_to_float((max(p for p, _ in bids) + min(asks)) // 2)
+        snap = feed.book(token_id)
+        sellable = sellable_against_bids(list(snap.bids) if snap else [], size_micro)
+        if snap is not None and snap.bids and snap.asks:
+            mid = price_to_float((snap.bids[0][0] + snap.asks[0][0]) // 2)
             return _LivePricing(mid, sellable)
-        return _LivePricing(
-            AccountService._last_print_price(conn, token_id), sellable
-        )
-
-    @staticmethod
-    def _last_print_price(conn, token_id: str) -> float:
-        """Price of the token's most recent print in dollars, else 0.5."""
-        last = conn.execute(
-            TableRead.TOKEN_PRINTS_CTE
-            + "SELECT PRICE FROM prints ORDER BY MATCH_TIME DESC LIMIT 1",
-            ([token_id], [token_id]),
-        ).fetchone()
-        return price_to_float(int(last["PRICE"])) if last else 0.5
+        lasts = TableRead.last_trade_prices_for_tokens(conn, [token_id, opposite])
+        if token_id in lasts:
+            return _LivePricing(price_to_float(lasts[token_id]), sellable)
+        if opposite in lasts:
+            return _LivePricing(price_to_float(MICRO - lasts[opposite]), sellable)
+        return _LivePricing(0.5, sellable)

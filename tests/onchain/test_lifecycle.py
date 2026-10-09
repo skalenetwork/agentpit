@@ -4,12 +4,12 @@ Markets state-machine: DRAFT → ACTIVE → CLOSED → RESOLVED, plus cancel and
 invalid transitions. Lives on-chain because market creation does prepareCondition.
 """
 
-from tests.onchain._helpers import ADMIN_HDR, create_market, fresh_client
+from tests.onchain._helpers import ADMIN_HDR, create_market, fresh_client, hdr, register
 
 
 def test_market_lifecycle_happy_path():
     client = fresh_client()
-    market = create_market(client)
+    market = create_market(client, active=False)
     mid = market["market_id"]
     assert market["market_state"] == "DRAFT"
 
@@ -26,6 +26,9 @@ def test_market_lifecycle_happy_path():
     # CLOSED surfaces in Gamma as closed=true / active=false.
     fetched = client.get(f"/markets/{mid}").json()
     assert fetched["closed"] is True and fetched["active"] is False
+    order = {"token_id": market["erc1155_tokens"][0][0], "side": "BUY", "price": "0.5", "size": 10}
+    refused = client.post("/order", headers=hdr(register(client)["api_key"]), json=order)
+    assert refused.status_code == 400 and "is closed" in refused.json()["detail"]
 
     resolve = client.post(
         f"/markets/{mid}/resolve",
@@ -33,12 +36,12 @@ def test_market_lifecycle_happy_path():
         headers=ADMIN_HDR,
     ).json()
     assert resolve["market_state"] == "RESOLVED"
-    assert resolve["resolved_outcome"] == 0
+    assert resolve["payouts"] == [1, 0]
 
 
 def test_cancel_market_from_draft():
     client = fresh_client()
-    mid = create_market(client)["market_id"]
+    mid = create_market(client, active=False)["market_id"]
     cancel = client.post(f"/markets/{mid}/cancel", headers=ADMIN_HDR).json()
     assert cancel["market"]["market_state"] == "CANCELLED"
     # On-chain CTF positions: refund flows are now off-loaded to merge/redeem
@@ -50,7 +53,7 @@ def test_cancel_market_from_draft():
 
 def test_invalid_state_transitions():
     client = fresh_client()
-    mid = create_market(client)["market_id"]
+    mid = create_market(client, active=False)["market_id"]
 
     # DRAFT → CLOSE is invalid
     resp = client.post(f"/markets/{mid}/close", headers=ADMIN_HDR)

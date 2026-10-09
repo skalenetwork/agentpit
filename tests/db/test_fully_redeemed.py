@@ -9,13 +9,13 @@ def _insert_market(conn) -> int:
     row = conn.execute(
         """
         INSERT INTO markets
-            (CONDITION_ID, QUESTION, SLUG, DESCRIPTION, ERC1155_TOKENS,
+            (CONDITION_ID, QUESTION_ID, QUESTION, SLUG, DESCRIPTION, ERC1155_TOKENS,
              START_DATE, END_DATE, MARKET_STATE)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'ACTIVE')
         RETURNING MARKET_ID
         """,
         (
-            "0x" + "ab" * 32, "Q?", "q", "d",
+            "0x" + "ab" * 32, "0x" + "ab" * 32, "Q?", "q", "d",
             json.dumps([["1", "YES"], ["2", "NO"]]),
             1000, 2000,
         ),

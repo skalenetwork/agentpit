@@ -316,8 +316,8 @@ class AuthService:
         a zero balance means the account spent its gas, and re-granting on login
         would be a treasury faucet anyone could drain on repeat, so
         `simulated_chain=False` turns this off and the signup grant becomes once
-        per account. (The house account does not rely on this path at all — it is
-        kept above a gas floor by the mirror's top-up loop.)
+        per account. (The house account does not use this path: it sends no
+        transaction after provisioning.)
 
         A second lock sits beside the first: once the holder has exported their
         private key, this repair never runs again, because from that point a

@@ -1,10 +1,13 @@
 # tests/onchain/test_liquidity_lifespan.py
 import asyncio
+from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agentpit.api.app import create_app
 from agentpit.config import Settings
+from agentpit.db.table_create import TableCreate
 from agentpit.liquidity import feed
 
 from tests.onchain._helpers import ADMIN_HDR
@@ -16,21 +19,31 @@ def test_mirror_disabled_by_default():
         pass  # lifespan runs; no mirror tasks, no house provisioning, no crash
 
 
+def test_one_api_per_admin_key():
+    first, second = create_app(Settings()), create_app(Settings())
+    with TestClient(first):
+        with patch.object(TableCreate, "create_all_tables") as ddl:
+            with pytest.raises(RuntimeError, match="held by another AgentPit API"):
+                with TestClient(second):
+                    pass
+        assert ddl.call_count == 0
+    with TestClient(second):
+        pass
+
+
 def test_mirror_enabled_spawns_and_cancels_cleanly(monkeypatch):
     import time
     import uuid
 
     calls = []
 
-    async def fake_connection(state, assets, **kw):
-        calls.append(list(assets))
+    async def fake_run(conn):
+        calls.append(sorted(conn.assets))
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(feed, "run_connection", fake_connection)
-    monkeypatch.setattr(feed, "fetch_books_rest", lambda ids, **kw: [])
+    monkeypatch.setattr(feed.FeedConnection, "run", fake_run)
 
-    s = Settings(liquidity_engine_enabled=True, liquidity_house_account_count=1,
-                 mirror_target_refresh_seconds=0.1)
+    s = Settings(liquidity_engine_enabled=True, mirror_target_refresh_seconds=0.1)
     app = create_app(s)
     with TestClient(app) as client:
         r = client.get("/markets")        # API serves while the mirror idles
@@ -53,4 +66,6 @@ def test_mirror_enabled_spawns_and_cancels_cleanly(monkeypatch):
             time.sleep(0.05)
         assert calls and calls[0] == ["PM-LS"], \
             "target refresh must spawn a feed connection for the synced market"
+        assert feed.HOUSE is not None and feed.HOUSE.user.is_bot
+    assert feed.HOUSE is None
     # Clean shutdown (no hang, no unraised CancelledError) is the assertion.

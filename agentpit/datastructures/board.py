@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 CardKind = Literal["binary", "multi", "matchup", "window"]
-GameStatus = Literal["upcoming", "started", "settled"]
+GameStatus = Literal["upcoming", "live", "started", "settled"]
 
 
 class WireBet(BaseModel):
@@ -15,13 +15,23 @@ class WireBet(BaseModel):
     pnl: str
 
 
+class WireTeam(BaseModel):
+    logo: str | None
+    record: str | None
+    color: str | None
+    abbr: str | None
+
+
 class WireOutcome(BaseModel):
     label: str
     question: str
     slug: str
     url: str | None
+    market: int
     price: float | None
+    ask: float | None
     change24h: float | None
+    team: WireTeam | None
     bets: list[WireBet]
 
 
@@ -31,8 +41,11 @@ class WireCard(BaseModel):
     icon: str | None
     category: str | None
     url: str | None
+    volume: float | None
     kind: CardKind
     state: Literal["live", "settled"]
+    startTime: int | None
+    trading: bool | None
     endDate: int | None
     resolvedAt: int | None
     outcomeCount: int
@@ -45,7 +58,7 @@ class WireGame(WireCard):
     leagueLabel: str
     sport: str
     status: GameStatus
-    startTime: int | None
+    tz: str
 
 
 class BoardTab(BaseModel):

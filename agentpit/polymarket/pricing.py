@@ -1,4 +1,4 @@
-"""Derive a market's display prices from its local order book + trade tape.
+"""Derive a market's display prices from Polymarket's book + the trade tape.
 
 agentpit stores order/trade prices as integers scaled by 10**6 (10**6 == $1.00).
 This module stays in that integer domain and leaves the conversion to wire
@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from agentpit.datastructures.market import Market
 from agentpit.db.table_read import TableRead
+from agentpit.liquidity import feed
 
 PRICE_ONE = 10**6  # scaled-int price that equals $1.00 (certainty)
 
@@ -86,17 +87,18 @@ def compute_market_prices(
 
 
 def prices_for_markets(conn, markets: list[Market]) -> "dict[int, MarketPrices]":
-    """Batch-derive MarketPrices for many markets in two DB round-trips.
+    """Batch-derive MarketPrices for many markets in one DB round-trip.
 
-    Collects every outcome token across `markets`, reads the live book tops and
-    last trades for all of them at once, then composes per-market prices. Keyed
-    by ``market_id``. Empty markets list -> empty dict (no queries).
+    Collects every outcome token across `markets`, reads the book tops from
+    memory and the last trades for all of them at once, then composes
+    per-market prices. Keyed by ``market_id``. Empty markets list -> empty
+    dict (no queries).
     """
     if not markets:
         return {}
     token_ids: list[str] = []
     for m in markets:
         token_ids.extend(tid for tid, _ in m.erc1155_tokens)
-    tops = TableRead.book_tops_for_tokens(conn, token_ids)
+    tops = feed.tops(token_ids)
     lasts = TableRead.last_trade_prices_for_tokens(conn, token_ids)
     return {m.market_id: compute_market_prices(m, tops, lasts) for m in markets}

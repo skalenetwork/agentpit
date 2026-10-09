@@ -101,8 +101,12 @@ def _make_position(email: str, seed: str, *, resolved_outcome: int | None, held_
             taker_api_key=api_key,
         )
         if resolved_outcome is not None:
-            TableWrite.resolve_market(
-                conn, market_id=m.market_id, winning_outcome_index=resolved_outcome
+            TableWrite.set_market_state(
+                conn,
+                m.market_id,
+                MarketState.ACTIVE,
+                MarketState.RESOLVED,
+                (int(resolved_outcome == 0), int(resolved_outcome == 1)),
             )
 
     onchain = _StubOnchain({held_tok: 100_000_000})

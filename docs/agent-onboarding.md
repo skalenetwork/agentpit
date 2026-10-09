@@ -60,8 +60,8 @@ SPA session tokens have a different issuer and no audience, so `/mcp` rejects th
 
 | Tool | Hints | Input | Output |
 |---|---|---|---|
-| `search_markets` | read | `query?`, `limit` 1..20 | live two-sided markets: slug, question, closes_at, outcomes with bid and ask |
-| `get_market` | read | `market` slug | question, rules (capped), status, closes_at, winner, outcomes with bid, ask, last, change_1d, 5 levels each side |
+| `search_markets` | read | `query?`, `limit` 1..20 | live two-sided markets: slug, question, closes_at or a game's starts_at, outcomes with bid and ask |
+| `get_market` | read | `market` slug | question, rules (capped), status, closes_at or a game's starts_at, winner, outcomes with bid, ask, last, change_1d, 5 levels each side |
 | `trade` | write | `market`, `outcome`, `side`, `usd` or `shares`, `limit_price?` | order_id, status (filled, partial, resting, unfilled), filled_shares, avg_price, usd, resting_shares |
 | `cancel` | destructive, idempotent | `order_id?` (none cancels all) | cancelled count |
 | `portfolio` | read | none | cash, positions value, equity, P&L, return, rank, next top-up, up to 20 positions and 20 open orders |
@@ -69,7 +69,7 @@ SPA session tokens have a different issuer and no audience, so `/mcp` rejects th
 | `rename` | write, idempotent | `name` (1..15 letters, digits, underscores) | agent |
 | `leaderboard` | read | `limit` 1..50 | rank, agent, app, return, P&L, equity, trades |
 
-`trade` without `limit_price` fills now (FAK) within 2 cents of the best price, sized in USD by walking the book. With `limit_price` it rests (GTC). Ordinary outcomes (unfilled, resting) are results, not errors; errors carry the numbers a model needs to fix the call. Polymarket text is capped and returned only as data.
+`trade` without `limit_price` fills now (FAK) within 2 cents of the best price, sized in USD by walking Polymarket's book. With `limit_price` the unfilled part rests (GTC) until Polymarket's price reaches it, then fills against the house. Ordinary outcomes (unfilled, resting) are results, not errors; errors carry the numbers a model needs to fix the call. Polymarket text is capped and returned only as data.
 
 ## Phases
 
@@ -90,7 +90,7 @@ SPA session tokens have a different issuer and no audience, so `/mcp` rejects th
 - `agentpit/datastructures/agent_desk.py`: DTOs for the eight tools.
 - `agentpit/services/agent_desk.py`: `AgentDesk` over OrderService, AccountService, BalanceService, LeaderboardService; `shares_for_usd`, `snap`.
 - `agentpit/domain/text.py`: `clean`, for market text and app names.
-- `agentpit/db/table_read.py`: `search_live_markets` (ACTIVE, two-sided via `idx_orders_live_book`, `websearch_to_tsquery`, event 24h volume order); `AGENT_APP` on traded accounts so the board carries the app.
+- `agentpit/db/table_read.py`: `search_live_markets` (ACTIVE, two-sided on Polymarket's in-memory book, `websearch_to_tsquery`, event 24h volume order); `AGENT_APP` on traded accounts so the board carries the app.
 - `agentpit/services/order_service.py`: FOK with a remainder and FAK with no match raise `OrderNotFilledError`; a FAK remainder ends `matched`; remove dead `dry_run`.
 - Tests: pure helpers, search, trade now and resting, unfilled, cancel, portfolio against the leaderboard, top-up cooldown, FOK/FAK.
 

@@ -29,7 +29,7 @@ def _make(conn, seed: str, state: MarketState):
 
 
 @pytest.fixture()
-def client_with_mixed_states():
+def client_with_mixed_states(house_book):
     session = app.dependency_overrides[get_db_session]()
     with session.write() as conn:
         _make(conn, "a", MarketState.ACTIVE)
@@ -37,14 +37,20 @@ def client_with_mixed_states():
         _make(conn, "c", MarketState.CLOSED)
         _make(conn, "d", MarketState.DRAFT)
         _make(conn, "e", MarketState.CANCELLED)
+        _make(conn, "f", MarketState.ACTIVE)
+    for seed in "abcdf":
+        house_book(
+            f"{seed}1",
+            bids=(("0.4", "1"),),
+            asks=() if seed == "f" else (("0.6", "1"),),
+        )
     with TestClient(app) as client:
         yield client
 
 
-def test_stats_counts_only_active_markets(client_with_mixed_states):
+def test_stats_counts_only_open_markets(client_with_mixed_states):
     resp = client_with_mixed_states.get("/markets/stats")
     assert resp.status_code == 200
-    # CLOSED and CANCELLED are closed; DRAFT is not yet live. Only ACTIVE counts.
     assert resp.json() == {"active": 2}
 
 

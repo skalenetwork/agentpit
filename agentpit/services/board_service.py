@@ -19,6 +19,7 @@ from agentpit.datastructures.board import (
     WireCard,
     WireGame,
     WireOutcome,
+    WireTeam,
 )
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.market import Market
@@ -26,6 +27,7 @@ from agentpit.datastructures.market_state import MarketState
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.domain.sports import SPORTS, League, league_of
+from agentpit.liquidity import feed
 from agentpit.polymarket.pricing import MarketPrices, compute_market_prices
 from agentpit.services.agent_profile import _money
 from agentpit.services.leaderboard_service import LeaderboardService, all_holdings
@@ -81,6 +83,7 @@ class _Entry:
     active: list[bool]
     closed_out: bool
     resolved_at: int | None
+    end_date: int | None
     text: str
     game: bool
 
@@ -93,7 +96,7 @@ class _Entry:
         return not self.closed_out and (any(self.sided) or any(a and r.bets for r, a in zip(self.rows, self.active)))
 
     def settled(self, since: int) -> bool:
-        return self.closed_out and self.resolved_at is not None and self.resolved_at >= since and bool(self.bets)
+        return self.kind != "window" and self.closed_out and self.resolved_at is not None and self.resolved_at >= since and bool(self.bets)
 
     @property
     def lead(self) -> int:
@@ -110,7 +113,7 @@ class _Entry:
 
     @property
     def closes(self) -> int:
-        return (self.event.start_time if self.game else self.event.end_date) or 0
+        return (self.event.start_time if self.game else self.end_date) or 0
 
 
 _snapshot: _Snapshot | None = None
@@ -129,11 +132,16 @@ def _kind(markets: list[Market]) -> CardKind:
 
 
 def _price(m: Market, i: int, prices: dict[int, MarketPrices]) -> float | None:
-    if m.market_state == MarketState.RESOLVED:
-        return 1.0 if m.resolved_outcome == i else 0.0
+    if m.payouts is not None:
+        return m.payouts[i] / sum(m.payouts)
     if m.market_state == MarketState.ACTIVE:
         return prices[m.market_id].outcome_prices[i] / 1_000_000
     return None
+
+
+def _ask(token: str, tops: dict[str, tuple[int | None, int | None]]) -> float | None:
+    ask = tops.get(token, (None, None))[1]
+    return None if ask is None else ask / 1_000_000
 
 
 def _order(rows: list[tuple[WireOutcome, Market]], kind: CardKind, title: str) -> list[tuple[WireOutcome, Market]]:
@@ -152,8 +160,10 @@ def _entry(
     tags: set[str],
     prices: dict[int, MarketPrices],
     tops: dict[str, tuple[int | None, int | None]],
+    teams: dict[tuple[int, str], WireTeam],
     open_bets: Bets,
     settled_bets: Bets,
+    words: str,
 ) -> _Entry:
     kind = _kind(markets)
     closed_out = not any(m.market_state == MarketState.ACTIVE for m in markets)
@@ -167,17 +177,22 @@ def _entry(
         rows.extend(
             (
                 WireOutcome(
-                    label=label if per_token else m.outcome_label or m.question,
+                    label=(
+                        name := label if per_token else m.outcome_label or m.question
+                    ),
                     question=m.question,
                     slug=m.slug,
                     url=m.url,
+                    market=m.market_id,
                     price=_price(m, i, prices),
+                    ask=_ask(token, tops),
                     change24h=None if change is None else change if i == 0 else -change,
+                    team=teams.get((event.event_id, name)),
                     bets=[b for k, b in held if not per_token or k == i],
                 ),
                 m,
             )
-            for i, (_, label) in enumerate(m.erc1155_tokens if per_token else m.erc1155_tokens[:1])
+            for i, (token, label) in enumerate(m.erc1155_tokens if per_token else m.erc1155_tokens[:1])
         )
     rows = _order(rows, kind, event.title)
     resolved = [m.resolved_at or m.end_date for m in markets if m.market_state == MarketState.RESOLVED]
@@ -189,7 +204,8 @@ def _entry(
         active=[m.market_state == MarketState.ACTIVE for _, m in rows],
         closed_out=closed_out,
         resolved_at=max((t for t in resolved if t is not None), default=None),
-        text=" ".join([event.title, *(m.question for m in markets), *(m.outcome_label or "" for m in markets)]).casefold(),
+        end_date=max((m.end_date for m in markets if m.market_state == MarketState.ACTIVE and m.end_date is not None), default=event.end_date),
+        text=" ".join([event.title, words, *(m.question for m in markets), *(m.outcome_label or "" for m in markets)]).casefold(),
         game="games" in tags,
     )
 
@@ -204,9 +220,12 @@ def _card[C: WireCard](entry: _Entry, lead: int, icon: str | None, cls: type[C],
         icon=icon,
         category=event.category,
         url=event.url,
+        volume=event.volume,
         kind=entry.kind,
         state="settled" if entry.closed_out else "live",
-        endDate=event.end_date,
+        startTime=event.start_time if entry.game or entry.kind == "window" else None,
+        trading=any(entry.sided) if entry.game else None,
+        endDate=entry.end_date,
         resolvedAt=entry.resolved_at if entry.closed_out else None,
         outcomeCount=len(rows),
         lead=keep.index(lead),
@@ -224,7 +243,7 @@ def _bets(names: dict[str, str]) -> tuple[Bets, Bets]:
         if name is None:
             continue
         placed = [(settled_bets if p.settled else open_bets, p) for p in held.positions]
-        placed += [(settled_bets, p) for p in held.closed if p.curPrice in (0.0, 1.0) and p.realizedPnl == 0]
+        placed += [(settled_bets, p) for p in held.closed if p.curPrice in (0.0, 0.5, 1.0) and p.realizedPnl == 0]
         for target, p in placed:
             target.setdefault(p.conditionId, []).append(
                 (
@@ -269,11 +288,11 @@ def _sports(
                     views["agents"].futures.append(future)
             continue
         status = game.card.status
-        if status != "settled":
+        if status in ("upcoming", "live"):
             games.append(game)
-        if status == "upcoming" or (status == "started" and game.held):
+        if status in ("upcoming", "live") or (status == "started" and game.held):
             scope.games.append(game)
-            if status == "upcoming":
+            if status != "started":
                 views["upcoming"].games.append(game)
             if game.held:
                 views["agents"].games.append(game)
@@ -386,10 +405,11 @@ class BoardService:
             )
             active = [m for _, ms in pairs for m in ms if m.market_state == MarketState.ACTIVE]
             tokens = [t for m in active for t, _ in m.erc1155_tokens]
-            tops = TableRead.book_tops_for_tokens(conn, tokens)
+            tops = feed.tops(tokens)
             lasts = TableRead.last_trade_prices_for_tokens(conn, [t for t in tokens if t not in tops])
             tags = TableRead.tag_slugs_by_event(conn, [e.event_id for e, _ in pairs])
-            live_markets = TableRead.count_active_markets(conn, **excluded)
+            teams = TableRead.outcome_teams(conn, [e.event_id for e, _ in pairs])
+            live_markets = TableRead.count_open_markets(conn, feed.sided(), **excluded)
         prices = {m.market_id: compute_market_prices(m, tops, lasts) for m in active}
         open_bets, settled_bets = _bets({r.address: r.name for r in self._leaderboard.build_board()})
 
@@ -399,7 +419,18 @@ class BoardService:
         sports: list[tuple[_Entry, _Item[WireCard], _Item[WireGame] | None, League]] = []
         for event, ms in pairs:
             own = tags.get(event.event_id, set())
-            entry = _entry(event, ms, own, prices, tops, open_bets, settled_bets)
+            league = league_of(event.series_slug, own) if event.category == "Sports" else None
+            entry = _entry(
+                event,
+                ms,
+                own,
+                prices,
+                tops,
+                teams,
+                open_bets,
+                settled_bets,
+                league.words if league else "",
+            )
             icon = event.icon_url or next((m.icon_url for m in ms if m.icon_url), None)
             item = _card(entry, entry.lead, icon, WireCard)
             if entry.live:
@@ -409,11 +440,11 @@ class BoardService:
                     movers.append((move[0], _card(entry, move[1], icon, WireCard)))
             elif entry.settled(since):
                 settled.append((entry, item))
-            if event.category == "Sports":
-                league = league_of(event.series_slug, own)
+            if league is not None:
                 game = None
                 if entry.game:
-                    status: GameStatus = "settled" if entry.closed_out else "upcoming" if any(entry.sided) else "started"
+                    kicked_off = event.start_time is not None and event.start_time <= now
+                    status: GameStatus = "settled" if entry.closed_out else "started" if not any(entry.sided) else "live" if kicked_off else "upcoming"
                     game = _card(
                         entry,
                         entry.lead,
@@ -423,7 +454,7 @@ class BoardService:
                         leagueLabel=league.label,
                         sport=league.sport,
                         status=status,
-                        startTime=event.start_time,
+                        tz=league.tz,
                     )
                 sports.append((entry, item, game, league))
 

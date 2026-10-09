@@ -1,6 +1,6 @@
 """Categories the product does not carry are invisible to every browse query.
 
-The sync filter (`_is_excluded_category`) stops NEW markets arriving; these
+The admission policy (`CoveragePolicy.admits`) stops NEW markets arriving; these
 tests cover the other half — the ~1097 Sports events already on disk when the
 decision was made, which only a read-side predicate can hide.
 
@@ -124,15 +124,23 @@ def test_the_market_list_drops_the_excluded_category(catalogue):
 
 
 def test_a_direct_lookup_still_resolves_an_excluded_market(catalogue):
-    """Browsing hides it; addressing it by slug does not 404. `pinned.py`
+    """Browsing hides it; addressing it by slug does not 404. The MCP desk
     resolves one known slug through here and must keep working."""
     markets = TableRead.list_markets_filtered(catalogue, slug="themongolz", limit=1)
     assert [m.slug for m in markets] == ["themongolz"]
 
 
+def _sided(*names: str) -> list[str]:
+    return [f"{_hex32(name)}-yes" for name in names]
+
+
 def test_the_live_headline_counts_what_the_grid_shows(catalogue):
-    assert TableRead.count_active_markets(catalogue) == 2
-    assert TableRead.count_active_markets(catalogue, excluded_categories=SPORTS) == 1
+    sided = _sided("themongolz", "candidate-a")
+    assert TableRead.count_open_markets(catalogue, sided) == 2
+    assert (
+        TableRead.count_open_markets(catalogue, sided, excluded_categories=SPORTS) == 1
+    )
+    assert TableRead.count_open_markets(catalogue, _sided("candidate-a")) == 1
 
 
 def test_the_mirror_stops_quoting_the_excluded_category(catalogue):
@@ -153,14 +161,22 @@ def test_a_market_with_no_event_is_kept(db):
         db, limit=10, excluded_categories=SPORTS
     )
     assert [m.slug for m in markets] == ["unbound"]
-    assert TableRead.count_active_markets(db, excluded_categories=SPORTS) == 1
+    assert (
+        TableRead.count_open_markets(db, _sided("unbound"), excluded_categories=SPORTS)
+        == 1
+    )
 
 
 def test_an_empty_list_excludes_nothing(catalogue):
     """How the whole feature is switched off without a code change."""
     for empty in ([], None, [""], ["   "]):
         assert (
-            TableRead.count_active_markets(catalogue, excluded_categories=empty) == 2
+            TableRead.count_open_markets(
+                catalogue,
+                _sided("themongolz", "candidate-a"),
+                excluded_categories=empty,
+            )
+            == 2
         ), empty
 
 
@@ -234,8 +250,8 @@ def test_a_tagged_event_is_excluded_though_its_category_is_not(db):
         == []
     )
     assert (
-        TableRead.count_active_markets(
-            db, excluded_categories=SPORTS, excluded_tags=ESPORTS
+        TableRead.count_open_markets(
+            db, _sided("deadlock"), excluded_categories=SPORTS, excluded_tags=ESPORTS
         )
         == 0
     )

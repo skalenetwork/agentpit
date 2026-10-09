@@ -1,10 +1,13 @@
 """High-level on-chain operations executed with the admin/operator key."""
 
+from typing import cast
+
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
 from web3.contract.contract import ContractFunction
 from web3.types import TxReceipt
 
+from agentpit.datastructures.market import Payouts
 from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.tx_sender import PendingTx
 from agentpit.onchain.user_wallet import (
@@ -28,6 +31,7 @@ _MAX_UINT256 = 2**256 - 1
 # mined yet. Over-provisioning costs nothing: the unused gas is refunded.
 PREPARE_CONDITION_GAS = 120_000
 REGISTER_TOKEN_GAS = 220_000
+REPORT_PAYOUTS_GAS = 165_000
 
 # Three eth_calls per market in one JSON-RPC batch: 40 markets = 120 requests,
 # under SKALE's cap of 128.
@@ -118,6 +122,12 @@ class OnchainAdmin:
         )
         return fn, REGISTER_TOKEN_GAS
 
+    def report_payouts_call(
+        self, question_id: bytes, payouts: Payouts
+    ) -> tuple[ContractFunction, int]:
+        fn = self._contracts.ctf.functions.reportPayouts(question_id, list(payouts))
+        return fn, REPORT_PAYOUTS_GAS
+
     def submit_many(
         self, calls: list[tuple[ContractFunction, int]]
     ) -> list[PendingTx | Exception]:
@@ -151,6 +161,16 @@ class OnchainAdmin:
                 out.append((int(slots), int(comp_a[0]), int(comp_b[0])))
         return out
 
+    def payout_denominators(self, condition_ids: list[bytes]) -> list[int]:
+        out: list[int] = []
+        ctf = self._contracts.ctf.functions
+        for start in range(0, len(condition_ids), 3 * _STATE_BATCH):
+            with self._client.web3.batch_requests() as batch:
+                for condition_id in condition_ids[start : start + 3 * _STATE_BATCH]:
+                    batch.add(ctf.payoutDenominator(condition_id))
+                out.extend(cast(list[int], batch.execute()))
+        return out
+
     def prepare_condition(
         self,
         oracle: str,
@@ -170,18 +190,6 @@ class OnchainAdmin:
         fn = self._contracts.exchange.functions.registerToken(
             token_a, token_b, condition_id
         )
-        return send_admin_tx(self._client, fn, timeout=timeout)
-
-    def report_payouts(
-        self, question_id: bytes, payouts: list[int], *, timeout: int = 30
-    ) -> TxReceipt:
-        """Admin (= local oracle) reports the resolved payout vector.
-
-        For binary YES/NO markets `payouts` is `[1, 0]` if YES won, `[0, 1]`
-        if NO won. The CTF rejects re-reporting (custom error) — callers
-        wanting idempotency should pre-check `payoutDenominator` or catch.
-        """
-        fn = self._contracts.ctf.functions.reportPayouts(question_id, payouts)
         return send_admin_tx(self._client, fn, timeout=timeout)
 
     def user_split_position(

@@ -8,20 +8,25 @@ import psycopg
 from dataclasses import asdict
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any
 
 from eth_utils.crypto import keccak
 from web3 import Web3
 
 from agentpit.datastructures.cancel_orders_response import CancelOrdersResponse
 from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookSummary
+from agentpit.common import check_state
 from agentpit.datastructures.condition_id import ConditionId
+from agentpit.datastructures.match import Match
+from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.order_response import OrderResponse
 from agentpit.datastructures.place_order_request import PlaceOrderRequest
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.liquidity import feed
+from agentpit.liquidity.feed import MarketRef
+from agentpit.liquidity.replica import BookReplica
 from agentpit.domain.exceptions import (
     BusinessRuleError,
     InsufficientBalanceError,
@@ -31,12 +36,14 @@ from agentpit.domain.exceptions import (
     OrderNotFilledError,
 )
 from agentpit.onchain.admin import OnchainAdmin
+from agentpit.onchain.chain_rpc import Web3ChainRpc
 from agentpit.onchain.order_signer import OrderData, sign_order
-from agentpit.onchain.user_wallet import send_admin_tx
+from agentpit.onchain.tx_sender import FORGET_DONE_AFTER_S, TxDropped, TxUnknown
 from agentpit.datastructures.open_order import OpenOrder
 from agentpit.polymarket.format import decimal_str_to_size_micro, price_to_decimal_str, price_to_float, size_to_decimal_str
-from agentpit.polymarket.resolve import resolve_by_token_id
+from agentpit.polymarket.resolve import ResolvedOutcome, resolve_by_token_id
 from agentpit.services.leaderboard_service import touch
+from agentpit.services.market_service import market_lock
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +51,8 @@ _USDC_DECIMALS = 6
 _USDC_SCALE = Decimal(10**_USDC_DECIMALS)
 _PRICE_ONE = 10**_USDC_DECIMALS  # stored PRICE units that equal $1.00
 _ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+_SETTLE_TIMEOUT_S = 60
+_RECEIPT_CHECK_AFTER_S = 5
 
 # The CTFExchange decides crossing on the EXACT order amounts, not our rounded
 # stored PRICE: price = makerAmount*1e18/takerAmount (BUY) or
@@ -72,29 +81,23 @@ def _exchange_price(maker_amount: int, taker_amount: int, side: str) -> int:
 
 
 def _orders_cross(
-    taker_maker: int, taker_taker: int, taker_side: str,
-    maker_maker: int, maker_taker: int, maker_side: str,
+    taker_maker: int,
+    taker_taker: int,
+    taker_side: str,
+    maker_maker: int,
+    maker_taker: int,
 ) -> bool:
-    """CalculatorHelper.isCrossing — exact replica over both orders' amounts."""
+    """CalculatorHelper.isCrossing against a BUY maker, over both orders' amounts."""
     if taker_taker == 0 or maker_taker == 0:
         return True
     pa = _exchange_price(taker_maker, taker_taker, taker_side)
-    pb = _exchange_price(maker_maker, maker_taker, maker_side)
-    if taker_side == "BUY":
-        if maker_side == "BUY":
-            return pa + pb >= _EXCHANGE_ONE   # both bids → MINT
-        return pa >= pb                       # taker bid vs maker ask
-    if maker_side == "BUY":
-        return pb >= pa                       # taker ask vs maker bid
-    return pa + pb <= _EXCHANGE_ONE           # both asks → MERGE
+    pb = _exchange_price(maker_maker, maker_taker, "BUY")
+    return pa + pb >= _EXCHANGE_ONE if taker_side == "BUY" else pb >= pa
 
 
 class OrderService:
-    """Place + match + settle the simple-trade flow.
-
-    The orderbook is off-chain (the `orders` table). When two opposing orders
-    cross, the operator (admin key) submits a `matchOrders` tx so settlement
-    happens on-chain via the deployed CTFExchange.
+    """Agent orders fill against the house at Polymarket's book; the operator
+    (admin key) settles each fill with one `matchOrders` on the CTFExchange.
     """
 
     def __init__(self, db: DbSession, onchain: OnchainAdmin):
@@ -103,13 +106,7 @@ class OrderService:
 
     # --- public API -----------------------------------------------------
 
-    def place_order(
-        self,
-        user: User,
-        payload: PlaceOrderRequest,
-        *,
-        balance_hint: int | None = None,
-    ) -> OrderResponse:
+    def place_order(self, user: User, payload: PlaceOrderRequest) -> OrderResponse:
         if payload.order_type == "GTD":
             earliest = int(time.time()) + _EXPIRY_MIN_LEAD_SECONDS
             if payload.expiration < earliest:
@@ -120,30 +117,17 @@ class OrderService:
         if coid is not None:
             with self._db.read() as conn:
                 existing = TableRead.get_idempotency_order_id(conn, user.api_key, coid)
-                if existing is not None and self._safe_row(existing) is not None:
+                if existing is not None:
                     return self._build_replay_response(conn, existing)
-            if existing is not None:
-                # Stale claim: its order row was purged (cancelled + cleaned up)
-                # before this retry arrived. Replaying a purged, never-filled
-                # order helps nobody — drop the claim, place fresh.
-                with self._db.write() as conn:
-                    TableWrite.delete_idempotency_key(
-                        conn, api_key=user.api_key, client_order_id=coid
-                    )
-        token_id_int, _token_id_str = self._resolve_token(payload)
+        resolved = self._resolve_token(payload)
+        token_id_int = int(resolved.token_id)
         size_micro = decimal_str_to_size_micro(str(payload.size))
         maker_amount, taker_amount = self._amounts_from_price_size(
             payload.side, payload.price, size_micro
         )
 
         # Pre-flight balance check — reject obvious losers before signing.
-        # `balance_hint` lets a batch caller (the mirror) supply the relevant
-        # balance it already read this cycle, so we skip the on-chain read —
-        # the dominant per-order cost when replicating a deep book.
-        self._check_balance(
-            user.eth_address, payload.side, maker_amount, token_id_int,
-            balance_hint=balance_hint,
-        )
+        self._check_balance(user.eth_address, payload.side, maker_amount, token_id_int)
 
         order = OrderData(
             salt=secrets.randbits(256),
@@ -165,26 +149,46 @@ class OrderService:
         price_int = self._price_int(order)
 
         try:
-            with self._db.write() as conn:
-                if coid is not None:
-                    TableWrite.claim_idempotency_key(
+            with market_lock(resolved.market.market_id):
+                with self._db.write() as conn:
+                    state = TableRead.get_market_state(conn, resolved.market.market_id)
+                    if state != MarketState.ACTIVE:
+                        raise MarketStateError(
+                            f"'{resolved.market.slug}' is {state.value.lower()}, so it cannot be traded."
+                        )
+                    if coid is not None:
+                        TableWrite.claim_idempotency_key(
+                            conn,
+                            api_key=user.api_key,
+                            client_order_id=coid,
+                            order_id=order_id,
+                            created_at=int(time.time()),
+                        )
+                    self._insert_order(
                         conn,
                         api_key=user.api_key,
-                        client_order_id=coid,
+                        order=order,
                         order_id=order_id,
-                        created_at=int(time.time()),
+                        signature=signature,
+                        price_int=price_int,
+                        order_type=payload.order_type,
                     )
-                self._insert_order(
-                    conn,
-                    api_key=user.api_key,
-                    order=order,
-                    order_id=order_id,
-                    signature=signature,
-                    price_int=price_int,
-                    order_type=payload.order_type,
-                )
-                taker_row = self._get_order_row(conn, order_id)
-                matches = self._match(conn, taker_row)
+                    quote = feed.quote(resolved.token_id)
+                    match = self._take(
+                        conn, self._get_order_row(conn, order_id), order, quote
+                    )
+                    filled = 0 if match is None else match.size
+                    if payload.order_type == "FOK" and filled < size_micro:
+                        raise OrderNotFilledError(
+                            "order couldn't be fully filled. FOK orders are fully filled or killed."
+                        )
+                    if payload.order_type == "FAK" and not filled:
+                        raise OrderNotFilledError(
+                            "no orders found to match with FAK order. FAK orders are partially "
+                            "filled or killed if no match is found."
+                        )
+                if match is not None and quote is not None:
+                    quote[2].use(user.api_key, match.takes)
         except psycopg.errors.UniqueViolation:
             # A concurrent request claimed this client_order_id first; the row is
             # committed by the time the violation fires, so replay its order. A
@@ -198,166 +202,83 @@ class OrderService:
                     raise
                 return self._build_replay_response(conn, existing)
 
-        tx_hashes: list[str] = []
-        if matches:
+        error, tx_hash = "", None
+        if match is not None:
             try:
-                hashes = self._settle_on_chain(order, signature, matches)
-                tx_hashes = ["0x" + h.hex() for h in hashes]
-            except Exception as exc:
-                log.exception("on-chain settlement failed for order %s", order_id)
-                with self._db.write() as conn:
-                    conn.execute(
-                        "UPDATE trades SET STATUS = 'FAILED' "
-                        "WHERE TAKER_ORDER_ID = %s",
-                        (order_id,),
-                    )
-                failed_row = self._safe_row(order_id)
-                return OrderResponse(
-                    success=False,
-                    orderID=order_id,
-                    status=failed_row["STATUS"] if failed_row else "live",
-                    errorMsg=f"settlement failed: {exc}",
-                )
+                error, tx_hash = self._settle(order, signature, match, wait=True)
             finally:
-                touch(user.eth_address, *(m["maker_row"]["MAKER"] for m in matches))
+                touch(user.eth_address)
+        settled = match if match is not None and not error else None
 
         with self._db.read() as conn:
             row = self._get_order_row(conn, order_id)
-        # takingAmount/makingAmount come from the immediate match (taker's
-        # perspective), in decimal strings (§4); "" when nothing filled.
-        # The taker transacts at its OWN limit price for every fill (see
-        # _taker_fill_amount) — true for NORMAL fills and for MINT/MERGE,
-        # where taker and maker pay different prices summing to 1 — so the
-        # taker's collateral is taker_price × filled, not the maker's price.
-        filled_micro = sum(int(m["trade_size"]) for m in matches)
-        making_amount, taking_amount = self._fill_amounts(
-            payload.side, price_int, filled_micro
+        making_amount, taking_amount = (
+            ("", "")
+            if settled is None
+            else self._fill_amounts(
+                payload.side,
+                settled.agent_amount if payload.side == "BUY" else settled.house_amount,
+                settled.size,
+            )
         )
 
         return OrderResponse(
-            success=True,
+            success=not error,
+            errorMsg=error,
             orderID=order_id,
             status=row["STATUS"],
-            transactionsHashes=tx_hashes,
+            transactionsHashes=[tx_hash] if settled is not None and tx_hash else [],
             takingAmount=taking_amount,
             makingAmount=making_amount,
-            tradeIDs=[m["trade_id"] for m in matches],
+            tradeIDs=[settled.trade_id] if settled is not None else [],
         )
 
-    def _prepare_resting_orders(
-        self,
-        user: User,
-        payloads: "list[PlaceOrderRequest]",
-        balance_hints: "list[int | None] | None",
-    ) -> "list[tuple[OrderData, str, bytes, int, str]]":
-        """Sign + validate a batch of resting orders OUTSIDE any transaction
-        (CPU only). Returns (order, order_id, signature, price_int, order_type)
-        for the orders that pass; unknown-token / underfunded payloads drop."""
-        if not payloads:
-            return []
-        hints = (
-            balance_hints if balance_hints is not None else [None] * len(payloads)
-        )
-        # Resolve each distinct token id once (one read), not per order.
-        distinct = {p.token_id for p in payloads}
+    def sweep(self) -> None:
+        if feed.HOUSE is None:
+            return
         with self._db.read() as conn:
-            resolved = {t: resolve_by_token_id(conn, t) for t in distinct}
-        prepared: "list[tuple[OrderData, str, bytes, int, str]]" = []
-        for payload, hint in zip(payloads, hints):
-            r = resolved.get(payload.token_id)
-            if r is None:
-                continue  # unknown token
-            token_id_int = int(r.token_id)
-            size_micro = decimal_str_to_size_micro(str(payload.size))
-            maker_amount, taker_amount = self._amounts_from_price_size(
-                payload.side, payload.price, size_micro
-            )
+            rows = conn.execute(
+                "SELECT ORDER_ID, API_KEY, TOKEN_ID, SIDE, PRICE, REMAINING_AMOUNT "
+                f"FROM orders WHERE {TableRead.LIVE_ORDER} ORDER BY CREATED_AT",
+                (int(time.time()),),
+            ).fetchall()
+        for row in rows:
+            quote = feed.quote(row["TOKEN_ID"])
+            if quote is None:
+                continue
+            ref, yes, rep = quote
+            limit = int(row["PRICE"])
+            if not rep.take(
+                row["API_KEY"],
+                (row["SIDE"] == "BUY") == yes,
+                limit if yes else _PRICE_ONE - limit,
+                int(row["REMAINING_AMOUNT"]),
+            ):
+                continue
             try:
-                self._check_balance(
-                    user.eth_address, payload.side, maker_amount, token_id_int,
-                    balance_hint=hint,
-                )
-            except InsufficientBalanceError:
-                continue  # skip underfunded; not fatal for a batch
-            order = OrderData(
-                salt=secrets.randbits(256),
-                maker=user.eth_address,
-                signer=user.eth_address,
-                taker=_ZERO_ADDR,
-                tokenId=token_id_int,
-                makerAmount=maker_amount,
-                takerAmount=taker_amount,
-                expiration=int(payload.expiration),
-                nonce=0,
-                feeRateBps=0,
-                side=0 if payload.side == "BUY" else 1,
-                signatureType=0,
-            )
-            signature = sign_order(
-                user.eth_key, self._onchain._client.deployment, order
-            )
-            prepared.append((
-                order, self._compute_order_id(order), signature,
-                self._price_int(order), payload.order_type,
-            ))
-        return prepared
-
-    def place_resting_orders(
-        self,
-        user: User,
-        payloads: "list[PlaceOrderRequest]",
-        *,
-        balance_hints: "list[int | None] | None" = None,
-    ) -> "list[str]":
-        """Insert many NON-CROSSING resting orders in a single transaction.
-
-        For a trusted batch caller (the liquidity mirror) whose orders are
-        already classified as non-crossing: a resting non-crossing order matches
-        nothing, so we skip the per-order match/settle — one signing pass + one
-        bulk INSERT instead of ~3 DB round-trips per order. Returns the inserted
-        order_ids; unknown-token / underfunded payloads are omitted.
-
-        NOT for crossing/taker orders — those must go through place_order so
-        they match and settle on-chain.
-        """
-        return self.replace_resting_orders(
-            user, [], payloads, balance_hints=balance_hints
-        )
-
-    def replace_resting_orders(
-        self,
-        user: User,
-        cancel_ids: "list[str]",
-        payloads: "list[PlaceOrderRequest]",
-        *,
-        balance_hints: "list[int | None] | None" = None,
-    ) -> "list[str]":
-        """Atomically cancel `cancel_ids` and insert non-crossing `payloads` in
-        ONE transaction, so a concurrent /book read never sees the intermediate
-        empty state — the cancel-then-replace gap that makes the book flicker
-        between full and empty during fast re-quoting.
-
-        Cancels apply before inserts within the transaction (spec §5); the
-        orders are non-crossing (caller-classified), so no matching/settlement
-        runs. Returns the inserted order_ids.
-        """
-        prepared = self._prepare_resting_orders(user, payloads, balance_hints)
-        if not cancel_ids and not prepared:
-            return []
-        now = int(time.time())
-        with self._db.write() as conn:
-            for oid in dict.fromkeys(cancel_ids):
-                conn.execute(
-                    "UPDATE orders SET STATUS = 'cancelled' "
-                    f"WHERE ORDER_ID = %s AND API_KEY = %s AND {TableRead.LIVE_ORDER}",
-                    (oid, user.api_key, now),
-                )
-            for order, order_id, signature, price_int, order_type in prepared:
-                self._insert_order(
-                    conn, api_key=user.api_key, order=order, order_id=order_id,
-                    signature=signature, price_int=price_int, order_type=order_type,
-                )
-        return [order_id for _o, order_id, _s, _p, _t in prepared]
+                with market_lock(ref.market_id):
+                    with self._db.write() as conn:
+                        if (
+                            TableRead.get_market_state(conn, ref.market_id)
+                            != MarketState.ACTIVE
+                        ):
+                            continue
+                        fresh = conn.execute(
+                            "SELECT * FROM orders "
+                            f"WHERE ORDER_ID = %s AND {TableRead.LIVE_ORDER} FOR UPDATE",
+                            (row["ORDER_ID"], int(time.time())),
+                        ).fetchone()
+                        if fresh is None:
+                            continue
+                        agent_order, agent_signature = self._order_from_json(fresh)
+                        match = self._take(conn, fresh, agent_order, quote)
+                    if match is None:
+                        continue
+                    rep.use(fresh["API_KEY"], match.takes)
+                self._settle(agent_order, agent_signature, match, wait=False)
+                touch(fresh["MAKER"])
+            except Exception:
+                log.exception("sweep fill for order %s failed", row["ORDER_ID"])
 
     def list_open_orders(
         self,
@@ -488,38 +409,28 @@ class OrderService:
         return self.cancel_orders(user, ids)
 
     def get_book(self, token_id: str) -> OrderBookSummary:
-        """Aggregated order book for one outcome token (§8.5)."""
+        """Polymarket's order book for one outcome token (§8.5)."""
         with self._db.read() as conn:
             resolved = resolve_by_token_id(conn, token_id)
             if resolved is None:
                 raise MarketNotFoundError(0)
-            rows = conn.execute(
-                "SELECT SIDE, PRICE, SUM(REMAINING_AMOUNT) AS SZ FROM orders "
-                f"WHERE TOKEN_ID = %s AND {TableRead.LIVE_ORDER} GROUP BY SIDE, PRICE",
-                (token_id, int(time.time())),
-            ).fetchall()
             last = conn.execute(
                 TableRead.TOKEN_PRINTS_CTE
                 + "SELECT PRICE FROM prints ORDER BY MATCH_TIME DESC LIMIT 1",
                 ([token_id], [token_id]),
             ).fetchone()
-        bids = sorted(
-            (r for r in rows if r["SIDE"] == "BUY"),
-            key=lambda r: -int(r["PRICE"]),
-        )
-        asks = sorted(
-            (r for r in rows if r["SIDE"] == "SELL"),
-            key=lambda r: int(r["PRICE"]),
-        )
+        snap = feed.book(token_id)
 
-        def level(r) -> OrderBookLevel:
-            return OrderBookLevel(
-                price=price_to_decimal_str(int(r["PRICE"])),
-                size=size_to_decimal_str(int(r["SZ"])),
-            )
+        def levels(side: tuple[tuple[int, int], ...]) -> list[OrderBookLevel]:
+            return [
+                OrderBookLevel(
+                    price=price_to_decimal_str(p), size=size_to_decimal_str(s)
+                )
+                for p, s in side
+            ]
 
-        bid_levels = [level(r) for r in bids]
-        ask_levels = [level(r) for r in asks]
+        bid_levels = levels(snap.bids) if snap else []
+        ask_levels = levels(snap.asks) if snap else []
         last_trade_price = (
             price_to_decimal_str(int(last["PRICE"])) if last is not None else "0"
         )
@@ -617,29 +528,17 @@ class OrderService:
             points = thinned
         return {"history": points}
 
-    def _best_bid_ask(self, token_id: str) -> tuple[int | None, int | None]:
-        """(best_bid_price_int, best_ask_price_int) from the live book."""
-        with self._db.read() as conn:
-            rows = conn.execute(
-                "SELECT SIDE, PRICE FROM orders "
-                f"WHERE TOKEN_ID = %s AND {TableRead.LIVE_ORDER}",
-                (token_id, int(time.time())),
-            ).fetchall()
-        bids = [int(r["PRICE"]) for r in rows if r["SIDE"] == "BUY"]
-        asks = [int(r["PRICE"]) for r in rows if r["SIDE"] == "SELL"]
-        return (max(bids) if bids else None, min(asks) if asks else None)
-
     def get_midpoint(self, token_id: str) -> dict:
-        best_bid, best_ask = self._best_bid_ask(token_id)
+        best_bid, best_ask = feed.tops([token_id]).get(token_id, (None, None))
         if best_bid is None or best_ask is None:
             raise NotFoundError("no book for token")
         return {"mid": price_to_decimal_str((best_bid + best_ask) // 2)}
 
     def get_price(self, token_id: str, side: str) -> dict:
-        best_bid, best_ask = self._best_bid_ask(token_id)
+        best_bid, best_ask = feed.tops([token_id]).get(token_id, (None, None))
         chosen = best_ask if side == "BUY" else best_bid
         if chosen is None:
-            raise NotFoundError("no resting orders on that side")
+            raise NotFoundError("no Polymarket book on that side")
         return {"price": price_to_decimal_str(chosen)}
 
     def get_last_trade_price(self, token_id: str) -> dict:
@@ -655,68 +554,57 @@ class OrderService:
 
     # --- internals ------------------------------------------------------
 
-    def _resolve_token(self, payload: PlaceOrderRequest) -> tuple[int, str]:
-        """Resolve the order's canonical token_id to (token_id_int, token_id_str)."""
+    def _resolve_token(self, payload: PlaceOrderRequest) -> ResolvedOutcome:
         with self._db.read() as conn:
             resolved = resolve_by_token_id(conn, payload.token_id)
         if resolved is None:
             raise MarketStateError(f"unknown token_id '{payload.token_id}'")
-        return int(resolved.token_id), resolved.token_id
-
-    def _safe_row(self, order_id: str):
-        with self._db.read() as conn:
-            try:
-                return self._get_order_row(conn, order_id)
-            except RuntimeError:
-                return None
+        return resolved
 
     @staticmethod
-    def _fill_amounts(side: str, price_int: int, filled_micro: int) -> tuple[str, str]:
-        """(makingAmount, takingAmount) decimal strings for a taker's fills, or
-        ("","") when nothing filled. The taker transacts at its OWN limit price
-        for every fill, so collateral is taker_price x filled."""
-        if filled_micro <= 0:
+    def _fill_amounts(side: str, collateral: int, shares: int) -> tuple[str, str]:
+        """(makingAmount, takingAmount) decimal strings for what the agent
+        paid or received, or ("","") when nothing filled."""
+        if shares <= 0:
             return "", ""
-        collateral_micro = (price_int * filled_micro) // _PRICE_ONE
         if side == "BUY":
-            return (
-                size_to_decimal_str(collateral_micro),  # USDC given
-                size_to_decimal_str(filled_micro),       # shares received
-            )
-        return (
-            size_to_decimal_str(filled_micro),           # shares given
-            size_to_decimal_str(collateral_micro),       # USDC received
-        )
+            return size_to_decimal_str(collateral), size_to_decimal_str(shares)
+        return size_to_decimal_str(shares), size_to_decimal_str(collateral)
 
     def _build_replay_response(self, conn, order_id: str) -> OrderResponse:
         """Reconstruct an OrderResponse for an already-placed order (idempotent
-        replay). Fill amounts + trade ids come from the order's confirmed trades;
-        transaction hashes are best-effort (the normal path returns them from the
-        in-memory settlement, so DB rows may not carry them)."""
+        replay) from its trades: a FAILED one replays as success=False (spec
+        §5.5). errorMsg is not reconstructed (it was never persisted)."""
         row = self._get_order_row(conn, order_id)
         trades = conn.execute(
-            "SELECT TRADE_ID, TRADE_SIZE, TRANSACTION_HASH, STATUS FROM trades "
-            "WHERE TAKER_ORDER_ID = %s ORDER BY MATCH_TIME",
+            "SELECT TRADE_ID, TRADE_SIZE, PRICE, MATCH_KIND, TRANSACTION_HASH, STATUS "
+            "FROM trades WHERE TAKER_ORDER_ID = %s ORDER BY MATCH_TIME",
             (order_id,),
         ).fetchall()
-        # Settlement is all-or-nothing per taker, so any FAILED trade means the
-        # original attempt failed -> replay that failure (spec §5.5). errorMsg
-        # is not reconstructed (the exception text was never persisted).
-        has_failed = any(t["STATUS"] == "FAILED" for t in trades)
-        confirmed = [t for t in trades if t["STATUS"] != "FAILED"]
-        filled_micro = sum(int(t["TRADE_SIZE"]) for t in confirmed)
+        settled = [t for t in trades if t["STATUS"] != "FAILED"]
         making_amount, taking_amount = self._fill_amounts(
-            row["SIDE"], int(row["PRICE"]), filled_micro
+            row["SIDE"],
+            sum(
+                (
+                    int(t["PRICE"])
+                    if (t["MATCH_KIND"] or "NORMAL") == "NORMAL"
+                    else _PRICE_ONE - int(t["PRICE"])
+                )
+                * int(t["TRADE_SIZE"])
+                // _PRICE_ONE
+                for t in settled
+            ),
+            sum(int(t["TRADE_SIZE"]) for t in settled),
         )
-        tx_hashes = [t["TRANSACTION_HASH"] for t in confirmed if t["TRANSACTION_HASH"]]
+        tx_hashes = [t["TRANSACTION_HASH"] for t in settled if t["TRANSACTION_HASH"]]
         return OrderResponse(
-            success=not has_failed,
+            success=len(settled) == len(trades),
             orderID=order_id,
             status=row["STATUS"],
-            transactionsHashes=tx_hashes,
+            transactionsHashes=list(dict.fromkeys(tx_hashes)),
             takingAmount=taking_amount,
             makingAmount=making_amount,
-            tradeIDs=[t["TRADE_ID"] for t in confirmed],
+            tradeIDs=[t["TRADE_ID"] for t in settled],
         )
 
     @staticmethod
@@ -739,32 +627,14 @@ class OrderService:
         return int(size), collateral_int
 
     def _check_balance(
-        self,
-        eth_address: str,
-        side: str,
-        maker_amount: int,
-        token_id_int: int,
-        *,
-        balance_hint: int | None = None,
+        self, eth_address: str, side: str, maker_amount: int, token_id_int: int
     ) -> None:
-        # `balance_hint`, when given, is a same-cycle cached balance for this
-        # side/token; used instead of an on-chain read (the per-order read is
-        # the bottleneck when the mirror replicates a deep book — resting
-        # orders never move the balance, so one read per cycle is exact).
         if side == "BUY":
-            bal = (
-                balance_hint
-                if balance_hint is not None
-                else self._onchain.usd_balance(eth_address)
-            )
+            bal = self._onchain.usd_balance(eth_address)
             if bal < maker_amount:
                 raise InsufficientBalanceError(f"need {maker_amount} apUSD, have {bal}")
         else:
-            bal = (
-                balance_hint
-                if balance_hint is not None
-                else self._onchain.ctf_balance(eth_address, token_id_int)
-            )
+            bal = self._onchain.ctf_balance(eth_address, token_id_int)
             if bal < maker_amount:
                 raise InsufficientBalanceError(
                     f"need {maker_amount} outcome tokens, have {bal}"
@@ -782,8 +652,7 @@ class OrderService:
         order_type: str,
     ) -> None:
         order_json = json.dumps(self._signed_order_payload(order, signature))
-        # REMAINING_AMOUNT is tracked in outcome-token units regardless of side
-        # so the matching loop can compare BUY and SELL orders directly.
+        # REMAINING_AMOUNT is tracked in outcome-token units regardless of side.
         # BUY: takerAmount = outcome qty. SELL: makerAmount = outcome qty.
         outcome_remaining = order.takerAmount if order.side == 0 else order.makerAmount
         conn.execute(
@@ -832,6 +701,25 @@ class OrderService:
         return d
 
     @staticmethod
+    def _order_from_json(row) -> tuple[OrderData, bytes]:
+        signed = json.loads(row["ORDER_JSON"])
+        order = OrderData(
+            salt=int(signed["salt"]),
+            maker=signed["maker"],
+            signer=signed["signer"],
+            taker=signed["taker"],
+            tokenId=int(signed["tokenId"]),
+            makerAmount=int(signed["makerAmount"]),
+            takerAmount=int(signed["takerAmount"]),
+            expiration=int(signed["expiration"]),
+            nonce=int(signed["nonce"]),
+            feeRateBps=int(signed["feeRateBps"]),
+            side=int(signed["side"]),
+            signatureType=int(signed["signatureType"]),
+        )
+        return order, bytes.fromhex(signed["signature"][2:])
+
+    @staticmethod
     def _compute_order_id(order: OrderData) -> str:
         # Stable id derived from the signed fields. Not the EIP-712 hash; this
         # is purely an internal identifier.
@@ -859,29 +747,6 @@ class OrderService:
         return int((price * _USDC_SCALE).to_integral_value(rounding=ROUND_HALF_UP))
 
     @staticmethod
-    def _complement_token_id(conn, token_id: str) -> str | None:
-        """Look up the binary-market complement of `token_id`, if one exists.
-
-        Returns None when no two-outcome market contains this token (so the
-        MINT/MERGE paths simply don't apply).
-        """
-        row = conn.execute(
-            "SELECT ERC1155_TOKENS FROM markets WHERE ERC1155_TOKENS LIKE %s LIMIT 1",
-            (f'%"{token_id}"%',),
-        ).fetchone()
-        if row is None:
-            return None
-        pairs = json.loads(row["ERC1155_TOKENS"])
-        if len(pairs) != 2:
-            return None
-        a, b = pairs[0][0], pairs[1][0]
-        if a == token_id:
-            return b
-        if b == token_id:
-            return a
-        return None
-
-    @staticmethod
     def _get_order_row(conn, order_id: str):
         row = conn.execute(
             "SELECT * FROM orders WHERE ORDER_ID = %s LIMIT 1", (order_id,)
@@ -890,141 +755,113 @@ class OrderService:
             raise RuntimeError(f"order {order_id} not found post-insert")
         return row
 
-    def _match(self, conn, taker_row) -> list[dict]:
-        """Match the taker order against resting orders.
-
-        Considers two cross types:
-        - NORMAL: same token, opposite side (existing book sweep).
-        - MINT/MERGE: complementary token, same side, when prices satisfy
-          the split/merge invariant ``p_taker + p_maker >= 1`` for MINT or
-          ``<= 1`` for MERGE.
-
-        Returns a list of match dicts with keys: maker_order_id, price,
-        trade_size, maker_row, match_kind. Updates DB rows for both sides
-        and inserts trade rows.
-        """
-        taker_side = taker_row["SIDE"]
-        taker_price = int(taker_row["PRICE"])
-        token_id = taker_row["TOKEN_ID"]
-        taker_remaining = int(taker_row["REMAINING_AMOUNT"])
-        # Bound once and reused across all four queries below, so a single
-        # matching pass cannot disagree with itself about what time it is.
-        now = int(time.time())
-
-        opposite = "SELL" if taker_side == "BUY" else "BUY"
-        if taker_side == "BUY":
-            sql = (
-                "SELECT * FROM orders WHERE SIDE=%s AND PRICE <= %s "
-                f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
-            )
-        else:
-            sql = (
-                "SELECT * FROM orders WHERE SIDE=%s AND PRICE >= %s "
-                f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
-            )
-        same_token = conn.execute(
-            sql, (opposite, taker_price, token_id, taker_row["ORDER_ID"], now)
-        ).fetchall()
-        same_token = sorted(
-            same_token,
-            key=lambda r: (
-                (int(r["PRICE"]), int(r["CREATED_AT"]))
-                if taker_side == "BUY"
-                else (-int(r["PRICE"]), int(r["CREATED_AT"]))
+    def _take(
+        self,
+        conn,
+        row,
+        agent_order: OrderData,
+        quote: tuple[MarketRef, bool, BookReplica] | None,
+    ) -> Match | None:
+        house = feed.HOUSE
+        if house is None or quote is None:
+            return None
+        ref, yes, rep = quote
+        buy = row["SIDE"] == "BUY"
+        limit = int(row["PRICE"])
+        remaining = int(row["REMAINING_AMOUNT"])
+        takes = rep.take(
+            row["API_KEY"], buy == yes, limit if yes else _PRICE_ONE - limit, remaining
+        )
+        size = sum(t.size for t in takes)
+        cost = sum((t.price if yes else _PRICE_ONE - t.price) * t.size for t in takes)
+        house_amount = self._house_amounts(agent_order, size, cost)
+        if not 0 < house_amount < size:
+            return None
+        house_order = OrderData(
+            salt=secrets.randbits(256),
+            maker=house.user.eth_address,
+            signer=house.user.eth_address,
+            taker=_ZERO_ADDR,
+            tokenId=(
+                int(ref.no_token if yes else ref.yes_token)
+                if buy
+                else agent_order.tokenId
+            ),
+            makerAmount=house_amount,
+            takerAmount=size,
+            expiration=0,
+            nonce=0,
+            feeRateBps=0,
+            side=0,
+            signatureType=0,
+        )
+        check_state(
+            _orders_cross(
+                agent_order.makerAmount,
+                agent_order.takerAmount,
+                row["SIDE"],
+                house_amount,
+                size,
+            ),
+            f"house order does not cross order {row['ORDER_ID']}",
+        )
+        house_signature = sign_order(
+            house.user.eth_key, self._onchain._client.deployment, house_order
+        )
+        house_order_id = self._compute_order_id(house_order)
+        self._insert_order(
+            conn,
+            api_key=house.user.api_key,
+            order=house_order,
+            order_id=house_order_id,
+            signature=house_signature,
+            price_int=self._price_int(house_order),
+            order_type="FOK",
+        )
+        conn.execute(
+            "UPDATE orders SET REMAINING_AMOUNT = 0, STATUS = 'matched' WHERE ORDER_ID = %s",
+            (house_order_id,),
+        )
+        left = remaining - size
+        conn.execute(
+            "UPDATE orders SET REMAINING_AMOUNT = %s, STATUS = %s WHERE ORDER_ID = %s",
+            (
+                left,
+                "live" if left and row["ORDER_TYPE"] != "FAK" else "matched",
+                row["ORDER_ID"],
             ),
         )
-        tagged: list[tuple[str, Any]] = [("NORMAL", c) for c in same_token]
-
-        complement_id = self._complement_token_id(conn, token_id)
-        if complement_id is not None:
-            threshold = _PRICE_ONE - taker_price
-            if taker_side == "BUY":
-                comp_sql = (
-                    "SELECT * FROM orders WHERE SIDE='BUY' AND PRICE >= %s "
-                    f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
-                )
-                kind = "MINT"
-                # best maker = highest price (covers more of the mint cost).
-                comp_key = lambda r: (-int(r["PRICE"]), int(r["CREATED_AT"]))
-            else:
-                comp_sql = (
-                    "SELECT * FROM orders WHERE SIDE='SELL' AND PRICE <= %s "
-                    f"AND TOKEN_ID=%s AND ORDER_ID != %s AND {TableRead.LIVE_ORDER}"
-                )
-                kind = "MERGE"
-                # best maker = lowest ask (smallest cut of the merge proceeds).
-                comp_key = lambda r: (int(r["PRICE"]), int(r["CREATED_AT"]))
-            comp_rows = conn.execute(
-                comp_sql, (threshold, complement_id, taker_row["ORDER_ID"], now)
-            ).fetchall()
-            tagged.extend((kind, r) for r in sorted(comp_rows, key=comp_key))
-
-        matches: list[dict] = []
-        for kind, maker in tagged:
-            if taker_remaining <= 0:
-                break
-            maker_remaining = int(maker["REMAINING_AMOUNT"])
-            if maker_remaining <= 0:
-                continue
-            # The SQL pre-filter used the rounded stored PRICE; confirm the pair
-            # crosses on the EXACT amounts (what the exchange checks), so a match
-            # at the rounding boundary can't revert the on-chain matchOrders.
-            if not _orders_cross(
-                int(taker_row["MAKER_AMOUNT"]), int(taker_row["TAKER_AMOUNT"]),
-                taker_side,
-                int(maker["MAKER_AMOUNT"]), int(maker["TAKER_AMOUNT"]),
-                maker["SIDE"],
-            ):
-                continue
-            trade_size = min(maker_remaining, taker_remaining)
-            taker_remaining -= trade_size
-            new_maker_remaining = maker_remaining - trade_size
-            matches.append(
-                {
-                    "maker_row": maker,
-                    "maker_order_id": maker["ORDER_ID"],
-                    "price": int(maker["PRICE"]),
-                    "trade_size": trade_size,
-                    "new_maker_remaining": new_maker_remaining,
-                    "match_kind": kind,
-                }
-            )
-
-        order_type = taker_row["ORDER_TYPE"]
-        if order_type == "FOK" and taker_remaining:
-            raise OrderNotFilledError(
-                "order couldn't be fully filled. FOK orders are fully filled or killed."
-            )
-        if order_type == "FAK" and not matches:
-            raise OrderNotFilledError(
-                "no orders found to match with FAK order. FAK orders are partially "
-                "filled or killed if no match is found."
-            )
-
-        # Apply DB updates
-        for m in matches:
-            new_maker_remaining = m["new_maker_remaining"]
-            new_status = "matched" if new_maker_remaining == 0 else "live"
-            conn.execute(
-                "UPDATE orders SET REMAINING_AMOUNT=%s, STATUS=%s WHERE ORDER_ID=%s",
-                (new_maker_remaining, new_status, m["maker_order_id"]),
-            )
-            m["trade_id"] = self._insert_trade(conn, taker_row, m)
-
-        new_taker_status = "live" if taker_remaining and order_type != "FAK" else "matched"
-        conn.execute(
-            "UPDATE orders SET REMAINING_AMOUNT=%s, STATUS=%s WHERE ORDER_ID=%s",
-            (taker_remaining, new_taker_status, taker_row["ORDER_ID"]),
+        match = Match(
+            takes=takes,
+            size=size,
+            house_amount=house_amount,
+            agent_amount=size - house_amount if buy else size,
+            kind="MINT" if buy else "NORMAL",
+            house_order=house_order,
+            house_signature=house_signature,
+            trade_id=f"{row['ORDER_ID']}-{house_order_id}-{secrets.token_hex(8)}",
         )
-        return matches
+        self._insert_trade(conn, row, self._get_order_row(conn, house_order_id), match)
+        return match
 
     @staticmethod
-    def _insert_trade(
-        conn, taker_row, match: dict
-    ) -> str:
-        trade_id = "{}-{}-{}".format(
-            taker_row["ORDER_ID"], match["maker_order_id"], secrets.token_hex(8)
+    def _house_amounts(agent: OrderData, size: int, cost: int) -> int:
+        if agent.side == 0:
+            p = _exchange_price(agent.makerAmount, agent.takerAmount, "BUY")
+            return max(
+                size - cost // _PRICE_ONE,
+                -(-(_EXCHANGE_ONE - p) * size // _EXCHANGE_ONE),
+                size - size * agent.makerAmount // agent.takerAmount,
+            )
+        p = _exchange_price(agent.makerAmount, agent.takerAmount, "SELL")
+        return max(
+            -(-cost // _PRICE_ONE),
+            -(-p * size // _EXCHANGE_ONE),
+            size * agent.takerAmount // agent.makerAmount,
         )
+
+    @staticmethod
+    def _insert_trade(conn, taker_row, maker_row, match: Match) -> None:
         token_id = taker_row["TOKEN_ID"]
         resolved = resolve_by_token_id(conn, token_id)
         condition_id = resolved.condition_id if resolved else token_id
@@ -1032,22 +869,18 @@ class OrderService:
             resolved.market.erc1155_tokens[resolved.outcome_index][1]
             if resolved else ""
         )
-        maker_row = match["maker_row"]
         maker_user_id = TableRead.get_user_id_by_api_key(conn, maker_row["API_KEY"])
         maker_side = maker_row["SIDE"]
         # The maker's order is booked against ITS token, which for a
-        # MINT/MERGE is the complement of the taker's. Reading it from the
-        # maker row is what makes the leg reconstructable; copying `token_id`
-        # here is the bug this replaces.
+        # MINT is the complement of the taker's.
         maker_asset_id = maker_row["TOKEN_ID"]
-        match_kind = match.get("match_kind", "NORMAL")
         maker_orders_payload = [
             {
-                "order_id": match["maker_order_id"],
+                "order_id": maker_row["ORDER_ID"],
                 "owner": maker_user_id or "",         # non-secret USER_ID (§13)
                 "maker_address": maker_row["MAKER"],  # eth address
-                "matched_amount": str(match["trade_size"]),
-                "price": int(match["price"]),
+                "matched_amount": str(match.size),
+                "price": int(maker_row["PRICE"]),
                 "fee_rate_bps": int(maker_row["FEE_RATE_BPS"]),
                 "asset_id": maker_asset_id,
                 "outcome": outcome_label,
@@ -1065,90 +898,96 @@ class OrderService:
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
-                trade_id,
+                match.trade_id,
                 taker_row["ORDER_ID"],
                 json.dumps(maker_orders_payload),
                 condition_id,                 # MARKET = condition_id (§7 fix)
                 token_id,                     # ASSET_ID = token_id
                 maker_asset_id,
-                match_kind,
-                match["price"],
-                match["trade_size"],
+                match.kind,
+                int(maker_row["PRICE"]),
+                match.size,
                 taker_row["REMAINING_AMOUNT"],
                 taker_row["SIDE"],
                 "PENDING",
                 int(datetime.now(timezone.utc).timestamp()),
-                "",
+                None,
                 0,
                 int(taker_row["FEE_RATE_BPS"]),
                 taker_row["API_KEY"],          # internal filter key (never serialized)
                 maker_row["API_KEY"],          # internal filter key
             ),
         )
-        return trade_id
 
     # --- on-chain settlement -------------------------------------------
 
-    def _settle_on_chain(
-        self, taker_order: OrderData, taker_signature: bytes, matches: list[dict]
-    ) -> list[bytes]:
-        """Submit `matchOrders` as the operator, one tx per match-kind group.
-
-        Each call to CTFExchange.matchOrders resolves to a single MatchType
-        derived from the taker/maker token pairing, so NORMAL fills cannot
-        share a tx with MINT/MERGE fills. Returns one tx hash per group.
-        """
-        client = self._onchain._client  # noqa: SLF001
+    def _settle(
+        self,
+        agent_order: OrderData,
+        agent_signature: bytes,
+        match: Match,
+        *,
+        wait: bool,
+    ) -> tuple[str, str | None]:
+        sender = self._onchain._client.admin_sender  # noqa: SLF001
         exchange = self._onchain._contracts.exchange  # noqa: SLF001
-
-        groups: dict[str, list[dict]] = {}
-        for m in matches:
-            groups.setdefault(m.get("match_kind", "NORMAL"), []).append(m)
-
-        taker_solidity = self._to_solidity_order(taker_order, taker_signature)
-        tx_hashes: list[bytes] = []
-        for group in groups.values():
-            maker_solidity_orders = []
-            maker_fill_amounts = []
-            taker_fill_amount = 0
-            for m in group:
-                maker_row = m["maker_row"]
-                maker_signed = json.loads(maker_row["ORDER_JSON"])
-                maker_order = OrderData(
-                    salt=int(maker_signed["salt"]),
-                    maker=maker_signed["maker"],
-                    signer=maker_signed["signer"],
-                    taker=maker_signed["taker"],
-                    tokenId=int(maker_signed["tokenId"]),
-                    makerAmount=int(maker_signed["makerAmount"]),
-                    takerAmount=int(maker_signed["takerAmount"]),
-                    expiration=int(maker_signed["expiration"]),
-                    nonce=int(maker_signed["nonce"]),
-                    feeRateBps=int(maker_signed["feeRateBps"]),
-                    side=int(maker_signed["side"]),
-                    signatureType=int(maker_signed["signatureType"]),
-                )
-                maker_sig = bytes.fromhex(maker_signed["signature"][2:])
-                maker_solidity_orders.append(
-                    self._to_solidity_order(maker_order, maker_sig)
-                )
-                # matchOrders expects fill amounts in each side's makerAsset units.
-                maker_fill_amounts.append(
-                    self._maker_fill_amount(maker_order, m["trade_size"])
-                )
-                taker_fill_amount += self._taker_fill_amount(
-                    taker_order, m["trade_size"]
-                )
-
-            fn = exchange.functions.matchOrders(
-                taker_solidity,
-                maker_solidity_orders,
-                taker_fill_amount,
-                maker_fill_amounts,
+        tx_hash: str | None = None
+        try:
+            call = exchange.functions.matchOrders(
+                self._to_solidity_order(agent_order, agent_signature),
+                [self._to_solidity_order(match.house_order, match.house_signature)],
+                match.agent_amount,
+                [match.house_amount],
             )
-            receipt = send_admin_tx(client, fn, timeout=60)
-            tx_hashes.append(receipt["transactionHash"])
-        return tx_hashes
+            try:
+                tx = sender.submit(call)
+            except TxUnknown as unknown:
+                tx = unknown.pending
+            tx_hash = "0x" + tx.tx_hash.hex()
+            with self._db.write() as conn:
+                TableWrite.settle_trades(conn, [match.trade_id], "PENDING", tx_hash)
+            if not wait:
+                return "", tx_hash
+            receipt = sender.wait(tx, timeout=_SETTLE_TIMEOUT_S)
+        except Exception as exc:
+            lost = tx_hash is None or isinstance(exc, TxDropped)
+            status = "FAILED" if lost else "PENDING"
+            detail = str(exc)
+        else:
+            status = "CONFIRMED" if receipt["status"] == 1 else "FAILED"
+            detail = f"{tx_hash} reverted"
+        with self._db.write() as conn:
+            TableWrite.settle_trades(conn, [match.trade_id], status, tx_hash)
+        if status != "CONFIRMED":
+            log.warning("matchOrders for %s is %s: %s", match.trade_id, status, detail)
+        return (f"settlement failed: {detail}" if status == "FAILED" else ""), tx_hash
+
+    def settle_pending(self, now: int) -> None:
+        with self._db.read() as conn:
+            pending = TableRead.pending_settlements(conn, now - _RECEIPT_CHECK_AFTER_S)
+            unsent = TableRead.unsent_settlements(conn, now - FORGET_DONE_AFTER_S)
+        exchange = self._onchain._contracts.exchange  # noqa: SLF001
+        for row in unsent:
+            house = self._to_solidity_order(*self._order_from_json(row))
+            filled, _ = exchange.functions.orderStatus(
+                exchange.functions.hashOrder(house).call()
+            ).call()
+            status = "CONFIRMED" if filled else "FAILED"
+            log.info("matchOrders for %s left no hash; it is %s", row["TRADE_ID"], status)
+            with self._db.write() as conn:
+                TableWrite.settle_trades(conn, [row["TRADE_ID"]], status, None)
+        if not pending:
+            return
+        rpc = Web3ChainRpc(self._onchain._client.web3)  # noqa: SLF001
+        receipts = rpc.receipts([bytes.fromhex(h[2:]) for h, _, _ in pending])
+        with self._db.write() as conn:
+            for (tx_hash, matched_at, trade_ids), receipt in zip(pending, receipts):
+                if receipt is None and matched_at >= now - FORGET_DONE_AFTER_S:
+                    continue
+                landed = receipt is not None and receipt["status"] == 1
+                status = "CONFIRMED" if landed else "FAILED"
+                log.info("matchOrders %s for %s is %s", tx_hash, trade_ids, status)
+                TableWrite.settle_trades(conn, trade_ids, status, tx_hash)
 
     @staticmethod
     def _to_solidity_order(order: OrderData, signature: bytes) -> tuple:
@@ -1167,28 +1006,3 @@ class OrderService:
             order.signatureType,
             signature,
         )
-
-    @staticmethod
-    def _maker_fill_amount(maker: OrderData, trade_size: int) -> int:
-        # `trade_size` is denominated in outcome-token units regardless of side.
-        # For matchOrders, makerFillAmounts must be in the maker-asset units of
-        # each maker order. SELL maker: makerAsset = outcome tokens → trade_size.
-        # BUY maker: makerAsset = collateral → trade_size * price (rounded down).
-        if maker.side == 1:  # SELL
-            return trade_size
-        # BUY maker
-        ratio = Decimal(maker.makerAmount) / Decimal(maker.takerAmount)
-        return int(
-            (Decimal(trade_size) * ratio).to_integral_value(rounding=ROUND_HALF_UP)
-        )
-
-    @staticmethod
-    def _taker_fill_amount(taker: OrderData, trade_size: int) -> int:
-        # takerFillAmount is in the taker's makerAsset units.
-        if taker.side == 0:  # BUY taker → makerAsset = collateral
-            ratio = Decimal(taker.makerAmount) / Decimal(taker.takerAmount)
-            return int(
-                (Decimal(trade_size) * ratio).to_integral_value(rounding=ROUND_HALF_UP)
-            )
-        # SELL taker → makerAsset = outcome tokens
-        return trade_size

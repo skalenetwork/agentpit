@@ -8,7 +8,6 @@ every market to it via the SQLite DAL.
 Usage:
     python scripts/seed_world_cup_event.py
     python scripts/seed_world_cup_event.py --base http://localhost:8000
-    python scripts/seed_world_cup_event.py --book   # also populate orderbooks
 
 Re-running is safe: countries already attached to the event are skipped.
 """
@@ -17,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 import urllib.error
@@ -171,25 +169,9 @@ def attach_markets_to_event(market_ids: list[int]) -> int:
     return attached
 
 
-def seed_orderbooks(base: str, market_ids: list[int]) -> None:
-    """Re-use the existing per-market orderbook seeder for each sub-market."""
-    seeder = REPO_ROOT / "scripts" / "seed_market_orders.py"
-    for mid in market_ids:
-        print(f"\n→ orderbook for market {mid}")
-        subprocess.run(
-            [sys.executable, str(seeder), "--base", base, "--market", str(mid)],
-            check=True,
-        )
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://localhost:8000")
-    ap.add_argument(
-        "--book",
-        action="store_true",
-        help="Also populate an orderbook for each sub-market via seed_market_orders.py",
-    )
     args = ap.parse_args()
 
     print(f"→ registering temporary admin user against {args.base}")
@@ -229,14 +211,6 @@ def main() -> int:
     print(f"\n→ binding {len(market_ids)} market(s) to event '{EVENT_SLUG}'")
     attached = attach_markets_to_event(market_ids)
     print(f"   attached {attached}/{len(market_ids)}")
-
-    if args.book:
-        try:
-            seed_orderbooks(args.base, market_ids)
-        except subprocess.CalledProcessError as exc:
-            print(
-                f"WARN: orderbook seeding failed for one market: {exc}", file=sys.stderr
-            )
 
     print(f"\n✓ done — open {args.base.replace(':8000', ':5173')}/events/{EVENT_SLUG}")
     return 0

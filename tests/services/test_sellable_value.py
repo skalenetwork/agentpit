@@ -12,8 +12,8 @@ with the remainder cancelled (`placeMarketOrder` in `ui/src/api/orders.ts`,
 from __future__ import annotations
 
 import json
-import time
 import uuid
+from collections.abc import Callable
 
 import pytest
 
@@ -22,6 +22,7 @@ from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
 from agentpit.db.table_write import TableWrite
+from agentpit.liquidity.replica import BookReplica
 from agentpit.services.account_service import AccountService, sellable_against_bids
 from tests.db_helpers import fresh_test_db
 
@@ -124,26 +125,16 @@ def _insert_trade(conn, *, market: str, asset: str, taker_api_key: str) -> None:
     )
 
 
-def _insert_bid(conn, *, token_id: str, price: int, original: int, remaining: int):
-    conn.execute(
-        "INSERT INTO orders (ORDER_ID, TOKEN_ID, SIDE, PRICE, STATUS, "
-        "MAKER_AMOUNT, TAKER_AMOUNT, REMAINING_AMOUNT, EXPIRATION, CREATED_AT, "
-        "API_KEY) VALUES (%s, %s, 'BUY', %s, 'live', %s, %s, %s, 0, %s, 'maker')",
-        (
-            uuid.uuid4().hex,
-            token_id,
-            price,
-            original * price // 1_000_000,
-            original,
-            remaining,
-            int(time.time()),
-        ),
-    )
-
-
-def _position(email: str, seed: str, *, bids: list[tuple[int, int]], resolved: bool):
+def _position(
+    put: Callable[..., BookReplica],
+    email: str,
+    seed: str,
+    *,
+    bids: tuple[tuple[str, str], ...],
+    resolved: bool,
+):
     """The single `PositionWire` for an account holding 100 shares of the YES
-    token, with `bids` -- `(price_micro, remaining_micro)` -- resting on it."""
+    token, with `bids` on its Polymarket book."""
     db = fresh_test_db()
     # `list_positions` does `int(token_id)`, so these have to parse as ints.
     base = int.from_bytes(seed.encode(), "big")
@@ -165,18 +156,11 @@ def _position(email: str, seed: str, *, bids: list[tuple[int, int]], resolved: b
         )
         m = TableWrite.create_market(conn, req, is_polygon_market=False)
         _insert_trade(conn, market=_hex32(seed), asset=yes_tok, taker_api_key=api_key)
-        for price, remaining in bids:
-            _insert_bid(
-                conn,
-                token_id=yes_tok,
-                price=price,
-                original=remaining * 2,
-                remaining=remaining,
-            )
         if resolved:
-            TableWrite.resolve_market(
-                conn, market_id=m.market_id, winning_outcome_index=0
+            TableWrite.set_market_state(
+                conn, m.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0)
             )
+    put(yes_tok, bids=bids)
 
     onchain = _StubOnchain({yes_tok: 100_000_000})
     service = AccountService(db, onchain=onchain)  # type: ignore[arg-type]
@@ -185,13 +169,12 @@ def _position(email: str, seed: str, *, bids: list[tuple[int, int]], resolved: b
     return out[0]
 
 
-def test_a_live_position_reports_what_its_resting_bids_would_pay():
-    """Each order rests at half its original size, so a row that measured
-    depth by MAKER_AMOUNT / TAKER_AMOUNT would promise twice the proceeds."""
+def test_a_live_position_reports_what_polymarkets_bids_would_pay(house_book):
     p = _position(
+        house_book,
         "sellable-live@x.com",
         "sv1",
-        bids=[(500_000, 30_000_000), (490_000, 30_000_000)],
+        bids=(("0.5", "30"), ("0.49", "30")),
         resolved=False,
     )
     assert p.size == 100.0
@@ -200,13 +183,13 @@ def test_a_live_position_reports_what_its_resting_bids_would_pay():
     assert p.sellableValue == pytest.approx(15.0 + 14.7)
 
 
-def test_a_settled_position_is_not_sellable():
-    """Its book is gone once the market resolves -- the orders left in the
-    table are stale, and no sale can execute against them."""
+def test_a_settled_position_is_not_sellable(house_book):
+    """A resolved market cannot be traded, whatever book is still shown."""
     p = _position(
+        house_book,
         "sellable-settled@x.com",
         "sv2",
-        bids=[(500_000, 100_000_000)],
+        bids=(("0.5", "100"),),
         resolved=True,
     )
     assert p.settled is True

@@ -74,6 +74,9 @@ def to_gamma_market(
     active = market.market_state == MarketState.ACTIVE
     closed = market.market_state in _CLOSED_STATES
     end_iso = _iso(market.end_date)
+    price_fields = _price_fields(prices, labels)
+    if market.payouts is not None:
+        price_fields["outcomePrices"] = _json_arr([f"{n / sum(market.payouts):g}" for n in market.payouts])
     return GammaMarket(
         id=str(market.market_id),
         conditionId=market.condition_id.value,
@@ -93,9 +96,9 @@ def to_gamma_market(
         image=market.icon_url,
         volume="0",
         liquidity="0",
-        winner=None if market.resolved_outcome is None else labels[market.resolved_outcome],
+        winner=market.winner,
         resolvedAt=market.resolved_at,
-        **_price_fields(prices, labels),
+        **price_fields,
     )
 
 

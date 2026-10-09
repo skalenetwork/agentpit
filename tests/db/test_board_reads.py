@@ -47,7 +47,7 @@ def _market(db, event_id: int, name: str, state: MarketState, end_date: int = NO
 
 def _settle(db, market_id: int, resolved_at: int | None) -> None:
     db.execute(
-        "UPDATE markets SET MARKET_STATE = 'RESOLVED', RESOLVED_OUTCOME = 0, "
+        "UPDATE markets SET MARKET_STATE = 'RESOLVED', PAYOUTS = '{1,0}', "
         "RESOLVED_AT = %s WHERE MARKET_ID = %s",
         (resolved_at, market_id),
     )
@@ -114,17 +114,43 @@ def test_tag_slugs_are_the_union_over_an_events_markets(db):
     }
 
 
-def test_both_resolve_paths_stamp_the_resolution_time(db):
-    event = _event(db, "stamp")
-    by_id = _market(db, event, "by-id", MarketState.ACTIVE)
-    by_condition = _market(db, event, "by-condition", MarketState.ACTIVE)
+def test_a_market_context_names_the_only_paid_outcome(db):
+    event = _event(db, "context")
+    won = _market(db, event, "won", MarketState.ACTIVE)
+    split = _market(db, event, "split", MarketState.ACTIVE)
+    TableWrite.set_market_state(db, won.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (0, 1))
+    db.execute(
+        "UPDATE markets SET MARKET_STATE = 'RESOLVED', PAYOUTS = '{1,1}' WHERE MARKET_ID = %s",
+        (split.market_id,),
+    )
 
-    resolved = TableWrite.resolve_market(db, by_id.market_id, 1)
-    TableWrite.update_market_state_to_resolved_if_needed(db, by_condition.condition_id, 0)
+    contexts = TableRead.market_contexts(db, [won.condition_id.value, split.condition_id.value], [])
+    assert [contexts[m.condition_id.value].winner for m in (won, split)] == ["No", None]
+
+
+def test_a_market_context_gives_a_games_kickoff(db):
+    event = _event(db, "kickoff")
+    db.execute("UPDATE events SET START_TIME = %s WHERE EVENT_ID = %s", (NOW, event))
+    game = _market(db, event, "game", MarketState.ACTIVE)
+    other = _market(db, event, "other", MarketState.ACTIVE)
+    TableWrite.replace_market_tags(db, market_id=game.market_id, tags=[("games", "Games")])
+
+    contexts = TableRead.market_contexts(
+        db, [game.condition_id.value, other.condition_id.value], [game.erc1155_tokens[0][0]]
+    )
+    assert [
+        (contexts[m.condition_id.value].kickoff, contexts[m.condition_id.value].trading)
+        for m in (game, other)
+    ] == [(NOW, True), (None, None)]
+
+
+def test_resolve_stamps_the_resolution_time(db):
+    event = _event(db, "stamp")
+    market = _market(db, event, "by-id", MarketState.ACTIVE)
+
+    TableWrite.set_market_state(db, market.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (0, 1))
 
     now = int(db.execute("SELECT EXTRACT(EPOCH FROM now())::BIGINT AS T").fetchone()["T"])
-    for market in (by_id, by_condition):
-        row = TableRead.read_market(db, market.market_id)
-        assert row is not None and row.resolved_at is not None
-        assert abs(row.resolved_at - now) <= 5
-    assert resolved.resolved_at is not None
+    row = TableRead.read_market(db, market.market_id)
+    assert row is not None and row.resolved_at is not None
+    assert abs(row.resolved_at - now) <= 5

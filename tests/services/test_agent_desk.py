@@ -1,10 +1,10 @@
 import secrets
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pytest
-from fastapi.testclient import TestClient
 
 from agentpit.config import Settings
 from agentpit.datastructures.condition_id import ConditionId
@@ -16,6 +16,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import InsufficientBalanceError
 from agentpit.domain.text import clean
+from agentpit.liquidity.replica import BookReplica
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
@@ -23,7 +24,7 @@ from agentpit.onchain.web3_client import Web3Client
 from agentpit.services.agent_desk import AgentDesk, shares_for_usd, snap
 from agentpit.services.leaderboard_service import RANK_FLOOR, drain, pct
 from tests.db_helpers import fresh_test_db
-from tests.onchain._helpers import ADMIN_HDR, create_market, fresh_client, hdr, register
+from tests.onchain._helpers import create_market, fresh_client, house, register
 
 
 def _desk(settings: Settings | None = None) -> AgentDesk:
@@ -40,24 +41,23 @@ def _user(api_key: str) -> User:
     return user
 
 
-def _live_market(client: TestClient, maker: str) -> tuple[str, str]:
-    market = create_market(client)
-    client.post(f"/markets/{market['market_id']}/activate", headers=ADMIN_HDR).raise_for_status()
-    client.post(
-        f"/markets/{market['market_id']}/split_position", headers=hdr(maker), json={"amount": 200_000_000}
-    ).raise_for_status()
-    return market["slug"], market["erc1155_tokens"][0][0]
-
-
-def _asks() -> tuple[AgentDesk, User, str]:
+def _asks(house_book) -> tuple[AgentDesk, User, str, BookReplica]:
     desk = _desk()
     client = fresh_client()
-    maker = _user(register(client)["api_key"])
     agent = _user(register(client)["api_key"])
-    slug, _ = _live_market(client, maker.api_key)
-    desk.trade(maker, slug, "YES", "sell", shares=50, limit_price=0.4)
-    desk.trade(maker, slug, "YES", "sell", shares=100, limit_price=0.45)
-    return desk, agent, slug
+    market = create_market(client)
+    book = house_book(
+        market["erc1155_tokens"][0][0],
+        asks=(("0.4", "50"), ("0.45", "100")),
+        user=house(client),
+    )
+    return desk, agent, market["slug"], book
+
+
+def _drain(book: BookReplica, price: str) -> None:
+    book.apply_price_change_entry(
+        {"asset_id": book.asset_id, "side": "SELL", "price": price, "size": "0"}
+    )
 
 
 def test_snap_rounds_buys_down_and_sells_up():
@@ -80,12 +80,32 @@ def test_shares_for_usd_walks_levels_inside_the_limit():
 
 
 def _seed(
-    question: str, *, sides: tuple[str, ...], category: str, volume: float, state: MarketState, polymarket_id: int | None = None
+    put: Callable[..., BookReplica],
+    question: str,
+    *,
+    sides: tuple[str, ...],
+    category: str,
+    volume: float,
+    state: MarketState,
+    polymarket_id: int | None = None,
+    series: str | None = None,
+    kickoff: int | None = None,
 ) -> str:
     seed = uuid.uuid4().hex[:8]
     with fresh_test_db().write() as conn:
         event = TableWrite.upsert_event(conn, slug=f"ev-{seed}", title=question, category=category)
         TableWrite.update_event_volume(conn, event.event_id, volume)
+        TableWrite.refresh_event(
+            conn,
+            event_id=event.event_id,
+            slug=event.slug,
+            title=question,
+            icon_url=None,
+            end_date=None,
+            start_time=kickoff,
+            game_id=None,
+            series_slug=series,
+        )
         market = TableWrite.create_market(
             conn,
             CreateMarketRequest(
@@ -97,51 +117,130 @@ def _seed(
                 state=state,
                 event_id=event.event_id,
                 polymarket_id=polymarket_id,
+                end_date=kickoff,
             ),
             is_polygon_market=False,
         )
-        for side in sides:
-            conn.execute(
-                "INSERT INTO orders (ORDER_ID, TOKEN_ID, SIDE, PRICE, STATUS, REMAINING_AMOUNT, EXPIRATION, "
-                "CREATED_AT, API_KEY) VALUES (%s, %s, %s, %s, 'live', 1000000, 0, %s, 'k')",
-                (uuid.uuid4().hex, market.erc1155_tokens[0][0], side, 400_000 if side == "BUY" else 600_000, int(time.time())),
-            )
+        if kickoff:
+            TableWrite.replace_market_tags(conn, market_id=market.market_id, tags=[("games", "Games")])
+    put(
+        market.erc1155_tokens[0][0],
+        bids=(("0.4", "1"),) if "BUY" in sides else (),
+        asks=(("0.6", "1"),) if "SELL" in sides else (),
+    )
     return seed
 
 
-def test_search_lists_only_live_two_sided_markets_busiest_first():
+def test_search_lists_only_live_two_sided_markets_busiest_first(house_book):
     live = ("BUY", "SELL")
-    _seed("Will bitcoin reach 100k?", sides=live, category="Crypto", volume=10, state=MarketState.ACTIVE)
-    paris = _seed("Will it rain in Paris?", sides=live, category="Weather", volume=50, state=MarketState.ACTIVE, polymarket_id=7)
-    _seed("Will ether flip bitcoin?", sides=("BUY",), category="Crypto", volume=90, state=MarketState.ACTIVE)
-    _seed("Will the Lakers win?", sides=live, category="Sports", volume=90, state=MarketState.ACTIVE)
-    _seed("Will bitcoin halve?", sides=live, category="Crypto", volume=90, state=MarketState.CLOSED)
-    desk = _desk()
+    _seed(
+        house_book,
+        "Will bitcoin reach 100k?",
+        sides=live,
+        category="Crypto",
+        volume=10,
+        state=MarketState.ACTIVE,
+    )
+    paris = _seed(
+        house_book,
+        "Will it rain in Paris?",
+        sides=live,
+        category="Weather",
+        volume=50,
+        state=MarketState.ACTIVE,
+        polymarket_id=7,
+    )
+    _seed(
+        house_book,
+        "Will ether flip bitcoin?",
+        sides=("BUY",),
+        category="Crypto",
+        volume=90,
+        state=MarketState.ACTIVE,
+    )
+    _seed(
+        house_book,
+        "Will the Lakers win?",
+        sides=live,
+        category="Sports",
+        volume=90,
+        state=MarketState.ACTIVE,
+    )
+    _seed(
+        house_book,
+        "Will bitcoin halve?",
+        sides=live,
+        category="Crypto",
+        volume=90,
+        state=MarketState.CLOSED,
+    )
+    desk = _desk(Settings(excluded_categories=["Sports"]))
 
     listed = desk.search_markets().markets
 
     assert [m.question for m in listed] == ["Will it rain in Paris?", "Will bitcoin reach 100k?"]
-    assert [(q.name, q.bid, q.ask) for q in listed[0].outcomes] == [("Yes", 0.4, 0.6), ("No", None, None)]
+    assert [(q.name, q.bid, q.ask) for q in listed[0].outcomes] == [
+        ("Yes", 0.4, 0.6),
+        ("No", 0.4, 0.6),
+    ]
     assert [m.category for m in listed] == ["Weather", "Crypto"]
     assert [m.url for m in listed] == [f"https://polymarket.com/market/{paris}", None]
     assert [m.question for m in desk.search_markets("bitcoins").markets] == ["Will bitcoin reach 100k?"]
 
 
-def test_trade_now_reports_the_makers_price():
-    desk, agent, slug = _asks()
+def test_a_game_gives_its_kickoff_and_is_found_by_its_league(house_book):
+    live = ("BUY", "SELL")
+    kickoff = int(time.time()) + 3600
+    game = _seed(
+        house_book,
+        "Georgia vs. Alabama",
+        sides=live,
+        category="Sports",
+        volume=90,
+        state=MarketState.ACTIVE,
+        series="cfb-2026",
+        kickoff=kickoff,
+    )
+    _seed(
+        house_book,
+        "Will bitcoin reach 100k?",
+        sides=live,
+        category="Crypto",
+        volume=10,
+        state=MarketState.ACTIVE,
+        series="btc-daily",
+    )
+    desk = _desk()
+
+    first, second = desk.search_markets().markets
+    detail = desk.get_market(game)
+
+    starts = datetime.fromtimestamp(kickoff, UTC)
+    assert (first.market, first.starts_at, first.closes_at, second.starts_at) == (game, starts, None, None)
+    assert (detail.starts_at, detail.closes_at) == (starts, None)
+    for query in ("cfb", "NCAAF", "college football", "alabama"):
+        assert [m.market for m in desk.search_markets(query).markets] == [game], query
+    assert desk.search_markets("nfl").markets == []
+
+
+def test_trade_now_fills_at_polymarkets_levels_once_per_level(house_book):
+    desk, agent, slug, book = _asks(house_book)
 
     by_usd = desk.trade(agent, slug, "yes", "buy", usd=30)
+    used_up = desk.trade(agent, slug, "Yes", "buy", shares=30)
+    _drain(book, "0.4")
     by_shares = desk.trade(agent, slug, "Yes", "buy", shares=30)
 
     assert by_usd.order_id is not None
     assert by_usd.profile_url == f"https://agentpit.dev/agents/{agent.eth_address}"
     assert (by_usd.status, by_usd.filled_shares, by_usd.avg_price, by_usd.usd) == ("partial", 50, 0.4, 20)
+    assert used_up.status == "unfilled"
     assert (by_shares.status, by_shares.filled_shares, by_shares.avg_price, by_shares.usd) == ("filled", 30, 0.45, 13.5)
     assert by_shares.resting_shares == 0
 
 
-def test_trade_with_limit_price_rests_and_cancels():
-    desk, agent, slug = _asks()
+def test_trade_with_limit_price_rests_and_cancels(house_book):
+    desk, agent, slug, _ = _asks(house_book)
 
     first = desk.trade(agent, slug, "YES", "buy", usd=10, limit_price=0.2)
     desk.trade(agent, slug, "YES", "buy", shares=5, limit_price=0.1)
@@ -154,10 +253,14 @@ def test_trade_with_limit_price_rests_and_cancels():
     assert desk.cancel(agent).cancelled == 0
 
 
-def test_trade_the_book_moved_away_from_is_unfilled(monkeypatch: pytest.MonkeyPatch):
+def test_trade_the_book_moved_away_from_is_unfilled(
+    house_book, monkeypatch: pytest.MonkeyPatch
+):
     client = fresh_client()
     agent = _user(register(client)["api_key"])
-    slug, token = _live_market(client, agent.api_key)
+    market = create_market(client)
+    slug, token = market["slug"], market["erc1155_tokens"][0][0]
+    house_book(token, asks=(("0.5", "10"),))
     desk = _desk()
     stale = OrderBookSummary(
         market="m", asset_id=token, timestamp="0", hash="h", asks=[OrderBookLevel(price="0.4", size="10")]
@@ -177,16 +280,17 @@ def test_trade_the_book_moved_away_from_is_unfilled(monkeypatch: pytest.MonkeyPa
     }
 
 
-def test_insufficient_cash_states_have_and_need():
-    desk, agent, slug = _asks()
+def test_insufficient_cash_states_have_and_need(house_book):
+    desk, agent, slug, _ = _asks(house_book)
 
     with pytest.raises(InsufficientBalanceError, match=r"need \$500,000\.00, cash is \$100,000\.00"):
         desk.trade(agent, slug, "YES", "buy", shares=1_000_000, limit_price=0.5)
 
 
-def test_portfolio_matches_the_leaderboard():
-    desk, agent, slug = _asks()
+def test_portfolio_matches_the_leaderboard(house_book):
+    desk, agent, slug, book = _asks(house_book)
     desk.trade(agent, slug, "YES", "buy", usd=30)
+    _drain(book, "0.4")
     desk.trade(agent, slug, "YES", "buy", shares=10, limit_price=0.1)
     desk._board.take_snapshot(int(time.time()), drain())
     page = f"https://agentpit.dev/agents/{agent.eth_address}"
@@ -217,9 +321,9 @@ def test_portfolio_matches_the_leaderboard():
 
     assert (mine.equity_usd, mine.pnl_usd, mine.rank) == (standing.equity_usd, standing.pnl_usd, standing.rank)
     assert (mine.trades, mine.trades_to_rank, mine.rank_change) == (RANK_FLOOR, 0, None)
-    assert mine.ranked_agents == board.total == 2
+    assert mine.ranked_agents == board.total == 1
     assert mine.share == (
-        f"{mine.agent} is #{mine.rank} of 2 on AgentPit with a {pct(standing.return_pct)} return on paper money: {dated}"
+        f"{mine.agent} is #{mine.rank} of 1 on AgentPit with a {pct(standing.return_pct)} return on paper money: {dated}"
     )
 
 

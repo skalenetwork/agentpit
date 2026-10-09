@@ -39,6 +39,7 @@ from agentpit.domain.exceptions import (
     OrderNotFilledError,
 )
 from agentpit.domain.text import clean
+from agentpit.liquidity import feed
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.polymarket.format import decimal_str_to_price_int, decimal_str_to_size_micro
 from agentpit.services.account_service import MIN_PRICE_MICRO, SLIPPAGE_CAP_MICRO, AccountService
@@ -121,11 +122,13 @@ class AgentDesk:
                 conn,
                 query=query,
                 limit=limit,
+                sided=feed.sided(),
                 excluded_categories=self._settings.excluded_categories,
                 excluded_tags=self._settings.excluded_tags,
             )
-            tops = TableRead.book_tops_for_tokens(conn, [t for m in found for t, _ in m.erc1155_tokens])
+            tops = feed.tops([t for m in found for t, _ in m.erc1155_tokens])
             categories = TableRead.categories_by_condition_id(conn, [m.condition_id.value for m in found])
+            kickoffs = TableRead.kickoffs_by_condition_id(conn, [m.condition_id.value for m in found])
         return MarketList(
             markets=[
                 MarketCard(
@@ -133,7 +136,8 @@ class AgentDesk:
                     question=clean(m.question, 200),
                     url=m.url,
                     category=categories.get(m.condition_id.value),
-                    closes_at=_when(m.end_date),
+                    starts_at=_when(kickoffs.get(m.condition_id.value)),
+                    closes_at=None if m.condition_id.value in kickoffs else _when(m.end_date),
                     outcomes=[_quote(label, tops.get(token, (None, None))) for token, label in m.erc1155_tokens],
                 )
                 for m in found
@@ -144,6 +148,7 @@ class AgentDesk:
         m = self._market(market)
         with self._db.read() as conn:
             category = TableRead.categories_by_condition_id(conn, [m.condition_id.value]).get(m.condition_id.value)
+            kickoff = TableRead.kickoffs_by_condition_id(conn, [m.condition_id.value]).get(m.condition_id.value)
         outcomes: list[OutcomeBook] = []
         for token, label in m.erc1155_tokens:
             book = self._orders.get_book(token)
@@ -167,8 +172,9 @@ class AgentDesk:
             category=category,
             rules=clean(m.description, 1500),
             status=m.market_state.value.lower(),
-            closes_at=_when(m.end_date),
-            winner=m.erc1155_tokens[m.resolved_outcome][1] if m.resolved_outcome is not None else None,
+            starts_at=_when(kickoff),
+            closes_at=None if kickoff else _when(m.end_date),
+            winner=m.winner,
             outcomes=outcomes,
         )
 
@@ -192,7 +198,7 @@ class AgentDesk:
             levels = _levels(book.asks if buy else book.bids)
             if not levels:
                 raise BusinessRuleError(
-                    f"No {'asks' if buy else 'bids'} for '{label}' in '{market}' right now. "
+                    f"No live Polymarket {'asks' if buy else 'bids'} for '{label}' in '{market}' right now. "
                     "Pass a limit_price to rest an order at your price."
                 )
             best = levels[0][0]
@@ -237,11 +243,10 @@ class AgentDesk:
         except InsufficientBalanceError:
             raise self._shortfall(user, token, label, buy, limit, size) from None
         if not placed.success:
-            rest = f"; order {placed.orderID} is still resting, cancel it if unwanted" if placed.status == "live" else ""
-            raise BusinessRuleError(f"settlement failed, nothing was traded{rest}")
+            raise BusinessRuleError("settlement failed, nothing was traded")
         with self._db.read() as conn:
             rows = TableRead.list_trades_for_api_key(conn, user.api_key, taker_order_id=placed.orderID)
-        legs = [leg for r in rows for leg in legs_for_user(r, user.api_key) if leg.is_taker]
+        legs = [leg for r in rows if r["STATUS"] != "FAILED" for leg in legs_for_user(r, user.api_key) if leg.is_taker]
         filled = sum(leg.size_micro for leg in legs)
         cost = sum(leg.price_micro * leg.size_micro for leg in legs)
         resting = size - filled if placed.status == "live" else 0
