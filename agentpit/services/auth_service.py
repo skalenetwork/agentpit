@@ -19,12 +19,9 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
-    AdminGasPausedError,
+    SPONSORED_GAS_REFUSALS,
     BusinessRuleError,
     FeatureDisabledError,
-    GasPriceMovedError,
-    GasTopUpTimeoutError,
-    InsufficientGasError,
     InvalidCredentialsError,
     OnboardingError,
     TransactionInProgressError,
@@ -210,41 +207,22 @@ class AuthService:
     # --- helpers --------------------------------------------------------
 
     def _run_onboarding(self, user: User, *, only_if_unsent: bool = False) -> bool:
-        """Drip the account's collateral, then set its three exchange approvals.
+        """Drip the account's collateral, then send its three exchange approvals
+        through `UserGasSponsor`, which tops the wallet up to exactly their gas
+        (even with AGENTPIT_SPONSOR_USER_GAS off: no account could be created
+        otherwise). Takes the row: the sponsor books the gas to its API key.
 
-        The approvals are signed by the account's own key, so its wallet must
-        hold their gas first. There is no signup gas grant any more (the
-        collateral drip below is a different thing):
-        `UserGasSponsor` tops the wallet up to exactly what the three calls
-        need and sends them. It does so even with AGENTPIT_SPONSOR_USER_GAS
-        off -- without it no account or agent could ever be created.
+        All of it runs under the user's transaction lock, so a held lock
+        refuses before the admin sends anything. The drip is the one step that
+        must not repeat (the faucet mints on every call), so it is skipped once
+        the wallet holds the grant: a retry after a failed top-up or approval
+        is not paid twice. The approvals and the top-up repeat harmlessly.
 
-        Takes the row, not just the key: the sponsor books the gas to the
-        account's API key, and never a bot's.
-
-        The user's transaction lock is taken before the drip, not just around
-        the approvals, so a held lock refuses before the admin has sent
-        anything.
-
-        The drip is the only step that must not repeat. The faucet mints its
-        amount on every call and the collateral token has no cap, so an account
-        whose first attempt failed after the drip (the top-up timed out, the
-        breaker paused, an approval reverted) would be handed a second grant by
-        the retry. The balance, read under the lock, decides: the wallet is
-        dripped only while it holds less than the grant. A fresh wallet, and a
-        wallet a wiped anvil forgot, hold nothing and get it; the retry of an
-        attempt whose drip landed already holds it. The approvals and the
-        top-up repeat harmlessly: the sponsor sizes the top-up against the
-        balance it finds.
-
-        With `only_if_unsent`, nothing is done (and False is returned) when the
-        wallet has by now sent a transaction. `_maybe_reonboard` reads the nonce
-        before it asks for the lock, so a repair that waited for the lock may
-        hold a zero another sign-in has since made stale. True: onboarding ran.
+        With `only_if_unsent`, nothing is done and False is returned when the
+        wallet has sent a transaction by now: `_maybe_reonboard` reads the
+        nonce before taking the lock. True: onboarding ran.
         """
         timeout = self._settings.tx_confirmations_timeout_s
-        # Built per call, like every other service: it holds nothing of its own
-        # (the per-user locks are module-level).
         sponsor = UserGasSponsor(self._db, self._onchain, self._settings)
         with sponsor.locked(user):
             if only_if_unsent and self._onchain.transaction_count(user.eth_address):
@@ -260,20 +238,13 @@ class AuthService:
         Anvil's chain state is wiped on every restart while the DB persists, so a
         user can end up logged in with no collateral and no approvals. The
         wallet's nonce is the chain-wipe signal: onboarding sends three
-        approvals from it, so an onboarded account always reads at least three,
-        and zero means the chain forgot it. It used to be the native balance,
-        which no longer says anything: exact top-ups leave an ordinary wallet
-        near zero after every action, and reading that as a wipe would
-        re-onboard -- and re-drip a full collateral grant to -- healthy accounts
-        on every login. Failures here are logged but never block login — the
-        user can still authenticate and see errors at trade time.
+        approvals, so zero means the chain forgot the account. (Not the native
+        balance: exact top-ups leave every healthy wallet near zero.) Failures
+        here are logged but never block login.
 
-        A repair drips collateral (a full grant, but only to a wallet that
-        holds less than the grant, see `_run_onboarding`), so it only ever runs
-        where the chain is meant to be thrown away: `simulated_chain=False` turns it off,
-        and so does a chain id that is not a disposable one. (The house account
-        does not rely on this path at all — it is kept above a gas floor by the
-        mirror's top-up loop.)
+        A repair drips collateral, so it runs only where the chain is meant to
+        be thrown away: `simulated_chain` on and a disposable chain id. (The
+        house account is kept above a gas floor by the mirror's top-up loop.)
 
         A second lock sits beside the first: an account that exported its
         private key while export still existed never gets this repair, because
@@ -308,9 +279,8 @@ class AuthService:
             user.user_id,
         )
         try:
-            # The nonce is read again under the lock: the read above was made
-            # without it, and a sign-in that got the lock first has since
-            # done the repair this one was about to repeat.
+            # The nonce is read again under the lock: a sign-in that got the
+            # lock first may have done the repair already.
             if not self._run_onboarding(user, only_if_unsent=True):
                 log.info(
                     "re-onboarding %s skipped: its wallet has sent since the check",
@@ -318,8 +288,7 @@ class AuthService:
                 )
                 return
         except TransactionInProgressError:
-            # Something is sending for this account right now. Not a failure
-            # worth a traceback: the next sign-in looks again.
+            # Not a failure worth a traceback: the next sign-in looks again.
             log.info(
                 "re-onboarding %s skipped: a transaction is in progress",
                 user.user_id,
@@ -383,8 +352,7 @@ class AuthService:
             raise OnboardingError(
                 "this account is already being set up — try again in a moment"
             )
-        # The row, not just `acct`: the sponsor books the onboarding gas to its
-        # API key and skips a bot's.
+        # The row, not just `acct`: the sponsor books the gas to its API key.
         with self._db.read() as conn:
             user = TableRead.get_user_by_userid(conn, user_id)
         if user is None:
@@ -393,26 +361,16 @@ class AuthService:
         # hold the write lock for ~1s of network round-trips.
         try:
             self._run_onboarding(user)
-        except (
-            AdminGasPausedError,
-            GasTopUpTimeoutError,
-            GasPriceMovedError,
-            InsufficientGasError,
-        ):
-            # Not wrapped: a 503 "try again later" (the breaker, a top-up that
-            # got no receipt in time, or a fee that rose twice while the
-            # approvals went out) or a 402 "the wallet could not pay",
-            # not an OnboardingError (400, or MCP's "still being set up") and
-            # not a traceback per sign-in. The claim goes back all the same:
-            # the retry they ask for must not find the row held. The retry
-            # does not drip again (`_run_onboarding`), so a timeout after the
-            # drip costs nothing.
+        except SPONSORED_GAS_REFUSALS:
+            # Not wrapped: a 503 "try again later" or a 402, not an
+            # OnboardingError (400, or MCP's "still being set up") and not a
+            # traceback per sign-in. The claim goes back so the retry finds the
+            # row free; it does not drip again (`_run_onboarding`).
             self._release_onboarding_claim(user_id)
             raise
         except TransactionInProgressError as exc:
-            # Another request holds this wallet's transaction lock -- in
-            # practice one whose claim went stale while it was still sending.
-            # A lost claim by another name, so it gets the same answer.
+            # In practice a request whose claim went stale while it was still
+            # sending: a lost claim by another name, so the same answer.
             self._release_onboarding_claim(user_id)
             raise OnboardingError(
                 "this account is already being set up — try again in a moment"
