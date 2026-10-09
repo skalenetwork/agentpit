@@ -1,9 +1,6 @@
-"""Split, merge and claim from a wallet holding no native coin, on anvil.
-
-`UserGasSponsor` pays for every user transaction: just before the call, the
-admin sends the wallet exactly what it needs. Each branch of the gate is pinned
-with fakes in tests/services/test_position_service.py.
-"""
+"""Split, merge and claim from a wallet holding no native coin, on anvil, every
+transaction paid by `UserGasSponsor`'s exact top-up. The gate's branches are
+pinned with fakes in tests/services/test_position_service.py."""
 
 from __future__ import annotations
 
@@ -35,33 +32,29 @@ from tests.onchain._helpers import (
     onboarded_account,
     pending_user_txs,
     position_service,
-    redeem_amounts,
     resolve_yes,
     send_as,
     split,
     sponsored_gas,
     synced_market,
-    tx_rows,
+    tx_details,
 )
 
 _PARTITION = [1, 2]
 
 
 def _need(admin, fn, address) -> int:
-    """What the sponsor sizes `fn` at: the fee-less estimate plus 20%, at the
-    current gas price. Exact when nothing is mined between this and the send."""
+    """What the sponsor sizes `fn` at: the estimate plus 20%, at the current price."""
     return admin.estimate_user_gas(fn, address) * 120 // 100 * admin.gas_price()
 
 
 def _last_receipt(admin, address):
-    """The receipt of `address`'s latest transaction (anvil mines one per
-    block, so it is in one of the last few)."""
+    """The receipt of `address`'s latest transaction (anvil mines one per block)."""
     web3 = admin._client.web3  # noqa: SLF001
     sender = Web3.to_checksum_address(address)
     head = web3.eth.block_number
     for number in range(head, max(head - 8, -1), -1):
-        block = web3.eth.get_block(number, full_transactions=True)
-        for tx in reversed(block["transactions"]):
+        for tx in reversed(web3.eth.get_block(number, full_transactions=True)["transactions"]):
             if tx["from"] == sender:
                 return web3.eth.get_transaction_receipt(tx["hash"])
     raise AssertionError(f"no recent transaction from {sender}")
@@ -72,9 +65,8 @@ def _spent(receipt) -> int:
 
 
 def _assert_topped_up_to(admin, db, user, need: int, booked_before: int) -> None:
-    """The last transaction mined, the wallet was topped up from 0 to exactly
-    `need` (the transaction spent part of it), and the top-up's transfer plus
-    the transaction's gas are booked: never refused for budget, always counted."""
+    """The last transaction mined; the wallet went from 0 to exactly `need` and
+    spent part of it; the top-up's transfer plus the gas used are booked."""
     receipt = _last_receipt(admin, user.eth_address)
     assert receipt["status"] == 1
     assert admin.native_balance(user.eth_address) + _spent(receipt) == need
@@ -82,9 +74,8 @@ def _assert_topped_up_to(admin, db, user, need: int, booked_before: int) -> None
 
 
 def _refused_without_a_transaction(db, admin, user, market_id, error, text) -> None:
-    """Claim, expect `error`, and prove nothing was sent: neither the user's
-    nonce nor the admin's moved, neither balance changed, nothing was booked,
-    no REDEEM row was written."""
+    """Claim, expect `error`, and prove nothing moved: no nonce, no native
+    balance (the user's or the admin's), no booked gas, no REDEEM row."""
     wallet, payer = user.eth_address, admin.oracle_address
 
     def snapshot():
@@ -100,15 +91,13 @@ def _refused_without_a_transaction(db, admin, user, market_id, error, text) -> N
     with pytest.raises(error, match=text):
         position_service(db, admin).redeem(user, market_id)
     assert snapshot() == before
-    assert tx_rows(db, user, "REDEEM") == 0
+    assert tx_details(db, user, "REDEEM") == []
 
 
 def _after_top_up(monkeypatch, admin, user, action) -> None:
     """Run `action()` once the sponsor's top-up of `user` has mined: the window
-    between the gate and the user's transaction, in which the world can change
-    (a market resolves, a resting SELL fills, a fill or `/me/top-up` moves apUSD
-    without taking the lock). `action` must not call `admin.fund_gas`: that is
-    this hook."""
+    in which the world can change under a gate that already passed. `action`
+    must not call `admin.fund_gas`, which is this hook."""
     real = admin.fund_gas
     me = user.eth_address.lower()
 
@@ -136,14 +125,13 @@ def test_a_claim_from_an_empty_wallet_is_topped_up_exactly_and_pays_out():
     assert admin.usd_balance(user.eth_address) == usd_before + 100_000_000
     assert admin.ctf_balances(user.eth_address, tokens) == [0, 0]  # the loser burned too
     _assert_topped_up_to(admin, db, user, need, booked_before)
-    assert tx_rows(db, user, "REDEEM") == 1
+    assert len(tx_details(db, user, "REDEEM")) == 1
 
 
 def test_consecutive_claims_never_leave_more_than_one_claims_need():
-    """A top-up happens only when the wallet holds less than the next claim
-    needs, and brings it to exactly that, so the balance cannot creep: after
-    each claim it holds at most the largest need so far (on anvil, almost all
-    of it, because anvil bills the base fee, not maxFeePerGas)."""
+    """A top-up comes only when the wallet holds less than the next claim needs,
+    and brings it to exactly that: after each claim the balance is at most the
+    largest need so far (on anvil nearly all of it: it bills the base fee)."""
     admin, db = chain()
     user = onboarded_account(db, admin)
     markets = [synced_market(db, admin) for _ in range(3)]
@@ -175,8 +163,8 @@ def test_consecutive_claims_never_leave_more_than_one_claims_need():
     ],
 )
 def test_nothing_worth_claiming_is_refused_without_a_transaction(gift):
-    """`redeemPositions` succeeds with nothing to redeem, so without the gate
-    each of these would cost the admin a top-up and the account a claim."""
+    """`redeemPositions` succeeds with nothing to redeem: without the gate each
+    of these would cost the admin a top-up and the account a claim."""
     admin, db = chain()
     market, pm = synced_market(db, admin)
     whale = onboarded_account(db, admin)
@@ -194,8 +182,8 @@ def test_nothing_worth_claiming_is_refused_without_a_transaction(gift):
 
 
 def test_a_market_the_chain_has_not_resolved_is_refused_without_a_transaction():
-    """RESOLVED in the database with no `reportPayouts` on chain:
-    `redeemPositions` would revert, after the admin had paid for the top-up."""
+    """RESOLVED in the database with no `reportPayouts` on chain: the claim would
+    revert, after the admin had paid for the top-up."""
     admin, db = chain()
     market, _pm = synced_market(db, admin)
     user = onboarded_account(db, admin)
@@ -232,33 +220,29 @@ def test_split_and_merge_from_an_empty_wallet_are_topped_up_and_booked():
     _assert_topped_up_to(admin, db, user, need, booked)
     assert admin.ctf_balances(user.eth_address, tokens) == [25_000_000, 25_000_000]
 
-    assert tx_rows(db, user, "SPLIT") == 1
-    assert tx_rows(db, user, "MERGE") == 1
+    assert len(tx_details(db, user, "SPLIT")) == 1
+    assert len(tx_details(db, user, "MERGE")) == 1
 
 
 def test_with_the_kill_switch_off_a_dry_wallet_gets_402_not_500():
-    """AGENTPIT_SPONSOR_USER_GAS=false: nothing is topped up, so the node
-    refuses the claim for want of gas. The caller gets 402, "the wallet could
-    not pay", not a 500 from a raw RPC error."""
-    client = TestClient(
-        create_app(Settings(sponsor_user_gas=False)), raise_server_exceptions=False
-    )
+    """AGENTPIT_SPONSOR_USER_GAS=false: nothing is topped up, the node refuses
+    the claim for want of gas, and the caller gets 402 ("the wallet could not
+    pay"), not a 500 from a raw RPC error."""
+    client = TestClient(create_app(Settings(sponsor_user_gas=False)), raise_server_exceptions=False)
     admin = client.app.dependency_overrides[get_onchain_admin]()  # type: ignore[attr-defined]
     db = client.app.dependency_overrides[get_db_session]()  # type: ignore[attr-defined]
     market, user = dry_winner(db, admin)  # set up with the environment's sponsor
     tokens = [int(t) for t, _label in market.erc1155_tokens]
     nonce, booked = admin.transaction_count(user.eth_address), sponsored_gas(db, user)
 
-    r = client.post(
-        f"/markets/{market.market_id}/redeem_position", headers=hdr(user.api_key)
-    )
+    r = client.post(f"/markets/{market.market_id}/redeem_position", headers=hdr(user.api_key))
 
     assert r.status_code == 402, r.text
     assert admin.native_balance(user.eth_address) == 0  # nothing was topped up
     assert admin.transaction_count(user.eth_address) == nonce  # the node took nothing
     assert admin.ctf_balances(user.eth_address, tokens) == [100_000_000, 100_000_000]
     assert sponsored_gas(db, user) == booked  # the switch stops booking as well
-    assert tx_rows(db, user, "REDEEM") == 0
+    assert tx_details(db, user, "REDEEM") == []
 
 
 @pytest.mark.parametrize(
@@ -271,10 +255,9 @@ def test_with_the_kill_switch_off_a_dry_wallet_gets_402_not_500():
 def test_a_claim_is_logged_at_the_ctf_payout_whatever_the_wallet_does_meanwhile(
     monkeypatch, credit, debit
 ):
-    """A difference of two balance reads was wrong in both directions: a credit
-    during the claim made it read 107, and a debit larger than the payout made
-    it read -30, which `list_closed_positions` takes for a lost market and
-    drops. The amount is what `redeemPositions` paid, from the receipt."""
+    """A difference of two balance reads was wrong both ways: a credit mid-claim
+    read 107, a debit past the payout read -30, which `list_closed_positions`
+    takes for a lost market. The amount is what `redeemPositions` paid."""
     admin, db = chain()
     market, user = dry_winner(db, admin)  # a top-up is certain
     elsewhere = Account.create().address
@@ -296,7 +279,7 @@ def test_a_claim_is_logged_at_the_ctf_payout_whatever_the_wallet_does_meanwhile(
     )[0]["args"]["payout"]
     assert paid == 100_000_000
     assert claimed.collateral_amount == paid
-    assert redeem_amounts(db, user) == [paid]
+    assert [d["collateral_amount"] for d in tx_details(db, user, "REDEEM")] == [paid]
     assert claimed.new_usdc_balance == admin.usd_balance(user.eth_address)
 
     closed = AccountService(db, admin).list_closed_positions(user.eth_address)
@@ -306,11 +289,10 @@ def test_a_claim_is_logged_at_the_ctf_payout_whatever_the_wallet_does_meanwhile(
 
 
 def test_a_split_on_a_market_that_resolves_during_its_top_up_is_refused(monkeypatch):
-    """`split` checks the market before the lock, and the top-up takes a block
-    or several on SKALE. Resolved in that window, the market would take a split
-    that mints a claimable winner. The sponsor re-reads the market once the
-    wallet is funded: nothing is signed, the apUSD stays, and only the top-up's
-    transfer is booked, the reservation having gone back."""
+    """`split` checks the market before the lock, and the top-up takes blocks on
+    SKALE: resolved in that window, the market would take a split that mints a
+    claimable winner. The sponsor re-reads the market once funded: nothing is
+    signed, the apUSD stays, only the top-up's transfer is booked."""
     admin, db = chain()
     market, pm = synced_market(db, admin)
     user = onboarded_account(db, admin)
@@ -328,17 +310,16 @@ def test_a_split_on_a_market_that_resolves_during_its_top_up_is_refused(monkeypa
     assert admin.ctf_balances(user.eth_address, tokens) == [0, 0]
     assert admin.usd_balance(user.eth_address) == usd
     assert admin.transaction_count(user.eth_address) == nonce  # nothing was signed
-    assert tx_rows(db, user, "SPLIT") == 0
+    assert tx_details(db, user, "SPLIT") == []
     assert pending_user_txs(db) == []
     assert sponsored_gas(db, user) - booked == TRANSFER_GAS
 
 
 def test_a_claim_whose_tokens_left_during_its_top_up_is_refused(monkeypatch):
-    """A resting SELL filled by the admin's `matchOrders` moves the winning
-    tokens with no transaction of the user's, and the claim's top-up is a
-    window in which that can happen. Here the user sends them away itself.
-    The claim, which `redeemPositions` would let mine at a payout of nothing,
-    is refused with the gate's own error and never signed."""
+    """A resting SELL filled by `matchOrders` moves the winning tokens with no
+    transaction of the user's, and the top-up is a window for that; here the
+    user sends them away itself. The claim, which would mine at a payout of
+    nothing, is refused with the gate's own error and never signed."""
     admin, db = chain()
     market, user = dry_winner(db, admin)
     tokens = [int(t) for t, _label in market.erc1155_tokens]
@@ -355,17 +336,17 @@ def test_a_claim_whose_tokens_left_during_its_top_up_is_refused(monkeypatch):
 
     assert admin.ctf_balances(user.eth_address, tokens) == [0, 100_000_000]
     assert admin.transaction_count(user.eth_address) == nonce + 1  # the transfer only
-    assert tx_rows(db, user, "REDEEM") == 0
+    assert tx_details(db, user, "REDEEM") == []
     assert pending_user_txs(db) == []
     assert sponsored_gas(db, user) - booked == TRANSFER_GAS
 
 
 def test_a_claim_that_mines_with_no_payout_writes_no_row(monkeypatch):
-    """The gate and the re-check both pass (the balances are read through a
-    lie here, because nothing real can empty the wallet between the re-check
-    and the block), and the claim mines for a payout of nothing. The admin
-    paid for it, so its gas is booked, but the account gets no REDEEM row, no
-    intent row stays, and the caller hears `NothingToClaimError`."""
+    """The gate and the re-check both pass (the balances are read through a lie
+    here: nothing real can empty the wallet between re-check and block) and the
+    claim mines for a payout of nothing. The admin paid for it, so its gas is
+    booked; the account gets no REDEEM row, no intent row stays, and the caller
+    hears `NothingToClaimError`."""
     admin, db = chain()
     market, pm = synced_market(db, admin)
     user = onboarded_account(db, admin)  # holds no outcome token at all
@@ -385,5 +366,5 @@ def test_a_claim_that_mines_with_no_payout_writes_no_row(monkeypatch):
     receipt = _last_receipt(admin, user.eth_address)
     assert receipt["status"] == 1  # it mined, and paid nothing
     assert sponsored_gas(db, user) - booked == TRANSFER_GAS + receipt["gasUsed"]
-    assert tx_rows(db, user, "REDEEM") == 0
+    assert tx_details(db, user, "REDEEM") == []
     assert pending_user_txs(db) == []

@@ -4,7 +4,6 @@ Each test creates its own app + clients so it's isolated from the singleton
 app built by tests/conftest.py with on-chain disabled.
 """
 
-import json
 import secrets
 import time
 import uuid
@@ -116,14 +115,10 @@ def register(client: TestClient, email: str | None = None) -> dict:
 
 
 def fund_direct_sends(client: TestClient, address: str) -> None:
-    """Give a `register()`ed account gas to sign its own transactions.
-
-    Onboarding leaves none (the product never has a user sign outside
-    `UserGasSponsor`), and on anvil the leftover would cover one split only by
-    accident, since anvil bills the 7 wei base fee, not the price offered.
-    Sent by the app's own admin, so its `AdminTxSender` stays the only writer
-    of the admin nonce.
-    """
+    """Give a `register()`ed account gas to sign its own transactions: onboarding
+    leaves none, and on anvil its leftover would cover one split only by
+    accident (anvil bills the 7 wei base fee, not the price offered). Sent by
+    the app's own admin, so its `AdminTxSender` stays the only nonce writer."""
     admin = client.app.dependency_overrides[get_onchain_admin]()  # type: ignore[attr-defined]
     admin.fund_gas(address, 10**16)  # ~10M gas at anvil's ~1 gwei; a split's limit is ~132k
 
@@ -141,20 +136,16 @@ def create_market(client: TestClient, question: str | None = None, *, state: str
     ).json()
 
 
-def position_service(
-    db: DbSession, admin: OnchainAdmin, settings: Settings | None = None
-) -> PositionService:
+def position_service(db: DbSession, admin: OnchainAdmin, settings: Settings | None = None) -> PositionService:
     """A PositionService wired as `deps.get_position_service` wires one, so a
-    split, merge or claim from a test is sponsored as the API's would be.
-    `settings` defaults to the environment's."""
-    settings = settings or Settings()
-    return PositionService(db, admin, UserGasSponsor(db, admin, settings))
+    split, merge or claim from a test is sponsored as the API's would be."""
+    return PositionService(db, admin, UserGasSponsor(db, admin, settings or Settings()))
 
 
 def drain_native_balance(admin: OnchainAdmin, address: str) -> None:
-    """Set `address`'s native balance to exactly 0: the wallet the sponsor tops
-    up from nothing. `anvil_setBalance`, because a real send-to-zero overpays
-    (EIP-1559's effective price is only known after the block mines)."""
+    """Set `address`'s native balance to exactly 0, for a wallet the sponsor tops
+    up from nothing. `anvil_setBalance`: a real send-to-zero overpays, as
+    EIP-1559's effective price is only known after the block mines."""
     admin._client.web3.provider.make_request(  # noqa: SLF001
         "anvil_setBalance", [Web3.to_checksum_address(address), "0x0"]
     )
@@ -162,8 +153,7 @@ def drain_native_balance(admin: OnchainAdmin, address: str) -> None:
 
 # Gas a house account gets in the on-chain tests instead of the default 5
 # native: conftest truncates `users` before every test, so the house tests
-# provision a dozen accounts per run, all paid by the persistent anvil's admin
-# (~60 native a run at the default floor, ~0.6 at this one).
+# provision a dozen accounts per run, all paid by the persistent anvil's admin.
 HOUSE_TEST_GAS_FLOOR_WEI = 5 * 10**16
 
 
@@ -184,11 +174,11 @@ def chain() -> tuple[OnchainAdmin, DbSession]:
 
 
 def synced_market(db: DbSession, admin: OnchainAdmin) -> tuple[Market, dict]:
-    """A binary market prepared on the local CTF and ACTIVE, plus the upstream
-    document it was synced from (what `resolve_yes` later mirrors)."""
+    """An ACTIVE binary market on the local CTF, plus the upstream document it
+    was synced from (what `resolve_yes` later mirrors)."""
     suffix = secrets.token_hex(4)
     pm = {
-        "id": int(secrets.token_hex(4), 16),
+        "id": secrets.randbits(32),
         "conditionId": "0x" + secrets.token_hex(32),
         "question": f"Sponsored claim {suffix}?",
         "description": "d",
@@ -197,22 +187,16 @@ def synced_market(db: DbSession, admin: OnchainAdmin) -> tuple[Market, dict]:
         "endDate": "2020-01-02T00:00:00Z",
         "active": True,
         "closed": False,
-        "tokens": [
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "Yes"},
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "No"},
-        ],
+        "tokens": [{"token_id": str(secrets.randbits(64)), "outcome": o} for o in ("Yes", "No")],
     }
     with db.write() as conn:
         return create_polymarket_markets_if_needed(conn, [pm], admin)[0], pm
 
 
 def resolve_yes(db: DbSession, admin: OnchainAdmin, *pms: dict) -> None:
-    """Mirror an upstream YES win for each of `pms`: `reportPayouts` on chain,
-    then RESOLVED in the database."""
+    """Mirror an upstream YES win for each of `pms`: `reportPayouts` on chain, then RESOLVED."""
     won = {
-        pm["conditionId"]: dict(
-            pm, closed=True, tokens=[dict(t, winner=(i == 0)) for i, t in enumerate(pm["tokens"])]
-        )
+        pm["conditionId"]: dict(pm, closed=True, tokens=[dict(t, winner=i == 0) for i, t in enumerate(pm["tokens"])])
         for pm in pms
     }
     with db.write() as conn:
@@ -220,8 +204,8 @@ def resolve_yes(db: DbSession, admin: OnchainAdmin, *pms: dict) -> None:
 
 
 def new_account(db: DbSession, *, auto_redeem: bool | None = None) -> User:
-    """A fresh account that has never held native coin or sent a transaction.
-    `auto_redeem` sets the opt-in explicitly; left out, the column default."""
+    """A fresh account that has never held native coin or sent a transaction;
+    `auto_redeem` sets the opt-in explicitly (left out: the column default)."""
     with db.write() as conn:
         user_id, _acct, _key = TableWrite.create_user(
             conn, email=unique_email(), password_hash="x", handle=None
@@ -234,12 +218,9 @@ def new_account(db: DbSession, *, auto_redeem: bool | None = None) -> User:
     return user
 
 
-def onboarded_account(
-    db: DbSession, admin: OnchainAdmin, *, auto_redeem: bool | None = None
-) -> User:
-    """`new_account`, onboarded the way signup does it: the faucet's apUSD and
-    the three approvals, sent after one sponsored top-up. The wallet ends up
-    holding at most what those approvals needed."""
+def onboarded_account(db: DbSession, admin: OnchainAdmin, *, auto_redeem: bool | None = None) -> User:
+    """`new_account`, onboarded the way signup does it: the faucet's apUSD, then
+    the three approvals sent after one sponsored top-up."""
     user = new_account(db, auto_redeem=auto_redeem)
     admin.faucet_drip(user.eth_address)
     sponsor = UserGasSponsor(db, admin, Settings())
@@ -252,9 +233,7 @@ def split(db: DbSession, admin: OnchainAdmin, user: User, market: Market, amount
     position_service(db, admin).split(user, market.market_id, SplitPositionRequest(amount=amount))
 
 
-def dry_winner(
-    db: DbSession, admin: OnchainAdmin, amount: int = 100_000_000
-) -> tuple[Market, User]:
+def dry_winner(db: DbSession, admin: OnchainAdmin, amount: int = 100_000_000) -> tuple[Market, User]:
     """`(market, user)`: `user` split `amount` on a market whose YES side has
     won since, and holds no native coin -- the claim that needs a top-up."""
     market, pm = synced_market(db, admin)
@@ -266,8 +245,8 @@ def dry_winner(
 
 
 def send_as(admin: OnchainAdmin, user: User, fn) -> None:
-    """`user` signs `fn` itself, on gas given for the purpose. Through the
-    class, so a test's hook on `admin.fund_gas` does not see this top-up."""
+    """`user` signs `fn` itself, on gas given for the purpose. Through the class,
+    so a test's hook on `admin.fund_gas` does not see this top-up."""
     OnchainAdmin.fund_gas(admin, user.eth_address, 10**16)
     assert send_user_tx(admin._client, user.eth_key, fn)["status"] == 1  # noqa: SLF001
 
@@ -275,11 +254,7 @@ def send_as(admin: OnchainAdmin, user: User, fn) -> None:
 def give_tokens(admin: OnchainAdmin, sender: User, to: str, token_id: int, amount: int) -> None:
     """`sender` signs a transfer of `amount` of one outcome token to `to`."""
     transfer = admin._contracts.ctf.functions.safeTransferFrom(  # noqa: SLF001
-        Web3.to_checksum_address(sender.eth_address),
-        Web3.to_checksum_address(to),
-        token_id,
-        amount,
-        b"",
+        Web3.to_checksum_address(sender.eth_address), Web3.to_checksum_address(to), token_id, amount, b""
     )
     send_as(admin, sender, transfer)
 
@@ -290,27 +265,11 @@ def sponsored_gas(db: DbSession, user: User) -> int:
         return TableRead.sponsored_gas_used(conn, user.api_key, int(time.time()) // 86_400)
 
 
-def tx_rows(db: DbSession, user: User, kind: str) -> int:
-    """How many `kind` rows (SPLIT, REDEEM, ...) `user` has in its history."""
+def tx_details(db: DbSession, user: User, kind: str) -> list[dict]:
+    """The details of each `kind` row (SPLIT, REDEEM, ...) in `user`'s history."""
     with db.read() as conn:
-        return conn.execute(
-            "SELECT COUNT(*) AS N FROM transactions "
-            "WHERE API_KEY = %s AND TRANSACTION_TYPE = %s",
-            (user.api_key, kind),
-        ).fetchone()["N"]
-
-
-def redeem_amounts(db: DbSession, user: User) -> list[int]:
-    """`collateral_amount` of each REDEEM row: what the profile page reads."""
-    with db.read() as conn:
-        return [
-            json.loads(r["DETAILS"])["collateral_amount"]
-            for r in conn.execute(
-                "SELECT DETAILS FROM transactions "
-                "WHERE API_KEY = %s AND TRANSACTION_TYPE = 'REDEEM'",
-                (user.api_key,),
-            ).fetchall()
-        ]
+        history = TableRead.get_transaction_history(conn, user.api_key)
+    return [t["details"] for t in history if t["transaction_type"] == kind]
 
 
 def pending_user_txs(db: DbSession) -> list[tuple[str, str, str, int | None, dict]]:
@@ -320,3 +279,10 @@ def pending_user_txs(db: DbSession) -> list[tuple[str, str, str, int | None, dic
             (r.tx_hash, r.api_key, r.transaction_type, r.market_id, r.details)
             for r in TableRead.list_pending_user_txs(conn)
         ]
+
+
+def assert_approvals_set(admin: OnchainAdmin, address: str) -> None:
+    c = admin._contracts  # noqa: SLF001
+    assert c.usd.functions.allowance(address, c.exchange.address).call() == 2**256 - 1
+    assert c.usd.functions.allowance(address, c.ctf.address).call() == 2**256 - 1
+    assert c.ctf.functions.isApprovedForAll(address, c.exchange.address).call()

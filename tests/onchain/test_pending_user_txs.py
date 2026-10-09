@@ -1,16 +1,11 @@
 """A split or claim that mined after we stopped waiting for it, on anvil.
 
 `send_as_user` is wrapped to send for real, then raise as if the answer had
-been lost (a receipt timeout, or a read timeout on the broadcast). Checks that:
-
-- the caller gets 503 "not confirmed yet ... do not repeat it", not a 500;
-- the intent row stays and no history row is written yet;
-- a second request on the market is a 409, not a second split or a "nothing
-  to claim" for a claim that was paid;
-- `reconcile_pending_user_txs` turns the intent into the history row, at the
-  claim's exact payout.
-
-The unit cases (a refusal, a revert, a TTL, a row that fails) are in
+been lost (a receipt timeout, or a read timeout on the broadcast). The caller
+gets 503 "not confirmed yet", the intent row stays with no history row, a
+second request on the market is a 409 (not a second split, nor "nothing to
+claim" for a claim that was paid), and `reconcile_pending_user_txs` turns the
+intent into the history row at the claim's exact payout. The unit cases are in
 tests/services/test_position_service.py and test_pending_user_txs.py.
 """
 
@@ -33,23 +28,22 @@ from tests.onchain._helpers import (
     hdr,
     onboarded_account,
     pending_user_txs,
-    redeem_amounts,
     synced_market,
-    tx_rows,
+    tx_details,
 )
 
 
 def _app():
-    """The real app, its admin and its database. The lifespan is not run, so
-    no background pass reconciles anything behind the test's back."""
+    """The real app, its admin and its database; no lifespan, so no background
+    pass reconciles anything behind the test's back."""
     client = TestClient(create_app(Settings()), raise_server_exceptions=False)
     overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
     return client, overrides[get_onchain_admin](), overrides[get_db_session]()
 
 
 def _lose_the_answer(monkeypatch, admin, error: Exception) -> list:
-    """Send every user transaction for real, then raise `error` in place of
-    its receipt. Returns the receipts the caller never saw."""
+    """Send every user transaction for real, then raise `error` in place of its
+    receipt. Returns the receipts the caller never saw."""
     real = admin.send_as_user
     unseen: list = []
 
@@ -77,13 +71,12 @@ def test_a_claim_whose_receipt_was_lost_is_settled_at_its_exact_payout(monkeypat
 
     assert r.status_code == 503, r.text
     assert "not confirmed yet" in r.json()["detail"]
-    # The chain paid all the same; only the answer was lost.
-    (receipt,) = unseen
+    (receipt,) = unseen  # the chain paid all the same; only the answer was lost
     assert receipt["status"] == 1
     assert admin.usd_balance(user.eth_address) == usd_before + 100_000_000
     assert admin.ctf_balances(user.eth_address, tokens) == [0, 0]
     assert pending_user_txs(db) == [(_hash(receipt), user.api_key, "REDEEM", mid, {})]
-    assert tx_rows(db, user, "REDEEM") == 0
+    assert tx_details(db, user, "REDEEM") == []
 
     # Not "nothing to claim" for a claim that was paid, and no second top-up.
     native = admin.native_balance(user.eth_address)
@@ -97,7 +90,7 @@ def test_a_claim_whose_receipt_was_lost_is_settled_at_its_exact_payout(monkeypat
 
     assert reconcile_pending_user_txs(db, admin) == 1
 
-    assert redeem_amounts(db, user) == [100_000_000]
+    assert [d["collateral_amount"] for d in tx_details(db, user, "REDEEM")] == [100_000_000]
     assert pending_user_txs(db) == []
     closed = AccountService(db, admin).list_closed_positions(user.eth_address)
     assert len(closed) == 1
@@ -123,9 +116,7 @@ def test_a_split_whose_answer_was_lost_is_not_split_twice(monkeypatch, error):
 
     def post_split():
         return client.post(
-            f"/markets/{mid}/split_position",
-            json={"amount": 40_000_000},
-            headers=hdr(user.api_key),
+            f"/markets/{mid}/split_position", json={"amount": 40_000_000}, headers=hdr(user.api_key)
         )
 
     r = post_split()
@@ -134,10 +125,8 @@ def test_a_split_whose_answer_was_lost_is_not_split_twice(monkeypatch, error):
     (receipt,) = unseen
     assert receipt["status"] == 1
     assert admin.ctf_balances(user.eth_address, tokens) == [40_000_000, 40_000_000]
-    assert pending_user_txs(db) == [
-        (_hash(receipt), user.api_key, "SPLIT", mid, {"amount": 40_000_000})
-    ]
-    assert tx_rows(db, user, "SPLIT") == 0
+    assert pending_user_txs(db) == [(_hash(receipt), user.api_key, "SPLIT", mid, {"amount": 40_000_000})]
+    assert tx_details(db, user, "SPLIT") == []
 
     # The client retries what it was told had failed: refused, not split again.
     r = post_split()
@@ -147,7 +136,7 @@ def test_a_split_whose_answer_was_lost_is_not_split_twice(monkeypatch, error):
 
     assert reconcile_pending_user_txs(db, admin) == 1
 
-    assert tx_rows(db, user, "SPLIT") == 1
+    assert len(tx_details(db, user, "SPLIT")) == 1
     assert pending_user_txs(db) == []
     # The split now makes them a participant, so auto-redeem will find them.
     with db.read() as conn:
