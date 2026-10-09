@@ -130,13 +130,14 @@ class AdminGasPausedError(DomainError):
 
 class GasTopUpTimeoutError(DomainError):
     """The admin's gas top-up for a user-signed transaction got no receipt in
-    time, or found no free admin transaction slot, so no transaction of the
-    user's was sent.
+    time, found no free admin transaction slot, or was lost by the node
+    (`TxDropped`: its nonce went to a gap filler or another writer), so no
+    transaction of the user's was sent.
 
     A direct `DomainError` (503) like `AdminGasPausedError`: our side is
     congested, nothing the caller did is wrong, and the same request succeeds
-    once it clears. The top-up may still mine, so a retry sizes against the
-    balance it finds and tops up only the difference.
+    once it clears. The top-up may still mine (a lost one will not), so a retry
+    sizes against the balance it finds and tops up only the difference.
     """
 
     def __init__(
@@ -188,14 +189,16 @@ class TransactionRevertedError(BusinessRuleError):
 
 class TransactionPendingError(DomainError):
     """A split, merge or claim was signed and sent, and nobody knows yet how
-    it ended: its receipt did not come back in time, or the node never
-    answered the broadcast. It may well mine.
+    it ended: its receipt did not come back in time, the node never answered
+    the broadcast, the receipt poll failed after the node took it, or it failed
+    with an error not recognised as a refusal. It may well mine.
 
-    Its intent row stays in `pending_user_txs`, so the auto-redeem pass writes
-    the history row once it has mined (`reconcile_pending_user_txs`), and
-    until then a second split, merge or claim on that market is refused (409)
-    instead of repeating it. A direct `DomainError` (503): nothing the caller
-    did is wrong, but they must not simply send it again.
+    Its intent row stays in `pending_user_txs`, so the reconciler writes the
+    history row once it has mined (`reconcile_pending_user_txs`, run by both
+    resolution loops), and until then a second split, merge or claim on that
+    market is refused (409) instead of repeating it. A direct `DomainError`
+    (503): nothing the caller did is wrong, but they must not simply send it
+    again.
     """
 
     def __init__(
