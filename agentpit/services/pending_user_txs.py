@@ -3,19 +3,24 @@
 A split, merge or claim is signed by the user's key, broadcast, and waited on
 (`UserGasSponsor.send`). The wait can end without an answer: the receipt does
 not come back in time (`TimeExhausted`), or the node never answers the
-broadcast (a transport error). The transaction may mine all the same. Written
-only on success, its SPLIT / MERGE / REDEEM row would then be missing for
-good: the history loses it, auto-redeem's participant scan (trades plus
-SPLIT / MERGE rows) misses a holder whose only stake is that split, and a
-client that retries a split it was told had failed splits twice.
+broadcast (a transport error), or the receipt poll fails after the node took
+it. The transaction may mine all the same. Written only on success, its
+SPLIT / MERGE / REDEEM row would then be missing for good: the history loses
+it, auto-redeem's participant scan (trades plus SPLIT / MERGE rows) misses a
+holder whose only stake is that split, and a client that retries a split it
+was told had failed splits twice.
 
 So `PositionService` writes an intent row in `pending_user_txs` just before
 each broadcast, and turns it into the history row once the receipt is in. A
-refusal or a revert deletes it. When the outcome stays unknown, the row stays,
-the caller gets `TransactionPendingError` (503), and a new split, merge or
-claim on that market is refused (409) while the row is younger than
-`_PENDING_TTL_SECONDS`. `reconcile_pending_user_txs`, run at the start of
-every auto-redeem pass, settles what is left from the chain.
+refusal or a revert deletes it. When the outcome stays unknown, the row stays:
+after a receipt timeout, an unanswered broadcast, a receipt-poll error, and
+any error not recognised as a refusal (safe, since an unrecognised refusal only
+costs the account 409s on the market until the row is dropped for want of a
+receipt). The caller gets `TransactionPendingError` (503), and a new split,
+merge or claim on that market is refused (409) while the row is younger than
+`_PENDING_TTL_SECONDS`. `reconcile_pending_user_txs` settles what is left from
+the chain: at the start of every auto-redeem pass, and on its own in both
+resolution loops when auto-redeem is switched off.
 """
 
 import logging
