@@ -13,9 +13,7 @@ import { ClaimButton } from "./ClaimButton";
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // React 18 only batches a test's updates into `act` when told it is in one.
-(
-  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const ADDRESS = "0xabc0000000000000000000000000000000000001";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
