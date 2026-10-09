@@ -3,29 +3,21 @@ const FALLBACK = "Failed to claim.";
 /**
  * Maps a failed `POST /positions/claim` response to user-facing copy.
  *
- * The platform pays a claim's gas now: before the transaction the server
- * tops the wallet up to exactly what it needs (`UserGasSponsor`). So there is
- * nothing left for the user to fund and no address to send anything to, and
- * the old toast asking the user to top up their own wallet is gone. What is left
- * are a few different reasons a claim did not happen, and the status alone
- * tells the families apart:
+ * The platform pays a claim's gas (`UserGasSponsor`), so there is nothing for
+ * the user to fund; the status alone tells the reasons a claim did not happen
+ * apart:
  *
- * - 400 is the claim refusing on its own terms: "nothing to claim" (no
- *   winning tokens, or a payout under the $0.01 minimum) or "market is not
- *   resolved on chain yet". The backend's detail already says it in words a
- *   person can act on, so it is shown, sentence-cased to read like every
- *   other toast in the app.
+ * - 400 is the claim refusing on its own terms ("nothing to claim", "market is
+ *   not resolved on chain yet"). The backend's detail says it in words a
+ *   person can act on, so it is shown, sentence-cased like every other toast.
  * - 409 is a claim refused so as not to run twice: the account's transaction
- *   lock is held (auto-redeem or an earlier click is claiming), or an earlier
- *   transaction on this market is sent but not confirmed yet.
- * - 503 is our side: the platform's gas wallet running low (paused), the
- *   top-up not landing in time (busy, try again), or the claim sent but not
- *   confirmed yet, where the one thing the user must not do is repeat it.
- *   Those three need three different sentences, so the backend's own is
- *   shown, the same way as for a 400.
+ *   lock is held, or an earlier transaction on this market is unconfirmed.
+ * - 503 is our side: gas wallet low, top-up not landing in time, or the claim
+ *   sent but unconfirmed, where the user must not repeat it. Those need
+ *   different sentences, so the backend's own is shown, as for a 400.
  * - 402 is the wallet still unable to pay after the server's top-up and one
- *   retry, or sponsorship switched off by the operator. Neither is anything
- *   the user can fix, so the copy says only that claiming is unavailable.
+ *   retry, or sponsorship switched off. Nothing the user can fix, so the copy
+ *   says only that claiming is unavailable.
  *
  * A 409 or 503 whose body is not `{"detail": "<text>"}` gets a fixed line for
  * its status; anything else, including a 400 with no usable detail, gets the

@@ -117,12 +117,9 @@ export function ProfilePage() {
   const { data: closedData } = useClosedPositions(address);
   const { data: activityData } = useActivity(address);
   const { data: balance } = useUsdcBalance(own);
-  // The Credits tile is hidden, not deleted. The platform now tops a wallet
-  // up to exactly what each transaction needs before sending it, so the
-  // native balance is an internal buffer of at most one transaction's gas:
-  // nothing the user spends, refills or needs to watch. With this flag false
-  // the tile never renders and `/me/credits` is never fetched -- dormant
-  // code, kept because turning it back on is one word.
+  // The Credits tile is hidden, not deleted: with exact gas top-ups the
+  // native balance is an internal buffer of at most one transaction's gas,
+  // nothing the user spends or refills. False also skips `/me/credits`.
   const showCredits = false;
   const { data: credits } = useCredits(own && showCredits);
   const { data: topUpStatus } = useTopUpStatus(own);

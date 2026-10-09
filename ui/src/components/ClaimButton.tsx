@@ -29,22 +29,17 @@ export function ClaimButton({
     });
   };
   const claim = useMutation({
-    // The server takes one transaction lock per ACCOUNT, and every row has its
-    // own button: three clicks in a row would send three requests at once, and
-    // two of them would meet the held lock and toast a 409 for a claim that is
-    // about to be paid. Mutations of one scope run one after the other, so the
-    // later rows wait their turn (they read "Claiming…" until it comes).
+    // The server takes one transaction lock per ACCOUNT, so clicks on several
+    // rows at once would toast 409s for claims about to be paid. Mutations of
+    // one scope run one after the other: later rows wait ("Claiming…").
     scope: { id: `claim:${userAddress}` },
     mutationFn: () => claimPositionRequest(conditionId),
     onSuccess: () => {
       toast.success("Claimed.");
       refreshPositions();
       // Claiming pays out apUSD, so the balance at the top of the page
-      // changes. Without this it sits stale until whatever next natural
-      // refetch happens to invalidate it. The platform pays the claim's gas
-      // now, but the top-up and the claim still move the wallet's native
-      // buffer, so `credits` is invalidated too: the Credits tile is hidden
-      // today, and this keeps it honest the day it is shown again.
+      // changes. The top-up and the claim also move the native buffer, so
+      // `credits` goes too: its tile is hidden, but stays honest if shown.
       void queryClient.invalidateQueries({
         queryKey: ["balance-allowance", "COLLATERAL"],
       });
@@ -56,11 +51,9 @@ export function ClaimButton({
           ? claimErrorMessage(err.status, err.body)
           : "Failed to claim.";
       toast.error(message);
-      // A 400 is the claim refusing on its own terms -- nothing to claim, not
-      // resolved on chain, reverted -- and with auto-redeem on by default the
-      // usual reason is that a background pass has already paid this row. The
-      // list still shows it as unclaimed until its 10 s staleTime runs out, so
-      // refresh it now and the dead Claim button goes. Any other failure says
+      // A 400 usually means a background auto-redeem pass already paid this
+      // row, which the list shows as unclaimed until its 10 s staleTime runs
+      // out: refresh it now so the dead Claim button goes. Other failures say
       // nothing about whether the position is still there.
       if (err instanceof ApiError && err.status === 400) refreshPositions();
     },

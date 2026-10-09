@@ -389,13 +389,9 @@ function DeleteAgentDialog({ agent, name, onClose }: AgentDialogProps) {
   );
 }
 
-/** The wallet's native balance, under the address it belongs to.
- *
- *  Hidden (`showCredits` in `SettingsPage`). It used to be what paid for a
- *  claim, so the user had to watch it. The platform now tops the wallet up to
- *  exactly what each transaction needs just before sending it, which leaves
- *  this an internal buffer of at most one transaction's gas: a number the
- *  user cannot spend, refill or act on. */
+/** The wallet's native balance, under the address it belongs to. Hidden
+ *  (`showCredits` in `SettingsPage`): with exact gas top-ups it is an
+ *  internal buffer of at most one transaction's gas, nothing to act on. */
 function CreditsLine() {
   const { data: credits } = useCredits();
   return (
