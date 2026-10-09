@@ -1,26 +1,18 @@
 """Paying the gas of transactions that a user's own key signs.
 
-Wallets are custodial: the server holds every `User.eth_key`, and nothing
-exports it. SKALE offers no protocol-level sponsorship (skaled refuses EIP-7702
-transactions, there is no ERC-4337 EntryPoint, and
-`ConditionalTokens.redeemPositions` redeems only `msg.sender`), so the native
-coin has to be in the user's wallet before the user's transaction goes out.
-`UserGasSponsor.send` works out what the calls need, has the admin send exactly
-the shortfall and waits for it to mine (skaled checks the sender's balance at
-import, against committed state), then sends the calls signed by the user.
+Wallets are custodial, and SKALE has no protocol-level sponsorship (skaled
+refuses EIP-7702, there is no ERC-4337 EntryPoint, and `redeemPositions` pays
+only `msg.sender`), so the native coin must be in the user's wallet before the
+user's transaction goes out. `UserGasSponsor.send` sizes what the calls need,
+has the admin send exactly the shortfall and waits for it to mine (skaled
+checks the balance at import, against committed state), then sends the calls
+signed by the user. A wallet never holds more than one action's need.
 
-The wallet never holds more than one action's need. A top-up happens only when
-the balance is below the need and brings it to exactly the need, and the action
-then spends part of it.
-
-ONE WORKER ONLY. The per-user locks are module-level `threading.Lock`s, because
-services are built per request and the auto-redeem pass builds its own. They
-serialise one account's transactions inside this process, and that is the whole
-API today (deploy/Dockerfile.api runs a single uvicorn worker, which also runs
-the mirror and both resolution loops). With several workers, or several API
-processes on one database, each would hold its own locks. Two of them could
-then size, top up and send for one account at once, so these locks would have
-to become a Postgres advisory lock (`pg_try_advisory_lock` on the address).
+ONE WORKER ONLY. The per-user locks are module-level `threading.Lock`s, which
+serialise one account's transactions inside this process: the whole API today
+(deploy/Dockerfile.api runs a single uvicorn worker). With several API
+processes on one database they would have to become a Postgres advisory lock
+(`pg_try_advisory_lock` on the address).
 """
 
 import logging
@@ -55,6 +47,7 @@ from agentpit.onchain.chain_rpc import (
     is_balance_low,
 )
 from agentpit.onchain.tx_sender import TRANSFER_GAS, TxDropped
+from agentpit.onchain.user_wallet import GAS_BUFFER_PCT
 
 log = logging.getLogger(__name__)
 
@@ -64,22 +57,16 @@ SponsorKind = Literal["claim", "split", "merge", "onboarding"]
 OnSigned = Callable[[int, str], None]
 
 _SECONDS_PER_DAY = 86_400  # the sponsored-gas budget resets at 00:00 UTC
-# The node's estimate plus 20%, the pad `send_user_tx` has always used. skaled
-# refunds the unused limit, so the pad is what the wallet keeps afterwards.
-_GAS_BUFFER_PCT = 20
-# The kinds the daily budget can refuse (owner decision 3). Claims and
-# onboarding are booked to the same row but never refused for it, so heavy
-# claiming can use up a day's split/merge allowance, never the other way round.
+# The kinds the daily budget can refuse. Claims and onboarding are booked to
+# the same row but never refused for it.
 _BUDGETED = frozenset({"split", "merge"})
 # 402 for a wallet that could not pay: the kill switch is off, or the node
 # still said "balance too low" after the one re-top-up.
 _CANNOT_PAY = "the wallet could not pay for this transaction's gas — try again later"
 
-# One lock per account, keyed by the lowercased address and shared by every
-# sponsor in the process. Entries are created under `_locks_guard`, so two
-# requests cannot each create (and each hold) their own lock for one address.
-# One small entry per account that ever sent: never pruned, deliberately, as a
-# lock dropped while held would let a second holder in.
+# One lock per lowercased address, shared by every sponsor in the process and
+# created under `_locks_guard`. Never pruned: a lock dropped while held would
+# let a second holder in.
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 
@@ -96,8 +83,7 @@ def _lock_for(address: str) -> threading.Lock:
 def _call_hook(
     on_signed: OnSigned | None, index: int
 ) -> Callable[[str], None] | None:
-    """`send_user_tx`'s one-argument hook for call `index`: each signature of
-    that call, a resized retry's included, reports its own hash under it."""
+    """`send_user_tx`'s one-argument hook for call `index`."""
     if on_signed is None:
         return None
     return lambda tx_hash: on_signed(index, tx_hash)
@@ -105,15 +91,12 @@ def _call_hook(
 
 class _Paid:
     """What one sponsored send has had the admin pay for so far, for `_book`:
-    the top-ups that mined and the receipts of the calls.
+    the top-ups that mined and the calls' receipts.
 
-    `unseen` is set while a top-up or a user transaction is out and its
-    outcome is not known, and cleared once it is: by its receipt, or by an
-    answer that says it can never run. Whatever stops the send while it is
-    set, an error or a `BaseException` such as `KeyboardInterrupt`, leaves
-    something that may still mine, so the booking keeps the reservation.
-    Whatever stops it while it is clear (a read, or an answer) leaves nothing
-    in flight, and the reservation goes back."""
+    `unseen` is set while a top-up or user transaction is out with no answer
+    yet (a receipt, or a refusal that says it can never run). Whatever stops
+    the send while it is set, a `BaseException` included, may leave something
+    that still mines, so the booking keeps the reservation."""
 
     def __init__(self) -> None:
         self.topups = 0
@@ -130,11 +113,8 @@ class _Paid:
 
 class UserGasSponsor:
     """Tops a user's wallet up to exactly what its next transactions need, then
-    sends them signed by the user's key.
-
-    Built per request, like the services that call it; the only state that has
-    to outlive a request, the locks, is module-level.
-    """
+    sends them signed by the user's key. Built per request; the locks, the only
+    state that outlives one, are module-level."""
 
     def __init__(self, db: DbSession, onchain: OnchainAdmin, settings: Settings):
         self._db = db
@@ -143,21 +123,17 @@ class UserGasSponsor:
 
     @property
     def min_claim_micro(self) -> int:
-        """Smallest claim payout worth sending, in micro-apUSD. Read from here
-        by the claim gate and by the auto-redeem scan, so both use one number."""
+        """Smallest claim payout worth sending, in micro-apUSD: one number for
+        the claim gate and the auto-redeem scan."""
         return self._settings.min_claim_micro
 
     @contextmanager
     def locked(self, user: User) -> Iterator[None]:
-        """Hold the user's transaction lock, or raise TransactionInProgressError.
-
-        Never waits. A claim button pressed twice, or auto-redeem meeting a
-        manual claim, gets a 409 at once instead of a second top-up sized on a
-        balance the first is about to spend. All four kinds share the lock
-        because they share the account's one nonce stream. Callers run their
-        on-chain gate inside it too, so two claims cannot both pass the gate
-        and then burn the same tokens.
-        """
+        """Hold the user's transaction lock, or raise TransactionInProgressError
+        (409) at once rather than size a second top-up on a balance the first
+        is about to spend. All four kinds share it, as they share the account's
+        nonce stream; callers run their on-chain gate inside it, so two claims
+        cannot both pass it and burn the same tokens."""
         lock = _lock_for(user.eth_address)
         if not lock.acquire(blocking=False):
             raise TransactionInProgressError()
@@ -178,69 +154,34 @@ class UserGasSponsor:
         """Top `user` up to exactly what `calls` need, then send them in order,
         signed by the user's key. Must be called inside `locked(user)`.
 
-        Every call is estimated up front, on committed state, so the calls must
-        not depend on each other's effects: the three onboarding approvals do
-        not, and claim, split and merge are one call each. Returns one receipt
-        per call. If any reverted, `TransactionRevertedError` is raised instead,
-        after the gas is booked, because reverted gas is still paid.
+        Every call is estimated up front on committed state, so the calls must
+        not depend on each other's effects. Returns one receipt per call; if
+        any reverted, `TransactionRevertedError` is raised instead, after the
+        gas is booked (reverted gas is still paid).
 
-        A top-up whose receipt times out (`fund_gas` raises `TimeExhausted`,
-        also when the admin sender finds no free transaction slot) stops the
-        send before any user transaction goes out, and is re-raised as
-        `GasTopUpTimeoutError` (503, "the platform is busy"). `fund_gas` takes
-        `tx_confirmations_timeout_s` at most for the slot wait and the receipt
-        wait together, so a jammed sender cannot hold the user's lock for
-        longer. The top-up may still mine (unless no slot was ever found, when
-        nothing was broadcast), so it is treated like a fill whose receipt
-        timed out in `OrderService._book_sponsored_gas`: a split/merge
-        reservation is left standing, an over-count and the safe direction,
-        and nothing else is booked, not even the transfer. Nothing has to
-        remember it either: every send sizes against the balance it reads, so
-        once the late top-up has mined, the next send tops up only
-        max(0, need - balance), which is nothing when the late top-up covers
-        it. (If it has not mined yet, the next send tops up in full and the
-        wallet briefly holds more than one need, which later sends use up
-        before they top up again.) A top-up that can never run (`TxDropped`:
-        the node lost it and a gap filler took its nonce) cannot mine later,
-        so it is no timeout: it is the same retryable `GasTopUpTimeoutError`
-        (503), but like a paused breaker it hands the reservation back.
+        A top-up with no receipt in time, no free admin slot, or dropped by the
+        node (`TxDropped`) is `GasTopUpTimeoutError` (503), raised before any
+        user transaction goes out. `fund_gas` bounds the whole wait by
+        `tx_confirmations_timeout_s`, so a jammed sender cannot hold the lock
+        longer. A call the node refuses at import for its fee or for the
+        balance is re-sized and retried once; a second refusal is
+        `InsufficientGasError` (402) or `GasPriceMovedError` (503).
 
-        A user transaction is in flight from its broadcast until an answer says
-        how it ended. Stopped before that, by no receipt in time, no answer to
-        the broadcast, an error from the receipt poll, any other error that is
-        not a refusal, or a `BaseException` such as `KeyboardInterrupt`, it
-        may still mine, so it books like a receipt timeout: the reservation
-        stands. Only a refusal at import, a broadcast that never reached the
-        node (both `chain_rpc.cannot_mine`, the test `PositionService` keeps
-        its pending row by) and `TxDropped` say it can never run; then the
-        reservation goes back, less the transfers of the top-ups that mined.
-        The error propagates as it is (`TxDropped` as `GasTopUpTimeoutError`).
-
-        The node refusing a call at import for its fee or for the wallet's
-        balance is answered by one resize-and-retry of that call. If the node
-        refuses the retry too, neither signature can mine and the reservation
-        goes back: a second balance refusal is `InsufficientGasError` (402),
-        a second fee refusal `GasPriceMovedError` (503, "try again"). A
-        re-sizing that fails before the retry is signed leaves nothing in
-        flight either, and is `GasTopUpTimeoutError` (503, see `_resize`).
+        The booking (`_book`) keeps a split/merge's reservation while anything
+        may still mine unseen (see `_Paid`), the safe over-count, and otherwise
+        refunds what was not paid. A late top-up needs no memory: every send
+        sizes against the balance it reads.
 
         `on_signed(i, tx_hash)` is called each time call `i` is signed, before
-        its transaction is broadcast, so the caller can record a transaction
-        that may mine even if this never returns. A call is signed again only
-        after the node refused it at import (its one resize-and-retry: each
-        call has its own), so a second hash for the same `i` means the first
-        can never mine.
+        its broadcast, so the caller can record a transaction that may mine
+        even if this never returns. A second hash for the same `i` means the
+        node refused the first, which can never mine.
 
-        `before_send()` is the caller's last check, called once the wallet is
-        funded (after the top-up, if one was needed) and before the first user
-        transaction is signed. The top-up takes a block or several, and what
-        the caller checked before calling can change in that window: a market
-        resolves, tokens leave the wallet. It is called once, not again for the
-        resized retry of a refused call. If it raises, nothing is sent and
-        nothing of the user's can mine: only the top-up's transfer, which did
-        go out, is booked, a split/merge's reservation goes back, and its error
-        propagates as it is. The kill switch off has no top-up, and it is
-        called all the same.
+        `before_send()` is the caller's last check, once the wallet is funded
+        and before the first signature, since what it checked can change while
+        the top-up mines. Called once (not for a retry), with the kill switch
+        off too. If it raises, nothing is sent, only the top-up is booked, and
+        its error propagates.
         """
         # A cheap guard against a caller that forgot the lock. It cannot tell
         # which thread holds it, but a lock nobody holds is a sure bug.
@@ -284,10 +225,7 @@ class UserGasSponsor:
             if shortfall:
                 self._top_up(user, shortfall, paid)
             if before_send is not None:
-                # Nothing is out when it raises (`paid.unseen` is clear), so
-                # the booking below refunds the reservation and keeps only the
-                # transfers of the top-ups that mined.
-                before_send()
+                before_send()  # nothing is out if it raises: the reservation goes back
             retried = False  # whether call i has had its one resize-and-retry
             i = 0
             while i < len(calls):
@@ -297,8 +235,7 @@ class UserGasSponsor:
                         user, calls[i], limits[i], price, _call_hook(on_signed, i)
                     )
                 except Exception as exc:
-                    # Only an answer that it can never run settles it; any
-                    # other error may have left it in the node to mine.
+                    # Only an answer that it can never run settles it.
                     paid.unseen = not (isinstance(exc, TxDropped) or cannot_mine(exc))
                     balance_low = is_balance_low(exc)
                     if (
@@ -310,9 +247,8 @@ class UserGasSponsor:
                         if balance_low:
                             raise InsufficientGasError(_CANNOT_PAY) from exc
                         raise GasPriceMovedError() from exc
-                    # The price rose since sizing, or the balance read was
-                    # stale: size what is left again and send once more. The
-                    # reservation stays as it is; the booking below trues it up.
+                    # The price rose, or the balance read was stale: size what
+                    # is left again and send once more; `_book` trues it up.
                     retried = True
                     log.info(
                         "re-sizing a sponsored %s for %s after the node refused it: %s",
@@ -325,13 +261,11 @@ class UserGasSponsor:
                 paid.unseen = False
                 paid.receipts.append(receipt)
                 i += 1
-                # Each call gets its own retry: the fee can rise again between
-                # onboarding's approvals, and a shared one would abort the
-                # batch with the first approvals already mined.
+                # Each call has its own retry: a shared one would abort
+                # onboarding with its first approvals already mined.
                 retried = False
         except TxDropped as exc:
-            # The node lost a user transaction: it never ran and never will.
-            # The same "busy, try again" answer as for a lost top-up.
+            # It never ran and never will: "busy, try again", as for a top-up.
             raise GasTopUpTimeoutError() from exc
         finally:
             self._book(user, kind, paid.gas, reserved, day, unseen=paid.unseen)
@@ -345,12 +279,8 @@ class UserGasSponsor:
         before_send: Callable[[], None] | None,
     ) -> list[TxReceipt]:
         """The kill switch is off: send at the current price from the wallet as
-        it stands. No balance read, no reservation, no top-up, no booking,
-        because the admin pays nothing. A wallet that cannot pay gets 402 at
-        once; the retry exists only to top up again, and that is switched off.
-        The caller's last check runs after the estimates, just before the first
-        signature.
-        """
+        it stands, with no top-up and no booking, as the admin pays nothing. A
+        wallet that cannot pay gets 402 at once."""
         price, limits = self._limits(user, calls)
         if before_send is not None:
             before_send()
@@ -371,13 +301,12 @@ class UserGasSponsor:
     def _limits(
         self, user: User, calls: list[ContractFunction]
     ) -> tuple[int, list[int]]:
-        """(eth_gasPrice read once, a gas limit per call). The estimates carry
-        no fee fields: with one, anvil refuses to estimate for a dry wallet
-        ("gas required exceeds allowance: 0")."""
+        """(eth_gasPrice read once, a padded gas limit per call). skaled refunds
+        the unused limit, so the pad is what the wallet keeps afterwards."""
         price = self._onchain.gas_price()
         limits = [
             self._onchain.estimate_user_gas(fn, user.eth_address)
-            * (100 + _GAS_BUFFER_PCT)
+            * (100 + GAS_BUFFER_PCT)
             // 100
             for fn in calls
         ]
@@ -389,11 +318,10 @@ class UserGasSponsor:
         """(price, gas limits, shortfall): what `calls` need at the current
         price, less what the wallet already holds.
 
-        Raises RuntimeError over the ceiling. That is a bug, not a user error:
-        a wrong estimate must never size a large transfer from the admin. The
-        ceiling is in gas units by design (`max_topup_gas` at the current
-        price), so it bounds estimate bugs, not the price: a price spike tops
-        up in full, and the wei that risks is bounded by the admin breaker."""
+        A shortfall over `max_topup_gas` at that price is a wrong estimate, a
+        bug, and raises RuntimeError rather than size a large transfer. The
+        ceiling is in gas, so it bounds estimate bugs, not price spikes (the
+        admin breaker bounds those)."""
         price, limits = self._limits(user, calls)
         need = sum(limits) * price
         shortfall = max(0, need - self._onchain.native_balance(user.eth_address))
@@ -416,14 +344,11 @@ class UserGasSponsor:
     def _reserve(
         self, user: User, kind: SponsorKind, limits: list[int]
     ) -> tuple[int, int]:
-        """Reserve a split/merge's gas against the daily budget before anything
-        is sent; refuse with GasBudgetExceededError (429) once the day is used.
-
-        Returns (what was reserved, 0 when nothing applies; the UTC day it sits
-        on). The day arithmetic is `OrderService._reserve_sponsored_gas`'s, and
-        so are the exemptions: the house (`is_bot`) and a budget of 0. The
-        top-up's transfer is reserved too, whether or not one turns out to be
-        needed; the booking trues it up."""
+        """Reserve a split/merge's gas, a top-up's transfer included, against
+        the daily budget before anything is sent; GasBudgetExceededError (429)
+        once the day is used. Returns (gas reserved, 0 when exempt; the UTC
+        day). Day arithmetic and exemptions (the house, a budget of 0) are
+        `OrderService._reserve_sponsored_gas`'s."""
         now = int(time.time())
         day = now // _SECONDS_PER_DAY
         budget = self._settings.daily_sponsored_gas_per_account
@@ -441,20 +366,15 @@ class UserGasSponsor:
         return gas, day
 
     def _top_up(self, user: User, shortfall: int, paid: _Paid) -> None:
-        """Send `shortfall` and wait for it to mine: skaled checks the balance
-        at import, against committed state. A sponsored admin send, so a paused
-        breaker refuses it (`AdminGasPausedError`, 503). Only a wallet that
-        needs a top-up meets the breaker; a funded one proceeds while paused.
-        `TimeExhausted` (no receipt in time, or no free admin slot) becomes
-        `GasTopUpTimeoutError` (503), and so does `TxDropped`.
+        """Send `shortfall` and wait for it to mine. A paused breaker refuses it
+        (`AdminGasPausedError`, 503), so only a wallet that needs a top-up
+        meets the breaker; `TimeExhausted` and `TxDropped` become
+        `GasTopUpTimeoutError` (503).
 
-        `paid.unseen` is set while the top-up is out. It stays set when no
-        answer came back (no receipt in time, a transport error, a
-        `BaseException` mid-wait): the top-up may still mine, so the booking
-        keeps the reservation. A failure to connect counts as no answer here,
-        because `AdminTxSender` re-raises its first copy's error even when a
-        resend of it may have got through. An answer (a paused breaker, a
-        refusal, `TxDropped`) clears it. `send`'s docstring says the rest."""
+        `paid.unseen` stays set when no answer came back (a timeout, a
+        transport error, a `BaseException` mid-wait): the top-up may still
+        mine. A failed connect counts as no answer, since `AdminTxSender`
+        re-raises its first copy's error even when a resend got through."""
         paid.unseen = True
         try:
             self._onchain.fund_gas(
@@ -465,10 +385,7 @@ class UserGasSponsor:
         except TimeExhausted as exc:
             raise GasTopUpTimeoutError() from exc
         except TxDropped as exc:
-            # Its nonce went to a gap filler or another writer's transaction:
-            # it never ran and never will, so this is no timeout. It answers
-            # like one, because to the caller it is the same: our side is
-            # busy, try again.
+            # Its nonce went to a gap filler: it never ran and never will.
             paid.unseen = False
             raise GasTopUpTimeoutError() from exc
         except Exception as exc:
@@ -486,20 +403,14 @@ class UserGasSponsor:
         paid: _Paid,
     ) -> int:
         """After the node refused call `i` at import: size calls `i` onwards
-        again, top the wallet up to the new need, and return the new price.
-        `limits` is updated in place.
+        again (updating `limits` in place), top up to the new need, and return
+        the new price.
 
-        The refused transaction can never run and its retry is not signed
-        yet, so nothing of the user's is in flight while this runs. A failure
-        here, of a read or of the top-up, is therefore raised as
-        `GasTopUpTimeoutError` (503, "try again"): an answer, which
-        `PositionService` drops the refused transaction's pending row for.
-        Raised as it is, a read error would pass for a transaction whose
-        outcome nobody knows. The ceiling's `RuntimeError` goes the same way;
-        `_size` has logged it at ERROR already. A paused breaker stays
-        `AdminGasPausedError`. The booking is decided as anywhere else: a
-        failed read leaves nothing unseen and the reservation goes back, a
-        top-up that got no answer may still mine and keeps it."""
+        Nothing of the user's is in flight here, so any failure, the ceiling's
+        `RuntimeError` included, is raised as `GasTopUpTimeoutError` (503): an
+        answer, which `PositionService` drops the refused row for, where a raw
+        read error would pass for an unknown outcome. A paused breaker stays
+        `AdminGasPausedError`."""
         try:
             price, rest, shortfall = self._size(user, calls[i:])
         except Exception as exc:
@@ -523,7 +434,7 @@ class UserGasSponsor:
         on_signed: Callable[[str], None] | None,
     ) -> TxReceipt:
         """One user-signed send at the sized limit and price, so `send_user_tx`
-        does not estimate again (one more ~0.5 s round trip on SKALE)."""
+        does not estimate again."""
         return self._onchain.send_as_user(
             user.eth_key,
             fn,
@@ -543,22 +454,15 @@ class UserGasSponsor:
         *,
         unseen: bool,
     ) -> None:
-        """Book what the admin really paid on `day`, under the rules of
-        `OrderService._book_sponsored_gas`.
+        """Book what the admin paid on `day`, under the rules of
+        `OrderService._book_sponsored_gas`: `gas` (mined top-ups plus every
+        receipt's gasUsed, reverts included) less the reservation, so a
+        split/merge is refunded what it did not use. When something may have
+        mined `unseen` nothing is refunded; only an overrun is added. The house
+        is never booked.
 
-        `gas` is each mined top-up's transfer plus every receipt's gasUsed,
-        reverted ones included. A split/merge is booked that minus its reservation: a
-        refund when the estimate was high, all of it when nothing was sent.
-        When something may have mined unseen (`unseen`, see `_Paid`: a top-up
-        or a user transaction that got no answer) nothing is refunded; only
-        an overrun is added. Such a top-up is not in `gas`, so it adds nothing.
-        Claims and onboarding reserved nothing and are booked in full. The
-        house (`is_bot`) is never booked.
-
-        Never fails the action: by now the transactions are on chain (or have
-        failed, and this runs from `finally` all the same). A lost booking
-        leaves a split/merge's reservation standing, which over-counts, the
-        safe direction."""
+        Never fails the action: a lost booking leaves the reservation standing,
+        the safe over-count."""
         if user.is_bot:
             return
         delta = gas - reserved  # reserved is 0 for claims and onboarding
