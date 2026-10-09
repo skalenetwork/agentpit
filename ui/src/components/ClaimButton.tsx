@@ -29,6 +29,12 @@ export function ClaimButton({
     });
   };
   const claim = useMutation({
+    // The server takes one transaction lock per ACCOUNT, and every row has its
+    // own button: three clicks in a row would send three requests at once, and
+    // two of them would meet the held lock and toast a 409 for a claim that is
+    // about to be paid. Mutations of one scope run one after the other, so the
+    // later rows wait their turn (they read "Claiming…" until it comes).
+    scope: { id: `claim:${userAddress}` },
     mutationFn: () => claimPositionRequest(conditionId),
     onSuccess: () => {
       toast.success("Claimed.");
