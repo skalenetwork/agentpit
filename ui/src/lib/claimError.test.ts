@@ -4,80 +4,29 @@ import { claimErrorMessage } from "./claimError";
 /** The body FastAPI sends for every domain error: `{"detail": "<text>"}`. */
 const detail = (text: unknown) => JSON.stringify({ detail: text });
 
+const FAILED = "Failed to claim.";
+// A claim that was sent but not confirmed: the user must not repeat it.
+const PENDING =
+  "the transaction was sent but is not confirmed yet — it will appear in your history once it lands; do not repeat it";
+
 describe("claimErrorMessage", () => {
-  it("400: shows the backend's reason as a sentence", () => {
-    expect(claimErrorMessage(400, detail("nothing to claim"))).toBe(
-      "Nothing to claim.",
-    );
-    expect(
-      claimErrorMessage(400, detail("market is not resolved on chain yet")),
-    ).toBe("Market is not resolved on chain yet.");
+  // The backend's reason, shown as a sentence: capitalised, one closing full stop.
+  // prettier-ignore
+  it.each([
+    [400, "nothing to claim", "Nothing to claim."],
+    [400, "market is not resolved on chain yet", "Market is not resolved on chain yet."],
+    [400, "the claim reverted on chain.", "The claim reverted on chain."],
+    [409, "another transaction for this account is in progress — try again in a moment", "Another transaction for this account is in progress — try again in a moment."],
+    [409, "an earlier transaction on this market is not confirmed yet", "An earlier transaction on this market is not confirmed yet."],
+    [503, "the platform's gas wallet is running low — try again later", "The platform's gas wallet is running low — try again later."],
+    [503, "the platform is busy — try again in a moment", "The platform is busy — try again in a moment."],
+    [503, PENDING, "The transaction was sent but is not confirmed yet — it will appear in your history once it lands; do not repeat it."],
+  ])("%i: shows the reason %j", (status, reason, shown) => {
+    expect(claimErrorMessage(status, detail(reason))).toBe(shown);
   });
 
-  it("400: does not double the backend's own closing punctuation", () => {
-    expect(claimErrorMessage(400, detail("the claim reverted on chain."))).toBe(
-      "The claim reverted on chain.",
-    );
-  });
-
-  it("400 without a sentence to show falls back to the generic message", () => {
-    expect(claimErrorMessage(400, "")).toBe("Failed to claim.");
-    expect(claimErrorMessage(400, undefined)).toBe("Failed to claim.");
-    // A proxy's error page, not FastAPI.
-    expect(claimErrorMessage(400, "<html>Bad Request</html>")).toBe(
-      "Failed to claim.",
-    );
-    expect(claimErrorMessage(400, detail("   "))).toBe("Failed to claim.");
-    // A validation-style array is not a sentence either.
-    expect(claimErrorMessage(400, detail([{ msg: "field required" }]))).toBe(
-      "Failed to claim.",
-    );
-  });
-
-  it("409: shows the backend's reason, a held lock or an unconfirmed transaction", () => {
-    expect(
-      claimErrorMessage(
-        409,
-        detail(
-          "another transaction for this account is in progress — try again in a moment",
-        ),
-      ),
-    ).toBe(
-      "Another transaction for this account is in progress — try again in a moment.",
-    );
-    expect(
-      claimErrorMessage(
-        409,
-        detail("an earlier transaction on this market is not confirmed yet"),
-      ),
-    ).toBe("An earlier transaction on this market is not confirmed yet.");
-  });
-
-  it("503: shows the backend's reason, paused, busy or sent but unconfirmed", () => {
-    expect(
-      claimErrorMessage(
-        503,
-        detail("the platform's gas wallet is running low — try again later"),
-      ),
-    ).toBe("The platform's gas wallet is running low — try again later.");
-    expect(
-      claimErrorMessage(
-        503,
-        detail("the platform is busy — try again in a moment"),
-      ),
-    ).toBe("The platform is busy — try again in a moment.");
-    // A claim that was sent but not confirmed: the user must not repeat it,
-    // so "try again later" would be the wrong thing to say.
-    const pending = claimErrorMessage(
-      503,
-      detail(
-        "the transaction was sent but is not confirmed yet — it will appear in your history once it lands; do not repeat it",
-      ),
-    );
-    expect(pending).toBe(
-      "The transaction was sent but is not confirmed yet — it will appear in your history once it lands; do not repeat it.",
-    );
-    expect(pending).not.toMatch(/try again/i);
+  it("503: a sent but unconfirmed claim never says to try again", () => {
+    expect(claimErrorMessage(503, detail(PENDING))).not.toMatch(/try again/i);
   });
 
   it("402: says claiming is unavailable and never asks the user to fund anything", () => {
@@ -91,13 +40,19 @@ describe("claimErrorMessage", () => {
     expect(message).not.toMatch(/credits|send|0x/i);
   });
 
-  it("falls back to the generic message for anything else", () => {
-    expect(claimErrorMessage(404, detail("Market not found"))).toBe(
-      "Failed to claim.",
-    );
-    expect(claimErrorMessage(500, "Internal Server Error")).toBe(
-      "Failed to claim.",
-    );
-    expect(claimErrorMessage(undefined, undefined)).toBe("Failed to claim.");
+  // 400 without a sentence to show, and anything else.
+  // prettier-ignore
+  const generic: [number | undefined, string | undefined][] = [
+    [400, ""],
+    [400, undefined],
+    [400, "<html>Bad Request</html>"], // a proxy's error page, not FastAPI
+    [400, detail("   ")],
+    [400, detail([{ msg: "field required" }])], // a validation-style array is no sentence
+    [404, detail("Market not found")],
+    [500, "Internal Server Error"],
+    [undefined, undefined],
+  ];
+  it.each(generic)("%s with body %j: the generic message", (status, body) => {
+    expect(claimErrorMessage(status, body)).toBe(FAILED);
   });
 });
