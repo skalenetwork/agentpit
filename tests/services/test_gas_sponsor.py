@@ -12,13 +12,18 @@ import logging
 import secrets
 import threading
 import time
+from collections import Counter
 
+import psycopg
 import pytest
 import requests
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 from web3 import Web3
 from web3.exceptions import TimeExhausted, Web3RPCError
 
+from agentpit.api.exception_handlers import register_exception_handlers
 from agentpit.config import Settings
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
@@ -859,3 +864,229 @@ def test_kill_switch_never_stops_onboarding():
     _send(db, chain, user, [_Call()], "onboarding", AGENTPIT_SPONSOR_USER_GAS=False)
     assert chain.funded == [NEED]
     assert _used(db, user) == MINED
+
+
+# --- the failure matrix -----------------------------------------------------
+#
+# Every chain call `_send_sponsored` makes was made to fail once with each kind
+# of error in `_FAULTS`, for a claim, a split and onboarding: the reads that
+# size it, the reservation, the top-up, each send, and after a fee refusal the
+# re-sizing reads, the retry's top-up and the retry. Whatever fails where, the
+# lock is free afterwards, nothing goes out after the failure, the error is the
+# documented one, and a split's reservation goes back exactly when nothing it
+# paid for can still mine. Of those 360 cells the 112 kept in `_CELLS` failed
+# before the sponsor followed these rules; the other 248 held already.
+
+
+class _FaultyChain(_Chain):
+    """`_Chain` whose `at`-th chain call raises `fault`: `at` is ("price", n),
+    ("estimate", n), ("balance", n), ("fund", n) or ("send", n), the n-th
+    call of that kind from 1. A send fails once it is signed, as
+    `send_user_tx` signs before the broadcast; a top-up fails before it is
+    sent. `after` lists every chain call made once the fault fired; `mined`
+    counts the sends that came back with a receipt."""
+
+    def __init__(self, at: tuple[str, int], fault: BaseException, **kwargs):
+        super().__init__(during_send=lambda: self.tick("send"), **kwargs)
+        self.at = at
+        self.fault = fault
+        self.counts: Counter[str] = Counter()
+        self.fired = False
+        self.after: list[str] = []
+        self.mined = 0
+
+    def tick(self, name: str) -> None:
+        if self.fired:
+            self.after.append(name)
+        self.counts[name] += 1
+        if (name, self.counts[name]) == self.at:
+            self.fired = True
+            raise self.fault
+
+    def gas_price(self) -> int:
+        self.tick("price")
+        return super().gas_price()
+
+    def estimate_user_gas(self, fn, address: str) -> int:
+        self.tick("estimate")
+        return OnchainAdmin.estimate_user_gas(self, fn, address)  # type: ignore[arg-type]
+
+    def native_balance(self, address: str) -> int:
+        self.tick("balance")
+        return super().native_balance(address)
+
+    def fund_gas(self, address: str, value_wei: int, *, timeout: int = 30):
+        self.tick("fund")
+        return super().fund_gas(address, value_wei, timeout=timeout)
+
+    def send_as_user(self, *args, **kwargs):
+        receipt = super().send_as_user(*args, **kwargs)
+        self.mined += 1
+        return receipt
+
+
+_FAULTS = {
+    "runtime": lambda: RuntimeError("boom"),
+    "timeout": lambda: TimeExhausted("no receipt in 30s"),
+    "never-connected": _never_connected,
+    "read-timeout": lambda: requests.ReadTimeout("read timed out"),
+    "fee-low": lambda: _refused(SKALED_FEE_LOW),
+    "balance-low": lambda: _refused(SKALED_BALANCE_LOW),
+    "dropped": lambda: TxDropped("its nonce went to a gap filler"),
+    "db": lambda: psycopg.OperationalError("server closed the connection"),
+    "interrupt": KeyboardInterrupt,
+}
+_RESIZE_FAULTS = [
+    "runtime", "timeout", "never-connected", "read-timeout", "fee-low", "balance-low", "db",
+]  # fmt: skip
+_RETRY_TOP_UP_FAULTS = [
+    "runtime", "never-connected", "read-timeout", "fee-low", "balance-low", "db",
+]  # fmt: skip
+# {(scenario, kind): {point: faults}}. A point is the n-th chain call of its
+# kind, from 1, in the order `_send_sponsored` makes them. In "retry" the node
+# refuses the first send for its fee: "price2", "estimate2" (onboarding:
+# "estimate4" to "estimate6") and "balance2" re-size it, "fund2" is the
+# retry's top-up and "send2" the retry, and onboarding's "send3" and "send4"
+# are its next two calls' first tries.
+_CELLS = {
+    ("straight", "split"): {
+        "fund1": ["interrupt"],
+        "send1": ["runtime", "never-connected", "db", "interrupt"],
+    },
+    ("retry", "claim"): {
+        "price2": _RESIZE_FAULTS,
+        "estimate2": _RESIZE_FAULTS,
+        "balance2": _RESIZE_FAULTS,
+        "fund2": _RETRY_TOP_UP_FAULTS,
+        "send2": ["fee-low"],
+    },
+    ("retry", "split"): {
+        "price2": _RESIZE_FAULTS,
+        "estimate2": _RESIZE_FAULTS,
+        "balance2": _RESIZE_FAULTS,
+        "fund2": [*_RETRY_TOP_UP_FAULTS, "interrupt"],
+        "send2": ["runtime", "never-connected", "fee-low", "db", "interrupt"],
+    },
+    ("retry", "onboarding"): {
+        "price2": _RESIZE_FAULTS,
+        "estimate4": _RESIZE_FAULTS,
+        "estimate5": _RESIZE_FAULTS,
+        "estimate6": _RESIZE_FAULTS,
+        "balance2": _RESIZE_FAULTS,
+        "fund2": _RETRY_TOP_UP_FAULTS,
+        "send2": ["fee-low"],
+        "send3": ["fee-low", "balance-low"],
+        "send4": ["fee-low", "balance-low"],
+    },
+}
+
+
+def _point(name: str) -> tuple[str, int]:
+    kind = name.rstrip("0123456789")
+    return kind, int(name[len(kind) :])
+
+
+def _phase(scenario: str, point: str) -> str:
+    """What `_send_sponsored` is doing at `point`: topping up, sending a call
+    for the first time, re-sizing after a refusal, or sending the refused
+    call again."""
+    name, n = _point(point)
+    if name == "fund":
+        return "top-up"
+    if name == "send":
+        return "resend" if (scenario, n) == ("retry", 2) else "send"
+    assert scenario == "retry", "the only reads in `_CELLS` are the re-sizing's"
+    return "resize"
+
+
+# The errors that answer the caller in place of the error itself, and the
+# status each maps to; anything else propagates as it is (500).
+_STATUS = {GasTopUpTimeoutError: 503, GasPriceMovedError: 503, InsufficientGasError: 402}
+
+
+def _expected(scenario: str, point: str, fault: str) -> tuple[type | None, bool]:
+    """(what `send` raises, None when it succeeds; whether something paid for
+    may still mine, which keeps a split's reservation)."""
+    raw = type(_FAULTS[fault]())
+    phase = _phase(scenario, point)
+    if phase == "resize":
+        # The refused transaction can never mine, the retry is not signed yet.
+        return (raw if fault == "interrupt" else GasTopUpTimeoutError), False
+    if phase == "top-up":
+        # No answer leaves the top-up free to mine. The retry's top-up has a
+        # refused signature in front of it, so its failure is an answer for
+        # the caller (503).
+        unseen = fault in ("timeout", "never-connected", "read-timeout", "interrupt")
+        if fault in ("timeout", "dropped"):
+            return GasTopUpTimeoutError, unseen
+        if fault == "interrupt" or scenario == "straight":
+            return raw, unseen
+        return GasTopUpTimeoutError, unseen
+    # A send: the first try of a call, or the refused call's one retry.
+    if fault in ("fee-low", "balance-low"):
+        if phase == "send":
+            return None, False  # re-sized and sent again, and it mined
+        return (GasPriceMovedError if fault == "fee-low" else InsufficientGasError), False
+    if fault == "dropped":
+        return GasTopUpTimeoutError, False
+    if fault == "never-connected":
+        return raw, False
+    return raw, True  # it may have reached the node: it may mine
+
+
+def _status_of(exc: Exception) -> int:
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/")
+    def _raise():
+        raise exc
+
+    return TestClient(app, raise_server_exceptions=False).get("/").status_code
+
+
+@pytest.mark.parametrize(
+    ("scenario", "kind", "point", "fault"),
+    [
+        pytest.param(scenario, kind, point, fault, id=f"{scenario}-{kind}-{point}-{fault}")
+        for (scenario, kind), points in _CELLS.items()
+        for point, faults in points.items()
+        for fault in faults
+    ],
+)
+def test_every_failure_point_frees_the_lock_sends_nothing_more_and_books_right(
+    scenario, kind, point, fault
+):
+    db = fresh_test_db()
+    user = _user(db)
+    calls = [_Call(f"call{i}") for i in range(3 if kind == "onboarding" else 1)]
+    retry = {
+        "prices": (1_000, 1_500),
+        "balances": (0, len(calls) * NEED),
+        "refusals": [_refused(SKALED_FEE_LOW)],
+    }
+    chain = _FaultyChain(
+        _point(point), _FAULTS[fault](), **(retry if scenario == "retry" else {})
+    )
+    sponsor = UserGasSponsor(db, chain, _settings())  # type: ignore[arg-type]
+    raised: BaseException | None = None
+    try:
+        with sponsor.locked(user):
+            sponsor.send(user, calls, kind)  # type: ignore[arg-type]
+    except BaseException as exc:  # KeyboardInterrupt included
+        raised = exc
+
+    assert chain.fired, f"{point} is not where the calls are"
+    with sponsor.locked(user):  # the lock is free
+        pass
+    expected, unseen = _expected(scenario, point, fault)
+    assert (None if raised is None else type(raised)) is expected, repr(raised)
+    if raised is not None:
+        assert chain.after == []  # nothing, and no send, after the failure
+        if isinstance(raised, Exception):
+            assert _status_of(raised) == _STATUS.get(type(raised), 500)
+    # Each mined top-up's transfer and each receipt, plus what is left of the
+    # reservation when something may still mine unseen.
+    paid = len(chain.funded) * TRANSFER_GAS + chain.mined * 80_000
+    reserved = 120_000 + TRANSFER_GAS if kind == "split" and unseen else 0
+    assert _used(db, user) == max(paid, reserved)
