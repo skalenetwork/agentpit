@@ -1,12 +1,10 @@
 """Onboarding with no signup grant, on the local anvil.
 
-A new wallet used to be handed a fixed 0.02 native and pay its three
-approvals out of that. Now `UserGasSponsor` tops it up to exactly what the
-approvals need, in one transfer, and sends them; a new account -- a person's
-or an agent's -- ends onboarding with its approvals set and no more native
-than that one top-up. On anvil it keeps nearly all of it, because anvil bills
-the 7 wei base fee rather than the price the send offered; on skaled it would
-keep the unused ~20% of the gas limit. Never more than the need, either way.
+`UserGasSponsor` tops a new wallet up to exactly what its three approvals need,
+in one transfer, and sends them: a new account, a person's or an agent's, ends
+onboarding with its approvals set and no more native than that top-up. On anvil
+it keeps nearly all of it (anvil bills the 7 wei base fee, not the price the
+send offered); never more than the need.
 """
 
 import time
@@ -16,9 +14,12 @@ from agentpit.db.table_read import TableRead
 from agentpit.onchain.tx_sender import TRANSFER_GAS
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
-from tests.onchain._helpers import _auth_service, fresh_client, register
-
-_MAX_UINT256 = 2**256 - 1
+from tests.onchain._helpers import (
+    _auth_service,
+    assert_approvals_set,
+    fresh_client,
+    register,
+)
 
 
 def _record_top_ups(monkeypatch, client) -> list[tuple[str, int]]:
@@ -37,29 +38,22 @@ def _record_top_ups(monkeypatch, client) -> list[tuple[str, int]]:
 
 def _assert_onboarded_on_one_exact_top_up(client, address: str, api_key: str, top_ups) -> None:
     overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    admin = overrides[get_onchain_admin]()
-    settings = overrides[get_settings]()
-    contracts = admin._contracts  # noqa: SLF001
+    admin, settings = overrides[get_onchain_admin](), overrides[get_settings]()
 
     mine = [wei for to, wei in top_ups if to == address.lower()]
-    # One transfer, and it is the sponsor's: under its ceiling of
-    # AGENTPIT_MAX_TOPUP_GAS at today's price. The old 0.02 native grant is
-    # twenty times that ceiling at anvil's ~1 gwei.
+    # One transfer, and the sponsor's: under its AGENTPIT_MAX_TOPUP_GAS ceiling
+    # at today's price (the old 0.02 native grant is twenty times that at anvil's ~1 gwei).
     assert len(mine) == 1, mine
     need = mine[0]
     assert 0 < need <= settings.max_topup_gas * admin.gas_price()
-    # The wallet started empty, so the top-up was the whole need; the
-    # approvals spent part of it and nothing was added afterwards.
+    # The wallet started empty, so the top-up was the whole need; the approvals
+    # spent part of it and nothing was added afterwards.
     assert admin.native_balance(address) <= need
     # Exactly the three approvals went out from the wallet, and they are set.
     assert admin.transaction_count(address) == 3
-    usd, ctf, exchange = contracts.usd, contracts.ctf, contracts.exchange.address
-    assert usd.functions.allowance(address, exchange).call() == _MAX_UINT256
-    assert usd.functions.allowance(address, ctf.address).call() == _MAX_UINT256
-    assert ctf.functions.isApprovedForAll(address, exchange).call()
-    # The top-up and the approvals are on the account's daily row: never
-    # refused for budget, always counted against it. The approvals measured
-    # 46,487 / 46,487 / 45,996 gas on anvil.
+    assert_approvals_set(admin, address)
+    # The top-up and the approvals are on the account's daily row (measured
+    # 46,487 / 46,487 / 45,996 gas for the approvals on anvil).
     with fresh_test_db().read() as conn:
         booked = TableRead.sponsored_gas_used(conn, api_key, int(time.time()) // 86_400)
     assert TRANSFER_GAS + 3 * 21_000 < booked < TRANSFER_GAS + 3 * 60_000
