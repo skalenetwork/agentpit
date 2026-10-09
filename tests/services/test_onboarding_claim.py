@@ -1,37 +1,35 @@
+import logging
 import threading
 import time
 
 import pytest
+from web3.exceptions import TimeExhausted, Web3RPCError
 
-from agentpit.auth.jwt import JwtCoder
 from agentpit.config import Settings
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
+    GasPriceMovedError,
+    GasTopUpTimeoutError,
     InsufficientGasError,
     OnboardingError,
 )
 from agentpit.onchain.tx_sender import TRANSFER_GAS
 from agentpit.services.auth_service import AuthService
-from agentpit.services.gas_sponsor import UserGasSponsor
-from tests.db_helpers import fresh_test_db
-from tests.onboarding_fakes import (
-    APPROVAL_GAS,
-    APPROVAL_LIMIT,
-    GAS_PRICE,
-    ONBOARDING_NEED,
-    OnboardingChain,
-)
+from tests.onboarding_fakes import APPROVAL_GAS, APPROVAL_LIMIT, GAS_PRICE, ONBOARDING_NEED, OnboardingChain, onboarding
+
+STALE_S = AuthService.ONBOARDING_CLAIM_STALE_S + 1
+_PRICE_MOVED = Web3RPCError(repr({"code": -32000, "message": "Transaction gas price lower than current eth_gasPrice"}))
+_CANNOT_PAY = InsufficientGasError("this account's wallet cannot pay for the transaction")
 
 
 class _Chain(OnboardingChain):
-    """The wallet's top-up can be made to fail, or to wait on a gate."""
+    """The wallet's top-up can fail (`fail`) or wait on a gate; every approval can be refused (`refuse`)."""
 
-    def __init__(self, fail=None, gate: threading.Event | None = None):
+    def __init__(self, fail=None, gate: threading.Event | None = None, refuse=None):
         super().__init__()
-        self._fail = fail
-        self._gate = gate
+        self._fail, self._gate, self._refuse = fail, gate, refuse
 
     def fund_gas(self, user_address, value_wei, *, timeout=30):
         if self._gate is not None:
@@ -40,92 +38,75 @@ class _Chain(OnboardingChain):
             raise self._fail
         return super().fund_gas(user_address, value_wei, timeout=timeout)
 
-
-class _CannotPay(_Chain):
-    """The sponsor's last word on a wallet the node keeps refusing (its 402)."""
-
-    def send_as_user(self, *_a, **_k):
-        raise InsufficientGasError("this account's wallet cannot pay for the transaction")
-
-
-def _service(chain, settings: Settings | None = None):
-    db = fresh_test_db()
-    settings = settings or Settings()
-    return AuthService(db, JwtCoder(settings), chain, settings), db  # type: ignore[arg-type]
-
-
-def _row(db, email):
-    with db.write() as conn:
-        user_id, acct, _ = TableWrite.create_user(conn, email=email, password_hash=None, handle=None)
-    return user_id, acct
-
-
-def _claimed_at(db, user_id):
-    with db.read() as conn:
-        return conn.execute("SELECT ONBOARDING_STARTED_AT AS S FROM users WHERE USER_ID = %s", (user_id,)).fetchone()["S"]
+    def send_as_user(self, *args, **kwargs):
+        if self._refuse is not None:
+            self.calls.append("send_as_user")
+            raise self._refuse
+        return super().send_as_user(*args, **kwargs)
 
 
 def test_onboards_once_and_a_repeat_is_free():
-    chain = _Chain()
-    service, db = _service(chain)
-    user_id, acct = _row(db, "once@example.com")
-    assert service._onboard_new_account(user_id, acct).onboarded_at is not None
-    assert service._onboard_new_account(user_id, acct).onboarded_at is not None
-    assert len(chain.funded) == 1
+    o = onboarding(_Chain())
+    assert o.onboard().onboarded_at is not None
+    assert o.onboard().onboarded_at is not None
+    assert len(o.chain.funded) == 1
 
 
 def test_a_held_claim_refuses_a_second_onboarding():
-    chain = _Chain()
-    service, db = _service(chain)
-    user_id, acct = _row(db, "held@example.com")
-    with db.write() as conn:
-        conn.execute("UPDATE users SET ONBOARDING_STARTED_AT = %s WHERE USER_ID = %s", (int(time.time()), user_id))
+    o = onboarding(_Chain())
+    o.set_claim(0)
     with pytest.raises(OnboardingError, match="already being set up"):
-        service._onboard_new_account(user_id, acct)
-    assert chain.funded == []
+        o.onboard()
+    assert o.chain.funded == []
 
 
 def test_a_stale_claim_is_taken_over():
-    chain = _Chain()
-    service, db = _service(chain)
-    user_id, acct = _row(db, "stale@example.com")
-    with db.write() as conn:
-        conn.execute("UPDATE users SET ONBOARDING_STARTED_AT = %s WHERE USER_ID = %s",
-                     (int(time.time()) - AuthService.ONBOARDING_CLAIM_STALE_S - 1, user_id))
-    service._onboard_new_account(user_id, acct)
-    assert len(chain.funded) == 1
+    o = onboarding(_Chain())
+    o.set_claim(STALE_S)
+    o.onboard()
+    assert len(o.chain.funded) == 1
 
 
-def test_failed_onboarding_releases_the_claim():
-    service, db = _service(_Chain(fail=RuntimeError("chain down")))
-    user_id, acct = _row(db, "retry@example.com")
-    with pytest.raises(OnboardingError):
-        service._onboard_new_account(user_id, acct)
-    assert _claimed_at(db, user_id) is None
+# Every refusal reaches the caller as itself -- a 503 "the platform is busy" or
+# "the network fee rose", a 402 -- not wrapped as a 400 `OnboardingError` and
+# logged with a traceback per sign-in; only an unknown failure is.
+@pytest.mark.parametrize(
+    ("chain", "raised"),
+    [
+        pytest.param(_Chain(fail=RuntimeError("chain down")), OnboardingError, id="chain-down"),
+        pytest.param(_Chain(fail=AdminGasPausedError()), AdminGasPausedError, id="breaker-paused"),
+        pytest.param(_Chain(fail=TimeExhausted("no receipt for the top-up")), GasTopUpTimeoutError, id="top-up-timeout"),
+        # The fee keeps rising: the node refuses every approval, the re-sized retry included.
+        pytest.param(_Chain(refuse=_PRICE_MOVED), GasPriceMovedError, id="gas-price-moved"),
+        # The sponsor's last word on a wallet the node keeps refusing.
+        pytest.param(_Chain(refuse=_CANNOT_PAY), InsufficientGasError, id="wallet-cannot-pay-402"),
+    ],
+)
+def test_a_refused_onboarding_surfaces_its_error_and_releases_the_claim(chain, raised, caplog):
+    o = onboarding(chain)
+    with caplog.at_level(logging.ERROR, logger="agentpit.services.auth_service"):
+        with pytest.raises(raised):
+            o.onboard()
+
+    # A refused top-up signs nothing from a wallet that was never funded.
+    assert ("send_as_user" in chain.calls) == (chain._refuse is not None)
+    if raised is not OnboardingError:
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert o.claimed_at() is None
     good = _Chain()
-    service._onchain = good           # the honest retry a second later
-    service._onboard_new_account(user_id, acct)
+    o.service._onchain = good  # the honest retry a second later
+    o.onboard()
     assert len(good.funded) == 1
-
-
-def test_a_paused_breaker_releases_the_claim():
-    service, db = _service(_Chain(fail=AdminGasPausedError()))
-    user_id, acct = _row(db, "paused@example.com")
-    with pytest.raises(AdminGasPausedError):
-        service._onboard_new_account(user_id, acct)
-    assert _claimed_at(db, user_id) is None
 
 
 def test_parallel_first_sign_ins_fund_once():
     gate = threading.Event()
-    chain = _Chain(gate=gate)
-    service, db = _service(chain)
-    user_id, acct = _row(db, "race@example.com")
+    o = onboarding(_Chain(gate=gate))
     errors: list[Exception] = []
 
     def run():
         try:
-            service._onboard_new_account(user_id, acct)
+            o.onboard()
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -136,77 +117,45 @@ def test_parallel_first_sign_ins_fund_once():
     gate.set()
     for t in threads:
         t.join(10)
-    assert len(chain.funded) == 1
+    assert len(o.chain.funded) == 1
     assert len(errors) == 1 and isinstance(errors[0], OnboardingError)
 
 
 def test_clear_user_onboarded_also_clears_the_claim():
-    service, db = _service(_Chain())
-    user_id, acct = _row(db, "clear@example.com")
-    service._onboard_new_account(user_id, acct)
-    with db.write() as conn:
-        TableWrite.clear_user_onboarded(conn, user_id)
-    assert _claimed_at(db, user_id) is None
+    o = onboarding(_Chain())
+    o.onboard()
+    with o.db.write() as conn:
+        TableWrite.clear_user_onboarded(conn, o.user_id)
+    assert o.claimed_at() is None
 
 
-def test_onboarding_tops_up_exactly_the_approvals_and_signs_them_as_the_user():
-    chain = _Chain()
-    service, db = _service(chain)
-    user_id, acct = _row(db, "exact@example.com")
-
-    service._onboard_new_account(user_id, acct)
-
+# The user-gas switch stops claims, splits and merges from being funded, never
+# signups: without the top-up no account or agent could be created.
+@pytest.mark.parametrize(
+    "env", [{}, {"AGENTPIT_SPONSOR_USER_GAS": False}], ids=["sponsored", "user-gas-switch-off"]
+)
+def test_onboarding_tops_up_exactly_the_approvals_and_signs_them_as_the_user(env):
+    o = onboarding(_Chain(), Settings(**env))
+    assert o.onboard().onboarded_at is not None
     # The drip, one top-up to exactly three approvals' limits, the approvals.
-    assert chain.calls == ["faucet_drip", "fund_gas"] + ["send_as_user"] * 3
-    assert chain.funded == [(acct.address, ONBOARDING_NEED)]
-    assert chain.sent == [
-        (acct.address, fn, APPROVAL_LIMIT, GAS_PRICE) for fn in chain.approval_calls()
-    ]
-
-
-def test_onboarding_is_sponsored_with_the_user_gas_switch_off():
-    """The switch stops claims, splits and merges from being funded, never
-    signups: without the top-up no account or agent could be created."""
-    chain = _Chain()
-    service, db = _service(chain, Settings(AGENTPIT_SPONSOR_USER_GAS=False))
-    user_id, acct = _row(db, "switch@example.com")
-
-    assert service._onboard_new_account(user_id, acct).onboarded_at is not None
-    assert chain.funded == [(acct.address, ONBOARDING_NEED)]
+    assert o.chain.calls == ["faucet_drip", "fund_gas"] + ["send_as_user"] * 3
+    assert o.chain.funded == [(o.acct.address, ONBOARDING_NEED)]
+    assert o.chain.sent == [(o.acct.address, fn, APPROVAL_LIMIT, GAS_PRICE) for fn in o.chain.approval_calls()]
 
 
 def test_onboarding_gas_is_booked_to_the_account():
-    chain = _Chain()
-    service, db = _service(chain)
-    user_id, acct = _row(db, "booked@example.com")
+    o = onboarding(_Chain())
     day = int(time.time()) // 86_400
-
-    user = service._onboard_new_account(user_id, acct)
-
-    with db.read() as conn:
+    user = o.onboard()
+    with o.db.read() as conn:
         assert TableRead.sponsored_gas_used(conn, user.api_key, day) == TRANSFER_GAS + 3 * APPROVAL_GAS
 
 
 def test_a_transaction_in_progress_reads_as_a_lost_claim():
-    chain = _Chain()
-    service, db = _service(chain)
-    user_id, acct = _row(db, "busy@example.com")
-    with db.read() as conn:
-        user = TableRead.get_user_by_userid(conn, user_id)
-    assert user is not None
-
-    with UserGasSponsor(db, chain, Settings()).locked(user):  # type: ignore[arg-type]
+    o = onboarding(_Chain())
+    with o.hold_lock():
         with pytest.raises(OnboardingError, match="already being set up"):
-            service._onboard_new_account(user_id, acct)
-
-    assert chain.calls == []                 # refused before the admin sent anything
-    assert _claimed_at(db, user_id) is None
-    assert service._onboard_new_account(user_id, acct).onboarded_at is not None
-
-
-def test_a_wallet_that_cannot_pay_is_a_402_and_releases_the_claim():
-    service, db = _service(_CannotPay())
-    user_id, acct = _row(db, "dry@example.com")
-    with pytest.raises(InsufficientGasError):
-        service._onboard_new_account(user_id, acct)
-    assert _claimed_at(db, user_id) is None
+            o.onboard()
+    assert o.chain.calls == []  # refused before the admin sent anything
+    assert o.claimed_at() is None
+    assert o.onboard().onboarded_at is not None
