@@ -4,12 +4,10 @@ The sponsor tops a wallet up before every split, merge and claim, so the admin p
 this service lets through: a claim with nothing worth claiming, or on a market the chain has not
 resolved, never reaches `send`; every chain read runs inside the user's lock; a row is written
 only after the sponsor reports success; a claim is logged at the payout its receipt reports.
-
-Every transaction the sponsor signs gets an intent row in `pending_user_txs` before it is
-broadcast. Once its receipt is in, the row becomes the SPLIT / MERGE / REDEEM row; a refusal or a
-revert removes it; when nobody knows how it ended (no receipt in time, no answer to the
-broadcast) it stays, the caller gets `TransactionPendingError` (503), and the auto-redeem pass
-settles it later. tests/onchain/test_sponsored_positions.py and test_pending_user_txs.py prove
+Every signed transaction gets an intent row in `pending_user_txs` before it is broadcast: its
+receipt turns it into the SPLIT / MERGE / REDEEM row, a refusal or revert removes it, and when
+nobody knows how it ended it stays (the caller gets `TransactionPendingError`, 503) for the
+auto-redeem pass. tests/onchain/test_sponsored_positions.py and test_pending_user_txs.py prove
 the same against anvil.
 """
 
@@ -175,18 +173,11 @@ def _setup(state: MarketState):
         user_id, _acct, _key = TableWrite.create_user(
             conn, email="holder@x.com", password_hash="x", handle=None
         )
-        market = TableWrite.create_market(
-            conn,
-            CreateMarketRequest(
-                question="Gate?",
-                description="d",
-                erc1155_tokens=[(_YES, "Yes"), (_NO, "No")],
-                slug="gate",
-                condition_id=ConditionId(_CONDITION),
-                state=MarketState.ACTIVE,
-            ),
-            is_polygon_market=False,
+        request = CreateMarketRequest(
+            question="Gate?", description="d", erc1155_tokens=[(_YES, "Yes"), (_NO, "No")],
+            slug="gate", condition_id=ConditionId(_CONDITION), state=MarketState.ACTIVE,
         )
+        market = TableWrite.create_market(conn, request, is_polygon_market=False)
         if state == MarketState.RESOLVED:
             TableWrite.resolve_market(conn, market_id=market.market_id, winning_outcome_index=0)
         user = TableRead.get_user_by_userid(conn, user_id)
@@ -401,24 +392,27 @@ def test_a_held_lock_refuses_before_any_chain_read(action):
 # --- the intent row ------------------------------------------------------------
 
 
+# A call is signed again only after a refusal: a resized retry's first row goes as the second is
+# written, so the row standing during the send is always the last signature's.
 @pytest.mark.parametrize("action", _ACTIONS)
-def test_the_intent_row_is_written_before_the_send_and_becomes_the_row(action):
+@pytest.mark.parametrize("signs", [1, 2], ids=["signed-once", "resized-retry"])
+def test_the_intent_row_is_written_before_the_send_and_becomes_the_row(action, signs):
     db, user, mid, chain = _ready(action)
     seen: list[list] = []
-    sponsor = _FakeSponsor(payout=100_000_000, during_send=lambda: seen.append(_pending(db)))
+    sponsor = _FakeSponsor(
+        payout=100_000_000, signs=signs, during_send=lambda: seen.append(_pending(db))
+    )
 
     _act(_service(db, chain, sponsor), action, user, mid)
 
     kind, details = _INTENT[action]
-    assert seen == [[(sponsor.hashes[0], user.api_key, kind, mid, details)]]
+    assert seen == [[(sponsor.hashes[-1], user.api_key, kind, mid, details)]]
     assert _pending(db) == []
     assert _rows(db, user) == [kind]
 
 
-def _http_error(status: int) -> requests.HTTPError:
-    response = requests.Response()
-    response.status_code = status
-    return requests.HTTPError(f"{status} Error", response=response)
+_TOO_MANY_REQUESTS = requests.Response()
+_TOO_MANY_REQUESTS.status_code = 429
 
 
 # It may mine yet: the row stays for the auto-redeem pass and the caller hears 503 "do not repeat
@@ -432,7 +426,10 @@ def _http_error(status: int) -> requests.HTTPError:
         pytest.param(requests.ReadTimeout("read timed out"), id="read-timeout"),
         pytest.param(requests.ConnectionError("connection reset"), id="reset"),
         pytest.param(Web3RPCError("rate limit exceeded"), id="receipt-rpc-error"),
-        pytest.param(_http_error(429), id="receipt-429-after-the-retries"),
+        pytest.param(
+            requests.HTTPError("429 Error", response=_TOO_MANY_REQUESTS),
+            id="receipt-429-after-the-retries",
+        ),
         pytest.param(BadResponseFormat("no result in the response"), id="malformed-body"),
         pytest.param(Web3RPCError("transaction already known"), id="node-holds-it"),
     ],
@@ -495,22 +492,6 @@ def test_a_transaction_the_node_never_took_leaves_no_pending_row(action, error, 
     assert len(sponsor.hashes) == signed
     assert _pending(db) == []  # a reverted one mined and failed: nothing is unknown
     assert _rows(db, user) == []
-
-
-# A call is signed again only after a refusal: the first row goes as the second is written.
-@pytest.mark.parametrize("action", _ACTIONS)
-def test_a_resized_retry_replaces_the_refused_signatures_row(action):
-    db, user, mid, chain = _ready(action)
-    seen: list[list] = []
-    sponsor = _FakeSponsor(
-        payout=100_000_000, signs=2, during_send=lambda: seen.append(_pending(db))
-    )
-
-    _act(_service(db, chain, sponsor), action, user, mid)
-
-    assert [[row[0] for row in rows] for rows in seen] == [[sponsor.hashes[1]]]
-    assert _pending(db) == []
-    assert _rows(db, user) == [_INTENT[action][0]]
 
 
 # Auto-redeem may settle the row while the request waits for the receipt: the second writes nothing.
@@ -623,14 +604,11 @@ def test_a_claim_whose_tokens_left_during_the_top_up_is_refused(balances):
 # --- an earlier transaction still pending -------------------------------------
 
 
-def test_the_pending_ttl_is_ten_minutes():
-    assert _PENDING_TTL_SECONDS == 600
-
-
 # A retry of a split whose answer was lost would split twice: until it settles (or the ttl
 # passes) any action on the same market is a 409, before any chain read.
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_a_pending_transaction_on_the_market_refuses_another_before_any_read(action):
+    assert _PENDING_TTL_SECONDS == 600  # ten minutes
     db, user, mid, chain = _ready(action)
     _write_pending(db, user, mid, age=_PENDING_TTL_SECONDS - 5)
     sponsor = _FakeSponsor()
