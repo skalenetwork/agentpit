@@ -24,4 +24,4 @@ COPY scripts/backfill_*.py scripts/
 # the only thing that can reach it, so nobody outside can forge the header.
 # Publish a port here and this line becomes a hole.
 CMD ["uvicorn", "agentpit.api.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "5"]
