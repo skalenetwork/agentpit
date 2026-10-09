@@ -1,3 +1,8 @@
+from contextlib import contextmanager
+from types import SimpleNamespace
+
+import pytest
+
 import agentpit.api.app as app_mod
 
 
@@ -51,80 +56,51 @@ def test_run_resolution_cycle_resolves_then_redeems(monkeypatch):
 
     assert (resolved, redeemed) == (2, 3)
     assert calls["mirror"] == 1 and calls["redeem"] == 1
-    # The auto-redeem pass settles the pending rows itself, first; a second
-    # reconcile beside it would read the same rows twice.
-    assert reconciled == []
+    assert reconciled == []  # the pass settles pending rows itself, first
     assert isinstance(calls["now"], int)
-    # The pass gets the cycle's settings: its claim minimum and per-pass cap
-    # live there.
+    # The pass gets the cycle's settings: its claim minimum and cap live there.
     assert calls["settings"] is settings
 
 
-class _DisabledSettings:
-    auto_redeem_enabled = False
-    resolution_scan_batch = 200
-
-
 class _FakeDb:
+    @contextmanager
     def write(self):
-        from contextlib import contextmanager
-
-        @contextmanager
-        def _cm():
-            yield "CONN"
-
-        return _cm()
+        yield "CONN"
 
 
-def _disabled_cycle(monkeypatch, reconcile):
-    """One resolution cycle with auto-redeem off; returns what auto-redeem was
-    called with (nothing, when the wiring is right)."""
+@pytest.mark.parametrize("fails", [False, True], ids=["reconciles", "reconcile-fails"])
+def test_a_disabled_redeem_cycle_reconciles_on_its_own(monkeypatch, caplog, fails):
+    """With the switch off the redeeming pass never reconciles, so a claim that mined
+    unseen would stay pending: the loop settles it itself, under the redeem lock."""
     _no_scan(monkeypatch)
     monkeypatch.setattr(
         app_mod,
         "mirror_polymarket_resolutions",
         lambda conn, admin, *, now, candidates=None: 1 if candidates is None else 0,
     )
-    redeem_calls = []
+    redeem_calls, seen = [], []
     monkeypatch.setattr(
         app_mod,
         "auto_redeem_resolved_markets",
         lambda db, admin, settings: redeem_calls.append(1) or 0,
     )
-    monkeypatch.setattr(app_mod, "reconcile_pending_user_txs", reconcile)
-    result = app_mod._run_resolution_cycle(
-        _FakeDb(), admin="ADMIN", settings=_DisabledSettings()  # type: ignore[arg-type]
-    )
-    return result, redeem_calls
-
-
-def test_run_resolution_cycle_reconciles_on_its_own_when_redeem_disabled(monkeypatch):
-    """With the global auto-redeem switch off the pass that reconciles never
-    runs, so a claim or split that mined unseen would stay a pending row for
-    good. The loop settles them itself, under the lock the redeem pass uses."""
-    seen = []
 
     def reconcile(db, admin):
         seen.append((db.__class__.__name__, admin, app_mod._redeem_lock.locked()))
+        if fails:
+            raise RuntimeError("database gone")
         return 0
 
-    (resolved, redeemed, _scan), redeem_calls = _disabled_cycle(monkeypatch, reconcile)
+    monkeypatch.setattr(app_mod, "reconcile_pending_user_txs", reconcile)
+
+    disabled = SimpleNamespace(auto_redeem_enabled=False, resolution_scan_batch=200)
+    resolved, redeemed, _scan = app_mod._run_resolution_cycle(
+        _FakeDb(), admin="ADMIN", settings=disabled  # type: ignore[arg-type]
+    )
 
     assert (resolved, redeemed) == (1, 0)
     assert redeem_calls == []
     assert seen == [("_FakeDb", "ADMIN", True)]
-
-
-def test_a_reconcile_that_fails_does_not_break_the_resolution_cycle(
-    monkeypatch, caplog
-):
-    def reconcile(db, admin):
-        raise RuntimeError("database gone")
-
-    (resolved, redeemed, _scan), _ = _disabled_cycle(monkeypatch, reconcile)
-
-    assert (resolved, redeemed) == (1, 0)
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
-    assert len(errors) == 1 and errors[0].exc_info is not None
-    # And the lock is not left held for the other loop.
-    assert not app_mod._redeem_lock.locked()
+    assert len(errors) == int(fails) and all(r.exc_info is not None for r in errors)
+    assert not app_mod._redeem_lock.locked()  # not left held for the other loop
