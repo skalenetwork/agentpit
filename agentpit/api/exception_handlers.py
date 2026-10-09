@@ -27,6 +27,16 @@ from agentpit.domain.exceptions import (
 log = logging.getLogger(__name__)
 
 
+def _warn_503(what: str):
+    """A handler that logs `what` at WARNING and answers 503 with the detail."""
+
+    async def handler(_: Request, exc: Exception) -> JSONResponse:
+        log.warning("%s: %s", what, exc)
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    return handler
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(NotFoundError)
     async def _not_found(_: Request, exc: NotFoundError) -> JSONResponse:
@@ -86,32 +96,15 @@ def register_exception_handlers(app: FastAPI) -> None:
         log.warning("admin gas breaker refused a request: %s", exc)
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
-    @app.exception_handler(GasTopUpTimeoutError)
-    async def _gas_top_up_timeout(
-        _: Request, exc: GasTopUpTimeoutError
-    ) -> JSONResponse:
-        """The admin's top-up timed out: congestion on our side, so 503 and
-        WARNING, like the breaker."""
-        log.warning("gas top-up timed out, a request was refused: %s", exc)
-        return JSONResponse(status_code=503, content={"detail": str(exc)})
-
-    @app.exception_handler(GasPriceMovedError)
-    async def _gas_price_moved(_: Request, exc: GasPriceMovedError) -> JSONResponse:
-        """The node refused a user transaction as underpriced twice: the fee
-        is still climbing. Nothing is in flight and nothing the caller did is
-        wrong, so 503 and WARNING, like a top-up that timed out."""
-        log.warning("the gas price moved twice, a request was refused: %s", exc)
-        return JSONResponse(status_code=503, content={"detail": str(exc)})
-
-    @app.exception_handler(TransactionPendingError)
-    async def _transaction_pending(
-        _: Request, exc: TransactionPendingError
-    ) -> JSONResponse:
-        """A user transaction went out and its outcome is unknown: no receipt
-        in time, or no answer to the broadcast. 503 and WARNING like the other
-        congestion on our side; the detail tells the caller not to repeat it."""
-        log.warning("a user transaction's outcome is unknown: %s", exc)
-        return JSONResponse(status_code=503, content={"detail": str(exc)})
+    # A user transaction refused or left unconfirmed by congestion on our side:
+    # nothing the caller did is wrong, so 503 and WARNING, like the breaker.
+    # The pending one's detail tells the caller not to repeat it.
+    for exc_type, what in (
+        (GasTopUpTimeoutError, "gas top-up timed out, a request was refused"),
+        (GasPriceMovedError, "the gas price moved twice, a request was refused"),
+        (TransactionPendingError, "a user transaction's outcome is unknown"),
+    ):
+        app.add_exception_handler(exc_type, _warn_503(what))
 
     # Registered ahead of the generic BusinessRuleError handler below it, but
     # order doesn't actually matter to Starlette's lookup -- it walks the
