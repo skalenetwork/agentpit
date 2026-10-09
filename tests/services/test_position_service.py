@@ -53,8 +53,7 @@ _CONDITION = "0x" + "ab" * 32
 _CID = bytes.fromhex(_CONDITION[2:])
 _YES, _NO = "7001", "7002"
 _ACTIONS = ["split", "merge", "redeem"]
-# What each action's intent row carries: the final row's type and details, with no amount yet
-# for a claim (the receipt has not said what it paid).
+# Each action's intent row: the final row's type and details (a claim has no amount yet).
 _INTENT = {
     "split": ("SPLIT", {"amount": 40_000_000}),
     "merge": ("MERGE", {"amount": 40_000_000}),
@@ -236,10 +235,17 @@ def _act(service, action, user, market_id, amount=40_000_000):
 # --- claim -------------------------------------------------------------------
 
 
-def test_a_winning_claim_is_sent_under_the_lock_and_logged(caplog):
+# The wallet's apUSD moves while a claim is in flight (a fill, a mint, a transfer out), so a
+# balance difference would misstate it: the receipt's `PayoutRedemption` is the figure.
+@pytest.mark.parametrize(
+    "usd",
+    [(100_000_005,), (5, 70_000_005), (5, 107_000_005), (5, 5)],
+    ids=["no-drift", "a-debit-of-30-while-claiming", "a-credit-of-7-while-claiming", "a-big-debit"],
+)
+def test_a_winning_claim_is_sent_under_the_lock_and_logged_at_the_receipts_payout(usd, caplog):
     caplog.set_level(logging.WARNING, logger=_LOGGER)
     db, user, mid = _setup(MarketState.RESOLVED)
-    chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(100_000_005,))
+    chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=usd)
     sponsor = _FakeSponsor(payout=100_000_000, log=chain.reads)
 
     out = _service(db, chain, sponsor).redeem(user, mid)
@@ -247,7 +253,7 @@ def test_a_winning_claim_is_sent_under_the_lock_and_logged(caplog):
     # One call over the whole partition: the losing tokens burn in it too.
     assert sponsor.sent == [([("redeemPositions", _CID, [1, 2])], "claim", True)]
     assert out.collateral_amount == 100_000_000
-    assert out.new_usdc_balance == 100_000_005
+    assert out.new_usdc_balance == usd[0]
     assert _rows(db, user) == ["REDEEM"]
     assert _redeem_amounts(db, user) == [100_000_000]
     # The payout comes off the claim's receipt, for the claimant, and logs no warning.
@@ -257,24 +263,6 @@ def test_a_winning_claim_is_sent_under_the_lock_and_logged(caplog):
     sent_at = chain.reads.index("send")
     assert "usd_balance" not in chain.reads[:sent_at]
     assert chain.reads[sent_at:].count("usd_balance") == 1
-
-
-# The wallet's apUSD moves while a claim is in flight (a fill, a mint, a transfer out), so a
-# balance difference would misstate it: the receipt's `PayoutRedemption` is the figure.
-@pytest.mark.parametrize(
-    "usd",
-    [(5, 70_000_005), (5, 107_000_005), (5, 5)],
-    ids=["a-debit-of-30-while-claiming", "a-credit-of-7-while-claiming", "a-debit-as-big-as-it"],
-)
-def test_the_claim_is_the_payout_in_the_receipt_whatever_the_balance_did(usd):
-    db, user, mid = _setup(MarketState.RESOLVED)
-    chain = _FakeChain(balances=(100_000_000, 0), usd=usd)
-    sponsor = _FakeSponsor(payout=100_000_000)
-
-    out = _service(db, chain, sponsor).redeem(user, mid)
-
-    assert out.collateral_amount == 100_000_000
-    assert _redeem_amounts(db, user) == [100_000_000]
 
 
 def test_a_claim_that_mined_with_no_payout_is_no_claim_and_leaves_no_row(caplog):
