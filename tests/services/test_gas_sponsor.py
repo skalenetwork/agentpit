@@ -1,18 +1,18 @@
 """`UserGasSponsor` against a fake chain and the real test database.
 
-The chain is `_Chain`, just enough `OnchainAdmin` for the sponsor; the budget
-rows are real `sponsored_gas` rows, because the reservation's refusal is one
-SQL statement (`TableWrite.reserve_sponsored_gas`) and faking it would test
-nothing. Numbers used throughout: price 1,000 wei, an estimate of 100,000 gas
-(a limit of 120,000 after the 20% pad, so a need of 120,000,000 wei), and
-80,000 gas used per mined call.
+`_Chain` is just enough `OnchainAdmin` for the sponsor; the budget rows are real
+`sponsored_gas` rows, because the reservation's refusal is one SQL statement.
+Numbers: price 1,000 wei, an estimate of 100,000 gas (a limit of 120,000 after
+the 20% pad, a need of 120,000,000 wei), 80,000 gas used per mined call.
 """
 
+import functools
 import logging
 import secrets
-import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import Mock
 
 import psycopg
 import pytest
@@ -33,7 +33,6 @@ from agentpit.domain.exceptions import (
     GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientGasError,
-    MarketStateError,
     NothingToClaimError,
     TransactionInProgressError,
     TransactionRevertedError,
@@ -45,6 +44,10 @@ from tests.db_helpers import fresh_test_db
 
 NEED = 120_000_000  # 100,000 gas estimated, +20%, at 1,000 wei
 MINED = TRANSFER_GAS + 80_000  # one top-up and one mined call
+RESERVED = 120_000 + TRANSFER_GAS  # what a split holds while it sends
+BUDGET = 20_000_000
+SEND = ("redeem", 120_000, 1_000)  # a call as `_Chain.sends` records it
+BUSY = "the platform is busy — try again in a moment"
 
 # What the nodes answer, as web3 raises it for a single send.
 SKALED_BALANCE_LOW = "Account balance is too low (balance < value + gas * gas price)"
@@ -56,18 +59,18 @@ def _refused(message: str) -> Web3RPCError:
     return Web3RPCError(repr({"code": -32000, "message": message}))
 
 
-class _Call:
-    """A contract call as the sponsor sees it. The real
-    `OnchainAdmin.estimate_user_gas` calls `estimate_gas` on it (recorded, so
-    a test can see the fields it was given); the fake chain mines it with its
-    `status`, at 80,000 gas."""
+def _never_connected() -> requests.ConnectionError:
+    """The connect itself was refused: the request never reached the node."""
+    reason = NewConnectionError(None, "Failed to establish a new connection")
+    return requests.ConnectionError(MaxRetryError(None, "/", reason))
 
-    def __init__(
-        self, name: str = "redeem", estimate: int = 100_000, *, status: int = 1
-    ):
-        self.name = name
-        self.estimate = estimate
-        self.status = status
+
+class _Call:
+    """A contract call: `estimate_gas` records the fields it is given, and the
+    fake chain mines it with `status` at 80,000 gas."""
+
+    def __init__(self, name="redeem", estimate=100_000, *, status=1):
+        self.name, self.estimate, self.status = name, estimate, status
         self.estimated_with: list[dict] = []
 
     def estimate_gas(self, tx: dict) -> int:
@@ -76,41 +79,25 @@ class _Call:
 
 
 class _Chain:
-    """Just enough `OnchainAdmin` for `UserGasSponsor`.
-
-    `prices` and `balances` answer successive reads, the last one repeating, so
-    a test can script what the retry's re-sizing sees. `refusals` are raised by
-    the next sends in turn (None lets that send mine). `fund_gas` raises
-    `AdminGasPausedError` when `paused`, as `AdminTxSender.send_value` does.
-    `fund_errors` are raised by the next top-ups in turn, after the transfer is
-    recorded as sent: a receipt timeout, where the transfer went out and its
-    receipt did not come back (None lets that top-up mine).
-    Every send is signed first: it gets a hash of its own, recorded in
-    `signed` and handed to `on_signed` before the send can be refused, as
-    `send_user_tx` hands it over before the broadcast.
+    """Just enough `OnchainAdmin` for `UserGasSponsor`. `prices` and `balances`
+    answer successive reads (the last repeats); `refusals` are raised by the
+    next sends in turn, `fund_errors` by the next top-ups (after the transfer is
+    recorded as sent), None letting that one mine; `paused` makes `fund_gas`
+    raise `AdminGasPausedError`. Every send is signed first: its hash is
+    recorded in `signed` and handed to `on_signed` before it can be refused.
     There is deliberately no `check_sponsored`: a wallet that needs no top-up
-    must not meet the breaker at all.
-    """
+    must not meet the breaker at all."""
 
     # The real one: what it hands `estimate_gas` is under test.
     estimate_user_gas = OnchainAdmin.estimate_user_gas
 
     def __init__(
-        self,
-        *,
-        prices=(1_000,),
-        balances=(0,),
-        refusals=(),
-        paused=False,
-        during_send=None,
-        fund_errors=(),
-    ):
-        self.prices = list(prices)
-        self.balances = list(balances)
-        self.refusals = list(refusals)
-        self.fund_errors = list(fund_errors)
-        self.paused = paused
-        self.during_send = during_send
+        self, *, prices=(1_000,), balances=(0,), refusals=(), paused=False,
+        during_send=None, fund_errors=(),
+    ):  # fmt: skip
+        self.prices, self.balances = list(prices), list(balances)
+        self.refusals, self.fund_errors = list(refusals), list(fund_errors)
+        self.paused, self.during_send = paused, during_send
         self.events: list[tuple] = []
         self.signed: list[str] = []
 
@@ -129,30 +116,20 @@ class _Chain:
         if self.paused:
             raise AdminGasPausedError()
         self.events.append(("fund", value_wei))
-        error = self.fund_errors.pop(0) if self.fund_errors else None
-        if error is not None:
+        if self.fund_errors and (error := self.fund_errors.pop(0)) is not None:
             raise error
         return {"status": 1, "gasUsed": TRANSFER_GAS}
 
     def send_as_user(
-        self,
-        user_account,
-        fn,
-        *,
-        gas: int,
-        max_fee: int,
-        timeout: int = 30,
-        on_signed=None,
+        self, user_account, fn, *, gas: int, max_fee: int, timeout=30, on_signed=None
     ):
         self.events.append(("send", fn.name, gas, max_fee))
-        tx_hash = "0x%064x" % (len(self.signed) + 1)
-        self.signed.append(tx_hash)
+        self.signed.append("0x%064x" % (len(self.signed) + 1))
         if on_signed is not None:
-            on_signed(tx_hash)
+            on_signed(self.signed[-1])
         if self.during_send is not None:
             self.during_send()
-        refusal = self.refusals.pop(0) if self.refusals else None
-        if refusal is not None:
+        if self.refusals and (refusal := self.refusals.pop(0)) is not None:
             raise refusal
         return {"status": fn.status, "gasUsed": 80_000, "transactionHash": b"\x01" * 32}
 
@@ -165,18 +142,30 @@ class _Chain:
         return [e[1:] for e in self.events if e[0] == "send"]
 
 
+def _refused_once(message=SKALED_FEE_LOW, **kwargs) -> _Chain:
+    """The first send is refused as `message`; the re-sizing then sees a price
+    of 1,500 and a wallet that holds exactly the first top-up."""
+    refusals = [_refused(message)]
+    return _Chain(prices=(1_000, 1_500), balances=(0, NEED), refusals=refusals, **kwargs)
+
+
 def _settings(**overrides) -> Settings:
     """Every value these tests depend on, explicitly: a developer's .env must
     not move a ceiling or a budget under them."""
-    values: dict = {
-        "AGENTPIT_SPONSOR_USER_GAS": True,
-        "AGENTPIT_MAX_TOPUP_GAS": 1_000_000,
-        "AGENTPIT_MIN_CLAIM_MICRO": 10_000,
-        "AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT": 20_000_000,
-        "AGENTPIT_TX_TIMEOUT_S": 30,
-    }
-    values.update(overrides)
-    return Settings(**values)
+    return Settings(
+        **{
+            "AGENTPIT_SPONSOR_USER_GAS": True,
+            "AGENTPIT_MAX_TOPUP_GAS": 1_000_000,
+            "AGENTPIT_MIN_CLAIM_MICRO": 10_000,
+            "AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT": BUDGET,
+            "AGENTPIT_TX_TIMEOUT_S": 30,
+            **overrides,
+        }
+    )
+
+
+def _sponsor(db, chain=None, **settings) -> UserGasSponsor:
+    return UserGasSponsor(db, chain or _Chain(), _settings(**settings))  # type: ignore[arg-type]
 
 
 def _user(db, *, bot: bool = False):
@@ -209,52 +198,68 @@ def _spend(db, user, gas: int) -> None:
 
 
 def _send(
-    db, chain, user, calls, kind, *, on_signed=None, before_send=None, **settings
-):
-    sponsor = UserGasSponsor(db, chain, _settings(**settings))  # type: ignore[arg-type]
-    with sponsor.locked(user):
-        return sponsor.send(  # type: ignore[arg-type]
-            user, calls, kind, on_signed=on_signed, before_send=before_send
-        )
+    db, user, chain, kind="claim", calls=None, *, raises=None, match=None,
+    on_signed=None, before_send=None, **settings,
+):  # fmt: skip
+    """Send `calls` (one redeem by default) under the user's lock. With `raises`,
+    expect that error and return it, else return the receipts."""
+    sponsor = _sponsor(db, chain, **settings)
+
+    def run():
+        with sponsor.locked(user):
+            return sponsor.send(  # type: ignore[arg-type]
+                user, calls or [_Call()], kind,
+                on_signed=on_signed, before_send=before_send,
+            )  # fmt: skip
+
+    if raises is None:
+        return run()
+    with pytest.raises(raises, match=match) as caught:
+        run()
+    return caught.value
 
 
-# --- settings ---------------------------------------------------------------
+@pytest.fixture
+def db():
+    return fresh_test_db()
 
 
-def test_min_claim_micro_comes_from_settings():
-    db = fresh_test_db()
-    assert UserGasSponsor(db, _Chain(), _settings()).min_claim_micro == 10_000  # type: ignore[arg-type]
-    sponsor = UserGasSponsor(db, _Chain(), _settings(AGENTPIT_MIN_CLAIM_MICRO=25_000))  # type: ignore[arg-type]
-    assert sponsor.min_claim_micro == 25_000
+@pytest.fixture
+def user(db):
+    return _user(db)
 
 
-# --- sizing and the top-up --------------------------------------------------
+@pytest.fixture
+def send(db, user):
+    return functools.partial(_send, db, user)
 
 
-def test_the_top_up_is_need_minus_balance_and_mines_before_the_send():
-    db = fresh_test_db()
-    user = _user(db)
+@pytest.fixture
+def used(db, user):
+    """The gas booked today for the user (or another one)."""
+    return lambda who=user: _used(db, who)
+
+
+# --- sizing -----------------------------------------------------------------
+
+
+def test_min_claim_micro_comes_from_settings(db):
+    assert _sponsor(db).min_claim_micro == 10_000
+    assert _sponsor(db, AGENTPIT_MIN_CLAIM_MICRO=25_000).min_claim_micro == 25_000
+
+
+def test_top_up_is_need_minus_balance_and_mines_before_the_send(send):
     chain = _Chain(balances=(5_000_000,))
-    receipts = _send(db, chain, user, [_Call()], "claim")
-    assert chain.events == [
-        ("balance",),
-        ("fund", NEED - 5_000_000),
-        ("send", "redeem", 120_000, 1_000),
-    ]
+    receipts = send(chain)
+    assert chain.events == [("balance",), ("fund", NEED - 5_000_000), ("send", *SEND)]
     assert [r["status"] for r in receipts] == [1]
 
 
-def test_one_top_up_covers_every_call():
-    """Onboarding's three approvals, at the gas the anvil probe measured."""
-    db = fresh_test_db()
-    user = _user(db)
+def test_one_top_up_covers_every_call(send):
+    # Onboarding's three approvals, at the gas the anvil probe measured.
     chain = _Chain()
-    calls = [
-        _Call("approve_exchange", 46_487),
-        _Call("approve_ctf", 46_487),
-        _Call("approve_all", 45_996),
-    ]
-    _send(db, chain, user, calls, "onboarding")
+    calls = [_Call("approve_exchange", 46_487), _Call("approve_ctf", 46_487)]
+    send(chain, "onboarding", [*calls, _Call("approve_all", 45_996)])
     assert chain.funded == [(55_784 + 55_784 + 55_195) * 1_000]
     assert chain.sends == [
         ("approve_exchange", 55_784, 1_000),
@@ -263,90 +268,68 @@ def test_one_top_up_covers_every_call():
     ]
 
 
-def test_a_covered_wallet_gets_no_top_up_and_never_meets_the_breaker():
-    """The breaker is paused, yet a wallet that already holds the need goes
-    ahead: the breaker sits in front of the top-up only. Booked without a
-    transfer, since none was sent."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(balances=(NEED,), paused=True)
-    _send(db, chain, user, [_Call()], "claim")
+def test_a_covered_wallet_gets_no_top_up_and_never_meets_the_breaker(send, used):
+    chain = _Chain(balances=(NEED,), paused=True)  # the breaker guards top-ups only
+    send(chain)
     assert chain.funded == []
-    assert chain.sends == [("redeem", 120_000, 1_000)]
-    assert _used(db, user) == 80_000
+    assert chain.sends == [SEND]
+    assert used() == 80_000  # booked without a transfer
 
 
 @pytest.mark.parametrize("kind", ["claim", "split"])
-def test_a_top_up_over_the_ceiling_raises_before_anything_is_sent(kind, caplog):
-    db = fresh_test_db()
-    user = _user(db)
+def test_a_top_up_over_the_ceiling_raises_unsent(send, used, kind, caplog):
     chain = _Chain()
-    with pytest.raises(RuntimeError, match="ceiling"):
-        _send(db, chain, user, [_Call()], kind, AGENTPIT_MAX_TOPUP_GAS=100_000)
+    send(chain, kind, raises=RuntimeError, match="ceiling", AGENTPIT_MAX_TOPUP_GAS=100_000)
     assert chain.funded == [] and chain.sends == []
-    assert _used(db, user) == 0  # sized before the budget is touched
+    assert used() == 0  # sized before the budget is touched
     assert any(
         r.levelno == logging.ERROR and r.name == "agentpit.services.gas_sponsor"
         for r in caplog.records
     )
 
 
-def test_a_top_up_at_the_ceiling_is_allowed():
-    db = fresh_test_db()
-    user = _user(db)
+def test_a_top_up_at_the_ceiling_is_allowed(send):
     chain = _Chain()
-    _send(db, chain, user, [_Call()], "claim", AGENTPIT_MAX_TOPUP_GAS=120_000)
+    send(chain, AGENTPIT_MAX_TOPUP_GAS=120_000)
     assert chain.funded == [NEED]
 
 
-def test_estimates_carry_no_fee_fields():
-    """With a gasPrice or maxFeePerGas, anvil refuses to estimate for a dry
-    wallet ("gas required exceeds allowance: 0")."""
-    db = fresh_test_db()
-    user = _user(db)
+def test_estimates_carry_no_fee_fields(send, user):
+    # With a gasPrice or maxFeePerGas anvil refuses to estimate for a dry wallet.
     call = _Call()
-    _send(db, _Chain(), user, [call], "claim")
+    send(_Chain(), calls=[call])
     assert call.estimated_with == [{"from": Web3.to_checksum_address(user.eth_address)}]
 
 
 # --- one resize-and-retry ---------------------------------------------------
 
 
-def test_fee_too_low_is_retried_once_at_the_new_price():
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(
-        prices=(1_000, 1_500), balances=(0, NEED), refusals=[_refused(SKALED_FEE_LOW)]
-    )
-    _send(db, chain, user, [_Call()], "claim")
+def test_fee_too_low_is_retried_once_at_the_new_price(send, used):
+    chain = _refused_once()
+    send(chain)
     # The second top-up is the new need (120,000 gas at 1,500) minus the first.
     assert chain.funded == [NEED, 60_000_000]
-    assert chain.sends == [("redeem", 120_000, 1_000), ("redeem", 120_000, 1_500)]
-    # Each top-up's transfer is booked, plus the one receipt.
-    assert _used(db, user) == 2 * TRANSFER_GAS + 80_000
+    assert chain.sends == [SEND, ("redeem", 120_000, 1_500)]
+    assert used() == 2 * TRANSFER_GAS + 80_000  # both transfers, the one receipt
 
 
 @pytest.mark.parametrize("message", [SKALED_BALANCE_LOW, ANVIL_BALANCE_LOW])
-def test_balance_too_low_is_retried_once_with_a_fresh_top_up(message):
-    """The first read saw enough (a stale balance), the node disagreed."""
-    db = fresh_test_db()
-    user = _user(db)
+def test_balance_too_low_is_retried_once_with_a_fresh_top_up(send, message):
+    # The first read saw enough (a stale balance), the node disagreed.
     chain = _Chain(balances=(NEED, 0), refusals=[_refused(message)])
-    _send(db, chain, user, [_Call()], "claim")
+    send(chain)
     assert chain.funded == [NEED]
     assert len(chain.sends) == 2
 
 
-def test_only_the_calls_not_yet_sent_are_resized():
-    db = fresh_test_db()
-    user = _user(db)
-    first, second, third = _Call("a", 46_487), _Call("b", 46_487), _Call("c", 45_996)
+def test_only_the_calls_not_yet_sent_are_resized(send):
+    calls = [_Call("a", 46_487), _Call("b", 46_487), _Call("c", 45_996)]
     chain = _Chain(
         prices=(1_000, 2_000),
         balances=(0, 100_000_000),
         refusals=[None, _refused(SKALED_FEE_LOW)],
     )
-    _send(db, chain, user, [first, second, third], "onboarding")
+    send(chain, "onboarding", calls)
     assert chain.funded == [166_763_000, (55_784 + 55_195) * 2_000 - 100_000_000]
     assert chain.sends == [
         ("a", 55_784, 1_000),
@@ -354,56 +337,38 @@ def test_only_the_calls_not_yet_sent_are_resized():
         ("b", 55_784, 2_000),
         ("c", 55_195, 2_000),
     ]
-    assert [len(c.estimated_with) for c in (first, second, third)] == [1, 2, 2]
+    assert [len(c.estimated_with) for c in calls] == [1, 2, 2]
 
 
 @pytest.mark.parametrize("message", [SKALED_BALANCE_LOW, ANVIL_BALANCE_LOW])
-def test_a_second_balance_refusal_is_402(message):
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(refusals=[_refused(message), _refused(message)])
-    with pytest.raises(InsufficientGasError) as caught:
-        _send(db, chain, user, [_Call()], "claim")
-    assert isinstance(caught.value.__cause__, Web3RPCError)
+def test_a_second_balance_refusal_is_402(send, used, message):
+    chain = _Chain(refusals=[_refused(message)] * 2)
+    error = send(chain, raises=InsufficientGasError)
+    assert isinstance(error.__cause__, Web3RPCError)
     assert len(chain.sends) == 2
-    assert _used(db, user) == 2 * TRANSFER_GAS  # both top-ups were paid
+    assert used() == 2 * TRANSFER_GAS  # both top-ups were paid
 
 
 @pytest.mark.parametrize("kind", ["claim", "split"])
-def test_a_second_fee_refusal_is_a_retryable_503_and_hands_the_reservation_back(kind):
-    """The fee rose again between the re-sizing and the retry: the node
-    refused both signatures at import, so neither can mine. Not the raw
-    `Web3RPCError` (a 500) it used to propagate as: `GasPriceMovedError`
-    (503), "try again". Nothing is in flight, so a split's reservation goes
-    back; both top-ups mined, so their transfers stay booked."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(refusals=[_refused(SKALED_FEE_LOW), _refused(SKALED_FEE_LOW)])
-    with pytest.raises(GasPriceMovedError) as caught:
-        _send(db, chain, user, [_Call()], kind)
-    assert isinstance(caught.value.__cause__, Web3RPCError)
-    assert str(caught.value) == (
-        "the network fee rose while sending — try again in a moment"
-    )
+def test_a_second_fee_refusal_is_a_retryable_503(send, used, kind):
+    # Both signatures were refused at import, so nothing is in flight.
+    chain = _Chain(refusals=[_refused(SKALED_FEE_LOW)] * 2)
+    error = send(chain, kind, raises=GasPriceMovedError)
+    assert isinstance(error.__cause__, Web3RPCError)
+    assert str(error) == "the network fee rose while sending — try again in a moment"
     assert len(chain.sends) == 2
-    assert _used(db, user) == 2 * TRANSFER_GAS
+    assert used() == 2 * TRANSFER_GAS  # both top-ups mined, so both stay booked
 
 
-def test_each_call_gets_its_own_resize_and_retry():
-    """Onboarding's three approvals while the fee climbs: approval 2 is
-    refused at 1,000 and goes out at 1,500, approval 3 is refused at 1,500 and
-    goes out at 2,000. Each call has its own one retry; with one retry for the
-    whole batch the second refusal aborted onboarding after two approvals had
-    mined."""
-    db = fresh_test_db()
-    user = _user(db)
-    calls = [_Call("a"), _Call("b"), _Call("c")]
+def test_each_call_gets_its_own_resize_and_retry(send, used):
+    # With one retry for the whole batch the second refusal aborted onboarding
+    # after two approvals had mined.
     chain = _Chain(
         prices=(1_000, 1_500, 2_000),
         balances=(0, 240_000_000, 120_000_000),
         refusals=[None, _refused(SKALED_FEE_LOW), None, _refused(SKALED_FEE_LOW)],
     )
-    receipts = _send(db, chain, user, calls, "onboarding")
+    receipts = send(chain, "onboarding", [_Call("a"), _Call("b"), _Call("c")])
     assert [r["status"] for r in receipts] == [1, 1, 1]
     assert chain.sends == [
         ("a", 120_000, 1_000),
@@ -417,243 +382,125 @@ def test_each_call_gets_its_own_resize_and_retry():
         2 * 120_000 * 1_500 - 240_000_000,
         120_000 * 2_000 - 120_000_000,
     ]
-    assert _used(db, user) == 3 * TRANSFER_GAS + 3 * 80_000
+    assert used() == 3 * TRANSFER_GAS + 3 * 80_000
 
 
-def test_any_other_refusal_propagates_without_a_retry():
-    db = fresh_test_db()
-    user = _user(db)
+def test_any_other_refusal_propagates_without_a_retry(send):
     chain = _Chain(refusals=[_refused("nonce too low")])
-    with pytest.raises(Web3RPCError, match="nonce too low"):
-        _send(db, chain, user, [_Call()], "claim")
+    send(chain, raises=Web3RPCError, match="nonce too low")
     assert chain.funded == [NEED]
     assert len(chain.sends) == 1
 
 
-# --- the signing hook -------------------------------------------------------
+# --- the signing hook and the last check before the first signature --------
 
 
-def test_each_call_reports_its_index_and_hash_as_it_is_signed():
-    """`on_signed(i, tx_hash)` for every call, in order: what the caller writes
-    its intent row under before the broadcast."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain()
-    reported: list[tuple[int, str]] = []
-    _send(
-        db,
-        chain,
-        user,
-        [_Call("a"), _Call("b"), _Call("c")],
-        "onboarding",
-        on_signed=lambda i, tx_hash: reported.append((i, tx_hash)),
-    )
+def test_each_call_reports_its_index_and_hash_as_it_is_signed(send):
+    chain, reported = _Chain(), []
+    calls = [_Call("a"), _Call("b"), _Call("c")]
+    send(chain, "onboarding", calls, on_signed=lambda *args: reported.append(args))
     assert reported == list(enumerate(chain.signed))
     assert len(set(chain.signed)) == 3
 
 
 @pytest.mark.parametrize("message", [SKALED_FEE_LOW, SKALED_BALANCE_LOW])
-def test_a_resized_retry_reports_its_new_hash_for_the_same_call(message):
-    """The node refused the first signature at import; the retry is signed
-    again, at the new size, and is a different transaction with a different
-    hash. Reported under the same index, so the caller can tell that the
-    first one was refused."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(
-        prices=(1_000, 1_500), balances=(0, NEED), refusals=[_refused(message)]
-    )
-    reported: list[tuple[int, str]] = []
-    _send(
-        db,
-        chain,
-        user,
-        [_Call()],
-        "claim",
-        on_signed=lambda i, tx_hash: reported.append((i, tx_hash)),
-    )
+def test_a_resized_retry_reports_its_new_hash_for_the_same_call(send, message):
+    # A different transaction, so a different hash, under the same index.
+    chain, reported = _refused_once(message), []
+    send(chain, on_signed=lambda *args: reported.append(args))
     assert reported == [(0, chain.signed[0]), (0, chain.signed[1])]
     assert chain.signed[0] != chain.signed[1]
 
 
-def test_the_hook_reports_with_the_kill_switch_off_too():
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain()
-    reported: list[tuple[int, str]] = []
-    _send(
-        db,
+def test_both_hooks_run_with_the_kill_switch_off_too(send):
+    chain, reported = _Chain(), []
+    send(
         chain,
-        user,
-        [_Call()],
         "split",
-        on_signed=lambda i, tx_hash: reported.append((i, tx_hash)),
+        on_signed=lambda *args: reported.append(args),
+        before_send=lambda: chain.events.append(("hook",)),
         AGENTPIT_SPONSOR_USER_GAS=False,
     )
     assert reported == [(0, chain.signed[0])]
-
-
-# --- the last check before the first signature -----------------------------
+    assert chain.events == [("hook",), ("send", *SEND)]
 
 
 @pytest.mark.parametrize(
-    ("balance", "events"),
+    ("chain", "events"),
     [
         pytest.param(
-            0,
-            [
-                ("balance",),
-                ("fund", NEED),
-                ("hook",),
-                ("send", "redeem", 120_000, 1_000),
-            ],
+            _Chain(),
+            [("balance",), ("fund", NEED), ("hook",), ("send", *SEND)],
             id="after-a-top-up",
         ),
         pytest.param(
-            NEED,
-            [("balance",), ("hook",), ("send", "redeem", 120_000, 1_000)],
+            _Chain(balances=(NEED,)),
+            [("balance",), ("hook",), ("send", *SEND)],
             id="no-top-up-needed",
+        ),
+        # Asked once: it guards the first signature, and the retry is the same
+        # call at a new size.
+        pytest.param(
+            _refused_once(),
+            [("balance",), ("fund", NEED), ("hook",), ("send", *SEND)]
+            + [("balance",), ("fund", 60_000_000), ("send", "redeem", 120_000, 1_500)],
+            id="not-again-for-a-resized-retry",
         ),
     ],
 )
-def test_before_send_runs_after_the_top_up_and_before_the_first_signature(
-    balance, events
-):
-    """The world can change while the top-up mines: a market resolves, tokens
-    move. The caller's last check runs once the wallet is funded and before
-    anything is signed, so a call that no longer makes sense costs the admin
-    the top-up and nothing more."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(balances=(balance,))
-    receipts = _send(
-        db,
-        chain,
-        user,
-        [_Call()],
-        "claim",
-        before_send=lambda: chain.events.append(("hook",)),
-    )
+def test_before_send_runs_after_the_top_up_before_signing(send, chain, events):
+    # A market can resolve or tokens move while the top-up mines: a call that no
+    # longer makes sense costs the top-up and nothing more.
+    receipts = send(chain, before_send=lambda: chain.events.append(("hook",)))
     assert chain.events == events
     assert [r["status"] for r in receipts] == [1]
 
 
 @pytest.mark.parametrize("kind", ["claim", "split"])
 @pytest.mark.parametrize(
-    ("balance", "booked"),
+    ("balance", "booked", "settings"),
     [
-        pytest.param(0, TRANSFER_GAS, id="the-top-up-went-out"),
-        pytest.param(NEED, 0, id="no-top-up-was-needed"),
+        pytest.param(0, TRANSFER_GAS, {}, id="the-top-up-went-out"),
+        pytest.param(NEED, 0, {}, id="no-top-up-was-needed"),
+        pytest.param(0, 0, {"AGENTPIT_SPONSOR_USER_GAS": False}, id="kill-switch-off"),
     ],
 )
-def test_a_before_send_that_raises_sends_nothing_and_books_only_the_transfer(
-    kind, balance, booked
-):
-    """Nothing is signed, so nothing of the user's can mine: a split's
-    reservation goes back in full, and only the top-up's transfer, which did
-    go out, stays booked. The caller's own error propagates as it is, and the
-    lock is free afterwards."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(balances=(balance,))
-    error = NothingToClaimError()
+def test_a_failing_before_send(db, user, send, used, kind, balance, booked, settings):
+    # Nothing is signed, so a split's reservation goes back in full and only a
+    # top-up's transfer stays booked. The caller's error propagates as it is.
+    chain, error = _Chain(balances=(balance,)), NothingToClaimError()
 
     def refuse():
         raise error
 
-    with pytest.raises(NothingToClaimError) as caught:
-        _send(db, chain, user, [_Call()], kind, before_send=refuse)
-
-    assert caught.value is error
+    refused = send(chain, kind, before_send=refuse, raises=NothingToClaimError, **settings)
+    assert refused is error
     assert chain.sends == [] and chain.signed == []
-    assert _used(db, user) == booked
-    with UserGasSponsor(db, chain, _settings()).locked(user):  # type: ignore[arg-type]
+    assert used() == booked
+    with _sponsor(db, chain).locked(user):  # the lock is free
         pass
-
-
-def test_before_send_is_not_asked_again_for_a_resized_retry():
-    """It guards the first signature. The retry after a refusal at import is
-    the same call at a new size, signed a moment later, and is not re-checked."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(
-        prices=(1_000, 1_500), balances=(0, NEED), refusals=[_refused(SKALED_FEE_LOW)]
-    )
-    asked: list[int] = []
-    _send(db, chain, user, [_Call()], "claim", before_send=lambda: asked.append(1))
-    assert len(chain.sends) == 2
-    assert asked == [1]
-
-
-def test_before_send_runs_with_the_kill_switch_off_too():
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain()
-    _send(
-        db,
-        chain,
-        user,
-        [_Call()],
-        "split",
-        before_send=lambda: chain.events.append(("hook",)),
-        AGENTPIT_SPONSOR_USER_GAS=False,
-    )
-    assert chain.events == [("hook",), ("send", "redeem", 120_000, 1_000)]
-
-
-def test_a_before_send_that_raises_with_the_kill_switch_off_sends_nothing():
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain()
-
-    def refuse():
-        raise MarketStateError("split only runs on ACTIVE markets")
-
-    with pytest.raises(MarketStateError):
-        _send(
-            db,
-            chain,
-            user,
-            [_Call()],
-            "split",
-            before_send=refuse,
-            AGENTPIT_SPONSOR_USER_GAS=False,
-        )
-    assert chain.sends == [] and chain.signed == []
 
 
 # --- the per-user lock ------------------------------------------------------
 
 
-def test_a_held_lock_refuses_another_request():
-    """Services are built per request, so the second request has its own
-    sponsor, on its own thread: the lock must still be the same one."""
-    db = fresh_test_db()
-    user = _user(db)
-    outcome: list[object] = []
-
+def test_a_held_lock_refuses_another_request(db, user):
+    # Services are built per request, so the second request has its own sponsor
+    # on its own thread: the lock must still be the same one.
     def other_request():
-        try:
-            with UserGasSponsor(db, _Chain(), _settings()).locked(user):  # type: ignore[arg-type]
-                outcome.append("entered")
-        except TransactionInProgressError as exc:
-            outcome.append(exc)
+        with _sponsor(db).locked(user):
+            pass
 
-    with UserGasSponsor(db, _Chain(), _settings()).locked(user):  # type: ignore[arg-type]
-        worker = threading.Thread(target=other_request)
-        worker.start()
-        worker.join()
-    assert len(outcome) == 1 and isinstance(outcome[0], TransactionInProgressError)
-    assert (
-        str(outcome[0])
-        == "another transaction for this account is in progress — try again in a moment"
+    with _sponsor(db).locked(user), ThreadPoolExecutor(1) as pool:
+        with pytest.raises(TransactionInProgressError) as caught:
+            pool.submit(other_request).result()
+    assert str(caught.value) == (
+        "another transaction for this account is in progress — try again in a moment"
     )
 
 
-def test_the_lock_is_per_address_and_ignores_case():
-    db = fresh_test_db()
-    user, other = _user(db), _user(db)
-    sponsor = UserGasSponsor(db, _Chain(), _settings())  # type: ignore[arg-type]
+def test_the_lock_is_per_address_and_ignores_case(db, user):
+    other, sponsor = _user(db), _sponsor(db)
     # Stored checksummed (mixed case); a lowercase spelling is the same account.
     assert user.eth_address != user.eth_address.lower()
     lowercased = user.model_copy(update={"eth_address": user.eth_address.lower()})
@@ -665,10 +512,8 @@ def test_the_lock_is_per_address_and_ignores_case():
             pass
 
 
-def test_the_lock_is_released_when_the_body_raises():
-    db = fresh_test_db()
-    user = _user(db)
-    sponsor = UserGasSponsor(db, _Chain(), _settings())  # type: ignore[arg-type]
+def test_the_lock_is_released_when_the_body_raises(db, user):
+    sponsor = _sponsor(db)
     with pytest.raises(ValueError):
         with sponsor.locked(user):
             raise ValueError("boom")
@@ -676,326 +521,183 @@ def test_the_lock_is_released_when_the_body_raises():
         pass
 
 
-def test_sending_outside_the_lock_is_a_bug():
-    db = fresh_test_db()
-    user = _user(db)
+def test_sending_outside_the_lock_is_a_bug(db, user):
     chain = _Chain()
-    sponsor = UserGasSponsor(db, chain, _settings())  # type: ignore[arg-type]
     with pytest.raises(RuntimeError, match="locked"):
-        sponsor.send(user, [_Call()], "claim")  # type: ignore[list-item]
+        _sponsor(db, chain).send(user, [_Call()], "claim")  # type: ignore[list-item]
     assert chain.events == []
 
 
-# --- the breaker ------------------------------------------------------------
+# --- the breaker, the daily budget and the kill switch ----------------------
 
 
 @pytest.mark.parametrize("kind", ["claim", "split"])
-def test_a_paused_breaker_with_a_top_up_needed_is_503(kind):
-    db = fresh_test_db()
-    user = _user(db)
+def test_a_paused_breaker_with_a_top_up_needed_is_503(send, used, kind):
     chain = _Chain(paused=True)
-    with pytest.raises(AdminGasPausedError):
-        _send(db, chain, user, [_Call()], kind)
+    send(chain, kind, raises=AdminGasPausedError)
     assert chain.sends == []
-    assert _used(db, user) == 0  # a split's reservation is handed back
-
-
-# --- the daily budget -------------------------------------------------------
+    assert used() == 0  # a split's reservation is handed back
 
 
 @pytest.mark.parametrize("kind", ["split", "merge"])
-def test_split_and_merge_over_the_budget_are_429(kind):
-    db = fresh_test_db()
-    user = _user(db)
-    _spend(db, user, 20_000_000)
+def test_split_and_merge_over_the_budget_are_429(db, user, send, used, kind):
+    _spend(db, user, BUDGET)
     chain = _Chain()
-    with pytest.raises(GasBudgetExceededError) as caught:
-        _send(db, chain, user, [_Call()], kind)
-    assert 0 < caught.value.retry_after <= 86_400
+    error = send(chain, kind, raises=GasBudgetExceededError)
+    assert 0 < error.retry_after <= 86_400
     assert chain.funded == [] and chain.sends == []
-    assert _used(db, user) == 20_000_000
+    assert used() == BUDGET
 
 
 @pytest.mark.parametrize("kind", ["claim", "onboarding"])
-def test_claims_and_onboarding_are_never_refused_but_are_booked(kind):
-    db = fresh_test_db()
-    user = _user(db)
-    _spend(db, user, 20_000_000)
-    _send(db, _Chain(), user, [_Call()], kind)
-    assert _used(db, user) == 20_000_000 + MINED
+def test_claims_and_onboarding_are_booked_not_refused(db, user, send, used, kind):
+    _spend(db, user, BUDGET)
+    send(_Chain(), kind)
+    assert used() == BUDGET + MINED
 
 
 @pytest.mark.parametrize("kind", ["claim", "split", "merge", "onboarding"])
-def test_the_house_is_never_refused_or_booked(kind):
-    db = fresh_test_db()
+def test_the_house_is_never_refused_or_booked(db, used, kind):
     house = _user(db, bot=True)
-    _spend(db, house, 20_000_000)
+    _spend(db, house, BUDGET)
     chain = _Chain()
-    _send(db, chain, house, [_Call()], kind)
+    _send(db, house, chain, kind)
     assert chain.funded == [NEED]
-    assert _used(db, house) == 20_000_000
+    assert used(house) == BUDGET
 
 
 @pytest.mark.parametrize("kind", ["split", "merge"])
-def test_the_reservation_is_trued_up_to_actual_gas(kind):
-    db = fresh_test_db()
-    user = _user(db)
+def test_the_reservation_is_trued_up_to_actual_gas(db, user, send, used, kind):
     held: list[int] = []
-    chain = _Chain(during_send=lambda: held.append(_used(db, user)))
-    _send(db, chain, user, [_Call()], kind)
-    assert held == [120_000 + TRANSFER_GAS]  # the limit plus a transfer, while sending
-    assert _used(db, user) == MINED
+    send(_Chain(during_send=lambda: held.append(_used(db, user))), kind)
+    assert held == [RESERVED]  # the limit plus a transfer, while sending
+    assert used() == MINED
 
 
-def test_a_receipt_timeout_keeps_the_reservation():
-    """The split may still mine, so nothing is refunded."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(refusals=[TimeExhausted("no receipt in 30s")])
-    with pytest.raises(TimeExhausted):
-        _send(db, chain, user, [_Call()], "split")
-    assert _used(db, user) == 120_000 + TRANSFER_GAS
+@pytest.mark.parametrize("kind", ["claim", "split", "merge"])
+def test_kill_switch_off_sends_without_a_top_up_or_a_booking(db, user, send, used, kind):
+    _spend(db, user, BUDGET)  # an exhausted budget is not consulted either
+    chain = _Chain()
+    send(chain, kind, AGENTPIT_SPONSOR_USER_GAS=False)
+    assert chain.events == [("send", *SEND)]  # no balance read, no top-up
+    assert used() == BUDGET
+
+
+def test_kill_switch_off_and_a_dry_wallet_is_402_without_a_retry(send):
+    chain = _Chain(refusals=[_refused(ANVIL_BALANCE_LOW)])
+    send(chain, raises=InsufficientGasError, AGENTPIT_SPONSOR_USER_GAS=False)
+    assert len(chain.sends) == 1
+
+
+def test_kill_switch_never_stops_onboarding(send, used):
+    chain = _Chain()
+    send(chain, "onboarding", AGENTPIT_SPONSOR_USER_GAS=False)
+    assert chain.funded == [NEED]
+    assert used() == MINED
+
+
+# --- failures around the send: the reservation and the lock -----------------
 
 
 @pytest.mark.parametrize(
-    ("kind", "standing"), [("claim", 0), ("split", 120_000 + TRANSFER_GAS)]
+    ("error", "booked"),
+    [
+        # The transaction may be out and mine, so a split's reservation stands.
+        pytest.param(TimeExhausted("no receipt in 30s"), RESERVED, id="receipt-timeout"),
+        pytest.param(requests.ConnectionError("reset"), RESERVED, id="transport-error"),
+        # Neither of those nor a refusal at import: the receipt poll's JSON-RPC
+        # error, once the node has the transaction (`PositionService` keeps the
+        # split pending for it too).
+        pytest.param(Web3RPCError("rate limit exceeded"), RESERVED, id="receipt-poll"),
+        pytest.param(KeyboardInterrupt(), RESERVED, id="interrupt"),
+        # The transaction provably never ran, so the reservation goes back. A
+        # connect failure kept it, which stranded the day's whole limit on every
+        # attempt during an RPC outage.
+        pytest.param(_never_connected(), TRANSFER_GAS, id="never-reached"),
+        pytest.param(_refused("nonce too low"), TRANSFER_GAS, id="definite-refusal"),
+    ],
 )
-def test_a_top_up_whose_receipt_times_out_sends_nothing_and_is_not_paid_twice(
-    kind, standing
-):
-    """`fund_gas` gave up waiting for the top-up's receipt (or found no free
-    admin transaction slot). No user transaction goes out and the caller gets
-    `GasTopUpTimeoutError` (503) instead of a bare `TimeExhausted` (500). The
-    top-up may still mine, so a split's
-    reservation stands (an over-count, the safe direction) and nothing else is
-    booked. Once the late top-up has mined, the next send sizes against the
-    balance it left and tops up only max(0, need - balance): nothing here."""
-    db = fresh_test_db()
-    user = _user(db)
-    # The first read sees the empty wallet; every later one sees the late top-up.
-    chain = _Chain(balances=(0, NEED), fund_errors=[TimeExhausted("no receipt in 30s")])
-    with pytest.raises(GasTopUpTimeoutError) as caught:
-        _send(db, chain, user, [_Call()], kind)
-    assert isinstance(caught.value.__cause__, TimeExhausted)
-    assert str(caught.value) == "the platform is busy — try again in a moment"
-    assert chain.funded == [NEED] and chain.sends == []
-    assert _used(db, user) == standing
+def test_what_a_failed_send_does_to_the_reservation(db, user, send, used, error, booked):
+    send(_Chain(refusals=[error]), "split", raises=type(error))  # propagates as it is
+    assert used() == booked  # a top-up's transfer did go out, so it stays booked
+    with _sponsor(db).locked(user):  # and the lock is free
+        pass
 
-    _send(db, chain, user, [_Call()], kind)
+
+@pytest.mark.parametrize(("kind", "standing"), [("claim", 0), ("split", RESERVED)])
+def test_a_top_up_receipt_timeout_is_not_paid_twice(send, used, kind, standing):
+    # `fund_gas` gave up waiting: a 503, not a bare `TimeExhausted`. The top-up
+    # may still mine, so a split's reservation stands (an over-count, the safe
+    # direction). Once it has, the next send sizes against the balance it left.
+    chain = _Chain(balances=(0, NEED), fund_errors=[TimeExhausted("no receipt in 30s")])
+    error = send(chain, kind, raises=GasTopUpTimeoutError)
+    assert isinstance(error.__cause__, TimeExhausted)
+    assert str(error) == BUSY
+    assert chain.funded == [NEED] and chain.sends == []
+    assert used() == standing
+
+    send(chain, kind)
     assert chain.funded == [NEED]  # no second top-up
-    assert chain.sends == [("redeem", 120_000, 1_000)]
-    assert (
-        _used(db, user) == standing + 80_000
-    )  # the new reservation is trued up; the old one stands
+    assert chain.sends == [SEND]
+    assert used() == standing + 80_000  # the new reservation is trued up
 
 
 @pytest.mark.parametrize("kind", ["claim", "split"])
-def test_a_dropped_top_up_is_a_retryable_503_and_hands_the_reservation_back(kind):
-    """The node lost the top-up and a gap filler took its nonce (`TxDropped`):
-    it can never mine. That is the same "busy, try again" answer as a timeout,
-    not a bare `RuntimeError` (a 500). Unlike a timeout, nothing may mine
-    later, so a split's reservation goes back in full and the retry tops up
-    again."""
-    db = fresh_test_db()
-    user = _user(db)
+def test_a_dropped_top_up_is_a_retryable_503(send, used, kind):
+    # A gap filler took the top-up's nonce (`TxDropped`): it can never mine, so
+    # unlike a timeout the reservation goes back in full.
     chain = _Chain(fund_errors=[TxDropped("its nonce went to a gap filler")])
-    with pytest.raises(GasTopUpTimeoutError) as caught:
-        _send(db, chain, user, [_Call()], kind)
-    assert isinstance(caught.value.__cause__, TxDropped)
-    assert str(caught.value) == "the platform is busy — try again in a moment"
+    error = send(chain, kind, raises=GasTopUpTimeoutError)
+    assert isinstance(error.__cause__, TxDropped)
+    assert str(error) == BUSY
     assert chain.funded == [NEED] and chain.sends == []
-    assert _used(db, user) == 0
+    assert used() == 0
 
-    _send(db, chain, user, [_Call()], kind)  # the lock is free, and it funds again
+    send(chain, kind)  # the lock is free, and it funds again
     assert chain.funded == [NEED, NEED]
-    assert _used(db, user) == TRANSFER_GAS + 80_000
+    assert used() == MINED
 
 
-def test_a_dropped_retry_top_up_keeps_what_the_first_one_cost():
-    """The node refused the first send at import (the price rose) and the
-    re-sizing top-up was then dropped. The first top-up did mine, so its
-    transfer stays booked; the refused transaction never ran."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(
-        prices=(1_000, 1_500),
-        balances=(0, NEED),
-        refusals=[_refused(SKALED_FEE_LOW)],
-        fund_errors=[None, TxDropped("its nonce went to a gap filler")],
-    )
-    with pytest.raises(GasTopUpTimeoutError):
-        _send(db, chain, user, [_Call()], "split")
+def test_a_dropped_retry_top_up_keeps_what_the_first_one_cost(send, used):
+    # The first top-up did mine, so its transfer stays booked.
+    chain = _refused_once(fund_errors=[None, TxDropped("a gap filler took its nonce")])
+    send(chain, "split", raises=GasTopUpTimeoutError)
     assert len(chain.sends) == 1
-    assert _used(db, user) == TRANSFER_GAS
+    assert used() == TRANSFER_GAS
 
 
-def test_a_transport_error_after_the_broadcast_keeps_the_reservation():
-    """No answer to the send (a reset, a proxy's 502): the node may hold the
-    transaction and mine it, so the reservation stands like a receipt
-    timeout's. The error itself propagates as it is."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(refusals=[requests.ConnectionError("connection reset by peer")])
-    with pytest.raises(requests.ConnectionError):
-        _send(db, chain, user, [_Call()], "split")
-    assert _used(db, user) == 120_000 + TRANSFER_GAS
-
-
-def _never_connected() -> requests.ConnectionError:
-    """What requests raises when the connect itself was refused: the request
-    never reached the node (`chain_rpc.failed_before_connecting`)."""
-    return requests.ConnectionError(
-        MaxRetryError(
-            None, "/", NewConnectionError(None, "Failed to establish a new connection")
-        )
-    )
-
-
-def test_a_send_that_never_reached_the_node_hands_the_reservation_back():
-    """The broadcast failed to connect at all, so the node never saw the
-    split: nothing can mine, and the reservation goes back like a refusal's.
-    Kept, it stranded the whole limit for the day on every attempt during an
-    RPC outage. The top-up did mine, so its transfer stays booked. The error
-    itself propagates as it is."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(refusals=[_never_connected()])
-    with pytest.raises(requests.ConnectionError):
-        _send(db, chain, user, [_Call()], "split")
-    assert _used(db, user) == TRANSFER_GAS
-
-
-def test_an_unrecognised_error_after_the_broadcast_keeps_the_reservation():
-    """An error from `send_as_user` that is neither a receipt timeout, nor a
-    transport error, nor a refusal at import: here a JSON-RPC error from the
-    receipt poll, which runs once the node has taken the transaction. It may
-    well mine, so the reservation stands, as `PositionService` keeps the
-    split pending for the same error."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(refusals=[Web3RPCError("rate limit exceeded")])
-    with pytest.raises(Web3RPCError):
-        _send(db, chain, user, [_Call()], "split")
-    assert _used(db, user) == 120_000 + TRANSFER_GAS
-
-
-def test_an_interrupt_after_the_broadcast_keeps_the_reservation_and_frees_the_lock():
-    """A `KeyboardInterrupt` (or any `BaseException`) while the split's
-    transaction may already be out: it is re-raised as it is, the lock is
-    free, and the reservation stands, since the split may still mine."""
-    db = fresh_test_db()
-    user = _user(db)
-    sponsor = UserGasSponsor(db, _Chain(refusals=[KeyboardInterrupt()]), _settings())  # type: ignore[arg-type]
-    with pytest.raises(KeyboardInterrupt):
-        with sponsor.locked(user):
-            sponsor.send(user, [_Call()], "split")  # type: ignore[list-item]
-    with sponsor.locked(user):
-        pass
-    assert _used(db, user) == 120_000 + TRANSFER_GAS
-
-
-def test_a_failed_read_while_re_sizing_is_a_retryable_503_with_nothing_in_flight():
-    """The node refused the split at import (its fee was low), and the read
-    of the new price then got no answer. The refused transaction can never
-    mine and the retry was never signed, so nothing is in flight: the caller
-    gets `GasTopUpTimeoutError` (503, "try again"), which `PositionService`
-    reads as an answer and drops the pending row for, and the reservation goes
-    back. Only the first top-up's transfer is booked."""
-    db = fresh_test_db()
-    user = _user(db)
+def test_a_failed_read_while_re_sizing_is_a_retryable_503(send, used):
+    # The split was refused at import and the new price then got no answer: the
+    # refused transaction can never mine and the retry was never signed, so
+    # `PositionService` may drop the pending row and the reservation goes back.
     chain = _Chain(refusals=[_refused(SKALED_FEE_LOW)])
-    prices = iter([1_000])
-
-    def gas_price() -> int:
-        price = next(prices, None)
-        if price is None:
-            raise requests.ReadTimeout("read timed out")
-        return price
-
-    chain.gas_price = gas_price  # type: ignore[method-assign]
-    with pytest.raises(GasTopUpTimeoutError) as caught:
-        _send(db, chain, user, [_Call()], "split")
-    assert isinstance(caught.value.__cause__, requests.ReadTimeout)
+    chain.gas_price = Mock(side_effect=[1_000, requests.ReadTimeout("read timed out")])
+    error = send(chain, "split", raises=GasTopUpTimeoutError)
+    assert isinstance(error.__cause__, requests.ReadTimeout)
     assert len(chain.sends) == 1
-    assert _used(db, user) == TRANSFER_GAS
+    assert used() == TRANSFER_GAS  # only the first top-up's transfer
 
 
-def test_a_definite_refusal_hands_a_split_reservation_back():
-    """The counterpart: the node answered and refused ("nonce too low"), so the
-    transaction provably never ran. Only the top-up's transfer, which did go
-    out, stays booked."""
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(refusals=[_refused("nonce too low")])
-    with pytest.raises(Web3RPCError):
-        _send(db, chain, user, [_Call()], "split")
-    assert _used(db, user) == TRANSFER_GAS
-
-
-def test_a_booking_failure_never_fails_the_action(monkeypatch, caplog):
-    db = fresh_test_db()
-    user = _user(db)
-
+def test_a_booking_failure_never_fails_the_action(send, monkeypatch, caplog):
     def _broken(*_a, **_k):
         raise RuntimeError("database gone")
 
     monkeypatch.setattr(TableWrite, "add_sponsored_gas", _broken)
-    receipts = _send(db, _Chain(), user, [_Call()], "claim")
+    receipts = send(_Chain())
     assert [r["status"] for r in receipts] == [1]
     assert "booking sponsored gas failed" in caplog.text
 
 
-# --- status -----------------------------------------------------------------
-
-
 @pytest.mark.parametrize("kind", ["claim", "split"])
-def test_a_revert_raises_after_it_is_booked(kind):
-    db = fresh_test_db()
-    user = _user(db)
-    with pytest.raises(TransactionRevertedError, match=kind):
-        _send(db, _Chain(), user, [_Call(status=0)], kind)
-    assert _used(db, user) == MINED  # reverted gas is still paid
-
-
-# --- the kill switch --------------------------------------------------------
-
-
-@pytest.mark.parametrize("kind", ["claim", "split", "merge"])
-def test_kill_switch_off_sends_without_a_top_up_or_a_booking(kind):
-    db = fresh_test_db()
-    user = _user(db)
-    _spend(db, user, 20_000_000)  # an exhausted budget is not consulted either
-    chain = _Chain()
-    _send(db, chain, user, [_Call()], kind, AGENTPIT_SPONSOR_USER_GAS=False)
-    assert chain.events == [
-        ("send", "redeem", 120_000, 1_000)
-    ]  # no balance read, no top-up
-    assert _used(db, user) == 20_000_000
-
-
-def test_kill_switch_off_and_a_dry_wallet_is_402_without_a_retry():
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain(refusals=[_refused(ANVIL_BALANCE_LOW)])
-    with pytest.raises(InsufficientGasError):
-        _send(db, chain, user, [_Call()], "claim", AGENTPIT_SPONSOR_USER_GAS=False)
-    assert len(chain.sends) == 1
-
-
-def test_kill_switch_never_stops_onboarding():
-    db = fresh_test_db()
-    user = _user(db)
-    chain = _Chain()
-    _send(db, chain, user, [_Call()], "onboarding", AGENTPIT_SPONSOR_USER_GAS=False)
-    assert chain.funded == [NEED]
-    assert _used(db, user) == MINED
+def test_a_revert_raises_after_it_is_booked(send, used, kind):
+    send(_Chain(), kind, [_Call(status=0)], raises=TransactionRevertedError, match=kind)
+    assert used() == MINED  # reverted gas is still paid
 
 
 # --- the failure matrix -----------------------------------------------------
-#
 # Every chain call `_send_sponsored` makes was made to fail once with each kind
-# of error in `_FAULTS`, for a claim, a split and onboarding: the reads that
-# size it, the reservation, the top-up, each send, and after a fee refusal the
+# of error in `_FAULTS`, for a claim, a split and onboarding: the reads that size
+# it, the reservation, the top-up, each send, and after a fee refusal the
 # re-sizing reads, the retry's top-up and the retry. Whatever fails where, the
 # lock is free afterwards, nothing goes out after the failure, the error is the
 # documented one, and a split's reservation goes back exactly when nothing it
@@ -1004,21 +706,18 @@ def test_kill_switch_never_stops_onboarding():
 
 
 class _FaultyChain(_Chain):
-    """`_Chain` whose `at`-th chain call raises `fault`: `at` is ("price", n),
-    ("estimate", n), ("balance", n), ("fund", n) or ("send", n), the n-th
-    call of that kind from 1. A send fails once it is signed, as
-    `send_user_tx` signs before the broadcast; a top-up fails before it is
-    sent. `after` lists every chain call made once the fault fired; `mined`
-    counts the sends that came back with a receipt."""
+    """`_Chain` whose `at`-th chain call raises `fault`: `at` is (kind, n), the
+    n-th call from 1 of "price", "estimate", "balance", "fund" or "send". A send
+    fails once it is signed (as `send_user_tx` signs before the broadcast), a
+    top-up before it is sent. `after` lists every chain call made once the fault
+    fired; `mined` counts the sends that came back with a receipt."""
 
     def __init__(self, at: tuple[str, int], fault: BaseException, **kwargs):
         super().__init__(during_send=lambda: self.tick("send"), **kwargs)
-        self.at = at
-        self.fault = fault
+        self.at, self.fault = at, fault
         self.counts: Counter[str] = Counter()
-        self.fired = False
+        self.fired, self.mined = False, 0
         self.after: list[str] = []
-        self.mined = 0
 
     def tick(self, name: str) -> None:
         if self.fired:
@@ -1104,6 +803,9 @@ _CELLS = {
         "send4": ["fee-low", "balance-low"],
     },
 }
+# The errors that answer the caller in place of the error itself, and the
+# status each maps to; anything else propagates as it is (500).
+_STATUS = {GasTopUpTimeoutError: 503, GasPriceMovedError: 503, InsufficientGasError: 402}
 
 
 def _point(name: str) -> tuple[str, int]:
@@ -1111,33 +813,16 @@ def _point(name: str) -> tuple[str, int]:
     return kind, int(name[len(kind) :])
 
 
-def _phase(scenario: str, point: str) -> str:
-    """What `_send_sponsored` is doing at `point`: topping up, sending a call
-    for the first time, re-sizing after a refusal, or sending the refused
-    call again."""
-    name, n = _point(point)
-    if name == "fund":
-        return "top-up"
-    if name == "send":
-        return "resend" if (scenario, n) == ("retry", 2) else "send"
-    assert scenario == "retry", "the only reads in `_CELLS` are the re-sizing's"
-    return "resize"
-
-
-# The errors that answer the caller in place of the error itself, and the
-# status each maps to; anything else propagates as it is (500).
-_STATUS = {GasTopUpTimeoutError: 503, GasPriceMovedError: 503, InsufficientGasError: 402}
-
-
 def _expected(scenario: str, point: str, fault: str) -> tuple[type | None, bool]:
     """(what `send` raises, None when it succeeds; whether something paid for
     may still mine, which keeps a split's reservation)."""
     raw = type(_FAULTS[fault]())
-    phase = _phase(scenario, point)
-    if phase == "resize":
+    name, n = _point(point)
+    if name not in ("fund", "send"):  # a read re-sizing after a refusal
+        assert scenario == "retry", "the only reads in `_CELLS` are the re-sizing's"
         # The refused transaction can never mine, the retry is not signed yet.
         return (raw if fault == "interrupt" else GasTopUpTimeoutError), False
-    if phase == "top-up":
+    if name == "fund":
         # No answer leaves the top-up free to mine. The retry's top-up has a
         # refused signature in front of it, so its failure is an answer for
         # the caller (503).
@@ -1149,7 +834,7 @@ def _expected(scenario: str, point: str, fault: str) -> tuple[type | None, bool]
         return GasTopUpTimeoutError, unseen
     # A send: the first try of a call, or the refused call's one retry.
     if fault in ("fee-low", "balance-low"):
-        if phase == "send":
+        if (scenario, n) != ("retry", 2):
             return None, False  # re-sized and sent again, and it mined
         return (GasPriceMovedError if fault == "fee-low" else InsufficientGasError), False
     if fault == "dropped":
@@ -1179,11 +864,7 @@ def _status_of(exc: Exception) -> int:
         for fault in faults
     ],
 )
-def test_every_failure_point_frees_the_lock_sends_nothing_more_and_books_right(
-    scenario, kind, point, fault
-):
-    db = fresh_test_db()
-    user = _user(db)
+def test_every_failure_point_is_handled(db, user, used, scenario, kind, point, fault):
     calls = [_Call(f"call{i}") for i in range(3 if kind == "onboarding" else 1)]
     retry = {
         "prices": (1_000, 1_500),
@@ -1193,16 +874,14 @@ def test_every_failure_point_frees_the_lock_sends_nothing_more_and_books_right(
     chain = _FaultyChain(
         _point(point), _FAULTS[fault](), **(retry if scenario == "retry" else {})
     )
-    sponsor = UserGasSponsor(db, chain, _settings())  # type: ignore[arg-type]
     raised: BaseException | None = None
     try:
-        with sponsor.locked(user):
-            sponsor.send(user, calls, kind)  # type: ignore[arg-type]
+        _send(db, user, chain, kind, calls)
     except BaseException as exc:  # KeyboardInterrupt included
         raised = exc
 
     assert chain.fired, f"{point} is not where the calls are"
-    with sponsor.locked(user):  # the lock is free
+    with _sponsor(db, chain).locked(user):  # the lock is free
         pass
     expected, unseen = _expected(scenario, point, fault)
     assert (None if raised is None else type(raised)) is expected, repr(raised)
@@ -1213,5 +892,5 @@ def test_every_failure_point_frees_the_lock_sends_nothing_more_and_books_right(
     # Each mined top-up's transfer and each receipt, plus what is left of the
     # reservation when something may still mine unseen.
     paid = len(chain.funded) * TRANSFER_GAS + chain.mined * 80_000
-    reserved = 120_000 + TRANSFER_GAS if kind == "split" and unseen else 0
-    assert _used(db, user) == max(paid, reserved)
+    reserved = RESERVED if kind == "split" and unseen else 0
+    assert used() == max(paid, reserved)
