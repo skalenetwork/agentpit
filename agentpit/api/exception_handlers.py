@@ -15,6 +15,7 @@ from agentpit.domain.exceptions import (
     BusinessRuleError,
     FeatureDisabledError,
     GasBudgetExceededError,
+    GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientGasError,
     InvalidCredentialsError,
@@ -92,6 +93,14 @@ def register_exception_handlers(app: FastAPI) -> None:
         """The admin's top-up timed out: congestion on our side, so 503 and
         WARNING, like the breaker."""
         log.warning("gas top-up timed out, a request was refused: %s", exc)
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+    @app.exception_handler(GasPriceMovedError)
+    async def _gas_price_moved(_: Request, exc: GasPriceMovedError) -> JSONResponse:
+        """The node refused a user transaction as underpriced twice: the fee
+        is still climbing. Nothing is in flight and nothing the caller did is
+        wrong, so 503 and WARNING, like a top-up that timed out."""
+        log.warning("the gas price moved twice, a request was refused: %s", exc)
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     @app.exception_handler(TransactionPendingError)

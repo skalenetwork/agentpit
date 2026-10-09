@@ -20,6 +20,7 @@ from agentpit.domain.exceptions import (
     AdminGasPausedError,
     BusinessRuleError,
     GasBudgetExceededError,
+    GasPriceMovedError,
     GasTopUpTimeoutError,
     InsufficientGasError,
     NothingToClaimError,
@@ -121,6 +122,10 @@ def _sponsor_stub_app() -> FastAPI:
     def _busy():
         raise GasTopUpTimeoutError()
 
+    @app.get("/price-moved")
+    def _price_moved():
+        raise GasPriceMovedError()
+
     @app.get("/pending")
     def _pending():
         raise TransactionPendingError()
@@ -187,3 +192,21 @@ def test_a_transaction_whose_outcome_is_unknown_is_503_logged_at_warning(caplog)
     ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
     assert [rec.levelno for rec in ours] == [logging.WARNING]
     assert not issubclass(TransactionPendingError, BusinessRuleError)
+
+
+def test_a_gas_price_that_moved_twice_is_503_logged_at_warning(caplog):
+    """The node refused a user's transaction as underpriced, and refused the
+    re-sized retry too: the fee is still climbing. Nothing is in flight and
+    the same request goes through once it settles, so 503 and WARNING like
+    the other congestion on our side -- not the bare 500 the raw
+    `Web3RPCError` used to be."""
+    caplog.set_level(logging.INFO, logger="agentpit.api.exception_handlers")
+    client = TestClient(_sponsor_stub_app(), raise_server_exceptions=False)
+    r = client.get("/price-moved")
+    assert r.status_code == 503
+    assert r.json() == {
+        "detail": "the network fee rose while sending — try again in a moment"
+    }
+    ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
+    assert [rec.levelno for rec in ours] == [logging.WARNING]
+    assert not issubclass(GasPriceMovedError, BusinessRuleError)

@@ -146,6 +146,25 @@ class GasTopUpTimeoutError(DomainError):
         super().__init__(message)
 
 
+class GasPriceMovedError(DomainError):
+    """The network fee rose while a user-signed transaction was being sent.
+    The node refused it at import as underpriced, `UserGasSponsor` re-sized it
+    at the new price and topped the wallet up again, and the node refused the
+    retry as underpriced too. Neither can mine, so nothing of the user's is in
+    flight.
+
+    A direct `DomainError` (503) like `GasTopUpTimeoutError`: nothing the
+    caller did is wrong, and the same request goes through once the fee
+    settles.
+    """
+
+    def __init__(
+        self,
+        message: str = "the network fee rose while sending — try again in a moment",
+    ):
+        super().__init__(message)
+
+
 class GasBudgetExceededError(DomainError):
     """The account has made the admin pay for its daily share of gas: fills,
     splits and merges. Claims and onboarding are booked against the same
