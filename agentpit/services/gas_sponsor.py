@@ -365,7 +365,10 @@ class UserGasSponsor:
         price, less what the wallet already holds.
 
         Raises RuntimeError over the ceiling. That is a bug, not a user error:
-        a wrong estimate must never size a large transfer from the admin."""
+        a wrong estimate must never size a large transfer from the admin. The
+        ceiling is in gas units by design (`max_topup_gas` at the current
+        price), so it bounds estimate bugs, not the price: a price spike tops
+        up in full, and the wei that risks is bounded by the admin breaker."""
         price, limits = self._limits(user, calls)
         need = sum(limits) * price
         shortfall = max(0, need - self._onchain.native_balance(user.eth_address))
