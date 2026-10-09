@@ -254,7 +254,8 @@ def _act(service, action, user, market_id, amount=40_000_000):
 # --- claim -------------------------------------------------------------------
 
 
-def test_a_winning_claim_is_sent_under_the_lock_and_logged():
+def test_a_winning_claim_is_sent_under_the_lock_and_logged(caplog):
+    caplog.set_level(logging.WARNING, logger=_LOGGER)
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(100_000_005,))
     sponsor = _FakeSponsor(payout=100_000_000)
@@ -267,22 +268,21 @@ def test_a_winning_claim_is_sent_under_the_lock_and_logged():
     assert out.new_usdc_balance == 100_000_005
     assert _rows(db, user) == ["REDEEM"]
     assert _redeem_amounts(db, user) == [100_000_000]
+    # The payout is read from the claim's receipt, for the claimant, and a payout there is no
+    # surprise to log.
+    assert chain.payout_reads == [({"status": 1, "payout": 100_000_000}, user.eth_address)]
+    assert [r for r in caplog.records if r.name == _LOGGER] == []
 
 
+# The wallet's apUSD moves while a claim is in flight (a fill, a mint, a transfer out), so a
+# difference of two balance reads would credit or debit the claim; the receipt's
+# `PayoutRedemption` is the figure, for the response and the REDEEM row alike.
 @pytest.mark.parametrize(
     "usd",
-    [
-        pytest.param((5, 70_000_005), id="a-debit-of-30-while-claiming"),
-        pytest.param((5, 107_000_005), id="a-credit-of-7-while-claiming"),
-        pytest.param((5, 5), id="a-debit-as-big-as-the-payout"),
-    ],
+    [(5, 70_000_005), (5, 107_000_005), (5, 5)],
+    ids=["a-debit-of-30-while-claiming", "a-credit-of-7-while-claiming", "a-debit-as-big-as-payout"],
 )
 def test_the_claim_is_the_payout_in_the_receipt_whatever_the_balance_did(usd):
-    """The wallet's apUSD moves while a claim is in flight (a fill, a mint, a
-    transfer out), and a difference of two balance reads would take that for
-    the payout: a credit overstates it, and a debit larger than the payout
-    makes a won market read as lost. The receipt's `PayoutRedemption` is the
-    figure, for the response and for the REDEEM row alike."""
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(balances=(100_000_000, 0), usd=usd)
     sponsor = _FakeSponsor(payout=100_000_000)
@@ -293,27 +293,12 @@ def test_the_claim_is_the_payout_in_the_receipt_whatever_the_balance_did(usd):
     assert _redeem_amounts(db, user) == [100_000_000]
 
 
-def test_the_payout_is_read_from_the_claims_receipt_for_the_claimant():
-    db, user, mid = _setup(MarketState.RESOLVED)
-    chain = _FakeChain(balances=(100_000_000, 0), usd=(100_000_005,))
-    sponsor = _FakeSponsor(payout=100_000_000)
-
-    _service(db, chain, sponsor).redeem(user, mid)
-
-    assert chain.payout_reads == [
-        ({"status": 1, "payout": 100_000_000}, user.eth_address)
-    ]
-
-
 def test_a_claim_that_mined_with_no_payout_is_no_claim_and_leaves_no_row(caplog):
-    """The gate computed a payout from the balances, yet the receipt names none
-    paid to the claimant (the tokens left between the gate and the block, a
-    payout-vector mismatch, a redeemer other than the wallet). A REDEEM row at
-    zero would be a claim that paid nothing, which the profile page reads as a
-    lost market, and auto-redeem would count it as a claim made. So there is
-    no row, the intent row goes, and the caller hears `NothingToClaimError`
-    (400). The surprise is still logged with the market and the transaction,
-    never the key."""
+    # The gate computed a payout, yet the receipt names none paid to the claimant (the tokens
+    # left in between, a payout-vector mismatch...). A REDEEM row at zero would read as a lost
+    # market and auto-redeem would count a claim made: so no row, the intent row goes, and the
+    # caller hears `NothingToClaimError` (400). The surprise is logged with the market and the
+    # transaction, never the key.
     caplog.set_level(logging.WARNING, logger=_LOGGER)
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(balances=(100_000_000, 0), usd=(5,))
@@ -325,9 +310,7 @@ def test_a_claim_that_mined_with_no_payout_is_no_claim_and_leaves_no_row(caplog)
     assert len(sponsor.hashes) == 1  # it did go out, and mined
     assert _rows(db, user) == []
     assert _pending(db) == []
-    warnings = [
-        r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.WARNING
-    ]
+    warnings = [r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.WARNING]
     assert len(warnings) == 1
     message = warnings[0].getMessage()
     assert f"market {mid}" in message
@@ -335,19 +318,7 @@ def test_a_claim_that_mined_with_no_payout_is_no_claim_and_leaves_no_row(caplog)
     assert user.api_key not in message
 
 
-def test_a_claim_with_a_payout_in_its_receipt_logs_no_warning(caplog):
-    caplog.set_level(logging.WARNING, logger=_LOGGER)
-    db, user, mid = _setup(MarketState.RESOLVED)
-    chain = _FakeChain(balances=(100_000_000, 0), usd=(5,))
-
-    _service(db, chain, _FakeSponsor(payout=100_000_000)).redeem(user, mid)
-
-    assert [r for r in caplog.records if r.name == _LOGGER] == []
-
-
 def test_the_new_balance_is_one_fresh_read_after_the_claim_and_none_before():
-    """`new_usdc_balance` is what the wallet holds once the claim has landed.
-    No balance is read before the send: nothing needs the old figure now."""
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(balances=(100_000_000, 0), usd=(250_000_000,))
     sponsor = _FakeSponsor(payout=100_000_000, log=chain.reads)
@@ -360,23 +331,30 @@ def test_the_new_balance_is_one_fresh_read_after_the_claim_and_none_before():
     assert out.new_usdc_balance == 250_000_000
 
 
+# The setting is validated to be at least 1, but the gate does not lean on it: a claim that
+# pays nothing is pure admin gas, so it is refused even if the minimum were 0.
 @pytest.mark.parametrize(
-    "balances",
+    ("balances", "minimum"),
     [
-        pytest.param((0, 0), id="zero-holdings"),
-        pytest.param((0, 50_000_000), id="losing-tokens-only"),
-        pytest.param((9_999, 0), id="dust-below-a-cent"),
+        pytest.param((0, 0), 10_000, id="zero-holdings"),
+        pytest.param((0, 50_000_000), 10_000, id="losing-tokens-only"),
+        pytest.param((9_999, 0), 10_000, id="dust-below-a-cent"),
+        pytest.param((0, 0), 0, id="zero-holdings-minimum-0"),
+        pytest.param((0, 50_000_000), 0, id="losing-tokens-only-minimum-0"),
+        pytest.param((0, 0), 1, id="zero-holdings-minimum-1"),
+        pytest.param((0, 50_000_000), 1, id="losing-tokens-only-minimum-1"),
     ],
 )
-def test_nothing_worth_claiming_never_reaches_the_sponsor(balances):
+def test_nothing_worth_claiming_never_reaches_the_sponsor(balances, minimum):
     db, user, mid = _setup(MarketState.RESOLVED)
-    sponsor = _FakeSponsor()
+    sponsor = _FakeSponsor(min_claim_micro=minimum)
     with pytest.raises(NothingToClaimError, match="nothing to claim"):
         _service(db, _FakeChain(balances=balances), sponsor).redeem(user, mid)
     assert sponsor.sent == []
     assert _rows(db, user) == []
 
 
+# payout = sum(balance_i * numerator_i // denominator), against the minimum (10_000: $0.01).
 @pytest.mark.parametrize(
     ("vector", "balances", "claimed"),
     [
@@ -386,8 +364,6 @@ def test_nothing_worth_claiming_never_reaches_the_sponsor(balances):
     ],
 )
 def test_the_payout_weighs_each_balance_by_its_numerator(vector, balances, claimed):
-    """payout = sum(balance_i * numerator_i // denominator), against the
-    minimum (10_000, $0.01) inclusive."""
     db, user, mid = _setup(MarketState.RESOLVED)
     sponsor = _FakeSponsor(payout=1)
     service = _service(db, _FakeChain(vector=vector, balances=balances), sponsor)
@@ -400,26 +376,6 @@ def test_the_payout_weighs_each_balance_by_its_numerator(vector, balances, claim
         assert sponsor.sent == []
 
 
-@pytest.mark.parametrize("minimum", [0, 1], ids=["minimum-0", "minimum-1"])
-@pytest.mark.parametrize(
-    "balances",
-    [
-        pytest.param((0, 0), id="zero-holdings"),
-        pytest.param((0, 50_000_000), id="losing-tokens-only"),
-    ],
-)
-def test_a_payout_of_zero_is_never_sent_whatever_the_minimum(minimum, balances):
-    """The setting is validated to be at least 1, but the gate does not lean on
-    it: a claim that pays nothing is pure admin gas (a top-up and a redeem per
-    HTTP call, never budgeted), so it is refused even if the minimum were 0."""
-    db, user, mid = _setup(MarketState.RESOLVED)
-    sponsor = _FakeSponsor(min_claim_micro=minimum)
-    with pytest.raises(NothingToClaimError):
-        _service(db, _FakeChain(balances=balances), sponsor).redeem(user, mid)
-    assert sponsor.sent == []
-    assert _rows(db, user) == []
-
-
 def test_the_minimum_comes_from_the_sponsor():
     db, user, mid = _setup(MarketState.RESOLVED)
     sponsor = _FakeSponsor(min_claim_micro=1, payout=1)
@@ -428,8 +384,8 @@ def test_the_minimum_comes_from_the_sponsor():
 
 
 def test_a_market_the_chain_has_not_resolved_is_refused_without_a_send():
-    """RESOLVED in the database, no `reportPayouts` on chain: `redeemPositions`
-    would revert, after the admin had paid for the top-up in front of it."""
+    # RESOLVED in the database, no `reportPayouts` on chain: `redeemPositions` would revert,
+    # after the admin had paid for the top-up in front of it.
     db, user, mid = _setup(MarketState.RESOLVED)
     chain = _FakeChain(vector=(0, [0, 0]), balances=(100_000_000, 0))
     sponsor = _FakeSponsor()
@@ -450,8 +406,8 @@ def test_a_vector_the_caller_already_read_is_not_read_again():
 
 
 def test_a_market_the_database_has_not_resolved_is_refused_before_the_lock():
-    """Checked before the lock, so a busy account still hears the real
-    reason, and nothing touches the chain."""
+    # Checked before the lock, so a busy account still hears the real reason, and nothing
+    # touches the chain.
     db, user, mid = _setup(MarketState.ACTIVE)
     chain = _FakeChain()
     with pytest.raises(MarketStateError, match="not resolved yet"):
@@ -462,26 +418,20 @@ def test_a_market_the_database_has_not_resolved_is_refused_before_the_lock():
 # --- every action --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("action", ["split", "merge", "redeem"])
+# The pre-checks and the claim gate live inside the lock: a second request for the same
+# account is a 409, not a race against the first.
+@pytest.mark.parametrize("action", _ACTIONS)
 def test_a_held_lock_refuses_before_any_chain_read(action):
-    """The pre-checks and the claim gate live inside the lock: a second
-    request for the same account is a 409, not a race against the first."""
-    db, user, mid = _setup(
-        MarketState.RESOLVED if action == "redeem" else MarketState.ACTIVE
-    )
-    chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(100_000_000,))
+    db, user, mid, chain = _ready(action)
     with pytest.raises(TransactionInProgressError):
         _act(_service(db, chain, _FakeSponsor(busy=True)), action, user, mid)
     assert chain.reads == []
     assert _rows(db, user) == []
 
 
-@pytest.mark.parametrize("action", ["split", "merge", "redeem"])
+@pytest.mark.parametrize("action", _ACTIONS)
 def test_a_reverted_transaction_writes_no_row(action):
-    db, user, mid = _setup(
-        MarketState.RESOLVED if action == "redeem" else MarketState.ACTIVE
-    )
-    chain = _FakeChain(balances=(100_000_000, 100_000_000), usd=(100_000_000,))
+    db, user, mid, chain = _ready(action)
     sponsor = _FakeSponsor(fail=TransactionRevertedError("transaction reverted"))
     with pytest.raises(TransactionRevertedError):
         _act(_service(db, chain, sponsor), action, user, mid)
