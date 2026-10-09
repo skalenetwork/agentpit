@@ -6,12 +6,9 @@ from contextlib import contextmanager
 
 import pytest
 from eth_account import Account
-from fastapi.testclient import TestClient
 from web3 import Web3
 from web3.logs import DISCARD
 
-from agentpit.api.app import create_app
-from agentpit.api.deps import get_db_session, get_onchain_admin
 from agentpit.config import Settings
 from agentpit.datastructures.split_position_request import (
     MergePositionRequest,
@@ -24,6 +21,7 @@ from agentpit.services.account_service import AccountService
 from agentpit.utils.parse import hex2bytes
 from tests.onchain import _helpers as h
 
+admin, db = h.admin, h.db  # the shared fixtures
 _PARTITION = [1, 2]
 
 
@@ -50,21 +48,19 @@ def _spent(receipt) -> int:
 
 @contextmanager
 def _sponsored_from_empty(admin, db, user, call):
-    """Around one sponsored transaction of `call`: the wallet is emptied first,
-    and afterwards it was topped up from 0 to exactly the call's need (the
-    transaction spent part of it), the top-up's transfer plus the gas used booked."""
+    """Around one sponsored `call` from an emptied wallet: topped up from 0 to exactly its
+    need (the call spent part of it), the transfer plus the gas used booked."""
     h.drain_native_balance(admin, user.eth_address)
-    need, booked = _need(admin, call, user.eth_address), h.sponsored_gas(db, user)
+    need, booked = _need(admin, call, user.eth_address), h.sponsored_gas(db, user.api_key)
     yield
     receipt = _last_receipt(admin, user.eth_address)
     assert receipt["status"] == 1
     assert admin.native_balance(user.eth_address) + _spent(receipt) == need
-    assert h.sponsored_gas(db, user) - booked == TRANSFER_GAS + receipt["gasUsed"]
+    assert h.sponsored_gas(db, user.api_key) - booked == TRANSFER_GAS + receipt["gasUsed"]
 
 
 def _refused_without_a_transaction(db, admin, user, market_id, error, text) -> None:
-    """Claim, expect `error`, and prove nothing moved: no nonce, no native
-    balance (the user's or the admin's), no booked gas, no REDEEM row."""
+    """Claim, expect `error`, and prove nothing moved: nonces, native, booked gas, REDEEM rows."""
     wallet, payer = user.eth_address, admin.oracle_address
 
     def snapshot():
@@ -73,7 +69,7 @@ def _refused_without_a_transaction(db, admin, user, market_id, error, text) -> N
             admin.native_balance(wallet),
             admin.transaction_count(payer),
             admin.native_balance(payer),
-            h.sponsored_gas(db, user),
+            h.sponsored_gas(db, user.api_key),
         )
 
     before = snapshot()
@@ -84,9 +80,8 @@ def _refused_without_a_transaction(db, admin, user, market_id, error, text) -> N
 
 
 def _after_top_up(monkeypatch, admin, user, action) -> None:
-    """Run `action()` once the sponsor's top-up of `user` has mined: the window
-    in which the world can change under a gate that already passed. `action`
-    must not call `admin.fund_gas`, which is this hook."""
+    """Run `action()` once the sponsor's top-up of `user` has mined: the window where
+    the world can change under a gate that passed. It must not call `admin.fund_gas`."""
     real = admin.fund_gas
     me = user.eth_address.lower()
 
@@ -99,8 +94,7 @@ def _after_top_up(monkeypatch, admin, user, action) -> None:
     monkeypatch.setattr(admin, "fund_gas", fund_gas)
 
 
-def test_a_claim_from_an_empty_wallet_is_topped_up_exactly_and_pays_out():
-    admin, db = h.chain()
+def test_a_claim_from_an_empty_wallet_is_topped_up_exactly_and_pays_out(admin, db):
     market, user = h.dry_winner(db, admin)
     assert admin.native_balance(user.eth_address) == 0
     redeem = admin.redeem_call(hex2bytes(market.condition_id.value), _PARTITION)
@@ -116,11 +110,8 @@ def test_a_claim_from_an_empty_wallet_is_topped_up_exactly_and_pays_out():
     assert len(h.tx_details(db, user, "REDEEM")) == 1
 
 
-def test_consecutive_claims_never_leave_more_than_one_claims_need():
-    """A top-up comes only when the wallet holds less than the next claim needs,
-    and brings it to exactly that: after each claim the balance is at most the
-    largest need so far (on anvil nearly all of it: it bills the base fee)."""
-    admin, db = h.chain()
+def test_consecutive_claims_never_leave_more_than_one_claims_need(admin, db):
+    """A top-up comes only when short, and to exactly the need: the balance never creeps up."""
     user = h.onboarded_account(db, admin)
     markets = [h.synced_market(db, admin) for _ in range(3)]
     for market, _pm in markets:
@@ -146,16 +137,11 @@ def test_consecutive_claims_never_leave_more_than_one_claims_need():
 
 @pytest.mark.parametrize(
     "gift",
-    [
-        pytest.param(None, id="zero-holdings"),
-        pytest.param((1, 50_000_000), id="losing-tokens-only"),
-        pytest.param((0, 9_999), id="dust-below-a-cent"),
-    ],
+    [None, (1, 50_000_000), (0, 9_999)],
+    ids=["zero-holdings", "losing-tokens-only", "dust-below-a-cent"],
 )
-def test_nothing_worth_claiming_is_refused_without_a_transaction(gift):
-    """`redeemPositions` succeeds with nothing to redeem: without the gate each
-    of these would cost the admin a top-up and the account a claim."""
-    admin, db = h.chain()
+def test_nothing_worth_claiming_is_refused_without_a_transaction(admin, db, gift):
+    """`redeemPositions` succeeds with nothing to redeem: ungated, each would cost a top-up."""
     market, pm = h.synced_market(db, admin)
     whale = h.onboarded_account(db, admin)
     h.split(db, admin, whale, market, 100_000_000)
@@ -172,10 +158,8 @@ def test_nothing_worth_claiming_is_refused_without_a_transaction(gift):
     )
 
 
-def test_a_market_the_chain_has_not_resolved_is_refused_without_a_transaction():
-    """RESOLVED in the database with no `reportPayouts` on chain: the claim would
-    revert, after the admin had paid for the top-up."""
-    admin, db = h.chain()
+def test_a_market_the_chain_has_not_resolved_is_refused_without_a_transaction(admin, db):
+    """RESOLVED in the DB, no `reportPayouts` on chain: the claim would revert after the top-up."""
     market, _pm = h.synced_market(db, admin)
     user = h.onboarded_account(db, admin)
     h.split(db, admin, user, market, 100_000_000)
@@ -189,8 +173,7 @@ def test_a_market_the_chain_has_not_resolved_is_refused_without_a_transaction():
     )
 
 
-def test_split_and_merge_from_an_empty_wallet_are_topped_up_and_booked():
-    admin, db = h.chain()
+def test_split_and_merge_from_an_empty_wallet_are_topped_up_and_booked(admin, db):
     market, _pm = h.synced_market(db, admin)
     user = h.onboarded_account(db, admin)
     positions = h.position_service(db, admin)
@@ -210,16 +193,11 @@ def test_split_and_merge_from_an_empty_wallet_are_topped_up_and_booked():
 
 
 def test_with_the_kill_switch_off_a_dry_wallet_gets_402_not_500():
-    """AGENTPIT_SPONSOR_USER_GAS=false: nothing is topped up, the node refuses
-    the claim for want of gas, and the caller gets 402 ("the wallet could not
-    pay"), not a 500 from a raw RPC error."""
-    app = create_app(Settings(sponsor_user_gas=False))
-    client = TestClient(app, raise_server_exceptions=False)
-    overrides = app.dependency_overrides
-    admin, db = overrides[get_onchain_admin](), overrides[get_db_session]()
+    """AGENTPIT_SPONSOR_USER_GAS=false: the node refuses the dry claim; the caller gets 402."""
+    client, admin, db = h.app_world(Settings(sponsor_user_gas=False))
     market, user = h.dry_winner(db, admin)  # set up with the environment's sponsor
     tokens = [int(t) for t, _label in market.erc1155_tokens]
-    nonce, booked = admin.transaction_count(user.eth_address), h.sponsored_gas(db, user)
+    nonce, booked = admin.transaction_count(user.eth_address), h.sponsored_gas(db, user.api_key)
 
     r = client.post(f"/markets/{market.market_id}/redeem_position", headers=h.hdr(user.api_key))
 
@@ -227,24 +205,19 @@ def test_with_the_kill_switch_off_a_dry_wallet_gets_402_not_500():
     assert admin.native_balance(user.eth_address) == 0  # nothing was topped up
     assert admin.transaction_count(user.eth_address) == nonce  # the node took nothing
     assert admin.ctf_balances(user.eth_address, tokens) == [100_000_000, 100_000_000]
-    assert h.sponsored_gas(db, user) == booked  # the switch stops booking as well
+    assert h.sponsored_gas(db, user.api_key) == booked  # the switch stops booking as well
     assert h.tx_details(db, user, "REDEEM") == []
 
 
 @pytest.mark.parametrize(
     ("credit", "debit"),
-    [
-        pytest.param(7_000_000, 0, id="a-mint-of-7-lands-during-the-claim"),
-        pytest.param(0, 130_000_000, id="a-transfer-of-130-leaves-during-the-claim"),
-    ],
+    [(7_000_000, 0), (0, 130_000_000)],
+    ids=["a-mint-of-7-lands-during-the-claim", "a-transfer-of-130-leaves-during-the-claim"],
 )
 def test_a_claim_is_logged_at_the_ctf_payout_whatever_the_wallet_does_meanwhile(
-    monkeypatch, credit, debit
+    admin, db, monkeypatch, credit, debit
 ):
-    """A difference of two balance reads was wrong both ways: a credit mid-claim
-    read 107, a debit past the payout read -30, which `list_closed_positions`
-    takes for a lost market. The amount is what `redeemPositions` paid."""
-    admin, db = h.chain()
+    """A balance diff read 107 or -30 (dropped as a loss): log the receipt's payout instead."""
     market, user = h.dry_winner(db, admin)  # a top-up is certain
     elsewhere = Account.create().address
 
@@ -275,18 +248,14 @@ def test_a_claim_is_logged_at_the_ctf_payout_whatever_the_wallet_does_meanwhile(
     assert closed[0].currentValue == 100.0
 
 
-def test_a_split_on_a_market_that_resolves_during_its_top_up_is_refused(monkeypatch):
-    """`split` checks the market before the lock, and the top-up takes blocks on
-    SKALE: resolved in that window, the market would take a split that mints a
-    claimable winner. The sponsor re-reads the market once funded: nothing is
-    signed, the apUSD stays, only the top-up's transfer is booked."""
-    admin, db = h.chain()
+def test_a_split_on_a_market_that_resolves_during_its_top_up_is_refused(admin, db, monkeypatch):
+    """Resolved during the top-up, a split would mint a claimable winner: refused unsigned."""
     market, pm = h.synced_market(db, admin)
     user = h.onboarded_account(db, admin)
     tokens = [int(t) for t, _label in market.erc1155_tokens]
     h.drain_native_balance(admin, user.eth_address)
     usd = admin.usd_balance(user.eth_address)
-    nonce, booked = admin.transaction_count(user.eth_address), h.sponsored_gas(db, user)
+    nonce, booked = admin.transaction_count(user.eth_address), h.sponsored_gas(db, user.api_key)
     _after_top_up(monkeypatch, admin, user, lambda: h.resolve_yes(db, admin, pm))
 
     with pytest.raises(MarketStateError, match="split only runs on ACTIVE markets"):
@@ -299,18 +268,14 @@ def test_a_split_on_a_market_that_resolves_during_its_top_up_is_refused(monkeypa
     assert admin.transaction_count(user.eth_address) == nonce  # nothing was signed
     assert h.tx_details(db, user, "SPLIT") == []
     assert h.pending_user_txs(db) == []
-    assert h.sponsored_gas(db, user) - booked == TRANSFER_GAS
+    assert h.sponsored_gas(db, user.api_key) - booked == TRANSFER_GAS
 
 
-def test_a_claim_whose_tokens_left_during_its_top_up_is_refused(monkeypatch):
-    """A resting SELL filled by `matchOrders` moves the winning tokens with no
-    transaction of the user's, and the top-up is a window for that; here the
-    user sends them away itself. The claim, which would mine at a payout of
-    nothing, is refused with the gate's own error and never signed."""
-    admin, db = h.chain()
+def test_a_claim_whose_tokens_left_during_its_top_up_is_refused(admin, db, monkeypatch):
+    """The winners leave during the top-up, as a filled SELL would move them: never signed."""
     market, user = h.dry_winner(db, admin)
     tokens = [int(t) for t, _label in market.erc1155_tokens]
-    nonce, booked = admin.transaction_count(user.eth_address), h.sponsored_gas(db, user)
+    nonce, booked = admin.transaction_count(user.eth_address), h.sponsored_gas(db, user.api_key)
 
     def winners_leave():
         h.give_tokens(admin, user, Account.create().address, tokens[0], 100_000_000)
@@ -324,16 +289,11 @@ def test_a_claim_whose_tokens_left_during_its_top_up_is_refused(monkeypatch):
     assert admin.transaction_count(user.eth_address) == nonce + 1  # the transfer only
     assert h.tx_details(db, user, "REDEEM") == []
     assert h.pending_user_txs(db) == []
-    assert h.sponsored_gas(db, user) - booked == TRANSFER_GAS
+    assert h.sponsored_gas(db, user.api_key) - booked == TRANSFER_GAS
 
 
-def test_a_claim_that_mines_with_no_payout_writes_no_row(monkeypatch):
-    """The gate and the re-check both pass (the balances are read through a lie
-    here: nothing real can empty the wallet between re-check and block) and the
-    claim mines for a payout of nothing. The admin paid for it, so its gas is
-    booked; the account gets no REDEEM row, no intent row stays, and the caller
-    hears `NothingToClaimError`."""
-    admin, db = h.chain()
+def test_a_claim_that_mines_with_no_payout_writes_no_row(admin, db, monkeypatch):
+    """Gate and re-check pass (balances faked), the claim mines for nothing: gas booked, no row."""
     market, pm = h.synced_market(db, admin)
     user = h.onboarded_account(db, admin)  # holds no outcome token at all
     h.resolve_yes(db, admin, pm)
@@ -344,13 +304,13 @@ def test_a_claim_that_mines_with_no_payout_writes_no_row(monkeypatch):
         "ctf_balances",
         lambda address, ids: [100_000_000, 0] if address.lower() == me else real(address, ids),
     )
-    booked = h.sponsored_gas(db, user)
+    booked = h.sponsored_gas(db, user.api_key)
 
     with pytest.raises(NothingToClaimError):
         h.position_service(db, admin).redeem(user, market.market_id)
 
     receipt = _last_receipt(admin, user.eth_address)
     assert receipt["status"] == 1  # it mined, and paid nothing
-    assert h.sponsored_gas(db, user) - booked == TRANSFER_GAS + receipt["gasUsed"]
+    assert h.sponsored_gas(db, user.api_key) - booked == TRANSFER_GAS + receipt["gasUsed"]
     assert h.tx_details(db, user, "REDEEM") == []
     assert h.pending_user_txs(db) == []

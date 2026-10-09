@@ -1,41 +1,26 @@
 """A split or claim that mined after we stopped waiting for it, on anvil.
 
-`send_as_user` is wrapped to send for real, then raise as if the answer had
-been lost (a receipt timeout, or a read timeout on the broadcast). The caller
-gets 503 "not confirmed yet", the intent row stays with no history row, a
-second request on the market is a 409 (not a second split, nor "nothing to
-claim" for a claim that was paid), and `reconcile_pending_user_txs` turns the
-intent into the history row at the claim's exact payout. The unit cases are in
-tests/services/test_position_service.py and test_pending_user_txs.py.
+`send_as_user` sends for real, then raises as if the answer had been lost. The
+caller gets 503 "not confirmed yet" and the intent row stays; a retry is a 409
+(not a second split, nor "nothing to claim" for a paid claim); and
+`reconcile_pending_user_txs` writes the history row at the exact payout. Unit
+cases: tests/services/test_position_service.py and test_pending_user_txs.py.
 """
 
 from __future__ import annotations
 
 import pytest
 import requests
-from fastapi.testclient import TestClient
 from web3.exceptions import TimeExhausted
 
-from agentpit.api.app import create_app
-from agentpit.api.deps import get_db_session, get_onchain_admin
-from agentpit.config import Settings
 from agentpit.db.table_read import TableRead
 from agentpit.services.account_service import AccountService
 from agentpit.services.pending_user_txs import reconcile_pending_user_txs
 from tests.onchain import _helpers as h
 
 
-def _app():
-    """The real app, its admin and its database; no lifespan, so no background
-    pass reconciles anything behind the test's back."""
-    client = TestClient(create_app(Settings()), raise_server_exceptions=False)
-    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
-    return client, overrides[get_onchain_admin](), overrides[get_db_session]()
-
-
 def _lose_the_answer(monkeypatch, admin, error: Exception) -> list:
-    """Send every user transaction for real, then raise `error` in place of its
-    receipt. Returns the receipts the caller never saw."""
+    """Send every user transaction for real, then raise `error` in place of its receipt."""
     real = admin.send_as_user
     unseen: list = []
 
@@ -52,7 +37,7 @@ def _hash(receipt) -> str:
 
 
 def test_a_claim_whose_receipt_was_lost_is_settled_at_its_exact_payout(monkeypatch):
-    client, admin, db = _app()
+    client, admin, db = h.app_world()
     market, user = h.dry_winner(db, admin)
     mid = market.market_id
     tokens = [int(t) for t, _label in market.erc1155_tokens]
@@ -92,13 +77,11 @@ def test_a_claim_whose_receipt_was_lost_is_settled_at_its_exact_payout(monkeypat
 
 @pytest.mark.parametrize(
     "error",
-    [
-        pytest.param(TimeExhausted("no receipt in 30s"), id="receipt-timeout"),
-        pytest.param(requests.ReadTimeout("read timed out"), id="lost-answer"),
-    ],
+    [TimeExhausted("no receipt in 30s"), requests.ReadTimeout("read timed out")],
+    ids=["receipt-timeout", "lost-answer"],
 )
 def test_a_split_whose_answer_was_lost_is_not_split_twice(monkeypatch, error):
-    client, admin, db = _app()
+    client, admin, db = h.app_world()
     market, _pm = h.synced_market(db, admin)
     mid = market.market_id
     user = h.onboarded_account(db, admin)

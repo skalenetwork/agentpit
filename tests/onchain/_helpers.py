@@ -8,6 +8,7 @@ import secrets
 import time
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from web3 import Web3
 
@@ -115,10 +116,9 @@ def register(client: TestClient, email: str | None = None) -> dict:
 
 
 def fund_direct_sends(client: TestClient, address: str) -> None:
-    """Give a `register()`ed account gas to sign its own transactions: onboarding
-    leaves none, and on anvil its leftover would cover one split only by
-    accident (anvil bills the 7 wei base fee, not the price offered). Sent by
-    the app's own admin, so its `AdminTxSender` stays the only nonce writer."""
+    """Give a `register()`ed account gas to sign its own transactions: onboarding leaves none, and
+    on anvil its leftover would cover one split only by accident (it bills the 7 wei base fee).
+    Sent by the app's own admin, so its `AdminTxSender` stays the only nonce writer."""
     admin = client.app.dependency_overrides[get_onchain_admin]()  # type: ignore[attr-defined]
     admin.fund_gas(address, 10**16)  # ~10M gas at anvil's ~1 gwei; a split's limit is ~132k
 
@@ -153,13 +153,13 @@ def drain_native_balance(admin: OnchainAdmin, address: str) -> None:
     )
 
 
-# Gas a house account gets in the on-chain tests instead of the default 5
-# native: conftest truncates `users` before every test, so the house tests
-# provision a dozen accounts per run, all paid by the persistent anvil's admin.
+# Gas a house account gets in the on-chain tests instead of the default 5 native: conftest
+# truncates `users` before every test, so they provision a dozen accounts per run, all
+# paid by the persistent anvil's admin.
 HOUSE_TEST_GAS_FLOOR_WEI = 5 * 10**16
 
 
-# --- scenarios on the local chain, shared by the sponsored-gas tests ---------
+# --- scenarios on the local chain; `admin` and `db` are fixtures for the tests that import them ---
 
 
 def local_admin() -> OnchainAdmin:
@@ -170,9 +170,22 @@ def local_admin() -> OnchainAdmin:
     return OnchainAdmin(client, Contracts(client.web3, deployment))
 
 
-def chain() -> tuple[OnchainAdmin, DbSession]:
-    """`local_admin()` and a pool on the test database."""
-    return local_admin(), fresh_test_db()
+@pytest.fixture
+def admin() -> OnchainAdmin:
+    return local_admin()
+
+
+@pytest.fixture
+def db() -> DbSession:
+    return fresh_test_db()
+
+
+def app_world(settings: Settings | None = None):
+    """`(client, admin, db)` of the real app. No lifespan, so no background pass
+    reconciles anything behind a test's back; a server error is a 500 reply."""
+    client = TestClient(create_app(settings), raise_server_exceptions=False)
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    return client, overrides[get_onchain_admin](), overrides[get_db_session]()
 
 
 def synced_market(db: DbSession, admin: OnchainAdmin) -> tuple[Market, dict]:
@@ -260,10 +273,10 @@ def give_tokens(admin: OnchainAdmin, sender: User, to: str, token_id: int, amoun
     send_as(admin, sender, ctf.functions.safeTransferFrom(owner, recipient, token_id, amount, b""))
 
 
-def sponsored_gas(db: DbSession, user: User) -> int:
-    """Gas booked to `user`'s `sponsored_gas` row for today."""
+def sponsored_gas(db: DbSession, api_key: str) -> int:
+    """Gas booked to the account's `sponsored_gas` row for today."""
     with db.read() as conn:
-        return TableRead.sponsored_gas_used(conn, user.api_key, int(time.time()) // 86_400)
+        return TableRead.sponsored_gas_used(conn, api_key, int(time.time()) // 86_400)
 
 
 def tx_details(db: DbSession, user: User, kind: str) -> list[dict]:

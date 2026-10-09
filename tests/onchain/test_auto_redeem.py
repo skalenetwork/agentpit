@@ -14,6 +14,7 @@ from agentpit.onchain.tx_sender import TRANSFER_GAS
 from agentpit.polymarket.polymarket_sync import auto_redeem_resolved_markets
 from tests.onchain import _helpers as h
 
+admin, db = h.admin, h.db  # the shared fixtures
 # Opted in explicitly: the tests do not depend on the AUTO_REDEEM_ENABLED column default.
 _opted_in = partial(h.onboarded_account, auto_redeem=True)
 
@@ -25,8 +26,7 @@ def _market_row(db, market_id: int):
     return row
 
 
-def test_auto_redeem_pays_winner_and_flags_market():
-    admin, db = h.chain()
+def test_auto_redeem_pays_winner_and_flags_market(admin, db):
     market, pm = h.synced_market(db, admin)
     tokens = [int(t) for t, _label in market.erc1155_tokens]
     user = _opted_in(db, admin)
@@ -46,10 +46,8 @@ def test_auto_redeem_pays_winner_and_flags_market():
     assert auto_redeem_resolved_markets(db, admin, Settings()) == 0
 
 
-def test_auto_redeem_claims_for_a_holder_with_no_native_balance():
-    """The point of gasless claims: a winner whose wallet holds 0 native is
-    paid all the same, the gas booked to the account's day."""
-    admin, db = h.chain()
+def test_auto_redeem_claims_for_a_holder_with_no_native_balance(admin, db):
+    """Gasless claims: a winner holding 0 native is paid all the same, the gas booked."""
     settings = Settings()
     market, pm = h.synced_market(db, admin)
     yes_token = int(market.erc1155_tokens[0][0])
@@ -58,7 +56,8 @@ def test_auto_redeem_claims_for_a_holder_with_no_native_balance():
     h.resolve_yes(db, admin, pm)
     h.drain_native_balance(admin, user.eth_address)
     assert admin.native_balance(user.eth_address) == 0
-    usd_before, booked_before = admin.usd_balance(user.eth_address), h.sponsored_gas(db, user)
+    usd_before = admin.usd_balance(user.eth_address)
+    booked_before = h.sponsored_gas(db, user.api_key)
 
     assert auto_redeem_resolved_markets(db, admin, settings) == 1
 
@@ -66,16 +65,13 @@ def test_auto_redeem_claims_for_a_holder_with_no_native_balance():
     assert admin.ctf_balance(user.eth_address, yes_token) == 0
     assert _market_row(db, market.market_id).fully_redeemed is True
     # The top-up's own transfer plus the claim's receipt gas.
-    assert h.sponsored_gas(db, user) - booked_before > TRANSFER_GAS
+    assert h.sponsored_gas(db, user.api_key) - booked_before > TRANSFER_GAS
     # Whatever is left is part of one claim's need, far under the ceiling.
     assert admin.native_balance(user.eth_address) <= settings.max_topup_gas * admin.gas_price()
 
 
-def test_a_holder_who_has_not_opted_in_keeps_their_tokens():
-    """An opted-out holder is skipped outright, against the real chain: no
-    transaction from their wallet, tokens and balance untouched, the market
-    not flagged FULLY_REDEEMED. The winnings just wait."""
-    admin, db = h.chain()
+def test_a_holder_who_has_not_opted_in_keeps_their_tokens(admin, db):
+    """An opted-out holder is skipped: no transaction, tokens and balance untouched."""
     market, pm = h.synced_market(db, admin)
     tokens = [int(t) for t, _label in market.erc1155_tokens]
     user = h.onboarded_account(db, admin, auto_redeem=False)
@@ -95,10 +91,8 @@ def test_a_holder_who_has_not_opted_in_keeps_their_tokens():
     assert row.fully_redeemed is False
 
 
-def test_auto_redeem_stops_at_the_per_pass_cap():
-    """With a cap of one claim per pass, a holder owed in two markets is paid
-    in the first; the second stays open, untouched, and the next pass pays it."""
-    admin, db = h.chain()
+def test_auto_redeem_stops_at_the_per_pass_cap(admin, db):
+    """Cap of one claim per pass: the first market is paid, the second waits for the next pass."""
     capped = Settings().model_copy(update={"auto_redeem_max_per_pass": 1})
     (market_a, pm_a), (market_b, pm_b) = h.synced_market(db, admin), h.synced_market(db, admin)
     yes_b = int(market_b.erc1155_tokens[0][0])
@@ -117,11 +111,8 @@ def test_auto_redeem_stops_at_the_per_pass_cap():
     assert admin.ctf_balance(user.eth_address, yes_b) == 0
 
 
-def test_only_dust_and_losing_tokens_left_settle_the_market_without_a_transaction():
-    """Two opted-in holders, neither owed $0.01: one holds 0.005 apUSD of the
-    winner, the other only the loser. The pass sends nothing for either (no
-    top-up, no claim) and still flags the market: nothing worth claiming is left."""
-    admin, db = h.chain()
+def test_only_dust_and_losing_tokens_left_settle_the_market_without_a_transaction(admin, db):
+    """Neither holder is owed $0.01 (dust; only the loser): nothing sent, the market flagged."""
     settings = Settings().model_copy(update={"min_claim_micro": 10_000})
     market, pm = h.synced_market(db, admin)
     yes_token, no_token = (int(t) for t, _label in market.erc1155_tokens)
