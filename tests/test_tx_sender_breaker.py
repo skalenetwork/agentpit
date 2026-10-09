@@ -91,16 +91,25 @@ def test_receipts_debit_the_cached_balance():
         sender.submit(FakeFn())
 
 
-def test_a_mined_value_send_debits_its_value_as_well_as_its_gas():
-    """Every claim/split/merge top-up is a native transfer, so most of what the
-    admin spends is the value it sends, not the gas of sending it."""
+# Every claim/split/merge top-up is a native transfer, so most of what the admin
+# spends is the value it sends, not the gas of sending it.
+@pytest.mark.parametrize(
+    ("reverts", "status", "debited"),
+    [
+        pytest.param(False, 1, 7 * 10**15 + TRANSFER_GAS * PRICE, id="mined"),
+        # A reverted transaction hands its value back; only the gas is spent.
+        pytest.param(True, 0, TRANSFER_GAS * PRICE, id="reverted"),
+    ],
+)
+def test_a_value_send_debits_its_value_only_when_it_mines(reverts, status, debited):
     chain = FakeSkaled()
     sender, account, _ = make_sender(chain, stop_gas=100)
     chain.balances[account.address] = 10**18
+    chain.revert = {0} if reverts else set()
     sender.refresh_gas_balance()
-    value = 7 * 10**15
-    sender.send_value(Account.create().address, value, timeout=5)
-    assert sender._admin_balance == 10**18 - value - TRANSFER_GAS * PRICE
+    receipt = sender.send_value(Account.create().address, 7 * 10**15, timeout=5)
+    assert receipt["status"] == status
+    assert sender._admin_balance == 10**18 - debited
 
 
 def test_a_batch_of_value_sends_debits_each_value():
@@ -113,18 +122,6 @@ def test_a_batch_of_value_sends_debits_each_value():
     assert all(not isinstance(r, Exception) for r in results)
     sender.wait_all(results, timeout=5)  # type: ignore[arg-type]
     assert sender._admin_balance == 10**18 - 8 * 10**15 - 2 * TRANSFER_GAS * PRICE
-
-
-def test_a_reverted_send_debits_its_gas_but_not_its_value():
-    """A reverted transaction hands its value back; only the gas is spent."""
-    chain = FakeSkaled()
-    sender, account, _ = make_sender(chain, stop_gas=100)
-    chain.balances[account.address] = 10**18
-    chain.revert = {0}
-    sender.refresh_gas_balance()
-    receipt = sender.send_value(Account.create().address, 7 * 10**15, timeout=5)
-    assert receipt["status"] == 0
-    assert sender._admin_balance == 10**18 - TRANSFER_GAS * PRICE
 
 
 def test_debit_ignores_receipts_without_gas_fields():
