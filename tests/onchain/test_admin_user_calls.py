@@ -20,6 +20,11 @@ from tests.onchain._helpers import assert_approvals_set, local_admin
 HOLDER = "0x9D22FB092E79515611e8380026583929F88815b9"
 
 
+@pytest.fixture
+def admin() -> OnchainAdmin:
+    return local_admin()
+
+
 def _condition(admin: OnchainAdmin) -> tuple[bytes, bytes, list[int]]:
     """A fresh binary condition with the admin as oracle: (question id,
     condition id, [token of index set 1, token of index set 2])."""
@@ -82,11 +87,11 @@ def test_an_estimate_carries_no_fee_fields():
     [
         pytest.param([1, 0], (1, [1, 0]), id="yes-wins"),
         pytest.param([0, 1], (1, [0, 1]), id="no-wins"),
-        pytest.param([1, 1], (2, [1, 1]), id="split-resolution"),  # the denominator is the sum: each side pays half
+        # The denominator is the numerators' sum: each side of a 50/50 pays half.
+        pytest.param([1, 1], (2, [1, 1]), id="split-resolution"),
     ],
 )
-def test_payout_vector_before_and_after_report_payouts(payouts, expected):
-    admin = local_admin()
+def test_payout_vector_before_and_after_report_payouts(admin, payouts, expected):
     question_id, condition_id, _tokens = _condition(admin)
     assert admin.payout_vector(condition_id) == (0, [0, 0])
 
@@ -94,13 +99,11 @@ def test_payout_vector_before_and_after_report_payouts(payouts, expected):
     assert admin.payout_vector(condition_id) == expected
 
 
-def test_gas_price_is_the_nodes_current_price():
-    admin = local_admin()
+def test_gas_price_is_the_nodes_current_price(admin):
     assert admin.gas_price() == admin._client.web3.eth.gas_price  # noqa: SLF001
 
 
-def test_an_empty_wallet_can_be_estimated():
-    admin = local_admin()
+def test_an_empty_wallet_can_be_estimated(admin):
     wallet = Account.create()
     assert admin._client.web3.eth.get_balance(wallet.address) == 0  # noqa: SLF001
 
@@ -109,10 +112,9 @@ def test_an_empty_wallet_can_be_estimated():
         assert 21_000 < admin.estimate_user_gas(fn, wallet.address) < 100_000
 
 
-def test_a_claim_with_nothing_to_claim_still_estimates():
+def test_a_claim_with_nothing_to_claim_still_estimates(admin):
     """redeemPositions succeeds with zero holdings, so the chain never refuses a
     worthless claim and the sponsor has to gate it before paying for it."""
-    admin = local_admin()
     question_id, condition_id, _tokens = _condition(admin)
     admin.report_payouts(question_id, [1, 0])
 
@@ -120,8 +122,7 @@ def test_a_claim_with_nothing_to_claim_still_estimates():
     assert admin.estimate_user_gas(claim, Account.create().address) > 21_000
 
 
-def test_transaction_count_counts_only_what_the_wallet_sent():
-    admin = local_admin()
+def test_transaction_count_counts_only_what_the_wallet_sent(admin):
     wallet = Account.create()
     assert admin.transaction_count(wallet.address) == 0
 
@@ -135,8 +136,7 @@ def test_transaction_count_counts_only_what_the_wallet_sent():
     assert admin.transaction_count(wallet.address.lower()) == 1
 
 
-def test_send_as_user_sends_exactly_the_gas_and_price_it_is_given():
-    admin = local_admin()
+def test_send_as_user_sends_exactly_the_gas_and_price_it_is_given(admin):
     w3 = admin._client.web3  # noqa: SLF001
     wallet = Account.create()
     fn = admin.approval_calls()[0]
@@ -155,8 +155,7 @@ def test_send_as_user_sends_exactly_the_gas_and_price_it_is_given():
     assert w3.eth.get_balance(wallet.address) <= gas * price
 
 
-def test_one_wei_short_of_gas_times_price_is_a_balance_refusal():
-    admin = local_admin()
+def test_one_wei_short_of_gas_times_price_is_a_balance_refusal(admin):
     wallet, fn, gas, price = _staged(admin, short=1)
 
     with pytest.raises(Web3RPCError) as caught:
@@ -167,25 +166,25 @@ def test_one_wei_short_of_gas_times_price_is_a_balance_refusal():
     assert admin.transaction_count(wallet.address) == 0
 
 
-def test_a_reverted_call_is_mined_and_returned():
+def test_a_reverted_call_is_mined_and_returned(admin):
     """With the limit given nothing is estimated, so a call the contract rejects
     is mined, paid for and handed back with status 0: the sponsor books its gas
     and raises; it never sees an exception here."""
-    admin = local_admin()
     _question_id, condition_id, _tokens = _condition(admin)  # not reported
     wallet = Account.create()
     gas, price = 100_000, admin.gas_price()
     admin.fund_gas(wallet.address, gas * price)
 
-    receipt = admin.send_as_user(wallet, admin.redeem_call(condition_id, [1, 2]), gas=gas, max_fee=price)
+    redeem = admin.redeem_call(condition_id, [1, 2])
+
+    receipt = admin.send_as_user(wallet, redeem, gas=gas, max_fee=price)
 
     assert receipt["status"] == 0
     assert receipt["gasUsed"] > 0
     assert admin.transaction_count(wallet.address) == 1
 
 
-def test_approval_calls_are_the_three_onboarding_approvals_in_order():
-    admin = local_admin()
+def test_approval_calls_are_the_three_onboarding_approvals_in_order(admin):
     c = admin._contracts  # noqa: SLF001
 
     assert [(fn.address, fn.fn_name, fn.args) for fn in admin.approval_calls()] == [
@@ -195,10 +194,9 @@ def test_approval_calls_are_the_three_onboarding_approvals_in_order():
     ]
 
 
-def test_one_exact_top_up_pays_for_all_three_approvals():
+def test_one_exact_top_up_pays_for_all_three_approvals(admin):
     """Onboarding without a grant: one top-up sized for the three calls
     together, then the three sent back to back from it."""
-    admin = local_admin()
     wallet = Account.create()
     calls = admin.approval_calls()
     limits = [_sized(admin, fn, wallet.address) for fn in calls]
@@ -206,16 +204,17 @@ def test_one_exact_top_up_pays_for_all_three_approvals():
     need = sum(limits) * price
     admin.fund_gas(wallet.address, need)
 
-    receipts = [admin.send_as_user(wallet, fn, gas=gas, max_fee=price) for fn, gas in zip(calls, limits)]
+    receipts = [
+        admin.send_as_user(wallet, fn, gas=gas, max_fee=price) for fn, gas in zip(calls, limits)
+    ]
 
     assert [r["status"] for r in receipts] == [1, 1, 1]
     assert_approvals_set(admin, wallet.address)
     assert admin.native_balance(wallet.address) <= need
 
 
-def test_grant_user_approvals_still_sets_every_approval():
+def test_grant_user_approvals_still_sets_every_approval(admin):
     """The house path: a wallet that holds its own gas signs all three."""
-    admin = local_admin()
     house = _self_funded_house(admin)
 
     receipts = admin.grant_user_approvals(house)
@@ -224,8 +223,7 @@ def test_grant_user_approvals_still_sets_every_approval():
     assert_approvals_set(admin, house.address)
 
 
-def test_split_merge_and_redeem_calls_move_collateral_and_tokens():
-    admin = local_admin()
+def test_split_merge_and_redeem_calls_move_collateral_and_tokens(admin):
     question_id, condition_id, tokens = _condition(admin)
     wallet = _self_funded_house(admin, dripped=True)
     usd_start = admin.usd_balance(wallet.address)
@@ -251,8 +249,7 @@ def test_split_merge_and_redeem_calls_move_collateral_and_tokens():
     assert admin.usd_balance(wallet.address) == usd_start
 
 
-def test_user_split_position_still_splits_for_a_self_funded_wallet():
-    admin = local_admin()
+def test_user_split_position_still_splits_for_a_self_funded_wallet(admin):
     _question_id, condition_id, tokens = _condition(admin)
     house = _self_funded_house(admin, dripped=True)
 
@@ -262,26 +259,26 @@ def test_user_split_position_still_splits_for_a_self_funded_wallet():
     assert admin.ctf_balances(house.address, tokens) == [7_000_000, 7_000_000]
 
 
-def test_the_hash_is_handed_over_after_signing_and_before_the_broadcast():
+def test_the_hash_is_handed_over_after_signing_and_before_the_broadcast(admin):
     """`on_signed` gets the transaction's own hash, the one its receipt will
     carry, while the chain has not seen it yet: what `PositionService` writes
     its intent row under before anything can mine."""
-    admin = local_admin()
     wallet, fn, gas, price = _staged(admin)
     seen: list[tuple[str, int, object]] = []
 
     def on_signed(tx_hash: str) -> None:
-        seen.append((tx_hash, admin.transaction_count(wallet.address), admin.transaction_receipt(tx_hash)))
+        nonce, mined = admin.transaction_count(wallet.address), admin.transaction_receipt(tx_hash)
+        seen.append((tx_hash, nonce, mined))
 
     receipt = admin.send_as_user(wallet, fn, gas=gas, max_fee=price, on_signed=on_signed)
 
-    assert seen == [("0x" + bytes(receipt["transactionHash"]).hex(), 0, None)]  # not sent, not mined, yet
+    expected = "0x" + bytes(receipt["transactionHash"]).hex()
+    assert seen == [(expected, 0, None)]  # nothing sent, nothing mined, yet
 
 
-def test_a_hook_that_raises_stops_the_broadcast():
+def test_a_hook_that_raises_stops_the_broadcast(admin):
     """An intent row that could not be written must not leave a transaction on
     its way that nothing records."""
-    admin = local_admin()
     wallet, fn, gas, price = _staged(admin)
 
     def on_signed(_tx_hash: str) -> None:
@@ -293,8 +290,7 @@ def test_a_hook_that_raises_stops_the_broadcast():
     assert admin.native_balance(wallet.address) == gas * price
 
 
-def test_a_receipt_is_read_by_hash_and_an_unknown_hash_reads_none():
-    admin = local_admin()
+def test_a_receipt_is_read_by_hash_and_an_unknown_hash_reads_none(admin):
     wallet, fn, gas, price = _staged(admin)
     receipt = admin.send_as_user(wallet, fn, gas=gas, max_fee=price)
 
