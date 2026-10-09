@@ -247,11 +247,10 @@ class AdminTxSender:
 
     def _debit(self, receipt, value: int = 0) -> None:
         """Take a mined send's cost off the cached balance, so a burst between
-        two refreshes still trips the breaker: its gas, and the `value` it
-        sent (every gas top-up for a user is all value). A reverted
-        transaction hands its value back, so only its gas is taken. Fillers
-        and receipts nobody waits for are not debited; the next refresh
-        corrects for them."""
+        two refreshes still trips the breaker: its gas, plus the `value` it
+        sent unless it reverted (a gas top-up is all value). Fillers and
+        receipts nobody waits for are not debited; the next refresh corrects
+        for them."""
         used = receipt.get("gasUsed")
         price = receipt.get("effectiveGasPrice")
         if used is None or price is None:
@@ -294,13 +293,9 @@ class AdminTxSender:
         essential: bool = False,
         slot_timeout: float | None = None,
     ) -> PendingTx:
-        """Broadcast a plain native-token transfer.
-
-        `slot_timeout` replaces the sender's own for this one send: how long it
-        may wait, queueing on the send lock included, for a free in-flight slot
-        before `TimeExhausted`. A caller that holds something while it waits
-        (the user's lock, for a gas top-up) passes a shorter bound.
-        """
+        """Broadcast a plain native-token transfer. `slot_timeout` replaces the
+        sender's own wait for a free slot (send lock included) for this send:
+        a caller holding a lock meanwhile passes a shorter one."""
         self._gate(essential)
         return self._submit(
             _value_base(to, value_wei), TRANSFER_GAS, 0, slot_timeout=slot_timeout
@@ -391,15 +386,9 @@ class AdminTxSender:
         essential: bool = False,
         slot_timeout: float | None = None,
     ) -> TxReceipt:
-        """`submit_value` then `wait`: the receipt whatever its status.
-
-        With no `slot_timeout` the wait for a slot and the wait for the receipt
-        are separate, each as long as it is given. With one, the slot wait is
-        capped at it and counts against `timeout`, which then bounds the whole
-        call: a full pipeline raises `TimeExhausted` after `slot_timeout`, and
-        a slot that frees late leaves only what is left of `timeout` for the
-        receipt.
-        """
+        """`submit_value` then `wait`: the receipt whatever its status. With a
+        `slot_timeout`, the slot wait is capped at it and counts against
+        `timeout`, which then bounds the whole call."""
         started = self._clock()
         pending = self.submit_value(
             to, value_wei, essential=essential, slot_timeout=slot_timeout
@@ -756,9 +745,7 @@ class AdminTxSender:
         limit: float | None = None,
     ) -> None:
         """Poll until `need` slots are free (a batch takes one per item).
-
-        `limit` is the bound `deadline` was set from, for the error message;
-        the sender's own `slot_timeout` unless a caller passed a shorter one."""
+        `limit` is the bound `deadline` was set from, for the error message."""
         if limit is None:
             limit = self._slot_timeout
         if deadline is None:
