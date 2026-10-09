@@ -1,14 +1,10 @@
 import { Bot, ChartCandlestick, Handshake, Layers, Skull, SlidersHorizontal, Trophy } from "@lucide/astro";
-import { mirrorInterval, paperBalance } from "./measurements";
+import { paperBalance } from "./measurements";
 
 export const hero = {
   headline: { accent: "Paper trading", rest: " for prediction market bots." },
-  subhead: [
-    "Trade live Polymarket order books with paper money.",
-    "Every fill settles on SKALE on Base.",
-  ],
-  cue: "Send this to your agent",
-  visualNote: "The agents above answer at random. It is a demo, not a prediction.",
+  subhead: "Trade live Polymarket books, settled on SKALE on Base.",
+  cue: "Send this to your agent:",
 } as const;
 
 export const steps = (markets: string) => ({
@@ -72,7 +68,7 @@ export const questions = {
     },
     {
       term: "Is the data real?",
-      def: `Yes. Every order book is mirrored from live Polymarket every ${mirrorInterval.value} seconds, pull only, so a quote is as fresh as the last mirror pass.`,
+      def: "Yes. Every order book is Polymarket's live book, streamed as it changes, and every fill is at Polymarket's prices. Your agent's trades never move the market.",
     },
     {
       term: "What happens when a market resolves?",

@@ -4,10 +4,10 @@ import Closing from "../components/Closing.astro";
 import Facts from "../components/Facts.astro";
 import FeatureCard from "../components/FeatureCard.astro";
 import Hero from "../components/Hero.astro";
-import HeroStage from "../components/HeroStage.astro";
+import HeroLive from "../components/HeroLive.astro";
 import KeyWire from "../components/KeyWire.astro";
 import Layout from "../components/Layout.astro";
-import MarketStream from "../components/MarketStream.astro";
+import MarketWall from "../components/MarketWall.astro";
 import Prompt from "../components/Prompt.astro";
 import RankColumns from "../components/RankColumns.astro";
 import Section from "../components/Section.astro";
@@ -16,29 +16,34 @@ import StrategyDeck from "../components/StrategyDeck.astro";
 import TuneSliders from "../components/TuneSliders.astro";
 import TokenRain from "../components/TokenRain.astro";
 import { closing, features, hero, questions, steps } from "../content/home";
-import { activeMarkets as snapshot, book, quotes } from "../content/measurements";
+import { activeMarkets as snapshot, book } from "../content/measurements";
 import { site } from "../content/site";
 import { sentence } from "../content/start";
-import { activeMarkets } from "../lib/api";
+import { activeMarkets, marketBoard, stats } from "../lib/api";
 
 export const prerender = false;
 
+const [active, board, days] = await Promise.all([activeMarkets(), marketBoard({ tab: "trending", q: null, page: 1 }), stats()]);
+if (!board?.cards.length || !days || active === undefined) Astro.cache.set(false);
+const cards = board?.cards.slice(0, active === undefined ? 10 : 9) ?? [];
 const {
   heading,
   items: [key, money, markets],
-} = steps((await activeMarkets())?.toLocaleString("en-US") ?? snapshot.value);
+} = steps(active?.toLocaleString("en-US") ?? snapshot.value);
 ---
 
 <Layout title={`${site.name}: ${site.tagline}`} path="/" overlay>
-  <Hero lead={hero.subhead} caption={hero.visualNote}>
+  <Hero>
     <span class="text-signal">{hero.headline.accent}</span>{hero.headline.rest}
-    <div slot="actions" class="flex flex-col items-center gap-2.5 max-sm:px-5">
-      <p class="text-[15px]/5 font-medium text-muted/72 [text-box:trim-start_cap_alphabetic]">{hero.cue}</p>
-      <div class="flex w-full scheme-light-dark rounded-[40px] bg-surface/70 p-2 backdrop-blur-xl sm:p-2.5 lg:rounded-control">
+    <div slot="actions" class="flex flex-col items-center gap-8 max-sm:px-5">
+      <p class="text-body text-balance text-muted [text-box:trim-start_cap_alphabetic] sm:text-lead">
+        <span class="lg:block lg:text-nowrap">{hero.subhead} </span><span class="block">{hero.cue}</span>
+      </p>
+      <div class="flex w-full scheme-light-dark rounded-[37px] bg-surface/70 p-2 backdrop-blur-xl sm:rounded-[36px] sm:p-2.5 lg:rounded-control">
         <Prompt class="grow" text={sentence} />
       </div>
     </div>
-    <HeroStage slot="visual" quotes={quotes.items} />
+    {cards.length > 0 && <HeroLive slot="visual" cards={cards} days={days} more={active === undefined ? undefined : active - cards.length} />}
   </Hero>
 
   <Section heading={heading}>
@@ -51,7 +56,7 @@ const {
         href="/markets"
         class="min-h-96 lg:col-start-2 lg:row-span-2 lg:row-start-1"
       >
-        <MarketStream quotes={quotes.items} />
+        <MarketWall cards={board?.cards.slice(cards.length) ?? []} />
       </StatCard>
     </div>
   </Section>

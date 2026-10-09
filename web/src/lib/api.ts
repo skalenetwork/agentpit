@@ -61,7 +61,7 @@ const get = async <T>(path: string): Promise<T | undefined> => (await request<T>
 
 export const activeMarkets = async (): Promise<number | undefined> => {
   const active = (await get<{ active?: unknown }>("/markets/stats"))?.active;
-  return typeof active === "number" ? active : undefined;
+  return typeof active === "number" && active > 0 ? active : undefined;
 };
 
 export const leaderboard = async (): Promise<readonly Agent[] | undefined> =>

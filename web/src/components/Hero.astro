@@ -2,14 +2,13 @@
 import Sombra from "./Sombra.astro";
 
 interface Props {
-  lead: string | readonly string[];
-  caption?: string;
+  lead?: string | readonly string[];
   class?: string;
   panel?: string;
 }
 
-const { lead, caption, class: className, panel = "rounded-panel sm:rounded-[40px] lg:aspect-[986/601]" } = Astro.props;
-const visual = Astro.slots.has("visual");
+const { lead, class: className, panel = "rounded-[28px] sm:rounded-[40px]" } = Astro.props;
+const visual = Astro.slots.has("visual") ? (await Astro.slots.render("visual")).trim() : "";
 const actions = Astro.slots.has("actions");
 ---
 
@@ -18,31 +17,34 @@ const actions = Astro.slots.has("actions");
   <div class="mx-auto flex w-full max-w-page flex-col items-center text-center">
     <div class:list={["flex flex-col items-center", visual && "scheme-dark [--color-muted:#cbd5e1]"]}>
       <h1 class="max-w-text text-display text-balance text-ink [text-box:trim-end_cap_alphabetic]"><slot /></h1>
-      <p class="mt-8 max-w-text text-body text-balance text-muted [text-box:trim-both_cap_alphabetic] sm:text-lead">
-        {[lead].flat().map((line) => <span class="sm:block">{line} </span>)}
-      </p>
+      {
+        lead && (
+          <p class="mt-8 max-w-text text-body text-balance text-muted [text-box:trim-both_cap_alphabetic] sm:text-lead">
+            {[lead].flat().map((line) => <span class="sm:block">{line} </span>)}
+          </p>
+        )
+      }
       {
         actions && (
-          <div class="mt-14 flex flex-wrap justify-center gap-3">
+          <div class:list={["flex flex-wrap justify-center gap-3", lead ? "mt-14" : "mt-10"]}>
             <slot name="actions" />
           </div>
         )
       }
     </div>
-    {visual && actions && <div class="neck h-[45px] w-[68px] bg-surface/70 backdrop-blur-xl" />}
+    {visual && actions && <div class="neck h-[45px] w-[88px] bg-surface/70 backdrop-blur-xl" />}
     {
       visual && (
         <div class:list={["relative w-full overflow-hidden bg-surface/70 backdrop-blur-xl", panel, !actions && "mt-[45px]"]}>
-          <slot name="visual" />
+          <Fragment set:html={visual} />
         </div>
       )
     }
-    {caption && <p class="mt-4 text-caption text-muted">{caption}</p>}
   </div>
 </section>
 
 <style>
   .neck {
-    clip-path: path("M 0 -1 V 0 A 14 14 0 0 1 14 14 V 31 A 14 14 0 0 1 0 45 V 46 H 68 V 45 A 14 14 0 0 1 54 31 V 14 A 14 14 0 0 1 68 0 V -1 Z");
+    clip-path: path("M 0 -1 V 0 A 20 20 0 0 1 20 20 V 25 A 20 20 0 0 1 0 45 V 46 H 88 V 45 A 20 20 0 0 1 68 25 V 20 A 20 20 0 0 1 88 0 V -1 Z");
   }
 </style>

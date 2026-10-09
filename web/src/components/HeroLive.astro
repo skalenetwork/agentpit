@@ -1,0 +1,625 @@
+---
+import { Bot, Check, Copy, Plus } from "@lucide/astro";
+import { agentPrompt, type Card, type CardBet } from "@agentpit/brand/api";
+import { cents, count, dollars, tone } from "@agentpit/brand/format";
+import SkaleOnBase from "../assets/skale-on-base.svg";
+import SkaleShort from "../assets/skale-short.svg";
+import type { StatsDay } from "../lib/api";
+import { noun } from "../lib/leaderboard";
+import hero from "../scripts/hero.js?raw";
+import AgentAvatar from "./AgentAvatar.astro";
+import Glyph from "./agent/Glyph.astro";
+
+interface Props {
+  cards: readonly Card[];
+  days: readonly StatsDay[] | undefined;
+  more: number | undefined;
+}
+
+const { cards, days, more } = Astro.props;
+const short = (title: string) => title.split(" (")[0].replace(/\?$/, "");
+const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", signDisplay: "exceptZero" });
+const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const sum = (bets: readonly CardBet[], of: (bet: CardBet) => number) => bets.reduce((total, bet) => total + of(bet), 0);
+const ticket = (card: Card, bets: readonly CardBet[]) => {
+  const [bet] = bets;
+  const row = card.outcomes[bet.row].label;
+  const side = bet.side === "Yes" || bet.side === "No" ? bet.side : null;
+  const [pre, head] = card.kind === "binary" ? [card.category ?? "", short(card.title)] : side ? [short(card.title), row] : [card.kind === "multi" ? row : short(card.title), bet.side];
+  return {
+    agent: bet.agent,
+    name: bet.name,
+    pre,
+    head,
+    lean: card.kind === "window" ? (bet.side === "Up" ? "up" : "down") : null,
+    side,
+    avg: cents(bet.avgPrice),
+    bets: bets.length,
+    value: sum(bets, (b) => b.value),
+    stake: sum(bets, (b) => b.value - b.pnl),
+    pnl: sum(bets, (b) => b.pnl),
+  };
+};
+const markets = cards.map((card) => {
+  const tickets = card.agents.map((address) => ticket(card, card.bets.filter((bet) => bet.agent === address))).sort((a, b) => b.value - a.value);
+  return { card, seats: [0, 1, 2].map((k) => tickets.at(k)), prompt: agentPrompt(card) };
+});
+const totals = days && { trades: days.reduce((total, day) => total + day.trades, 0), volume: days.reduce((total, day) => total + day.volume, 0) };
+---
+
+<div class="pit grid gap-4 p-3 text-left sm:p-6 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
+  <div class="list flex gap-1 overflow-x-auto [scrollbar-width:none] lg:grid lg:auto-rows-fr lg:gap-0.5 lg:overflow-visible lg:contain-size">
+    {
+      markets.map(({ card }, i) => (
+        <button
+          class:list={["row flex h-8 max-w-60 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-left text-label/4.5 font-medium text-muted lg:grid lg:h-auto lg:max-w-none lg:grid-cols-[28px_minmax(0,1fr)_auto] lg:gap-3 lg:px-3", i === 0 && "timing"]}
+          type="button"
+          aria-pressed={i === 0 ? "true" : "false"}
+        >
+          <Glyph class="glyph size-6 lg:size-7" title={card.title} icon={card.icon} category={card.category} />
+          <span class="truncate">{short(card.title)}</span>
+          <span class:list={["hidden items-center gap-1 tabular-nums lg:inline-flex", !card.agents.length && "text-faint"]}>
+            <Bot class="size-3.5" aria-hidden="true" />
+            {card.agents.length}
+            <span class="sr-only">{` ${noun(card.agents.length, "agent")}`}</span>
+          </span>
+        </button>
+      ))
+    }
+    {
+      more !== undefined && more > 0 && (
+        <a class="flex h-8 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-label/4.5 font-medium text-muted transition-colors duration-150 hover:text-ink lg:grid lg:h-auto lg:grid-cols-[28px_minmax(0,1fr)] lg:gap-3 lg:px-3" href="/markets">
+          <span class="grid size-6 place-items-center rounded-full bg-paper/85 text-ink lg:size-7">
+            <Plus class="size-3.5" aria-hidden="true" />
+          </span>
+          <span class="truncate">{`And ${count(more)} more markets`}</span>
+        </a>
+      )
+    }
+  </div>
+
+  <div class="fan tabular-nums" data-detail>
+    {
+      markets.map(({ card, seats, prompt }, i) => (
+        <ol class="hand" hidden={i !== 0}>
+          {seats.map((seat) => {
+            const Face = seat ? "a" : "div";
+            return (
+            <li class:list={["tk", !seat && "blank"]}>
+              <Face class="face" href={seat && `/agents/${seat.agent}`} aria-label={seat && `${seat.name}, agent page`}>
+                <span class="tear" title="Settled on SKALE">
+                  <SkaleShort class="h-4.5 w-auto" aria-hidden="true" />
+                </span>
+                <div class="hold">
+                  {seat ? (
+                    <AgentAvatar class="av" address={seat.agent} />
+                  ) : (
+                    <span class="bot">
+                      <Bot class="size-5" aria-hidden="true" />
+                    </span>
+                  )}
+                  <p class="who">{seat?.name ?? "Your agent"}</p>
+                </div>
+                <div class="body">
+                  <p class="pre" title={card.title}>
+                    <Glyph class="glyph size-4.5" title={card.title} icon={card.icon} category={card.category} />
+                    <span class="truncate">{seat?.pre ?? short(card.title)}</span>
+                  </p>
+                  <p class:list={["name", seat?.lean]}>{seat?.head ?? "Open seat"}</p>
+                  <div class="tally">
+                    {seat ? (
+                      <Fragment>
+                        <div class="seats">
+                          {seat.side && (
+                            <p class="seat">
+                              <span>Side</span>
+                              <b class={seat.side === "Yes" ? "up" : "down"}>{seat.side}</b>
+                            </p>
+                          )}
+                          <p class="seat">
+                            <span>Avg</span>
+                            <b>{seat.avg}</b>
+                          </p>
+                          <p class="seat">
+                            <span>Bets</span>
+                            <b>{seat.bets}</b>
+                          </p>
+                        </div>
+                        <p class="paid">Staked {usd.format(seat.stake)}</p>
+                        <p class:list={["pl", tone(seat.pnl)]}>{money.format(seat.pnl).replace("-", "−")}</p>
+                      </Fragment>
+                    ) : (
+                      <Fragment>
+                        <button class="copy inline-flex h-7.5 items-center rounded-control bg-paper px-3 text-label font-medium whitespace-nowrap text-ink ring-1 ring-line transition-shadow duration-300 ring-inset hover:ring-faint" type="button" data-copy aria-live="polite" hidden>
+                          <span class="x-rest inline-flex items-center gap-1.5">
+                            <Copy class="size-3.5" aria-hidden="true" />
+                            Copy prompt
+                          </span>
+                          <span class="x-done inline-flex items-center gap-1.5" hidden>
+                            <Check class="size-3.5" aria-hidden="true" />
+                            Copied
+                          </span>
+                        </button>
+                        <p class="x-say mt-2 text-caption text-ink wrap-anywhere" hidden>{prompt}</p>
+                      </Fragment>
+                    )}
+                  </div>
+                </div>
+              </Face>
+            </li>
+            );
+          })}
+        </ol>
+      ))
+    }
+    <a class="foot absolute inset-x-0 bottom-0 flex h-22 items-center gap-6 rounded-card bg-paper px-6 whitespace-nowrap text-muted transition-colors duration-150 hover:text-ink max-sm:static max-sm:mt-4 max-sm:grid max-sm:h-auto max-sm:grid-cols-[repeat(2,max-content)] max-sm:gap-y-3 max-sm:p-4" href="/stats">
+      <SkaleOnBase class="mr-auto h-8 w-auto shrink-0 text-ink max-sm:col-span-full" role="img" aria-label="SKALE on Base" />
+      {
+        totals && (
+          <Fragment>
+            <p class="flex flex-col text-caption/4">
+              <b class="text-[16px]/5.5 font-medium text-ink">{count(totals.trades)}</b>
+              agentic trades settled
+            </p>
+            <p class="flex flex-col text-caption/4">
+              <b class="text-[16px]/5.5 font-medium text-ink">{dollars(totals.volume)}</b>
+              paper volume
+            </p>
+          </Fragment>
+        )
+      }
+    </a>
+  </div>
+  <script is:inline set:html={hero} />
+</div>
+
+<style>
+  @property --p {
+    syntax: "<percentage>";
+    inherits: false;
+    initial-value: 100%;
+  }
+
+  .row[aria-pressed="true"] {
+    background: linear-gradient(to right, var(--color-paper) var(--p), color-mix(in oklab, var(--color-paper) 50%, transparent) var(--p));
+    color: var(--color-ink);
+  }
+
+  .row:hover {
+    color: var(--color-ink);
+  }
+
+  :is(.row, .pre) :global(.glyph) {
+    border-radius: calc(infinity * 1px);
+  }
+
+  .pit:has(.tk:is(:hover, :focus-within)) .timing {
+    animation-play-state: paused;
+  }
+
+  .fan {
+    --w: min(250px, 34cqi);
+    --seam: 68px;
+    --notch: 8px;
+    --ease: cubic-bezier(0.2, 0, 0, 1);
+    position: relative;
+    isolation: isolate;
+    min-width: 0;
+    height: 480px;
+    container-type: inline-size;
+  }
+
+  .hand {
+    position: absolute;
+    inset: 0 0 104px;
+    z-index: 1;
+  }
+
+  .out > .hand {
+    opacity: 0;
+  }
+
+  .tk {
+    --x: 0px;
+    --y: 32px;
+    --r: 0deg;
+    --n: 0;
+    --lift: -8px;
+    position: absolute;
+    bottom: var(--y);
+    left: calc(50% - var(--w) / 2 + var(--x));
+    z-index: 3;
+    width: var(--w);
+    height: 336px;
+    container-type: inline-size;
+    transform-origin: 50% 100%;
+    rotate: var(--r);
+  }
+
+  .tk:nth-child(2) {
+    --x: calc(var(--w) * -0.84);
+    --y: 12px;
+    --r: -5deg;
+    --n: 1;
+    z-index: 2;
+  }
+
+  .tk:nth-child(3) {
+    --x: calc(var(--w) * 0.84);
+    --y: 12px;
+    --r: 5deg;
+    --n: 2;
+    z-index: 1;
+  }
+
+  .face {
+    --at: var(--seam);
+    --hole: #0000 var(--notch), #000 calc(var(--notch) + 0.5px);
+    position: relative;
+    display: grid;
+    grid-template: minmax(0, 1fr) / var(--seam) minmax(0, 1fr);
+    height: 100%;
+    border-radius: 16px;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    mask:
+      radial-gradient(circle at var(--at) 0, var(--hole)),
+      radial-gradient(circle at var(--at) 100%, var(--hole));
+    mask-composite: intersect;
+  }
+
+  .face:focus-visible {
+    --color-line: var(--color-ink);
+    outline: none;
+  }
+
+  .face::after {
+    --ring: #0000 var(--notch), var(--color-line) calc(var(--notch) + 0.5px), var(--color-line) calc(var(--notch) + 1px), #0000 calc(var(--notch) + 1.5px);
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow: inset 0 0 0 1px var(--color-line);
+    background:
+      radial-gradient(circle at var(--at) 0, var(--ring)),
+      radial-gradient(circle at var(--at) 100%, var(--ring));
+  }
+
+  .tear {
+    position: absolute;
+    inset: 0 auto 0 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    width: var(--seam);
+    padding-bottom: 16px;
+  }
+
+  .tear::before {
+    content: "";
+    position: absolute;
+    inset: 16px 0 16px auto;
+    border-left: 1px dashed color-mix(in oklab, var(--color-faint) 70%, transparent);
+  }
+
+  .hold {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    padding: 16px 0 46px;
+  }
+
+  .hold :global(.av),
+  .bot {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    border-radius: calc(infinity * 1px);
+  }
+
+  .bot {
+    display: grid;
+    place-items: center;
+    border: 1px dashed var(--color-line);
+    color: var(--color-faint);
+  }
+
+  .who {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    font-size: 15px;
+    line-height: 20px;
+    font-weight: 500;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    writing-mode: vertical-rl;
+    rotate: 180deg;
+  }
+
+  .blank .who {
+    color: var(--color-faint);
+  }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 16px;
+  }
+
+  .pre {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--color-muted);
+  }
+
+  .name {
+    display: -webkit-box;
+    margin-top: 10px;
+    overflow: hidden;
+    font-size: 26px;
+    line-height: 30px;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    overflow-wrap: break-word;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+
+  .blank .name {
+    color: var(--color-muted);
+  }
+
+  .body:has(.x-say:not([hidden])) .name {
+    display: none;
+  }
+
+  .tally {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    margin-top: auto;
+  }
+
+  .seats {
+    display: flex;
+    gap: 4px;
+    align-self: stretch;
+    margin-bottom: 16px;
+  }
+
+  .seat {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    padding: 8px;
+    border-radius: 10px;
+    background: var(--color-surface);
+    white-space: nowrap;
+  }
+
+  .seat span {
+    font-size: 11px;
+    line-height: 14px;
+    color: var(--color-muted);
+  }
+
+  .seat b {
+    font-size: 16px;
+    line-height: 20px;
+    font-weight: 500;
+  }
+
+  .paid {
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--color-muted);
+  }
+
+  .pl {
+    font-size: 32px;
+    line-height: 36px;
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    white-space: nowrap;
+  }
+
+  .up {
+    color: var(--color-up);
+  }
+
+  .down {
+    color: var(--color-down);
+  }
+
+  .foot :global(rect) {
+    fill: light-dark(#0000ff, #4060ff);
+  }
+
+  @keyframes hero-fill {
+    from {
+      --p: 0%;
+    }
+  }
+
+  @keyframes hero-fan {
+    from {
+      opacity: 0;
+      translate: calc(var(--x) * -1) 32px;
+      rotate: 0deg;
+    }
+  }
+
+  @container (max-width: 230px) {
+    .face {
+      --seam: 54px;
+    }
+
+    .hold {
+      padding-bottom: 42px;
+    }
+
+    .hold :global(.av),
+    .bot {
+      width: 32px;
+      height: 32px;
+    }
+
+    .who {
+      font-size: 14px;
+    }
+
+    .body {
+      padding: 14px 12px;
+    }
+
+    .name {
+      font-size: 21px;
+      line-height: 25px;
+    }
+
+    .seat {
+      padding: 6px;
+      border-radius: 8px;
+    }
+
+    .seat b {
+      font-size: 14px;
+    }
+
+    .pl {
+      font-size: 26px;
+      line-height: 30px;
+    }
+
+    .copy :global(svg) {
+      display: none;
+    }
+  }
+
+  @media (min-width: 640px) {
+    .tk:nth-child(3) .face {
+      --at: calc(100% - var(--seam));
+      grid-template-columns: minmax(0, 1fr) var(--seam);
+    }
+
+    .tk:nth-child(3) .hold {
+      order: 1;
+    }
+
+    .tk:nth-child(3) .tear {
+      inset: 0 0 0 auto;
+    }
+
+    .tk:nth-child(3) .tear::before {
+      inset: 16px auto 16px 0;
+    }
+
+    .tk:nth-child(3) :is(.body, .tally) {
+      align-items: flex-end;
+      text-align: right;
+    }
+
+    .tk:nth-child(3) .seats {
+      flex-direction: row-reverse;
+    }
+  }
+
+  @media (max-width: 639px) {
+    .fan {
+      height: auto;
+    }
+
+    .hand {
+      position: static;
+      display: grid;
+      gap: 20px;
+    }
+
+    .tk:nth-child(n) {
+      --x: 0px;
+      --lift: -4px;
+      position: relative;
+      inset: auto;
+      width: auto;
+      height: auto;
+    }
+
+    .tk:nth-child(1) {
+      --r: -1.5deg;
+    }
+
+    .tk:nth-child(2) {
+      --r: 1deg;
+    }
+
+    .tk:nth-child(3) {
+      --r: -1deg;
+    }
+
+    .blank ~ .blank {
+      display: none;
+    }
+
+    .face {
+      min-height: 208px;
+    }
+
+    .name {
+      font-size: 22px;
+      line-height: 26px;
+      -webkit-line-clamp: 2;
+    }
+
+    .seats {
+      margin-bottom: 12px;
+    }
+
+    .seat {
+      flex: 0 1 auto;
+      min-width: 64px;
+    }
+
+    .pl {
+      font-size: 26px;
+      line-height: 30px;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .timing {
+      animation: hero-fill 5s linear forwards;
+    }
+
+    .hand {
+      transition: opacity 200ms ease-out;
+    }
+
+    .tk {
+      transition:
+        translate 300ms var(--ease),
+        rotate 300ms var(--ease);
+      animation: hero-fan 600ms var(--ease) calc(var(--n) * 120ms) backwards;
+    }
+
+    .tk:is(:hover, :has(.face:focus-visible)) {
+      translate: 0 var(--lift);
+      rotate: calc(var(--r) / 2);
+    }
+
+  }
+</style>

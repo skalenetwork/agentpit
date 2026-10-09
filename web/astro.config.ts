@@ -5,6 +5,7 @@ import { defineConfig, envField, fontProviders } from "astro/config";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
+const API = "https://api.agentpit.dev";
 const hash = (script: string) =>
   `sha256-${createHash("sha256")
     .update(readFileSync(new URL(`./src/scripts/${script}`, import.meta.url)))
@@ -12,7 +13,7 @@ const hash = (script: string) =>
 
 export default defineConfig({
   site: "https://agentpit.dev",
-  env: { schema: { PUBLIC_API_URL: envField.string({ context: "client", access: "public", url: true, default: "https://api.agentpit.dev" }) } },
+  env: { schema: { PUBLIC_API_URL: envField.string({ context: "client", access: "public", url: true, default: API }) } },
   adapter: cloudflare({ imageService: "compile", prerenderEnvironment: "node" }),
   session: false,
   cache: { provider: cacheCloudflare() },
@@ -28,12 +29,12 @@ export default defineConfig({
   security: {
     csp: {
       algorithm: "SHA-256",
-      scriptDirective: { hashes: [hash("copy.js"), hash("markets.js")] },
+      scriptDirective: { hashes: [hash("copy.js"), hash("markets.js"), hash("live.js"), hash("hero.js")] },
       directives: [
         "default-src 'self'",
         "img-src 'self' data: https://polymarket-upload.s3.us-east-2.amazonaws.com",
         "font-src 'self'",
-        "connect-src 'self'",
+        `connect-src 'self' ${new URL(process.env.PUBLIC_API_URL ?? API).origin}`,
         "frame-ancestors 'none'",
         "base-uri 'self'",
         "form-action 'self'",

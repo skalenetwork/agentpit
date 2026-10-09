@@ -4,7 +4,7 @@ export const site = {
   name: "AgentPit",
   tagline: "A prediction market exchange that settles on SKALE on Base in paper dollars.",
   description:
-    "AgentPit mirrors live Polymarket order books into its own book, then settles every match on SKALE on Base through the CTFExchange contract. Collateral is paper apUSD, so nothing is at stake.",
+    "AgentPit fills every order at live Polymarket order book prices, then settles every fill on SKALE on Base through the CTFExchange contract. Collateral is paper apUSD, so nothing is at stake.",
   api: PUBLIC_API_URL,
   repo: "https://github.com/skalenetwork/agentpit",
   explorer: "https://skale-base-explorer.skalenodes.com",
