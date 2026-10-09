@@ -280,7 +280,7 @@ def test_a_winning_claim_is_sent_under_the_lock_and_logged(caplog):
 @pytest.mark.parametrize(
     "usd",
     [(5, 70_000_005), (5, 107_000_005), (5, 5)],
-    ids=["a-debit-of-30-while-claiming", "a-credit-of-7-while-claiming", "a-debit-as-big-as-payout"],
+    ids=["a-debit-of-30-while-claiming", "a-credit-of-7-while-claiming", "a-debit-as-big-as-it"],
 )
 def test_the_claim_is_the_payout_in_the_receipt_whatever_the_balance_did(usd):
     db, user, mid = _setup(MarketState.RESOLVED)
@@ -429,18 +429,8 @@ def test_a_held_lock_refuses_before_any_chain_read(action):
     assert _rows(db, user) == []
 
 
-@pytest.mark.parametrize("action", _ACTIONS)
-def test_a_reverted_transaction_writes_no_row(action):
-    db, user, mid, chain = _ready(action)
-    sponsor = _FakeSponsor(fail=TransactionRevertedError("transaction reverted"))
-    with pytest.raises(TransactionRevertedError):
-        _act(_service(db, chain, sponsor), action, user, mid)
-    assert len(sponsor.sent) == 1
-    assert _rows(db, user) == []
-    assert _pending(db) == []  # it mined and failed: nothing is unknown
-
-
 # --- the intent row ------------------------------------------------------------
+
 
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_the_intent_row_is_written_before_the_send_and_becomes_the_row(action):
@@ -456,6 +446,17 @@ def test_the_intent_row_is_written_before_the_send_and_becomes_the_row(action):
     assert _rows(db, user) == [kind]
 
 
+def _http_error(status: int) -> requests.HTTPError:
+    response = requests.Response()
+    response.status_code = status
+    return requests.HTTPError(f"{status} Error", response=response)
+
+
+# It may mine yet: the row stays for the auto-redeem pass, nothing is written to the history now,
+# and the caller hears 503 "do not repeat it", not a 500. That includes what the receipt poll can
+# raise once `send_raw_transaction` has returned (the node holds the transaction, so none of
+# these says it will not mine, whatever `classify_send_error` makes of the text): deleting the
+# row would lose the history row and lift the duplicate guard, so a client retry splits twice.
 @pytest.mark.parametrize("action", _ACTIONS)
 @pytest.mark.parametrize(
     "error",
@@ -463,15 +464,16 @@ def test_the_intent_row_is_written_before_the_send_and_becomes_the_row(action):
         pytest.param(TimeExhausted("no receipt in 30s"), id="receipt-timeout"),
         pytest.param(requests.ReadTimeout("read timed out"), id="read-timeout"),
         pytest.param(requests.ConnectionError("connection reset"), id="reset"),
+        pytest.param(Web3RPCError("rate limit exceeded"), id="receipt-rpc-error"),
+        pytest.param(_http_error(429), id="receipt-429-after-the-retries"),
+        pytest.param(BadResponseFormat("no result in the response"), id="malformed-body"),
+        pytest.param(Web3RPCError("transaction already known"), id="node-holds-it"),
     ],
 )
 def test_a_sent_transaction_nobody_heard_back_about_stays_pending(action, error, caplog):
-    """It may mine yet. The intent row stays for the auto-redeem pass to
-    settle, nothing is written to the history now, and the caller hears 503
-    with "do not repeat it", not a 500."""
-    caplog.set_level(logging.WARNING, logger="agentpit.services.position_service")
+    caplog.set_level(logging.WARNING, logger=_LOGGER)
     db, user, mid, chain = _ready(action)
-    sponsor = _FakeSponsor(fail=error)
+    sponsor = _FakeSponsor(fail=error)  # one signature: nothing was refused
 
     with pytest.raises(TransactionPendingError, match="do not repeat it") as caught:
         _act(_service(db, chain, sponsor), action, user, mid)
@@ -484,158 +486,55 @@ def test_a_sent_transaction_nobody_heard_back_about_stays_pending(action, error,
     assert len(warnings) == 1 and sponsor.hashes[0] in warnings[0].getMessage()
 
 
-def _http_error(status: int) -> requests.HTTPError:
-    response = requests.Response()
-    response.status_code = status
-    return requests.HTTPError(f"{status} Error", response=response)
+_FEE_LOW = "Transaction gas price lower than current eth_gasPrice"
+_NEVER_CONNECTED = requests.ConnectionError(  # `failed_before_connecting`
+    MaxRetryError(None, "/", NewConnectionError(None, "Failed to establish a new connection"))
+)
 
 
+# The node holds no transaction of the user's, so no row is left. `signed` is how many
+# signatures went out: none (a read or a top-up got no answer), one, or two (refused at import and
+# signed again at the new size, or never sent because the retry's top-up failed).
 @pytest.mark.parametrize("action", _ACTIONS)
 @pytest.mark.parametrize(
-    "error",
+    ("error", "signed"),
     [
-        # What the receipt poll can raise once `send_raw_transaction` has
-        # returned: the node holds the transaction, so none of these says it
-        # will not mine, whatever `classify_send_error` makes of the text.
-        pytest.param(Web3RPCError("rate limit exceeded"), id="receipt-rpc-error"),
-        pytest.param(_http_error(429), id="receipt-429-after-the-retries"),
-        pytest.param(
-            BadResponseFormat("no result in the response"), id="malformed-body"
-        ),
-        pytest.param(Web3RPCError("transaction already known"), id="node-holds-it"),
+        pytest.param(TransactionRevertedError("transaction reverted"), 1, id="reverted"),
+        pytest.param(requests.ConnectionError("connection reset"), 0, id="no-answer-unsigned"),
+        pytest.param(InsufficientGasError("could not pay"), 2, id="balance-low-twice-402"),
+        pytest.param(Web3RPCError(_FEE_LOW), 2, id="fee-low-twice"),
+        pytest.param(GasPriceMovedError(), 2, id="fee-low-twice-503"),
+        pytest.param(GasTopUpTimeoutError(), 2, id="the-retrys-top-up-timed-out"),
+        pytest.param(AdminGasPausedError(), 2, id="the-retrys-top-up-is-paused"),
+        pytest.param(TxDropped("its nonce went elsewhere"), 2, id="the-retrys-top-up-dropped"),
+        pytest.param(Web3RPCError("nonce too low"), 2, id="nonce-refusal"),
+        pytest.param(Web3RPCError("replacement transaction underpriced"), 1, id="nonce-taken"),
+        pytest.param(Web3RPCError("nonce too low"), 1, id="nonce-invalid"),
+        pytest.param(Web3RPCError("transaction queue is full"), 1, id="queue-full"),
+        pytest.param(Web3RPCError("account balance is too low"), 1, id="balance-low"),
+        pytest.param(Web3RPCError(_FEE_LOW), 1, id="fee-low"),
+        # The connect itself was refused: the node never saw it, so it cannot mine, and the error
+        # is what it is, not a 503 "do not repeat it" and 409s until the auto-redeem pass.
+        pytest.param(_NEVER_CONNECTED, 1, id="never-reached-the-node"),
     ],
 )
-def test_an_error_after_the_node_took_the_transaction_stays_pending(
-    action, error, caplog
-):
-    """Not every error that is neither a receipt timeout nor a transport error
-    is an answer about the transaction. The receipt poll runs after the
-    broadcast was accepted, and a JSON-RPC error on it, a 429 that outlives
-    the provider's retries or a body that does not parse leave the transaction
-    in the node, free to mine. Deleting its row would lose the history row and
-    lift the duplicate guard at once, so a client retry splits twice. The row
-    stays, and the caller hears 503, "do not repeat it"."""
-    caplog.set_level(logging.WARNING, logger="agentpit.services.position_service")
+def test_a_transaction_the_node_never_took_leaves_no_pending_row(action, error, signed):
     db, user, mid, chain = _ready(action)
-    sponsor = _FakeSponsor(fail=error)  # one signature: nothing was refused
-
-    with pytest.raises(TransactionPendingError, match="do not repeat it") as caught:
-        _act(_service(db, chain, sponsor), action, user, mid)
-
-    assert caught.value.__cause__ is error
-    kind, details = _INTENT[action]
-    assert _pending(db) == [(sponsor.hashes[0], user.api_key, kind, mid, details)]
-    assert _rows(db, user) == []
-    warnings = [
-        r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.WARNING
-    ]
-    assert len(warnings) == 1 and sponsor.hashes[0] in warnings[0].getMessage()
-
-
-@pytest.mark.parametrize("action", _ACTIONS)
-def test_no_answer_before_anything_was_signed_is_no_pending_transaction(action):
-    """A read or a top-up that got no answer: no transaction of the user's
-    exists, so there is nothing to wait for and the error is what it is."""
-    db, user, mid, chain = _ready(action)
-    error = requests.ConnectionError("connection reset")
-    sponsor = _FakeSponsor(fail=error, fail_unsigned=True)
-
-    with pytest.raises(requests.ConnectionError):
-        _act(_service(db, chain, sponsor), action, user, mid)
-
-    assert _pending(db) == []
-    assert _rows(db, user) == []
-
-
-@pytest.mark.parametrize("action", _ACTIONS)
-@pytest.mark.parametrize(
-    "error",
-    [
-        pytest.param(InsufficientGasError("could not pay"), id="balance-low-twice-402"),
-        pytest.param(
-            Web3RPCError("Transaction gas price lower than current eth_gasPrice"),
-            id="fee-low-twice",
-        ),
-        pytest.param(GasPriceMovedError(), id="fee-low-twice-503"),
-        pytest.param(GasTopUpTimeoutError(), id="the-retrys-top-up-timed-out"),
-        pytest.param(AdminGasPausedError(), id="the-retrys-top-up-is-paused"),
-        pytest.param(
-            TxDropped("its nonce went elsewhere"), id="the-retrys-top-up-dropped"
-        ),
-        pytest.param(Web3RPCError("nonce too low"), id="nonce-refusal"),
-    ],
-)
-def test_a_transaction_the_node_refused_leaves_no_pending_row(action, error):
-    """Signed, refused at import, signed again and refused (or never sent,
-    because the retry's top-up failed): the node holds none of them, so
-    neither leaves a row behind."""
-    db, user, mid, chain = _ready(action)
-    sponsor = _FakeSponsor(fail=error, signs=2)
+    sponsor = _FakeSponsor(fail=error, signs=max(signed, 1), fail_unsigned=signed == 0)
 
     with pytest.raises(type(error)):
         _act(_service(db, chain, sponsor), action, user, mid)
 
-    assert len(sponsor.hashes) == 2
-    assert _pending(db) == []
+    assert len(sponsor.sent) == 1
+    assert len(sponsor.hashes) == signed
+    assert _pending(db) == []  # a reverted one mined and failed: nothing is unknown
     assert _rows(db, user) == []
 
 
-@pytest.mark.parametrize("action", _ACTIONS)
-@pytest.mark.parametrize(
-    "error",
-    [
-        pytest.param(
-            Web3RPCError("replacement transaction underpriced"), id="nonce-taken"
-        ),
-        pytest.param(Web3RPCError("nonce too low"), id="nonce-invalid"),
-        pytest.param(Web3RPCError("transaction queue is full"), id="queue-full"),
-        pytest.param(Web3RPCError("account balance is too low"), id="balance-low"),
-        pytest.param(
-            Web3RPCError("Transaction gas price lower than current eth_gasPrice"),
-            id="fee-low",
-        ),
-    ],
-)
-def test_a_refusal_at_import_leaves_no_pending_row(action, error):
-    """The answers that say the node did not take the transaction, on the
-    first signature already: its row goes."""
-    db, user, mid, chain = _ready(action)
-    sponsor = _FakeSponsor(fail=error)
-
-    with pytest.raises(Web3RPCError):
-        _act(_service(db, chain, sponsor), action, user, mid)
-
-    assert len(sponsor.hashes) == 1
-    assert _pending(db) == []
-    assert _rows(db, user) == []
-
-
-@pytest.mark.parametrize("action", _ACTIONS)
-def test_a_broadcast_that_never_reached_the_node_leaves_no_pending_row(action):
-    """The connect itself was refused (`failed_before_connecting`): the node
-    never saw the transaction, so it cannot mine and nothing is pending. The
-    row goes and the error is what it is, instead of a 503 "do not repeat it"
-    and 409s on the market until the auto-redeem pass drops the row."""
-    db, user, mid, chain = _ready(action)
-    error = requests.ConnectionError(
-        MaxRetryError(
-            None, "/", NewConnectionError(None, "Failed to establish a new connection")
-        )
-    )
-    sponsor = _FakeSponsor(fail=error)
-
-    with pytest.raises(requests.ConnectionError):
-        _act(_service(db, chain, sponsor), action, user, mid)
-
-    assert len(sponsor.hashes) == 1
-    assert _pending(db) == []
-    assert _rows(db, user) == []
-
-
+# The sponsor signs a call again only after the node refused it, so the first hash can never
+# mine: its row goes as the second one's is written.
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_a_resized_retry_replaces_the_refused_signatures_row(action):
-    """The sponsor signs a call again only after the node refused it, so the
-    first hash can never mine: its row goes as the second one's is written."""
     db, user, mid, chain = _ready(action)
     seen: list[list] = []
     sponsor = _FakeSponsor(
@@ -649,11 +548,10 @@ def test_a_resized_retry_replaces_the_refused_signatures_row(action):
     assert _rows(db, user) == [_INTENT[action][0]]
 
 
+# The auto-redeem pass can settle the intent row while the request still waits for the same
+# receipt: whoever confirms second finds the row gone and writes nothing.
 @pytest.mark.parametrize("action", _ACTIONS)
 def test_a_transaction_confirmed_meanwhile_is_not_logged_twice(action):
-    """The auto-redeem pass can settle the intent row while the request is
-    still waiting for the same receipt. Whoever confirms second finds the row
-    gone and writes nothing."""
     db, user, mid, chain = _ready(action)
 
     def reconciler_first():
@@ -670,14 +568,11 @@ def test_a_transaction_confirmed_meanwhile_is_not_logged_twice(action):
     assert _pending(db) == []
 
 
+# It mined, and the history row could not be written (the pool timed out): the intent row is
+# still there for the auto-redeem pass, the caller hears what it would for an unknown outcome,
+# and the log says whose transaction it was.
 @pytest.mark.parametrize("action", _ACTIONS)
-def test_a_mined_transaction_whose_row_cannot_be_written_stays_pending(
-    action, monkeypatch, caplog
-):
-    """It mined, and the history row could not be written (the pool timed
-    out). The intent row is still there, so the auto-redeem pass writes the
-    row later; the caller hears what it would for an unknown outcome, and the
-    log says whose transaction it was."""
+def test_a_mined_transaction_whose_row_cannot_be_written_stays_pending(action, monkeypatch, caplog):
     db, user, mid, chain = _ready(action)
     sponsor = _FakeSponsor(payout=100_000_000)
 
@@ -698,12 +593,8 @@ def test_a_mined_transaction_whose_row_cannot_be_written_stays_pending(
 
 
 def test_a_claims_row_is_written_before_the_balance_is_read_again():
-    """The claim mined: its REDEEM row does not hang on the read of the new
-    balance that follows it."""
     db, user, mid = _setup(MarketState.RESOLVED)
-    chain = _FakeChain(
-        balances=(100_000_000, 0), usd=(requests.ReadTimeout("read timed out"),)
-    )
+    chain = _FakeChain(balances=(100_000_000, 0), usd=(requests.ReadTimeout("read timed out"),))
     sponsor = _FakeSponsor(payout=100_000_000)
 
     with pytest.raises(requests.ReadTimeout):
