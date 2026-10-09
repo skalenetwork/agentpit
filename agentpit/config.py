@@ -295,26 +295,19 @@ class Settings(BaseSettings):
     )
     operator_private_key: str | None = Field(default=None, validation_alias="PK")
     rpc_url_override: str | None = Field(default=None, validation_alias="RPC_URL")
-    # Users get no gas at signup: AGENTPIT_SIGNUP_GAS_GRANT_WEI was deleted with the
-    # gasless-transactions change (2026-10-08); an old .env that still sets it
-    # loads fine (extra="ignore"). Every transaction a user signs -- the three
-    # onboarding approvals, split, merge, claim -- is topped up to exactly its
-    # own need just before it is sent (`UserGasSponsor`,
-    # agentpit/services/gas_sponsor.py), so a wallet never holds more than one
-    # transaction's gas. The house is funded at liquidity_gas_floor_wei.
+    # Users get no gas at signup (AGENTPIT_SIGNUP_GAS_GRANT_WEI is gone; an old
+    # .env that sets it still loads): every transaction a user signs is topped
+    # up to exactly its own need (`UserGasSponsor`). The house is funded at
+    # liquidity_gas_floor_wei.
     #
     # True while the chain can be wiped out from under the database (a local
     # anvil). There, an onboarded account the chain forgot is repaired by
-    # running onboarding again. For a user "forgot" means its address has sent
-    # no transaction (nonce 0): a zero balance is no signal for a user any
-    # more, since with exact top-ups an ordinary wallet sits near zero. The
-    # house still keys its repair on a zero native balance
-    # (`HouseAccountProvisioner._maybe_reonboard`), which is safe because
-    # `top_up_gas` holds it above its floor, so an empty house means a wipe.
-    # A durable chain forgets nothing, so on one the repair could only
-    # onboard an account a second time, faucet drip included. Set false
-    # before pointing at a real chain. The chain id is checked as well
-    # (`is_disposable_chain`).
+    # running onboarding again: a user whose nonce is 0 (exact top-ups leave
+    # every wallet near zero, so a balance says nothing), or the house at a
+    # zero native balance (`top_up_gas` keeps it above its floor). On a durable
+    # chain the repair could only onboard an account twice, faucet drip
+    # included. Set false before pointing at a real chain; the chain id is
+    # checked as well (`is_disposable_chain`).
     simulated_chain: bool = Field(
         default=True, validation_alias="AGENTPIT_SIMULATED_CHAIN"
     )
@@ -379,31 +372,27 @@ class Settings(BaseSettings):
     )
 
     # --- User gas sponsorship (owner decisions 2026-10-08) -------------------
-    # Every transaction a user's key signs -- onboarding approvals, split,
-    # merge, claim -- is preceded by an admin top-up of exactly what it needs:
-    # its estimate plus 20%, at the current eth_gasPrice, less what the wallet
-    # already holds (UserGasSponsor). Nobody picks a grant size any more.
+    # Every transaction a user's key signs is preceded by an admin top-up of
+    # exactly what it needs: its estimate plus 20%, at the current
+    # eth_gasPrice, less what the wallet holds (UserGasSponsor).
     # Kill switch for the claim/split/merge top-ups. Off, those transactions go
     # out unfunded and a dry wallet gets 402. Onboarding is sponsored either
-    # way: it replaced the signup grant, and without it no account or agent
-    # could ever be created.
+    # way: without it no account or agent could ever be created.
     sponsor_user_gas: bool = Field(
         default=True, validation_alias="AGENTPIT_SPONSOR_USER_GAS"
     )
     # Ceiling on one top-up, in GAS valued at the current price (like the
-    # admin floors above, so it means the same on mainnet and testnet). The
-    # largest real need is onboarding's three approvals, ~167k with the
-    # buffer; a top-up above this is a wrong estimate, raised as a bug rather
-    # than paid. At least 1: a ceiling of 0 would refuse every top-up,
-    # onboarding's included, and every signup would fail.
+    # admin floors above). The largest real need is onboarding's three
+    # approvals, ~167k with the buffer; a top-up above this is a wrong
+    # estimate, raised as a bug rather than paid. At least 1: 0 would refuse
+    # every top-up, so every signup would fail.
     max_topup_gas: int = Field(
         default=1_000_000, ge=1, validation_alias="AGENTPIT_MAX_TOPUP_GAS"
     )
     # Smallest claim payout worth a sponsored redeemPositions, in micro-apUSD
     # ($0.01). redeemPositions succeeds with zero holdings, so without a floor
     # every losing or dust position would be a free way to spend admin gas.
-    # At least 1: the gates refuse `payout < minimum`, so a minimum of 0 would
-    # let a position worth nothing through.
+    # At least 1, so a position worth nothing never passes the gates.
     min_claim_micro: int = Field(
         default=10_000, ge=1, validation_alias="AGENTPIT_MIN_CLAIM_MICRO"
     )
