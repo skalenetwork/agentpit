@@ -16,20 +16,23 @@ export function ClaimButton({
   userAddress: string;
 }) {
   const queryClient = useQueryClient();
+  const refreshPositions = () => {
+    void queryClient.invalidateQueries({
+      queryKey: ["positions", userAddress],
+    });
+    // The claimed position becomes a closed one -- Biggest Win, P/L and
+    // Predictions all read off `closedPositions`, and without this they'd
+    // sit stale (still counting the position as open/unclaimed) until
+    // whatever next natural refetch happens to invalidate it.
+    void queryClient.invalidateQueries({
+      queryKey: ["closed-positions", userAddress],
+    });
+  };
   const claim = useMutation({
     mutationFn: () => claimPositionRequest(conditionId),
     onSuccess: () => {
       toast.success("Claimed.");
-      void queryClient.invalidateQueries({
-        queryKey: ["positions", userAddress],
-      });
-      // The claimed position becomes a closed one -- Biggest Win, P/L and
-      // Predictions all read off `closedPositions`, and without this they'd
-      // sit stale (still counting the position as open/unclaimed) until
-      // whatever next natural refetch happens to invalidate it.
-      void queryClient.invalidateQueries({
-        queryKey: ["closed-positions", userAddress],
-      });
+      refreshPositions();
       // Claiming pays out apUSD, so the balance at the top of the page
       // changes. Without this it sits stale until whatever next natural
       // refetch happens to invalidate it. The platform pays the claim's gas
@@ -47,6 +50,13 @@ export function ClaimButton({
           ? claimErrorMessage(err.status, err.body)
           : "Failed to claim.";
       toast.error(message);
+      // A 400 is the claim refusing on its own terms -- nothing to claim, not
+      // resolved on chain, reverted -- and with auto-redeem on by default the
+      // usual reason is that a background pass has already paid this row. The
+      // list still shows it as unclaimed until its 10 s staleTime runs out, so
+      // refresh it now and the dead Claim button goes. Any other failure says
+      // nothing about whether the position is still there.
+      if (err instanceof ApiError && err.status === 400) refreshPositions();
     },
   });
 
