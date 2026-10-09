@@ -174,6 +174,8 @@ class PositionService:
         the payouts were never reported on chain, the claim would revert, and
         that is a `MarketStateError`. The gate runs inside the lock, so a
         concurrent claim cannot pass it while this one burns the same tokens.
+        It runs a second time after the top-up, as the sponsor's
+        `before_send`, because the tokens can leave while the top-up mines.
 
         The amount in the response and in the REDEEM row is the payout the
         chain reports in the claim's receipt (`OnchainAdmin.redeemed_payout`).
@@ -198,20 +200,23 @@ class PositionService:
             den, nums = payout_vector
             if den == 0:
                 raise MarketStateError("market is not resolved on chain yet")
-            balances = self._onchain.ctf_balances(user.eth_address, token_ids)
-            # Floored per outcome, as ConditionalTokens.redeemPositions pays
-            # (payoutStake * numerator / den per index set) and as the
-            # auto-redeem scan's `_claimable_payout` computes it.
-            payout = sum(bal * num // den for bal, num in zip(balances, nums))
-            # `payout <= 0` on its own, not left to the minimum: the setting is
-            # validated to be at least 1, but a claim that pays nothing must
-            # not reach the sponsor even if that were ever relaxed.
-            if payout <= 0 or payout < self._sponsor.min_claim_micro:
-                raise NothingToClaimError()
+            payout = self._claimable(user, token_ids, den, nums)
             call = self._onchain.redeem_call(condition_id, _partition(market))
             # No amount in the intent: only the receipt says what was paid.
             receipt, tx_hash = self._send_recorded(
-                user, call, "claim", "REDEEM", market_id, {}
+                user,
+                call,
+                "claim",
+                "REDEEM",
+                market_id,
+                {},
+                # The gate above ran before the top-up. The tokens can leave
+                # while it mines (a resting SELL filled by the admin's
+                # matchOrders), so the gate runs again once the wallet is
+                # funded, before anything is signed. Only the balances can
+                # have moved: a reported payout vector is final (the CTF
+                # reports a condition once), so the one in hand is used.
+                before_send=lambda: self._claimable(user, token_ids, den, nums),
             )
             # What the CTF paid, from the claim's own receipt. Not the change
             # in the wallet's apUSD across the claim: fills, mints and
@@ -240,6 +245,25 @@ class PositionService:
             collateral_amount=paid,
             new_usdc_balance=new_balance,
         )
+
+    def _claimable(
+        self, user: User, token_ids: list[int], den: int, nums: list[int]
+    ) -> int:
+        """What the chain would pay `user` for its tokens of this market under
+        the payout vector `(den, nums)`, or `NothingToClaimError` when that is
+        under the sponsor's minimum. The claim gate, run before the lock is
+        used and again before the first signature."""
+        balances = self._onchain.ctf_balances(user.eth_address, token_ids)
+        # Floored per outcome, as ConditionalTokens.redeemPositions pays
+        # (payoutStake * numerator / den per index set) and as the
+        # auto-redeem scan's `_claimable_payout` computes it.
+        payout = sum(bal * num // den for bal, num in zip(balances, nums))
+        # `payout <= 0` on its own, not left to the minimum: the setting is
+        # validated to be at least 1, but a claim that pays nothing must
+        # not reach the sponsor even if that were ever relaxed.
+        if payout <= 0 or payout < self._sponsor.min_claim_micro:
+            raise NothingToClaimError()
+        return payout
 
     # --- the intent row -------------------------------------------------
 

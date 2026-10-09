@@ -846,6 +846,38 @@ def test_a_split_on_a_market_that_stopped_trading_during_the_top_up_is_refused(s
     assert _rows(db, user) == []
 
 
+@pytest.mark.parametrize(
+    "balances",
+    [
+        pytest.param((0, 0), id="every-token-left"),
+        pytest.param((0, 100_000_000), id="only-the-loser-is-left"),
+        pytest.param((9_999, 0), id="dust-below-a-cent"),
+    ],
+)
+def test_a_claim_whose_tokens_left_during_the_top_up_is_refused(balances):
+    """The gate ran before the top-up. A resting SELL filled meanwhile, or a
+    transfer out, can leave a position that would pay less than the minimum,
+    and `redeemPositions` would then mine a payout of nothing at the admin's
+    expense. The sponsor's `before_send` runs the gate again once the wallet
+    is funded: the claim is refused as it would have been up front, and
+    nothing is signed."""
+    db, user, mid = _setup(MarketState.RESOLVED)
+    chain = _FakeChain(balances=(100_000_000, 0), usd=(5,))
+
+    def tokens_leave():
+        chain.balances = dict(zip((int(_YES), int(_NO)), balances))
+
+    sponsor = _FakeSponsor(payout=100_000_000, during_top_up=tokens_leave)
+
+    with pytest.raises(NothingToClaimError, match="nothing to claim"):
+        _service(db, chain, sponsor).redeem(user, mid)
+
+    assert sponsor.hashes == []
+    assert _pending(db) == []
+    assert _rows(db, user) == []
+    assert chain.reads.count("ctf_balances") == 2  # the gate, and again before the send
+
+
 # --- an earlier transaction still pending -------------------------------------
 
 
