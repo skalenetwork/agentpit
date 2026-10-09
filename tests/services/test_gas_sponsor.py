@@ -574,6 +574,19 @@ def test_kill_switch_off_and_a_dry_wallet_is_402_without_a_retry(send):
     assert len(chain.sends) == 1
 
 
+@pytest.mark.parametrize("kind", ["onboarding", "claim", "split", "merge"])
+def test_an_exported_key_pays_its_own_gas(db, user, send, used, kind):
+    with db.write() as conn:
+        conn.execute(
+            "UPDATE users SET KEY_EXPORTED_AT = %s WHERE USER_ID = %s",
+            (int(time.time()), user.user_id),
+        )
+    chain = _Chain()
+    send(chain, kind)
+    assert chain.events == [("send", *SEND)]
+    assert used() == 0
+
+
 def test_kill_switch_never_stops_onboarding(send, used):
     chain = _Chain()
     send(chain, "onboarding", AGENTPIT_SPONSOR_USER_GAS=False)

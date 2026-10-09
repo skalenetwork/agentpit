@@ -29,6 +29,7 @@ from web3.types import TxReceipt
 from agentpit.config import Settings
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
+from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     DomainError,
@@ -187,7 +188,8 @@ class UserGasSponsor:
         # which thread holds it, but a lock nobody holds is a sure bug.
         if not _lock_for(user.eth_address).locked():
             raise RuntimeError("UserGasSponsor.send must run inside locked(user)")
-        if kind != "onboarding" and not self._settings.sponsor_user_gas:
+        unsponsored = kind != "onboarding" and not self._settings.sponsor_user_gas
+        if unsponsored or self._exported(user):
             receipts = self._send_unsponsored(user, calls, on_signed, before_send)
         else:
             receipts = self._send_sponsored(
@@ -206,6 +208,13 @@ class UserGasSponsor:
                     f"the {kind} transaction reverted on chain"
                 )
         return receipts
+
+    def _exported(self, user: User) -> bool:
+        """Whether the user's key left before export was removed: that key can
+        spend a top-up before our transaction does, so such a wallet pays its
+        own gas, as with the kill switch off."""
+        with self._db.read() as conn:
+            return TableRead.get_key_export_state(conn, user.user_id)[0] is not None
 
     # --- the two paths ---------------------------------------------------
 
