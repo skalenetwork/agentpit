@@ -5,7 +5,13 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import AdminGasPausedError, GasTopUpTimeoutError, InsufficientGasError, OnboardingError
+from agentpit.domain.exceptions import (
+    AdminGasPausedError,
+    GasPriceMovedError,
+    GasTopUpTimeoutError,
+    InsufficientGasError,
+    OnboardingError,
+)
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -158,6 +164,21 @@ def test_an_api_agent_whose_top_up_timed_out_is_not_left_behind():
 
     with pytest.raises(GasTopUpTimeoutError):
         AgentAccounts(db, busy).create_api_agent(OWNER)
+
+    with db.read() as conn:
+        assert TableRead.agents_owned_by(conn, OWNER) == []
+
+
+def test_an_api_agent_whose_gas_price_moved_is_not_left_behind():
+    """The fee rose twice while its approvals were being sent: a 503 "try
+    again", like a top-up that timed out, so the half-made agent goes too."""
+    db = fresh_test_db()
+
+    def moved(_user_id: str, _acct: LocalAccount) -> User:
+        raise GasPriceMovedError()
+
+    with pytest.raises(GasPriceMovedError):
+        AgentAccounts(db, moved).create_api_agent(OWNER)
 
     with db.read() as conn:
         assert TableRead.agents_owned_by(conn, OWNER) == []

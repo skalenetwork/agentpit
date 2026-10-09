@@ -1,12 +1,12 @@
 import logging
 
 import pytest
-from web3.exceptions import TimeExhausted
+from web3.exceptions import TimeExhausted, Web3RPCError
 
 from agentpit.auth.jwt import JwtCoder
 from agentpit.config import Settings
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import AdminGasPausedError, GasTopUpTimeoutError
+from agentpit.domain.exceptions import AdminGasPausedError, GasPriceMovedError, GasTopUpTimeoutError
 from agentpit.services.auth_service import AuthService
 from tests.db_helpers import fresh_test_db
 from tests.onboarding_fakes import OnboardingChain
@@ -57,6 +57,43 @@ def test_onboarding_surfaces_a_top_up_timeout_not_an_onboarding_error(caplog):
     assert "send_as_user" not in chain.calls
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
     # The claim is back, so the retry they are told to make is not turned away.
+    with db.read() as conn:
+        row = conn.execute("SELECT ONBOARDING_STARTED_AT AS S FROM users WHERE USER_ID = %s", (user_id,)).fetchone()
+    assert row["S"] is None
+
+
+class _PriceMovedChain(OnboardingChain):
+    """The fee keeps rising: the node refuses every approval as underpriced,
+    the re-sized retry included, so the sponsor raises `GasPriceMovedError`."""
+
+    def send_as_user(self, *_a, **_k):
+        self.calls.append("send_as_user")
+        raise Web3RPCError(
+            repr(
+                {
+                    "code": -32000,
+                    "message": "Transaction gas price lower than current eth_gasPrice",
+                }
+            )
+        )
+
+
+def test_onboarding_surfaces_a_gas_price_move_not_an_onboarding_error(caplog):
+    """A 503 "the network fee rose", like a top-up timeout: not wrapped as
+    an `OnboardingError` (400) and logged with a traceback per sign-in. The
+    claim goes back, so the retry they are told to make is not turned away."""
+    db = fresh_test_db()
+    settings = Settings()
+    chain = _PriceMovedChain()
+    service = AuthService(db, JwtCoder(settings), chain, settings)  # type: ignore[arg-type]
+    with db.write() as conn:
+        user_id, acct, _ = TableWrite.create_user(conn, email="moved@example.com", password_hash=None, handle=None)
+
+    with caplog.at_level(logging.ERROR, logger="agentpit.services.auth_service"):
+        with pytest.raises(GasPriceMovedError):
+            service._onboard_new_account(user_id, acct)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
     with db.read() as conn:
         row = conn.execute("SELECT ONBOARDING_STARTED_AT AS S FROM users WHERE USER_ID = %s", (user_id,)).fetchone()
     assert row["S"] is None
