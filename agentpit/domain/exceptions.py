@@ -98,15 +98,13 @@ class MarketStateError(BusinessRuleError):
 
 
 class InsufficientGasError(BusinessRuleError):
-    """Raised when a user's wallet can't cover a transaction's gas.
+    """Raised when a user's wallet can't cover a transaction's gas: the node
+    still refused for balance after `UserGasSponsor`'s one resize-and-retry,
+    or sponsorship is switched off (`AGENTPIT_SPONSOR_USER_GAS=false`).
 
-    The platform pays: `UserGasSponsor` tops the wallet up to exactly what the
-    transaction needs before sending it. So this means the node still refused
-    for balance after the sponsor's one resize-and-retry, or the operator
-    switched sponsorship off (`AGENTPIT_SPONSOR_USER_GAS=false`). 402, distinct
-    from the generic `BusinessRuleError` 400, so a caller can tell "your input
-    is wrong" from "the wallet could not pay". Neither is anything the user can
-    fund, so the UI says only that the action is unavailable right now.
+    402, distinct from the generic `BusinessRuleError` 400, so a caller can
+    tell "your input is wrong" from "the wallet could not pay". Nothing the
+    user can fund, so the UI says only that the action is unavailable.
     """
 
 
@@ -130,14 +128,9 @@ class AdminGasPausedError(DomainError):
 
 class GasTopUpTimeoutError(DomainError):
     """The admin's gas top-up for a user-signed transaction got no receipt in
-    time, found no free admin transaction slot, or was lost by the node
-    (`TxDropped`: its nonce went to a gap filler or another writer), so no
-    transaction of the user's was sent.
-
-    A direct `DomainError` (503) like `AdminGasPausedError`: our side is
-    congested, nothing the caller did is wrong, and the same request succeeds
-    once it clears. The top-up may still mine (a lost one will not), so a retry
-    sizes against the balance it finds and tops up only the difference.
+    time, found no free admin slot, or was dropped by the node, so nothing of
+    the user's was sent. 503: our side is busy. A retry sizes against the
+    balance it finds, so a top-up that mines late is not paid twice.
     """
 
     def __init__(
@@ -147,15 +140,10 @@ class GasTopUpTimeoutError(DomainError):
 
 
 class GasPriceMovedError(DomainError):
-    """The network fee rose while a user-signed transaction was being sent.
-    The node refused it at import as underpriced, `UserGasSponsor` re-sized it
-    at the new price and topped the wallet up again, and the node refused the
-    retry as underpriced too. Neither can mine, so nothing of the user's is in
-    flight.
-
-    A direct `DomainError` (503) like `GasTopUpTimeoutError`: nothing the
-    caller did is wrong, and the same request goes through once the fee
-    settles.
+    """The node refused a user-signed transaction as underpriced twice, the
+    second time after `UserGasSponsor` re-sized it at the new price. Neither
+    can mine. 503: nothing the caller did is wrong, and the same request goes
+    through once the fee settles.
     """
 
     def __init__(
@@ -163,6 +151,16 @@ class GasPriceMovedError(DomainError):
         message: str = "the network fee rose while sending — try again in a moment",
     ):
         super().__init__(message)
+
+
+# What `UserGasSponsor.send` raises when it could not get a transaction paid
+# for and out: nothing of the user's is in flight, and a retry may succeed.
+SPONSORED_GAS_REFUSALS = (
+    AdminGasPausedError,
+    GasTopUpTimeoutError,
+    GasPriceMovedError,
+    InsufficientGasError,
+)
 
 
 class GasBudgetExceededError(DomainError):
@@ -183,12 +181,9 @@ class GasBudgetExceededError(DomainError):
 
 
 class NothingToClaimError(BusinessRuleError):
-    """A claim whose on-chain payout is below the minimum
-    (`AGENTPIT_MIN_CLAIM_MICRO`): no holdings, only losing tokens, or dust.
-
-    Raised before anything is sent. `redeemPositions` succeeds even with zero
-    holdings, so without this gate every such claim would be a sponsored
-    transaction that pays out nothing.
+    """A claim whose on-chain payout is below `AGENTPIT_MIN_CLAIM_MICRO`: no
+    holdings, only losing tokens, or dust. Raised before anything is sent,
+    since `redeemPositions` succeeds, on sponsored gas, with nothing to pay.
     """
 
     def __init__(self, message: str = "nothing to claim"):
@@ -196,28 +191,20 @@ class NothingToClaimError(BusinessRuleError):
 
 
 class TransactionRevertedError(BusinessRuleError):
-    """A transaction the platform paid the gas for was mined with status 0.
-
-    Raised only after its gas has been booked: a reverted transaction is
-    still paid for. The caller writes no REDEEM/SPLIT/MERGE row for it.
-    """
+    """A transaction the platform paid the gas for mined with status 0. Raised
+    after its gas is booked; no REDEEM/SPLIT/MERGE row is written for it."""
 
     def __init__(self, message: str):
         super().__init__(message)
 
 
 class TransactionPendingError(DomainError):
-    """A split, merge or claim was signed and sent, and nobody knows yet how
-    it ended: its receipt did not come back in time, the node never answered
-    the broadcast, the receipt poll failed after the node took it, or it failed
-    with an error not recognised as a refusal. It may well mine.
-
-    Its intent row stays in `pending_user_txs`, so the reconciler writes the
-    history row once it has mined (`reconcile_pending_user_txs`, run by both
-    resolution loops), and until then a second split, merge or claim on that
-    market is refused (409) instead of repeating it. A direct `DomainError`
-    (503): nothing the caller did is wrong, but they must not simply send it
-    again.
+    """A split, merge or claim was sent and nobody knows yet how it ended (no
+    receipt in time, no answer to the broadcast, a failed receipt poll, or an
+    error not recognised as a refusal). It may well mine: its
+    `pending_user_txs` row stays for the reconciler, and until then another
+    action on that market is a 409. 503: nothing the caller did is wrong, but
+    they must not simply send it again.
     """
 
     def __init__(
@@ -231,12 +218,10 @@ class TransactionPendingError(DomainError):
 
 
 class TransactionInProgressError(DomainError):
-    """Another transaction for this account is still being sent.
-
-    Claim, split, merge and onboarding share one per-account lock because
-    they share the account's nonce stream; the lock is taken without waiting.
-    409, not a `BusinessRuleError` (400): nothing in the request is wrong,
-    and the same request succeeds once the other one has landed.
+    """Another transaction for this account is still being sent. Claim, split,
+    merge and onboarding share one per-account lock, taken without waiting,
+    because they share the account's nonce stream. 409: nothing in the request
+    is wrong, and it succeeds once the other one has landed.
     """
 
     def __init__(
