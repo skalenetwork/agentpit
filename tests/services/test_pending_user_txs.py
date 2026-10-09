@@ -3,8 +3,8 @@
 A split, merge or claim whose receipt did not come back (or whose broadcast got no answer) leaves
 an intent row in `pending_user_txs`. The auto-redeem pass reconciles first, reading each row's
 receipt by hash: a mined one gets its history row, a reverted or long-lost one is dropped, one
-still on its way is left for the next pass. The chain is a fake here;
-tests/onchain/test_pending_user_txs.py runs the same against anvil.
+still on its way is left for the next pass. The chain is a fake;
+tests/onchain/test_pending_user_txs.py runs it on anvil.
 """
 
 from __future__ import annotations
@@ -17,10 +17,7 @@ import pytest
 
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.services.pending_user_txs import (
-    _PENDING_TTL_SECONDS,
-    reconcile_pending_user_txs,
-)
+from agentpit.services.pending_user_txs import _PENDING_TTL_SECONDS, reconcile_pending_user_txs
 from tests.db_helpers import fresh_test_db
 
 _LOGGER = "agentpit.services.pending_user_txs"
@@ -67,14 +64,13 @@ def _pending_hashes(db) -> list[str]:
 
 
 def _history(db) -> list[tuple[str, int, dict]]:
+    query = (
+        "SELECT TRANSACTION_TYPE, MARKET_ID, DETAILS FROM transactions "
+        "WHERE API_KEY = 'k1' ORDER BY TRANSACTION_ID"
+    )
     with db.read() as conn:
-        return [
-            (r["TRANSACTION_TYPE"], r["MARKET_ID"], json.loads(r["DETAILS"]))
-            for r in conn.execute(
-                "SELECT TRANSACTION_TYPE, MARKET_ID, DETAILS FROM transactions "
-                "WHERE API_KEY = 'k1' ORDER BY TRANSACTION_ID"
-            ).fetchall()
-        ]
+        rows = conn.execute(query).fetchall()
+    return [(r["TRANSACTION_TYPE"], r["MARKET_ID"], json.loads(r["DETAILS"])) for r in rows]
 
 
 def test_a_mined_transaction_becomes_its_history_row():
