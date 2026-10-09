@@ -376,19 +376,6 @@ def test_a_market_the_database_has_not_resolved_is_refused_before_the_lock():
     assert chain.reads == []
 
 
-# --- every action --------------------------------------------------------------
-
-
-# The pre-checks and the claim gate live inside the lock: a second request is a 409.
-@pytest.mark.parametrize("action", _ACTIONS)
-def test_a_held_lock_refuses_before_any_chain_read(action):
-    db, user, mid, chain = _ready(action)
-    with pytest.raises(TransactionInProgressError):
-        _act(_service(db, chain, _FakeSponsor(busy=True)), action, user, mid)
-    assert chain.reads == []
-    assert _rows(db, user) == []
-
-
 # --- the intent row ------------------------------------------------------------
 
 
@@ -601,7 +588,17 @@ def test_a_claim_whose_tokens_left_during_the_top_up_is_refused(balances):
     assert chain.reads.count("ctf_balances") == 2  # the gate, and again before the send
 
 
-# --- an earlier transaction still pending -------------------------------------
+# --- a held lock, an earlier transaction still pending -------------------------
+
+
+# The pre-checks and the claim gate live inside the lock: a second request is a 409.
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_a_held_lock_refuses_before_any_chain_read(action):
+    db, user, mid, chain = _ready(action)
+    with pytest.raises(TransactionInProgressError):
+        _act(_service(db, chain, _FakeSponsor(busy=True)), action, user, mid)
+    assert chain.reads == []
+    assert _rows(db, user) == []
 
 
 # A retry of a split whose answer was lost would split twice: until it settles (or the ttl
@@ -675,9 +672,6 @@ def test_a_split_or_merge_without_the_funds_sends_nothing(action, balances, usd)
         _act(service, action, user, mid)
     assert sponsor.sent == []
     assert _rows(db, user) == []
-
-
-# --- wiring --------------------------------------------------------------------
 
 
 def test_the_dependency_sponsors_with_the_apps_settings():
