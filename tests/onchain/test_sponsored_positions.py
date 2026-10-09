@@ -9,7 +9,10 @@ real chain:
 - a claim with nothing worth claiming costs nobody a transaction;
 - the sponsored gas lands in the account's daily `sponsored_gas` row;
 - a claim is logged at the CTF's payout, whatever else moves the wallet's
-  apUSD while the claim is in flight.
+  apUSD while the claim is in flight;
+- a split or claim whose premise is gone once the top-up has mined (the
+  market resolved, the tokens left) is refused with nothing signed, and a
+  claim that still mines at a payout of nothing writes no row.
 
 Each branch of the gate is pinned with fakes in
 tests/services/test_position_service.py.
@@ -22,6 +25,7 @@ import secrets
 import time
 
 import pytest
+from eth_account import Account
 from fastapi.testclient import TestClient
 from web3 import Web3
 from web3.logs import DISCARD
@@ -474,3 +478,124 @@ def test_a_claim_is_logged_at_the_ctf_payout_whatever_the_wallet_does_meanwhile(
     assert len(closed) == 1
     assert closed[0].curPrice == 1.0
     assert closed[0].currentValue == 100.0
+
+
+def _after_top_up(monkeypatch, admin: OnchainAdmin, user: User, action) -> None:
+    """Run `action()` once the sponsor's top-up of `user` has mined: the window
+    between the gate, which runs before the lock is used, and the user's
+    transaction, in which the world can change (a market resolves, a resting
+    SELL fills). `action` must use the real `fund_gas` it captured, not
+    `admin.fund_gas`, which is the hook."""
+    real = admin.fund_gas
+    me = user.eth_address.lower()
+
+    def fund_gas(address, value_wei, **kwargs):
+        receipt = real(address, value_wei, **kwargs)
+        if address.lower() == me:
+            action()
+        return receipt
+
+    monkeypatch.setattr(admin, "fund_gas", fund_gas)
+
+
+def _pending_hashes(db: DbSession) -> list[str]:
+    with db.read() as conn:
+        return [row.tx_hash for row in TableRead.list_pending_user_txs(conn)]
+
+
+def test_a_split_on_a_market_that_resolves_during_its_top_up_is_refused(monkeypatch):
+    """`split` checks the market before the lock, and the top-up takes a block
+    or several on SKALE. Resolved in that window, the market would take a split
+    that mints a claimable winner. The sponsor re-reads the market once the
+    wallet is funded: nothing is signed, the apUSD stays, and only the top-up's
+    transfer is booked, the reservation having gone back."""
+    admin, db = _chain()
+    market, pm = _market(db, admin)
+    user = _holder(db, admin)
+    tokens = [int(t) for t, _label in market.erc1155_tokens]
+    drain_native_balance(admin, user.eth_address)
+    usd = admin.usd_balance(user.eth_address)
+    nonce, booked = admin.transaction_count(user.eth_address), _booked(db, user)
+    _after_top_up(
+        monkeypatch, admin, user, lambda: _resolve(db, admin, market, pm, winner=0)
+    )
+
+    with pytest.raises(MarketStateError, match="split only runs on ACTIVE markets"):
+        position_service(db, admin).split(
+            user, market.market_id, SplitPositionRequest(amount=40_000_000)
+        )
+
+    assert admin.ctf_balances(user.eth_address, tokens) == [0, 0]
+    assert admin.usd_balance(user.eth_address) == usd
+    assert admin.transaction_count(user.eth_address) == nonce  # nothing was signed
+    assert _rows(db, user, "SPLIT") == 0
+    assert _pending_hashes(db) == []
+    assert _booked(db, user) - booked == TRANSFER_GAS
+
+
+def test_a_claim_whose_tokens_left_during_its_top_up_is_refused(monkeypatch):
+    """A resting SELL filled by the admin's `matchOrders` moves the winning
+    tokens with no transaction of the user's, and the claim's top-up is a
+    window in which that can happen. Here the user sends them away itself.
+    The claim, which `redeemPositions` would let mine at a payout of nothing,
+    is refused with the gate's own error and never signed."""
+    admin, db = _chain()
+    market, pm = _market(db, admin)
+    user = _holder(db, admin)
+    positions = position_service(db, admin)
+    positions.split(user, market.market_id, SplitPositionRequest(amount=100_000_000))
+    _resolve(db, admin, market, pm, winner=0)  # YES wins
+    drain_native_balance(admin, user.eth_address)
+    tokens = [int(t) for t, _label in market.erc1155_tokens]
+    sink = Account.create().address
+    real_fund_gas = admin.fund_gas
+
+    def winners_leave():
+        real_fund_gas(user.eth_address, 10**16)  # spare gas for the user's own send
+        transfer = admin._contracts.ctf.functions.safeTransferFrom(  # noqa: SLF001
+            Web3.to_checksum_address(user.eth_address), sink, tokens[0], 100_000_000, b""
+        )
+        assert send_user_tx(admin._client, user.eth_key, transfer)["status"] == 1  # noqa: SLF001
+
+    nonce, booked = admin.transaction_count(user.eth_address), _booked(db, user)
+    _after_top_up(monkeypatch, admin, user, winners_leave)
+
+    with pytest.raises(NothingToClaimError, match="nothing to claim"):
+        positions.redeem(user, market.market_id)
+
+    assert admin.ctf_balances(user.eth_address, tokens) == [0, 100_000_000]
+    assert admin.transaction_count(user.eth_address) == nonce + 1  # the transfer only
+    assert _rows(db, user, "REDEEM") == 0
+    assert _pending_hashes(db) == []
+    assert _booked(db, user) - booked == TRANSFER_GAS
+
+
+def test_a_claim_that_mines_with_no_payout_writes_no_row(monkeypatch):
+    """The gate and the re-check both pass (the balances are read through a
+    lie here, because nothing real can empty the wallet between the re-check
+    and the block), and the claim mines for a payout of nothing. The admin
+    paid for it, so its gas is booked, but the account gets no REDEEM row, no
+    intent row stays, and the caller hears `NothingToClaimError`."""
+    admin, db = _chain()
+    market, pm = _market(db, admin)
+    user = _holder(db, admin)  # holds no outcome token at all
+    _resolve(db, admin, market, pm, winner=0)
+    drain_native_balance(admin, user.eth_address)
+    me, real = user.eth_address.lower(), admin.ctf_balances
+    monkeypatch.setattr(
+        admin,
+        "ctf_balances",
+        lambda address, ids: (
+            [100_000_000, 0] if address.lower() == me else real(address, ids)
+        ),
+    )
+    booked = _booked(db, user)
+
+    with pytest.raises(NothingToClaimError):
+        position_service(db, admin).redeem(user, market.market_id)
+
+    receipt = _last_receipt(admin, user.eth_address)
+    assert receipt["status"] == 1  # it mined, and paid nothing
+    assert _booked(db, user) - booked == TRANSFER_GAS + receipt["gasUsed"]
+    assert _rows(db, user, "REDEEM") == 0
+    assert _pending_hashes(db) == []
