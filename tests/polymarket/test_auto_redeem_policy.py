@@ -1,11 +1,8 @@
 """What one auto-redeem pass decides, with the chain faked.
 
-Since gasless claims (2026-10-08) the admin tops up every claim the pass
-makes, so who it claims for, how many it makes per pass, and what it does
-when a claim cannot go out are questions of cost, not only of settlement.
-The transaction under `PositionService.redeem` is covered by
-tests/onchain/test_auto_redeem.py and the sponsor's own tests; here `redeem`
-is a stub and the chain is two reads.
+The admin pays for every claim (gasless claims), so who a pass claims for, how many
+and what it does when one cannot go out are questions of cost. `redeem` is a stub:
+tests/onchain/test_auto_redeem.py covers the transaction.
 """
 
 from __future__ import annotations
@@ -14,6 +11,7 @@ import json
 import logging
 import secrets
 import time
+from collections import namedtuple
 
 import pytest
 
@@ -21,16 +19,7 @@ from agentpit.config import Settings
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import (
-    AdminGasPausedError,
-    GasPriceMovedError,
-    GasTopUpTimeoutError,
-    InsufficientGasError,
-    NothingToClaimError,
-    TransactionInProgressError,
-    TransactionPendingError,
-    TransactionRevertedError,
-)
+from agentpit.domain import exceptions as errors
 from agentpit.polymarket import polymarket_sync
 from agentpit.polymarket.polymarket_sync import auto_redeem_resolved_markets
 from agentpit.services import gas_sponsor
@@ -39,674 +28,52 @@ from tests.db_helpers import fresh_test_db
 
 _LOGGER = "agentpit.polymarket.polymarket_sync"
 _ONE_USD = 1_000_000  # micro-apUSD, well above the $0.01 minimum
-# The real sponsor, taken before the autouse `sponsors` fixture swaps it out,
-# for the test that wants its real lock.
+_H1 = "0x" + "e1" * 32  # the one pending transaction hash the tests use
+# Taken before the fixtures swap them out, for the test that wants the real ones.
 _REAL_SPONSOR = gas_sponsor.UserGasSponsor
+_REAL_REDEEM = PositionService.redeem
+_BACKOFF = polymarket_sync._claim_backoff_until  # noqa: SLF001
+_REFUSED = polymarket_sync._REFUSED_BACKOFF_SECONDS  # noqa: SLF001
+_REVERT = polymarket_sync._REVERT_BACKOFF_SECONDS  # noqa: SLF001
+
+_Market = namedtuple("_Market", "id yes no")
+_Claim = namedtuple("_Claim", "user_id market_id vector")
+
+
+def _raise_next(queue: list[Exception | None]) -> None:
+    """Raise the next queued RPC error; a None lets that read answer."""
+    if queue and (error := queue.pop(0)) is not None:
+        raise error
 
 
 class _Chain:
-    """The two reads a pass makes, and nothing else.
+    """The two reads a pass makes, and nothing else: anything more it touched
+    (fund_gas, send_as_user, ...) would raise here. Unset balances read 0."""
 
-    Not a MagicMock on purpose: if the pass itself touched anything else
-    (fund_gas, send_as_user, ...) it would raise here instead of quietly
-    recording a call. Unset balances read 0. `vector_errors` and
-    `balance_errors` are raised by the next reads in turn (None lets that read
-    answer), as an RPC error would be.
-    """
-
-    def __init__(self, vector: tuple[int, list[int]] = (1, [1, 0])):
-        self.vector = vector
+    def __init__(self) -> None:
+        self.vector = (1, [1, 0])
         self.held: dict[str, dict[int, int]] = {}
-        self.vector_reads = 0
-        self.balance_reads = 0
+        self.vector_reads = self.balance_reads = 0
         self.vector_errors: list[Exception | None] = []
         self.balance_errors: list[Exception | None] = []
 
     def hold(self, address: str, token: str, amount: int) -> None:
         self.held.setdefault(address.lower(), {})[int(token)] = amount
 
-    def payout_vector(
-        self, condition_id: bytes, outcome_count: int = 2
-    ) -> tuple[int, list[int]]:
+    def payout_vector(self, condition_id: bytes, outcome_count: int = 2):
         self.vector_reads += 1
-        error = self.vector_errors.pop(0) if self.vector_errors else None
-        if error is not None:
-            raise error
+        _raise_next(self.vector_errors)
         return self.vector
 
     def ctf_balances(self, address: str, token_ids: list[int]) -> list[int]:
         self.balance_reads += 1
-        error = self.balance_errors.pop(0) if self.balance_errors else None
-        if error is not None:
-            raise error
+        _raise_next(self.balance_errors)
         held = self.held.get(address.lower(), {})
         return [held.get(t, 0) for t in token_ids]
 
 
-@pytest.fixture(autouse=True)
-def sponsors(monkeypatch) -> list[Settings]:
-    """Replace `UserGasSponsor` with a recorder of the settings each pass
-    built it from. `redeem` is stubbed, so nothing ever sends through it; the
-    pass only reads its `min_claim_micro`."""
-    built: list[Settings] = []
-
-    class _Sponsor:
-        def __init__(self, db, onchain, settings):
-            built.append(settings)
-            self.min_claim_micro = settings.min_claim_micro
-
-    monkeypatch.setattr(gas_sponsor, "UserGasSponsor", _Sponsor)
-    return built
-
-
-@pytest.fixture()
-def claims(monkeypatch):
-    """Stub `PositionService.redeem`. Returns `(calls, outcomes)`: each call
-    is recorded as `(user_id, market_id, payout_vector)`, and an exception
-    set in `outcomes[(user_id, market_id)]` is raised instead of returning."""
-    calls: list[tuple[str, int, tuple[int, list[int]] | None]] = []
-    outcomes: dict[tuple[str, int], Exception] = {}
-
-    def _redeem(self, user, market_id, *, payout_vector=None):
-        calls.append((user.user_id, market_id, payout_vector))
-        exc = outcomes.get((user.user_id, market_id))
-        if exc is not None:
-            raise exc
-
-    monkeypatch.setattr(PositionService, "redeem", _redeem)
-    return calls, outcomes
-
-
-def _settings(*, cap: int = 20) -> Settings:
-    return Settings(
-        _env_file=None, min_claim_micro=10_000, auto_redeem_max_per_pass=cap
-    )
-
-
-def _market(db) -> tuple[int, str, str]:
-    """A RESOLVED market whose YES (index 0) won: `(market_id, yes, no)`."""
-    yes = str(int.from_bytes(secrets.token_bytes(8), "big"))
-    no = str(int.from_bytes(secrets.token_bytes(8), "big"))
-    with db.write() as conn:
-        row = conn.execute(
-            "INSERT INTO markets (CONDITION_ID, QUESTION, SLUG, DESCRIPTION, "
-            "ERC1155_TOKENS, START_DATE, MARKET_STATE, RESOLVED_OUTCOME) "
-            "VALUES (%s, %s, %s, 'd', %s, 100, 'RESOLVED', 0) "
-            "RETURNING MARKET_ID",
-            (
-                f"0x{secrets.token_hex(32)}",
-                f"Already won {secrets.token_hex(4)}?",
-                f"already-won-{secrets.token_hex(4)}",
-                json.dumps([[yes, "YES"], [no, "NO"]]),
-            ),
-        ).fetchone()
-    return row["MARKET_ID"], yes, no
-
-
-def _holder(
-    db,
-    chain: _Chain,
-    market: tuple[int, str, str],
-    *,
-    holds: dict[str, int],
-    auto_redeem: bool = True,
-) -> User:
-    """An account with a trade on `market` (which is how the pass finds it)
-    holding `holds` (token -> balance) on the fake chain."""
-    _market_id, yes, _no = market
-    with db.write() as conn:
-        user_id, acct, api_key = TableWrite.create_user(
-            conn,
-            email=f"holder-{secrets.token_hex(4)}@example.com",
-            password_hash="x",
-            handle=None,
-        )
-        TableWrite.set_auto_redeem(conn, user_id, auto_redeem)
-        conn.execute(
-            "INSERT INTO trades (TRADE_ID, ASSET_ID, TAKER_API_KEY, "
-            "MAKER_API_KEY, STATUS, MATCH_TIME) VALUES (%s, %s, %s, %s, "
-            "'MATCHED', 1)",
-            (secrets.token_hex(8), yes, api_key, api_key),
-        )
-    for token, amount in holds.items():
-        chain.hold(acct.address, token, amount)
-    with db.read() as conn:
-        user = TableRead.get_user_by_userid(conn, user_id)
-    assert user is not None
-    return user
-
-
-def _flagged(db, market_id: int) -> bool:
-    with db.read() as conn:
-        market = TableRead.read_market(conn, market_id)
-    assert market is not None
-    return market.fully_redeemed
-
-
-# ----- who is owed a claim ----------------------------------------------------
-
-
-def test_holders_owed_less_than_the_minimum_cost_nothing_and_settle_the_market(
-    claims,
-):
-    """Nothing, only the losing side, or dust under $0.01: a claim for any of
-    them would be pure admin gas, so none is made -- and since nobody is owed
-    one worth making, the market is done."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    market_id, yes, no = market
-    _holder(db, chain, market, holds={})
-    _holder(db, chain, market, holds={no: 50 * _ONE_USD})
-    _holder(db, chain, market, holds={yes: 9_999})
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert calls == []
-    assert _flagged(db, market_id) is True
-
-
-def test_a_holder_owed_nothing_is_never_claimed_for_whatever_the_minimum(claims):
-    """`Settings` refuses a minimum below 1, but the scan does not lean on it:
-    with a minimum of 0 a claim for a position worth nothing would still be
-    admin gas for no payout, once per holder and per pass."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    market_id, yes, no = market
-    _holder(db, chain, market, holds={})
-    _holder(db, chain, market, holds={no: 50 * _ONE_USD})
-    # `model_copy` skips validation, which is how a 0 gets past the field.
-    settings = _settings().model_copy(update={"min_claim_micro": 0})
-
-    assert auto_redeem_resolved_markets(db, chain, settings) == 0  # type: ignore[arg-type]
-    assert calls == []
-    assert _flagged(db, market_id) is True
-
-
-def test_a_payout_of_exactly_the_minimum_is_claimed(claims):
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    user = _holder(db, chain, market, holds={market[1]: 10_000})
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
-    assert calls == [(user.user_id, market[0], (1, [1, 0]))]
-    assert _flagged(db, market[0]) is True
-
-
-def test_an_opted_out_holder_who_is_owed_still_holds_the_market_open(claims):
-    """The flag only stops the scan, and they may switch the toggle back on."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    _holder(db, chain, market, holds={market[1]: _ONE_USD}, auto_redeem=False)
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert calls == []
-    assert _flagged(db, market[0]) is False
-
-
-def test_the_vector_is_read_once_per_market_and_handed_to_every_claim(claims):
-    """One payout read per market, one balance read per holder: on SKALE a
-    chain read costs ~0.5 s, and the pass holds `_redeem_lock` meanwhile."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    for _ in range(3):
-        _holder(db, chain, market, holds={market[1]: _ONE_USD})
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 3  # type: ignore[arg-type]
-    assert chain.vector_reads == 1
-    assert chain.balance_reads == 3
-    assert [vector for _user, _market, vector in calls] == [(1, [1, 0])] * 3
-
-
-def test_a_market_with_no_payout_on_chain_stays_open_and_unread(claims):
-    """RESOLVED in the database without a reportPayouts on chain (the admin
-    resolve route): nobody can be paid yet, so nobody is settled either, and
-    no balance is read for it."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain(vector=(0, [0, 0]))
-    market = _market(db)
-    _holder(db, chain, market, holds={market[1]: _ONE_USD})
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert calls == []
-    assert chain.balance_reads == 0
-    assert _flagged(db, market[0]) is False
-
-
-def test_a_market_nobody_traded_is_settled_without_a_chain_read(claims):
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert chain.vector_reads == 0
-    assert _flagged(db, market[0]) is True
-
-
-def test_the_sponsor_is_built_once_per_pass_from_the_settings_given(
-    claims, sponsors
-):
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    _holder(db, chain, market, holds={market[1]: _ONE_USD})
-    settings = _settings()
-
-    auto_redeem_resolved_markets(db, chain, settings)  # type: ignore[arg-type]
-    assert sponsors == [settings]
-
-
-# ----- how many per pass ------------------------------------------------------
-
-
-def test_the_pass_stops_at_the_cap_and_the_next_pass_takes_the_rest(claims):
-    """Each claim is about two blocks under `_redeem_lock`, which both
-    resolution loops wait on. Markets a capped pass did not reach stay open."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    markets = [_market(db) for _ in range(3)]
-    for market in markets:
-        _holder(db, chain, market, holds={market[1]: _ONE_USD})
-
-    assert auto_redeem_resolved_markets(db, chain, _settings(cap=2)) == 2  # type: ignore[arg-type]
-    assert [m for _user, m, _vector in calls] == [markets[0][0], markets[1][0]]
-    assert [_flagged(db, m[0]) for m in markets] == [True, True, False]
-
-    assert auto_redeem_resolved_markets(db, chain, _settings(cap=2)) == 1  # type: ignore[arg-type]
-    assert calls[-1][1] == markets[2][0]
-    assert _flagged(db, markets[2][0]) is True
-
-
-def test_a_failed_claim_counts_toward_the_cap(claims):
-    """Attempts, not successes: a refused claim already spent reads and an
-    estimate under the lock, and a reverted one spent gas."""
-    calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    first, second = _market(db), _market(db)
-    user = _holder(db, chain, first, holds={first[1]: _ONE_USD})
-    _holder(db, chain, second, holds={second[1]: _ONE_USD})
-    outcomes[(user.user_id, first[0])] = RuntimeError("node hiccup")
-
-    assert auto_redeem_resolved_markets(db, chain, _settings(cap=1)) == 0  # type: ignore[arg-type]
-    assert [m for _user, m, _vector in calls] == [first[0]]
-    assert _flagged(db, second[0]) is False
-
-
-# ----- when a claim cannot go out --------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("exc", "level"),
-    [
-        (TransactionInProgressError(), logging.INFO),
-        (AdminGasPausedError(), logging.WARNING),
-        (InsufficientGasError("wallet balance too low"), logging.WARNING),
-        (GasTopUpTimeoutError(), logging.WARNING),
-        (GasPriceMovedError(), logging.WARNING),
-    ],
-    ids=[
-        "lock-held",
-        "breaker-paused",
-        "not-sponsored",
-        "top-up-timed-out",
-        "gas-price-moved",
-    ],
-)
-def test_an_expected_refusal_skips_the_holder_quietly_and_keeps_the_market_open(
-    claims, caplog, exc, level
-):
-    """A held lock (they are claiming by hand), a paused gas breaker, a dry
-    wallet while sponsoring is switched off, a top-up that timed out, or a fee
-    that rose twice while the claim went out: retried later, and logged
-    without a traceback. The pin loop runs a pass every 20 s; a traceback per
-    holder each time would bury the failures that need one."""
-    _calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
-    outcomes[(user.user_id, market[0])] = exc
-    caplog.set_level(logging.INFO, logger=_LOGGER)
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert _flagged(db, market[0]) is False
-    records = [r for r in caplog.records if r.name == _LOGGER]
-    assert [r.levelno for r in records] == [level]
-    assert records[0].exc_info is None
-
-
-def test_an_unexpected_error_keeps_its_traceback(claims, caplog):
-    _calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
-    outcomes[(user.user_id, market[0])] = RuntimeError("boom")
-    caplog.set_level(logging.INFO, logger=_LOGGER)
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert _flagged(db, market[0]) is False
-    errors = [
-        r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.ERROR
-    ]
-    assert len(errors) == 1
-    assert errors[0].exc_info is not None
-
-
-def test_a_reverted_claim_is_left_alone_for_an_hour(claims):
-    """After the on-chain gate a revert should not happen. If it does, it must
-    not repeat, and cost gas, on every pass."""
-    calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
-    key = (user.user_id, market[0])
-    outcomes[key] = TransactionRevertedError("redeemPositions reverted")
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert len(calls) == 1
-    left = polymarket_sync._claim_backoff_until[key] - time.monotonic()
-    assert 3_590 < left <= 3_600
-
-    # Inside the hour: not tried again, and the market stays open.
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert len(calls) == 1
-    assert _flagged(db, market[0]) is False
-
-    # The hour is up and the cause is gone: claimed, settled, forgotten.
-    polymarket_sync._claim_backoff_until[key] = 0.0
-    del outcomes[key]
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
-    assert len(calls) == 2
-    assert _flagged(db, market[0]) is True
-    assert key not in polymarket_sync._claim_backoff_until
-
-
-# ----- a failure that repeats must not starve the rest ------------------------
-
-
-def test_refused_holders_are_backed_off_so_the_next_pass_reaches_the_rest(claims):
-    """With the gas breaker paused, the first 20 holders in api-key order fail
-    the same way on every pass. Counted as attempts and never remembered, they
-    would burn the cap each time: the 21st holder, every later market and the
-    house's own claims (which would succeed) would never be reached, and
-    `_redeem_lock` would be held for ~20 futile attempts every 20 s."""
-    calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    first, second = _market(db), _market(db)
-    holders = [
-        _holder(db, chain, first, holds={first[1]: _ONE_USD}) for _ in range(25)
-    ]
-    last = _holder(db, chain, second, holds={second[1]: _ONE_USD})
-    for holder in holders:
-        outcomes[(holder.user_id, first[0])] = AdminGasPausedError()
-
-    # Pass 1 spends the cap on 20 refusals and stops inside the first market.
-    assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 0  # type: ignore[arg-type]
-    tried = [user for user, _market_id, _vector in calls]
-    assert len(tried) == 20
-
-    # Pass 2 passes those 20 by without counting them: the other 5 are tried,
-    # and so is the next market.
-    assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 1  # type: ignore[arg-type]
-    again = [user for user, _market_id, _vector in calls[20:]]
-    assert len(again) == 6
-    assert not set(again) & set(tried)
-    assert last.user_id in again
-    assert _flagged(db, first[0]) is False  # all 25 are still owed
-    assert _flagged(db, second[0]) is True
-
-
-@pytest.mark.parametrize(
-    ("exc", "constant"),
-    [
-        (AdminGasPausedError(), "_REFUSED_BACKOFF_SECONDS"),
-        (InsufficientGasError("wallet balance too low"), "_REFUSED_BACKOFF_SECONDS"),
-        (GasTopUpTimeoutError(), "_REFUSED_BACKOFF_SECONDS"),
-        (RuntimeError("boom"), "_REFUSED_BACKOFF_SECONDS"),
-        (TransactionRevertedError("reverted"), "_REVERT_BACKOFF_SECONDS"),
-    ],
-    ids=["breaker-paused", "not-sponsored", "top-up-timed-out", "unexpected", "reverted"],
-)
-def test_a_failed_claim_is_not_retried_inside_its_backoff_window(claims, exc, constant):
-    """Short for what may clear soon (the breaker, congestion, a kill switch);
-    an hour for a claim that mined and reverted, which costs gas each time."""
-    calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
-    key = (user.user_id, market[0])
-    outcomes[key] = exc
-    window = getattr(polymarket_sync, constant)
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    left = polymarket_sync._claim_backoff_until[key] - time.monotonic()
-    assert window - 10 < left <= window
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert len(calls) == 1
-    assert _flagged(db, market[0]) is False
-
-
-def test_a_refusal_is_forgiven_sooner_than_a_revert():
-    assert 0 < polymarket_sync._REFUSED_BACKOFF_SECONDS < 3_600
-    assert polymarket_sync._REVERT_BACKOFF_SECONDS == 3_600
-
-
-def test_a_held_lock_is_not_backed_off(claims):
-    """The holder is claiming by hand: nothing failed, and the next pass may
-    find the lock free."""
-    calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
-    key = (user.user_id, market[0])
-    outcomes[key] = TransactionInProgressError()
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert key not in polymarket_sync._claim_backoff_until
-
-    del outcomes[key]
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
-    assert len(calls) == 2
-    assert _flagged(db, market[0]) is True
-
-
-# ----- busy locks must not starve the cap -------------------------------------
-
-
-def test_holders_with_held_locks_do_not_use_up_the_cap(claims):
-    """A held lock is a 409 before any chain read, so it costs the admin
-    nothing, and it is not backed off (the next pass may find the lock free).
-    Counted toward the cap, `cap` such holders visited first in key order would
-    use it up on every pass: the honest holder in the next market, and the
-    house's own claims, would never be reached."""
-    calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    first, second = _market(db), _market(db)
-    squatters = [
-        _holder(db, chain, first, holds={first[1]: _ONE_USD}) for _ in range(25)
-    ]
-    honest = _holder(db, chain, second, holds={second[1]: _ONE_USD})
-    for squatter in squatters:
-        outcomes[(squatter.user_id, first[0])] = TransactionInProgressError()
-
-    # The honest holder is claimed in the very first pass, after 25 refusals
-    # that spent nothing of the cap of 20.
-    assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 1  # type: ignore[arg-type]
-    assert [u for u, _m, _vector in calls].count(honest.user_id) == 1
-    assert len(calls) == 26
-    assert _flagged(db, second[0]) is True
-    # Their market stays open and nobody is backed off.
-    assert _flagged(db, first[0]) is False
-    assert not polymarket_sync._claim_backoff_until
-
-    # Later passes meet the same busy locks again, and settle nothing more.
-    for _ in range(4):
-        assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 0  # type: ignore[arg-type]
-    assert [u for u, _m, _vector in calls].count(honest.user_id) == 1
-    assert _flagged(db, first[0]) is False
-
-
-def test_the_cap_still_counts_the_claims_that_were_tried_after_busy_locks(claims):
-    """Skipping a busy holder gives the cap back, no more: the claims that
-    really go out are still limited to `cap` a pass."""
-    calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    first = _market(db)
-    for _ in range(3):
-        squatter = _holder(db, chain, first, holds={first[1]: _ONE_USD})
-        outcomes[(squatter.user_id, first[0])] = TransactionInProgressError()
-    # One market apiece, so a claimed holder is not met again by the next pass.
-    honest = [_market(db) for _ in range(3)]
-    for market in honest:
-        _holder(db, chain, market, holds={market[1]: _ONE_USD})
-
-    assert auto_redeem_resolved_markets(db, chain, _settings(cap=2)) == 2  # type: ignore[arg-type]
-    claimed = [m for _u, m, _vector in calls if m != first[0]]
-    assert claimed == [honest[0][0], honest[1][0]]
-    assert [_flagged(db, m[0]) for m in honest] == [True, True, False]
-
-    assert auto_redeem_resolved_markets(db, chain, _settings(cap=2)) == 1  # type: ignore[arg-type]
-    assert calls[-1][1] == honest[2][0]
-    assert _flagged(db, honest[2][0]) is True
-    assert _flagged(db, first[0]) is False
-
-
-def test_holders_on_a_really_held_lock_are_passed_by_before_any_chain_read(
-    monkeypatch,
-):
-    """The same with the real sponsor lock instead of a stubbed error: the
-    squatters go through the real `PositionService.redeem`, which refuses at
-    `locked()` before its first read (`_Chain` has no `redeem_call`, so a
-    claim that got further would raise something else and be backed off)."""
-    monkeypatch.setattr(gas_sponsor, "UserGasSponsor", _REAL_SPONSOR)
-    db, chain = fresh_test_db(), _Chain()
-    first, second = _market(db), _market(db)
-    squatters = [
-        _holder(db, chain, first, holds={first[1]: _ONE_USD}) for _ in range(25)
-    ]
-    honest = _holder(db, chain, second, holds={second[1]: _ONE_USD})
-    busy = {s.user_id for s in squatters}
-    claimed: list[str] = []
-    real_redeem = PositionService.redeem
-
-    def redeem(self, user, market_id, *, payout_vector=None):
-        if user.user_id in busy:
-            return real_redeem(self, user, market_id, payout_vector=payout_vector)
-        claimed.append(user.user_id)
-
-    monkeypatch.setattr(PositionService, "redeem", redeem)
-    locks = [gas_sponsor._lock_for(s.eth_address) for s in squatters]  # noqa: SLF001
-    for lock in locks:
-        assert lock.acquire(blocking=False)
-    try:
-        assert auto_redeem_resolved_markets(db, chain, _settings(cap=20)) == 1  # type: ignore[arg-type]
-    finally:
-        for lock in locks:
-            lock.release()
-
-    assert claimed == [honest.user_id]
-    assert _flagged(db, second[0]) is True
-    assert _flagged(db, first[0]) is False
-    assert not polymarket_sync._claim_backoff_until
-    # Only the pass's own reads: one vector a market, one balance a holder.
-    assert chain.vector_reads == 2
-    assert chain.balance_reads == 26
-
-
-# ----- a market that cannot be read ------------------------------------------
-
-
-def _poison_market(db) -> int:
-    """A RESOLVED market whose token ids are not numbers (a bad row), found
-    in the suite as `ValueError: invalid literal for int() ... 'cut-y'`."""
-    with db.write() as conn:
-        row = conn.execute(
-            "INSERT INTO markets (CONDITION_ID, QUESTION, SLUG, DESCRIPTION, "
-            "ERC1155_TOKENS, START_DATE, MARKET_STATE, RESOLVED_OUTCOME) "
-            "VALUES (%s, %s, %s, 'd', %s, 100, 'RESOLVED', 0) "
-            "RETURNING MARKET_ID",
-            (
-                f"0x{secrets.token_hex(32)}",
-                f"Poison {secrets.token_hex(4)}?",
-                f"poison-{secrets.token_hex(4)}",
-                json.dumps([["cut-y", "YES"], ["cut-n", "NO"]]),
-            ),
-        ).fetchone()
-    return row["MARKET_ID"]
-
-
-def test_a_market_that_cannot_be_read_is_skipped_and_the_pass_goes_on(claims, caplog):
-    """One bad row must not stop every later market from being claimed: it is
-    logged once, left open, and the pass moves to the next market."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    poison = _poison_market(db)  # the lower market id, so it comes first
-    good = _market(db)
-    _holder(db, chain, good, holds={good[1]: _ONE_USD})
-    caplog.set_level(logging.INFO, logger=_LOGGER)
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
-    assert [m for _user, m, _vector in calls] == [good[0]]
-    assert _flagged(db, poison) is False
-    assert _flagged(db, good[0]) is True
-    errors = [
-        r for r in caplog.records if r.name == _LOGGER and r.levelno == logging.ERROR
-    ]
-    assert len(errors) == 1
-    assert errors[0].exc_info is not None
-
-
-def test_an_rpc_error_reading_one_markets_payout_does_not_abort_the_pass(claims):
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    first, second = _market(db), _market(db)
-    _holder(db, chain, first, holds={first[1]: _ONE_USD})
-    _holder(db, chain, second, holds={second[1]: _ONE_USD})
-    chain.vector_errors = [RuntimeError("node hiccup")]  # the first market's read
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
-    assert [m for _user, m, _vector in calls] == [second[0]]
-    assert _flagged(db, first[0]) is False
-    assert _flagged(db, second[0]) is True
-
-
-def test_an_rpc_error_reading_a_holders_balances_leaves_the_market_open(claims):
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    first, second = _market(db), _market(db)
-    _holder(db, chain, first, holds={first[1]: _ONE_USD})
-    _holder(db, chain, second, holds={second[1]: _ONE_USD})
-    chain.balance_errors = [RuntimeError("node hiccup")]  # the first read
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
-    assert [m for _user, m, _vector in calls] == [second[0]]
-    assert _flagged(db, first[0]) is False
-    assert _flagged(db, second[0]) is True
-
-
-def test_a_holder_who_claimed_by_hand_meanwhile_does_not_hold_the_market_open(
-    claims,
-):
-    """The scan saw a payout; the gate, re-reading under the holder's lock a
-    moment later, did not: they pressed Claim in between. Nothing is owed."""
-    _calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
-    outcomes[(user.user_id, market[0])] = NothingToClaimError()
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-    assert _flagged(db, market[0]) is True
-
-
-# ----- transactions whose outcome nobody saw -----------------------------------
-
-
 class _ReceiptChain(_Chain):
-    """`_Chain`, plus the two things the pass's reconciler asks of the chain:
-    `receipts[tx_hash]` is that hash's receipt (None when the chain has none),
-    and `redeemed_payout` reads a receipt's `payout`."""
+    """`_Chain` plus what the pass's reconciler asks: `receipts[tx_hash]`."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -719,151 +86,508 @@ class _ReceiptChain(_Chain):
         return receipt["payout"]
 
 
-def _account(db) -> User:
-    """An account opted in to auto-redeem with no trade anywhere: the pass
-    finds it only through a SPLIT row, or through a pending one."""
-    with db.write() as conn:
-        user_id, _acct, _key = TableWrite.create_user(
-            conn,
-            email=f"splitter-{secrets.token_hex(4)}@example.com",
-            password_hash="x",
-            handle=None,
-        )
-        TableWrite.set_auto_redeem(conn, user_id, True)
-        user = TableRead.get_user_by_userid(conn, user_id)
-    assert user is not None
-    return user
+def _settings(*, cap: int = 20) -> Settings:
+    return Settings(
+        _env_file=None, min_claim_micro=10_000, auto_redeem_max_per_pass=cap
+    )
 
 
-def _pending(db, user: User, market_id: int, kind="REDEEM", details=None, *, tx_hash: str):
-    with db.write() as conn:
-        TableWrite.insert_pending_user_tx(
-            conn, tx_hash, user.api_key, kind, market_id, details or {},
-            created_at=int(time.time()) - 30,
-        )
+class _World:
+    """A fresh database, a fake chain and a stubbed `redeem` that records every
+    claim in `calls` and raises `outcomes[(user_id, market_id)]` when one is set."""
 
+    def __init__(self, chain: _Chain) -> None:
+        self.db, self.chain = fresh_test_db(), chain
+        self.calls: list[_Claim] = []
+        self.outcomes: dict[tuple[str, int], Exception] = {}
 
-def _history(db, user: User) -> list[tuple[str, dict]]:
-    with db.read() as conn:
-        return [
-            (r["TRANSACTION_TYPE"], json.loads(r["DETAILS"]))
-            for r in conn.execute(
+    def redeem(self, user: User, market_id: int, *, payout_vector=None) -> None:
+        self.calls.append(_Claim(user.user_id, market_id, payout_vector))
+        if (exc := self.outcomes.get((user.user_id, market_id))) is not None:
+            raise exc
+
+    @property
+    def claimed_markets(self) -> list[int]:
+        return [c.market_id for c in self.calls]
+
+    @property
+    def claimed_users(self) -> list[str]:
+        return [c.user_id for c in self.calls]
+
+    def market(self, tokens: tuple[str, str] | None = None) -> _Market:
+        """A RESOLVED market whose YES (index 0) won; random token ids unless given."""
+        yes, no = tokens or [str(secrets.randbits(63)) for _ in range(2)]
+        tag = secrets.token_hex(4)
+        with self.db.write() as conn:
+            row = conn.execute(
+                "INSERT INTO markets (CONDITION_ID, QUESTION, SLUG, DESCRIPTION, "
+                "ERC1155_TOKENS, START_DATE, MARKET_STATE, RESOLVED_OUTCOME) "
+                "VALUES (%s, %s, %s, 'd', %s, 100, 'RESOLVED', 0) RETURNING MARKET_ID",
+                (
+                    f"0x{secrets.token_hex(32)}",
+                    f"Won {tag}?",
+                    f"won-{tag}",
+                    json.dumps([[yes, "YES"], [no, "NO"]]),
+                ),
+            ).fetchone()
+        return _Market(row["MARKET_ID"], yes, no)
+
+    def account(self, *, opted_in: bool = True) -> User:
+        """An account with no trade (found only via a SPLIT row or a pending one)."""
+        email = f"acct-{secrets.token_hex(4)}@example.com"
+        with self.db.write() as conn:
+            user_id, _acct, _key = TableWrite.create_user(
+                conn, email=email, password_hash="x", handle=None
+            )
+            TableWrite.set_auto_redeem(conn, user_id, opted_in)
+            user = TableRead.get_user_by_userid(conn, user_id)
+        assert user is not None
+        return user
+
+    def holder(self, market, holds=None, *, opted_in=True):
+        """A trader on `market` holding `holds` (default: `_ONE_USD` of the winner)."""
+        user = self.account(opted_in=opted_in)
+        with self.db.write() as conn:
+            conn.execute(
+                "INSERT INTO trades (TRADE_ID, ASSET_ID, TAKER_API_KEY, "
+                "MAKER_API_KEY, STATUS, MATCH_TIME) VALUES (%s, %s, %s, %s, "
+                "'MATCHED', 1)",
+                (secrets.token_hex(8), market.yes, user.api_key, user.api_key),
+            )
+        holds = {market.yes: _ONE_USD} if holds is None else holds
+        for token, amount in holds.items():
+            self.chain.hold(user.eth_address, token, amount)
+        return user
+
+    def holders(self, market: _Market, n: int, exc: Exception) -> list[User]:
+        """`n` owed holders on `market` whose claims raise `exc`."""
+        users = [self.holder(market) for _ in range(n)]
+        for user in users:
+            self.outcomes[(user.user_id, market.id)] = exc
+        return users
+
+    def failing_claim(self, exc: Exception) -> tuple[_Market, tuple[str, int]]:
+        """A market with one owed holder whose claim raises `exc`, and the claim key."""
+        market = self.market()
+        (user,) = self.holders(market, 1, exc)
+        return market, (user.user_id, market.id)
+
+    def owed_markets(self, n: int) -> list[_Market]:
+        markets = [self.market() for _ in range(n)]
+        for market in markets:
+            self.holder(market)
+        return markets
+
+    def pending(self, user: User, market: _Market, kind="REDEEM", **details):
+        """A transaction of theirs on `market` that went out, outcome unseen."""
+        old = int(time.time()) - 30
+        with self.db.write() as conn:
+            TableWrite.insert_pending_user_tx(
+                conn, _H1, user.api_key, kind, market.id, details, created_at=old
+            )
+
+    def mined(self, user: User, **receipt) -> None:
+        self.chain.receipts[_H1] = {"status": 1, "from": user.eth_address, **receipt}
+
+    def history(self, user: User) -> list[tuple[str, dict]]:
+        with self.db.read() as conn:
+            rows = conn.execute(
                 "SELECT TRANSACTION_TYPE, DETAILS FROM transactions "
                 "WHERE API_KEY = %s ORDER BY TRANSACTION_ID",
                 (user.api_key,),
             ).fetchall()
-        ]
+        return [(r["TRANSACTION_TYPE"], json.loads(r["DETAILS"])) for r in rows]
+
+    def run(self, *, cap: int = 20, settings: Settings | None = None) -> int:
+        settings = settings or _settings(cap=cap)
+        return auto_redeem_resolved_markets(self.db, self.chain, settings)  # type: ignore[arg-type]
+
+    def flagged(self, market: _Market) -> bool:
+        with self.db.read() as conn:
+            row = TableRead.read_market(conn, market.id)
+        assert row is not None
+        return row.fully_redeemed
 
 
-_H1 = "0x" + "e1" * 32
+@pytest.fixture(autouse=True)
+def sponsors(monkeypatch) -> list[Settings]:
+    """Swap `UserGasSponsor` for a recorder of the settings each pass built it from."""
+    built: list[Settings] = []
+
+    class _Sponsor:
+        def __init__(self, db, onchain, settings):
+            built.append(settings)
+            self.min_claim_micro = settings.min_claim_micro
+
+    monkeypatch.setattr(gas_sponsor, "UserGasSponsor", _Sponsor)
+    return built
 
 
-def test_the_pass_settles_a_claim_that_mined_unseen_before_it_scans(claims):
-    """The request gave up waiting for the claim's receipt, and the claim
-    mined. The pass writes its REDEEM row first, then finds nobody owed: the
-    market is done, and the history has the win."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _ReceiptChain()
-    market = _market(db)
-    user = _holder(db, chain, market, holds={})  # the claim burned the tokens
-    _pending(db, user, market[0], tx_hash=_H1)
-    chain.receipts[_H1] = {"status": 1, "from": user.eth_address, "payout": _ONE_USD}
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-
-    assert calls == []
-    assert _history(db, user) == [("REDEEM", {"collateral_amount": _ONE_USD})]
-    assert _flagged(db, market[0]) is True
+@pytest.fixture()
+def world(monkeypatch) -> _World:
+    world = _World(_Chain())
+    # A bound method is not rebound on the instance, so `redeem` gets no service.
+    monkeypatch.setattr(PositionService, "redeem", world.redeem)
+    return world
 
 
-def test_a_split_that_mined_unseen_makes_its_holder_a_participant(claims):
-    """Only trades and SPLIT/MERGE rows make a participant, and a split whose
-    answer was lost had neither. Settled first, it is a SPLIT row, so the
-    same pass finds the holder owed and claims for them."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _ReceiptChain()
-    market = _market(db)
-    user = _account(db)
-    chain.hold(user.eth_address, market[1], _ONE_USD)
-    _pending(db, user, market[0], "SPLIT", {"amount": _ONE_USD}, tx_hash=_H1)
-    chain.receipts[_H1] = {"status": 1, "from": user.eth_address}
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
-
-    assert [(u, m) for u, m, _vector in calls] == [(user.user_id, market[0])]
-    assert _history(db, user) == [("SPLIT", {"amount": _ONE_USD})]
-
-
-def test_a_holder_with_a_transaction_in_flight_is_skipped_and_not_counted(claims):
-    """A pending row with no receipt yet: a split, merge or claim of theirs on
-    this market is on its way, and a claim now would meet the duplicate
-    guard's 409. Passed by like a held lock (no backoff, the market stays
-    open), and without spending the cap the other holders need."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _ReceiptChain()
-    first, second = _market(db), _market(db)
-    busy = _holder(db, chain, first, holds={first[1]: _ONE_USD})
-    _pending(db, busy, first[0], tx_hash=_H1)  # no receipt yet
-    honest = _holder(db, chain, second, holds={second[1]: _ONE_USD})
-
-    assert auto_redeem_resolved_markets(db, chain, _settings(cap=1)) == 1  # type: ignore[arg-type]
-
-    assert [u for u, _m, _vector in calls] == [honest.user_id]
-    assert (busy.user_id, first[0]) not in polymarket_sync._claim_backoff_until
-    assert _flagged(db, first[0]) is False
-    assert _flagged(db, second[0]) is True
-
-
-def test_a_split_in_flight_holds_the_market_open_for_a_holder_with_no_trades(claims):
-    """Not a participant yet (no trade, no SPLIT row), but the tokens may be
-    on their way: the market is not settled from under them."""
-    calls, _ = claims
-    db, chain = fresh_test_db(), _ReceiptChain()
-    market = _market(db)
-    user = _account(db)
-    _pending(db, user, market[0], "SPLIT", {"amount": _ONE_USD}, tx_hash=_H1)
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-
-    assert calls == []
-    assert _flagged(db, market[0]) is False
-
-
-def test_a_claim_whose_outcome_is_unknown_keeps_the_market_open_without_a_backoff(
-    claims, caplog
-):
-    """The claim went out and its receipt did not come back: it may mine yet,
-    and its pending row keeps the holder out of the next passes until it is
-    settled. No backoff on top, and no traceback: nothing is broken."""
-    _calls, outcomes = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    user = _holder(db, chain, market, holds={market[1]: _ONE_USD})
-    key = (user.user_id, market[0])
-    outcomes[key] = TransactionPendingError()
+@pytest.fixture()
+def logs(caplog):
+    """A callable returning what the pass has logged so far."""
     caplog.set_level(logging.INFO, logger=_LOGGER)
-
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 0  # type: ignore[arg-type]
-
-    assert key not in polymarket_sync._claim_backoff_until
-    assert _flagged(db, market[0]) is False
-    records = [r for r in caplog.records if r.name == _LOGGER]
-    assert [r.levelno for r in records] == [logging.WARNING]
-    assert records[0].exc_info is None
+    return lambda: [r for r in caplog.records if r.name == _LOGGER]
 
 
-def test_a_reconciler_that_fails_outright_does_not_stop_the_pass(claims, monkeypatch, caplog):
-    calls, _ = claims
-    db, chain = fresh_test_db(), _Chain()
-    market = _market(db)
-    _holder(db, chain, market, holds={market[1]: _ONE_USD})
+_NONE, _LOSING, _DUST = (0, 0), (0, 50 * _ONE_USD), (9_999, 0)  # (yes, no) held
+
+
+@pytest.mark.parametrize(
+    ("minimum", "balances", "claims"),
+    [
+        pytest.param(10_000, [_NONE, _LOSING, _DUST], 0, id="dust"),
+        pytest.param(0, [_NONE, _LOSING], 0, id="zero-minimum"),
+        pytest.param(10_000, [(10_000, 0)], 1, id="exact-minimum"),
+    ],
+)
+def test_claims_need_a_payout_of_the_minimum(world, minimum, balances, claims):
+    """Nothing, the losing side or dust is pure admin gas: no claim, market done."""
+    market = world.market()
+    users = [world.holder(market, {market.yes: y, market.no: n}) for y, n in balances]
+    # `Settings` refuses a 0 minimum, but the scan must not lean on that:
+    # `model_copy` skips validation.
+    settings = _settings().model_copy(update={"min_claim_micro": minimum})
+
+    assert world.run(settings=settings) == claims
+    # With a claim, it is the one holder's, with the vector; otherwise none.
+    assert world.calls == [(users[0].user_id, market.id, (1, [1, 0]))][:claims]
+    assert world.flagged(market) is True
+
+
+def test_an_opted_out_holder_who_is_owed_still_holds_the_market_open(world):
+    """The flag only stops the scan, and they may switch the toggle back on."""
+    market = world.market()
+    world.holder(market, opted_in=False)
+
+    assert world.run() == 0
+    assert world.calls == []
+    assert world.flagged(market) is False
+
+
+def test_a_pass_reads_the_vector_once_and_builds_the_sponsor_once(world, sponsors):
+    """On SKALE a chain read costs ~0.5 s, and the pass holds `_redeem_lock`."""
+    market = world.market()
+    for _ in range(3):
+        world.holder(market)
+    settings = _settings()
+
+    assert world.run(settings=settings) == 3
+    assert world.chain.vector_reads == 1
+    assert world.chain.balance_reads == 3
+    assert [c.vector for c in world.calls] == [(1, [1, 0])] * 3
+    assert sponsors == [settings]  # built from the settings the pass was given
+
+
+def test_a_market_with_no_payout_on_chain_stays_open_and_unread(world):
+    """RESOLVED in the database with no reportPayouts on chain (admin resolve route)."""
+    world.chain.vector = (0, [0, 0])
+    market = world.market()
+    world.holder(market)
+
+    assert world.run() == 0
+    assert world.calls == []
+    assert world.chain.balance_reads == 0
+    assert world.flagged(market) is False
+
+
+def test_a_market_nobody_traded_is_settled_without_a_chain_read(world):
+    market = world.market()
+
+    assert world.run() == 0
+    assert world.chain.vector_reads == 0
+    assert world.flagged(market) is True
+
+
+def test_the_pass_stops_at_the_cap_and_the_next_pass_takes_the_rest(world):
+    """A claim holds `_redeem_lock` ~2 blocks; markets the cap missed stay open."""
+    markets = world.owed_markets(3)
+
+    assert world.run(cap=2) == 2
+    assert world.claimed_markets == [markets[0].id, markets[1].id]
+    assert [world.flagged(m) for m in markets] == [True, True, False]
+
+    assert world.run(cap=2) == 1
+    assert world.calls[-1].market_id == markets[2].id
+    assert world.flagged(markets[2]) is True
+
+
+def test_a_failed_claim_counts_toward_the_cap(world):
+    """Attempts, not successes: a refused claim spent reads, a revert spent gas."""
+    first, _ = world.failing_claim(RuntimeError("node hiccup"))
+    (second,) = world.owed_markets(1)
+
+    assert world.run(cap=1) == 0
+    assert world.claimed_markets == [first.id]
+    assert world.flagged(second) is False
+
+
+@pytest.mark.parametrize(
+    ("exc", "level"),
+    [
+        pytest.param(errors.TransactionInProgressError(), "INFO", id="lock-held"),
+        pytest.param(errors.AdminGasPausedError(), "WARNING", id="breaker-paused"),
+        pytest.param(errors.InsufficientGasError("dry"), "WARNING", id="not-sponsored"),
+        pytest.param(errors.GasTopUpTimeoutError(), "WARNING", id="top-up-timed-out"),
+        pytest.param(errors.GasPriceMovedError(), "WARNING", id="gas-price-moved"),
+        pytest.param(errors.TransactionPendingError(), "WARNING", id="outcome-unknown"),
+        pytest.param(RuntimeError("boom"), "ERROR", id="unexpected"),
+    ],
+)
+def test_a_refused_claim_keeps_the_market_open_and_logs_by_kind(
+    world, logs, exc, level
+):
+    """Refusals log no traceback (the pin loop runs every 20 s); only a bug has one."""
+    market, _ = world.failing_claim(exc)
+
+    assert world.run() == 0
+    assert world.flagged(market) is False
+    records = logs()
+    assert [r.levelname for r in records] == [level]
+    assert (records[0].exc_info is not None) is (level == "ERROR")
+
+
+@pytest.mark.parametrize(
+    ("exc", "window"),
+    [
+        pytest.param(errors.AdminGasPausedError(), _REFUSED, id="breaker-paused"),
+        pytest.param(errors.InsufficientGasError("dry"), _REFUSED, id="not-sponsored"),
+        pytest.param(errors.GasTopUpTimeoutError(), _REFUSED, id="top-up-timed-out"),
+        pytest.param(RuntimeError("boom"), _REFUSED, id="unexpected"),
+        pytest.param(
+            errors.TransactionRevertedError("reverted"), _REVERT, id="reverted"
+        ),
+        # Nothing failed (a hand claim in progress, or one that may mine yet).
+        pytest.param(errors.TransactionInProgressError(), None, id="lock-held"),
+        pytest.param(errors.TransactionPendingError(), None, id="outcome-unknown"),
+    ],
+)
+def test_backoff_follows_a_failed_claim_not_a_busy_one(world, exc, window):
+    """Short for what may clear soon; an hour for a revert, which costs gas each try."""
+    market, key = world.failing_claim(exc)
+
+    assert world.run() == 0
+    if window is None:
+        assert key not in _BACKOFF
+    else:
+        assert window - 10 < _BACKOFF[key] - time.monotonic() <= window
+        # Inside the window: not tried again, and the market stays open.
+        assert world.run() == 0
+        assert len(world.calls) == 1
+        assert world.flagged(market) is False
+        _BACKOFF[key] = 0.0  # the window is up
+
+    # The cause is gone: claimed, settled, forgotten.
+    del world.outcomes[key]
+    assert world.run() == 1
+    assert len(world.calls) == 2
+    assert world.flagged(market) is True
+    assert key not in _BACKOFF
+
+
+def test_a_refusal_is_forgiven_sooner_than_a_revert():
+    assert 0 < _REFUSED < 3_600
+    assert _REVERT == 3_600
+
+
+def test_refused_holders_are_backed_off_so_the_next_pass_reaches_the_rest(world):
+    """Unremembered refusals burn the cap every pass and starve every later claim."""
+    first, second = world.market(), world.market()
+    world.holders(first, 25, errors.AdminGasPausedError())
+    last = world.holder(second)
+
+    # Pass 1 spends the cap on 20 refusals and stops inside the first market.
+    assert world.run() == 0
+    tried = world.claimed_users
+    assert len(tried) == 20
+
+    # Pass 2 passes those 20 by without counting them: the other 5 are tried,
+    # and so is the next market.
+    assert world.run() == 1
+    again = world.claimed_users[20:]
+    assert len(again) == 6
+    assert not set(again) & set(tried)
+    assert last.user_id in again
+    assert world.flagged(first) is False  # all 25 are still owed
+    assert world.flagged(second) is True
+
+
+def test_holders_with_held_locks_do_not_use_up_the_cap(world):
+    """A held lock costs nothing and is not backed off: `cap` of them cannot starve."""
+    first, second = world.market(), world.market()
+    world.holders(first, 25, errors.TransactionInProgressError())
+    honest = world.holder(second)
+
+    # Claimed in the very first pass, after 25 refusals that spent none of the cap.
+    assert world.run() == 1
+    assert world.claimed_users.count(honest.user_id) == 1
+    assert len(world.calls) == 26
+    assert world.flagged(second) is True
+    # Their market stays open and nobody is backed off.
+    assert world.flagged(first) is False
+    assert not _BACKOFF
+
+    # Later passes meet the same busy locks again, and settle nothing more.
+    for _ in range(4):
+        assert world.run() == 0
+    assert world.claimed_users.count(honest.user_id) == 1
+    assert world.flagged(first) is False
+
+
+def test_the_cap_still_counts_the_claims_that_were_tried_after_busy_locks(world):
+    """Skipping a busy holder gives the cap back, no more."""
+    first = world.market()
+    world.holders(first, 3, errors.TransactionInProgressError())
+    # One market apiece, so a claimed holder is not met again by the next pass.
+    honest = world.owed_markets(3)
+
+    assert world.run(cap=2) == 2
+    claimed = [m for m in world.claimed_markets if m != first.id]
+    assert claimed == [honest[0].id, honest[1].id]
+    assert [world.flagged(m) for m in honest] == [True, True, False]
+
+    assert world.run(cap=2) == 1
+    assert world.calls[-1].market_id == honest[2].id
+    assert world.flagged(honest[2]) is True
+    assert world.flagged(first) is False
+
+
+def test_really_held_locks_are_passed_by_before_any_chain_read(world, monkeypatch):
+    """The same with the real sponsor lock: `redeem` refuses at `locked()`, no read."""
+    monkeypatch.setattr(gas_sponsor, "UserGasSponsor", _REAL_SPONSOR)
+    first, second = world.market(), world.market()
+    squatters = [world.holder(first) for _ in range(25)]
+    honest = world.holder(second)
+    busy = {s.user_id for s in squatters}
+
+    def redeem(service, user, market_id, *, payout_vector=None):
+        if user.user_id in busy:
+            return _REAL_REDEEM(service, user, market_id, payout_vector=payout_vector)
+        world.redeem(user, market_id, payout_vector=payout_vector)
+
+    monkeypatch.setattr(PositionService, "redeem", redeem)
+    locks = [gas_sponsor._lock_for(s.eth_address) for s in squatters]  # noqa: SLF001
+    for lock in locks:
+        assert lock.acquire(blocking=False)
+    try:
+        assert world.run() == 1
+    finally:
+        for lock in locks:
+            lock.release()
+
+    assert world.claimed_users == [honest.user_id]
+    assert world.flagged(second) is True
+    assert world.flagged(first) is False
+    assert not _BACKOFF
+    # Only the pass's own reads: one vector a market, one balance a holder.
+    assert world.chain.vector_reads == 2
+    assert world.chain.balance_reads == 26
+
+
+def test_a_market_that_cannot_be_read_is_skipped_and_the_pass_goes_on(world, logs):
+    """A bad row (`ValueError: invalid literal for int() ... 'cut-y'`) is logged."""
+    poison = world.market(("cut-y", "cut-n"))  # the lower market id, so first
+    (good,) = world.owed_markets(1)
+
+    assert world.run() == 1
+    assert world.claimed_markets == [good.id]
+    assert world.flagged(poison) is False
+    assert world.flagged(good) is True
+    logged = [r for r in logs() if r.levelno >= logging.ERROR]
+    assert len(logged) == 1 and logged[0].exc_info is not None
+
+
+@pytest.mark.parametrize("reads", ["vector_errors", "balance_errors"])
+def test_an_rpc_error_on_one_read_skips_that_market_only(world, reads):
+    first, second = world.owed_markets(2)
+    # The first market's payout read, or its holder's balance read.
+    setattr(world.chain, reads, [RuntimeError("node hiccup")])
+
+    assert world.run() == 1
+    assert world.claimed_markets == [second.id]
+    assert world.flagged(first) is False
+    assert world.flagged(second) is True
+
+
+def test_a_holder_who_claimed_by_hand_meanwhile_does_not_hold_the_market_open(world):
+    """The gate, re-reading under the holder's lock, saw them claim after the scan."""
+    market, _ = world.failing_claim(errors.NothingToClaimError())
+
+    assert world.run() == 0
+    assert world.flagged(market) is True
+
+
+def test_the_pass_settles_a_claim_that_mined_unseen_before_it_scans(world):
+    """The request gave up on the receipt but the claim mined: settled first, done."""
+    world.chain = _ReceiptChain()
+    market = world.market()
+    user = world.holder(market, {})  # the claim burned the tokens
+    world.pending(user, market)
+    world.mined(user, payout=_ONE_USD)
+
+    assert world.run() == 0
+    assert world.calls == []
+    assert world.history(user) == [("REDEEM", {"collateral_amount": _ONE_USD})]
+    assert world.flagged(market) is True
+
+
+def test_a_split_that_mined_unseen_makes_its_holder_a_participant(world):
+    """Settled first, the lost split is a SPLIT row: the same pass finds them owed."""
+    world.chain = _ReceiptChain()
+    market = world.market()
+    user = world.account()
+    world.chain.hold(user.eth_address, market.yes, _ONE_USD)
+    world.pending(user, market, "SPLIT", amount=_ONE_USD)
+    world.mined(user)
+
+    assert world.run() == 1
+    assert world.calls == [(user.user_id, market.id, (1, [1, 0]))]
+    assert world.history(user) == [("SPLIT", {"amount": _ONE_USD})]
+
+
+def test_a_holder_with_a_transaction_in_flight_is_skipped_and_not_counted(world):
+    """Its claim would meet the duplicate guard's 409: skipped like a held lock."""
+    world.chain = _ReceiptChain()
+    first, second = world.market(), world.market()
+    busy = world.holder(first)
+    world.pending(busy, first)  # no receipt yet
+    honest = world.holder(second)
+
+    assert world.run(cap=1) == 1
+    assert world.claimed_users == [honest.user_id]
+    assert (busy.user_id, first.id) not in _BACKOFF
+    assert world.flagged(first) is False
+    assert world.flagged(second) is True
+
+
+def test_a_split_in_flight_holds_the_market_open_for_a_holder_with_no_trades(world):
+    """Not a participant yet, but the tokens may be on their way."""
+    world.chain = _ReceiptChain()
+    market = world.market()
+    world.pending(world.account(), market, "SPLIT", amount=_ONE_USD)
+
+    assert world.run() == 0
+    assert world.calls == []
+    assert world.flagged(market) is False
+
+
+def test_a_failing_reconciler_does_not_stop_the_pass(world, logs, monkeypatch):
+    world.owed_markets(1)
 
     def broken(_db, _admin):
         raise RuntimeError("database gone")
 
     monkeypatch.setattr(polymarket_sync, "reconcile_pending_user_txs", broken)
 
-    assert auto_redeem_resolved_markets(db, chain, _settings()) == 1  # type: ignore[arg-type]
-    assert len(calls) == 1
-    errors = [r for r in caplog.records if r.name == _LOGGER and r.levelno >= logging.ERROR]
-    assert len(errors) == 1 and errors[0].exc_info is not None
+    assert world.run() == 1
+    assert len(world.calls) == 1
+    logged = [r for r in logs() if r.levelno >= logging.ERROR]
+    assert len(logged) == 1 and logged[0].exc_info is not None
