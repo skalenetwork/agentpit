@@ -371,8 +371,7 @@ def test_a_second_fee_refusal_is_a_retryable_503(send, used, kind):
 
 
 def test_each_call_gets_its_own_resize_and_retry(send, used):
-    # With one retry for the whole batch the second refusal aborted onboarding
-    # after two approvals had mined.
+    # One retry for the whole batch aborted onboarding after two approvals mined.
     chain = _Chain(
         prices=(1_000, 1_500, 2_000),
         balances=(0, 240_000_000, 120_000_000),
@@ -448,8 +447,7 @@ def test_both_hooks_run_with_the_kill_switch_off_too(send):
             [("balance",), ("hook",), ("send", *SEND)],
             id="no-top-up-needed",
         ),
-        # Asked once: it guards the first signature, and the retry is the same
-        # call at a new size.
+        # Asked once: it guards the first signature, the retry is the same call.
         pytest.param(
             _refused_once(),
             [("balance",), ("fund", NEED), ("hook",), ("send", *SEND)]
@@ -459,8 +457,7 @@ def test_both_hooks_run_with_the_kill_switch_off_too(send):
     ],
 )
 def test_before_send_runs_after_the_top_up_before_signing(send, chain, events):
-    # A market can resolve or tokens move while the top-up mines: a call that no
-    # longer makes sense costs the top-up and nothing more.
+    # A market can resolve while the top-up mines: a stale call costs only that.
     receipts = send(chain, before_send=lambda: chain.events.append(("hook",)))
     assert chain.events == events
     assert [r["status"] for r in receipts] == [1]
@@ -476,8 +473,7 @@ def test_before_send_runs_after_the_top_up_before_signing(send, chain, events):
     ],
 )
 def test_a_failing_before_send(db, user, send, used, kind, balance, booked, settings):
-    # Nothing is signed, so a split's reservation goes back in full and only a
-    # top-up's transfer stays booked. The caller's error propagates as it is.
+    # Nothing is signed: a split's reservation goes back, a top-up's transfer stays.
     chain, error = _Chain(balances=(balance,)), NothingToClaimError()
 
     def refuse():
@@ -492,8 +488,7 @@ def test_a_failing_before_send(db, user, send, used, kind, balance, booked, sett
 
 
 def test_a_held_lock_refuses_another_request(db, user):
-    # Services are built per request, so the second request has its own sponsor
-    # on its own thread: the lock must still be the same one.
+    # Each request builds its own sponsor on its own thread; the lock is shared.
     def other_request():
         with _sponsor(db).locked(user):
             pass
@@ -612,14 +607,11 @@ def test_kill_switch_never_stops_onboarding(send, used):
         # The transaction may be out and mine, so a split's reservation stands.
         pytest.param(TimeExhausted("no receipt in 30s"), RESERVED, id="receipt-timeout"),
         pytest.param(requests.ConnectionError("reset"), RESERVED, id="transport-error"),
-        # Neither of those nor a refusal at import: the receipt poll's JSON-RPC
-        # error, once the node has the transaction (`PositionService` keeps the
-        # split pending for it too).
+        # Neither of those nor a refusal at import: the receipt poll's JSON-RPC error.
         pytest.param(Web3RPCError("rate limit exceeded"), RESERVED, id="receipt-poll"),
         pytest.param(KeyboardInterrupt(), RESERVED, id="interrupt"),
-        # The transaction provably never ran, so the reservation goes back. A
-        # connect failure kept it, which stranded the day's whole limit on every
-        # attempt during an RPC outage.
+        # Provably never ran, so the reservation goes back (kept, a connect failure
+        # stranded the day's whole limit on every attempt during an RPC outage).
         pytest.param(_never_connected(), TRANSFER_GAS, id="never-reached"),
         pytest.param(_refused("nonce too low"), TRANSFER_GAS, id="definite-refusal"),
     ],
@@ -633,9 +625,8 @@ def test_what_a_failed_send_does_to_the_reservation(db, user, send, used, error,
 
 @pytest.mark.parametrize(("kind", "standing"), [("claim", 0), ("split", RESERVED)])
 def test_a_top_up_receipt_timeout_is_not_paid_twice(send, used, kind, standing):
-    # `fund_gas` gave up waiting: a 503, not a bare `TimeExhausted`. The top-up
-    # may still mine, so a split's reservation stands (an over-count, the safe
-    # direction). Once it has, the next send sizes against the balance it left.
+    # `fund_gas` gave up waiting (a 503, not a bare `TimeExhausted`). The top-up may
+    # still mine, so a split's reservation stands (an over-count, the safe side).
     chain = _Chain(balances=(0, NEED), fund_errors=[TimeExhausted("no receipt in 30s")])
     error = send(chain, kind, raises=GasTopUpTimeoutError)
     assert isinstance(error.__cause__, TimeExhausted)
@@ -651,8 +642,8 @@ def test_a_top_up_receipt_timeout_is_not_paid_twice(send, used, kind, standing):
 
 @pytest.mark.parametrize("kind", ["claim", "split"])
 def test_a_dropped_top_up_is_a_retryable_503(send, used, kind):
-    # A gap filler took the top-up's nonce (`TxDropped`): it can never mine, so
-    # unlike a timeout the reservation goes back in full.
+    # A gap filler took its nonce (`TxDropped`): it can never mine, so the
+    # reservation goes back in full, unlike a timeout's.
     chain = _Chain(fund_errors=[TxDropped("its nonce went to a gap filler")])
     error = send(chain, kind, raises=GasTopUpTimeoutError)
     assert isinstance(error.__cause__, TxDropped)
@@ -674,8 +665,7 @@ def test_a_dropped_retry_top_up_keeps_what_the_first_one_cost(send, used):
 
 
 def test_a_failed_read_while_re_sizing_is_a_retryable_503(send, used):
-    # The split was refused at import and the new price then got no answer: the
-    # refused transaction can never mine and the retry was never signed, so
+    # Refused at import, then no answer for the new price: nothing is in flight, so
     # `PositionService` may drop the pending row and the reservation goes back.
     chain = _Chain(refusals=[_refused(SKALED_FEE_LOW)])
     chain.gas_price = Mock(side_effect=[1_000, requests.ReadTimeout("read timed out")])
@@ -702,12 +692,12 @@ def test_a_revert_raises_after_it_is_booked(send, used, kind):
 
 
 # --- the failure matrix -----------------------------------------------------
-# Every chain call `_send_sponsored` makes was made to fail once with each kind
-# of error in `_FAULTS`, for a claim, a split and onboarding. Whatever fails
-# where, the lock is free afterwards, nothing goes out after the failure, the
-# error is the documented one, and a split's reservation goes back exactly when
-# nothing it paid for can still mine. Of those 360 cells the 112 kept in
-# `_CELLS` failed before the sponsor followed these rules; the other 248 held.
+# Every chain call `_send_sponsored` makes was made to fail once with each error
+# in `_FAULTS`, for a claim, a split and onboarding. Whatever fails where, the
+# lock is free afterwards, nothing goes out after the failure, the error is the
+# documented one, and a split's reservation goes back exactly when nothing it
+# paid for can still mine. Of those 360 cells the 112 in `_CELLS` failed before
+# the sponsor followed these rules; the other 248 held.
 
 _FAULTS = {
     "runtime": lambda: RuntimeError("boom"),
@@ -727,12 +717,11 @@ _RETRY_TOP_UP_FAULTS = [
     "runtime", "never-connected", "read-timeout", "fee-low", "balance-low", "db",
 ]  # fmt: skip
 _RE_SIZING = {"price2": _RESIZE_FAULTS, "estimate2": _RESIZE_FAULTS, "balance2": _RESIZE_FAULTS}
-# {(scenario, kind): {point: faults}}. A point is the n-th chain call of its
-# kind, from 1, in the order `_send_sponsored` makes them. In "retry" the node
-# refuses the first send for its fee: "price2", "estimate2" (onboarding:
-# "estimate4" to "estimate6") and "balance2" re-size it, "fund2" is the
-# retry's top-up and "send2" the retry, and onboarding's "send3" and "send4"
-# are its next two calls' first tries.
+# {(scenario, kind): {point: faults}}; a point is the n-th chain call of its kind.
+# In "retry" the node refuses the first send for its fee: "price2", "estimate2"
+# (onboarding: "estimate4" to "estimate6") and "balance2" re-size it, "fund2" is
+# the retry's top-up, "send2" the retry, onboarding's "send3"/"send4" the next
+# two calls' first tries.
 _CELLS = {
     ("straight", "split"): {
         "fund1": ["interrupt"],
@@ -753,8 +742,7 @@ _CELLS = {
         **{f"send{n}": ["fee-low", "balance-low"] for n in (3, 4)},
     },
 }
-# The errors that answer the caller in place of the error itself, and the
-# status each maps to; anything else propagates as it is (500).
+# The errors that answer the caller in place of the raw one, with their status.
 _STATUS = {GasTopUpTimeoutError: 503, GasPriceMovedError: 503, InsufficientGasError: 402}
 
 
@@ -773,9 +761,8 @@ def _expected(scenario: str, point: str, fault: str) -> tuple[type | None, bool]
         # The refused transaction can never mine, the retry is not signed yet.
         return (raw if fault == "interrupt" else GasTopUpTimeoutError), False
     if name == "fund":
-        # No answer leaves the top-up free to mine. The retry's top-up has a
-        # refused signature in front of it, so its failure is an answer for
-        # the caller (503).
+        # No answer leaves the top-up free to mine; the retry's top-up has a
+        # refused signature before it, so its failure is an answer (503).
         unseen = fault in ("timeout", "never-connected", "read-timeout", "interrupt")
         if fault in ("timeout", "dropped"):
             return GasTopUpTimeoutError, unseen
@@ -837,8 +824,7 @@ def test_every_failure_point_is_handled(db, user, used, scenario, kind, point, f
         assert chain.after == []  # nothing, and no send, after the failure
         if isinstance(raised, Exception):
             assert _status_of(raised) == _STATUS.get(type(raised), 500)
-    # Each mined top-up's transfer and each receipt, plus what is left of the
-    # reservation when something may still mine unseen.
+    # Each mined top-up's transfer and receipt, or the reservation if one may mine.
     paid = len(chain.funded) * TRANSFER_GAS + chain.mined * 80_000
     reserved = RESERVED if kind == "split" and unseen else 0
     assert used() == max(paid, reserved)
