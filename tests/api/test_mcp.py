@@ -106,7 +106,7 @@ def test_market_and_portfolio_tools_render_the_card():
     assert (read["ttlMs"], read["cacheScope"]) == (3_600_000, "public")
 
 
-def test_search_markets_replies_with_the_polymarket_url_the_card_opens():
+def test_search_markets_replies_with_the_polymarket_url_the_card_opens(house_book):
     key = _agent().api_key
     with fresh_test_db().write() as conn:
         event = TableWrite.upsert_event(conn, slug="ev-rain", title="Will it rain?", category="Weather")
@@ -124,12 +124,7 @@ def test_search_markets_replies_with_the_polymarket_url_the_card_opens():
             ),
             is_polygon_market=False,
         )
-        for side, price in (("BUY", 400_000), ("SELL", 600_000)):
-            conn.execute(
-                "INSERT INTO orders (ORDER_ID, TOKEN_ID, SIDE, PRICE, STATUS, REMAINING_AMOUNT, EXPIRATION, CREATED_AT, API_KEY) "
-                "VALUES (%s, %s, %s, %s, 'live', 1000000, 0, 0, 'k')",
-                (f"o-{side}", market.erc1155_tokens[0][0], side, price),
-            )
+    house_book(market.erc1155_tokens[0][0], bids=(("0.4", "1"),), asks=(("0.6", "1"),))
     with TestClient(app) as client:
         found = _call(client, key, "tools/call", {"name": "search_markets", "arguments": {}}, "search_markets")
         read = _call(client, key, "resources/read", {"uri": CARD}, CARD)
@@ -212,8 +207,8 @@ def test_a_second_lifespan_still_serves():
 
 
 def test_mcp_adds_no_openapi_paths():
-    with TestClient(app) as client, TestClient(plain) as bare:
-        assert client.get("/openapi.json").json()["paths"] == bare.get("/openapi.json").json()["paths"]
+    with TestClient(app) as client:
+        assert client.get("/openapi.json").json()["paths"] == TestClient(plain).get("/openapi.json").json()["paths"]
 
 
 @pytest.mark.parametrize(

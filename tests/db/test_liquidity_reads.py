@@ -1,19 +1,11 @@
 """Tests for the liquidity-engine read helpers added in Phase 5b Task 4."""
 
-from agentpit.auth.passwords import hash_password
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from tests.db_helpers import fresh_test_conn
-
-
-def _make_user(conn, email):
-    uid, acct, api_key = TableWrite.create_user(
-        conn, email=email, password_hash=hash_password("pw12pw12pw12"), handle=None
-    )
-    return uid, api_key
 
 
 def _hex32(seed: str) -> str:
@@ -44,40 +36,6 @@ def _make_market(conn, *, question: str, cond_id: str, polymarket_condition_id=N
             (state.value, polymarket_condition_id, market.market_id),
         )
     return market
-
-
-# ---------------------------------------------------------------------------
-# list_bot_users
-# ---------------------------------------------------------------------------
-
-
-def test_list_bot_users_only_bots():
-    conn = fresh_test_conn()
-    _make_user(conn, "human@x.com")
-    _uid, bot_key = _make_user(conn, "bot@x.com")
-    TableWrite.mark_user_as_bot(conn, bot_key)
-    bots = TableRead.list_bot_users(conn)
-    assert [u.email for u in bots] == ["bot@x.com"]
-    assert bots[0].is_bot is True
-    assert bots[0].eth_key is not None
-
-
-def test_list_bot_users_empty_when_no_bots():
-    conn = fresh_test_conn()
-    _make_user(conn, "regular@x.com")
-    assert TableRead.list_bot_users(conn) == []
-
-
-def test_list_bot_users_returns_multiple_bots():
-    conn = fresh_test_conn()
-    _, k1 = _make_user(conn, "bot1@x.com")
-    _, k2 = _make_user(conn, "bot2@x.com")
-    _make_user(conn, "human@x.com")
-    TableWrite.mark_user_as_bot(conn, k1)
-    TableWrite.mark_user_as_bot(conn, k2)
-    bots = TableRead.list_bot_users(conn)
-    assert len(bots) == 2
-    assert all(b.is_bot for b in bots)
 
 
 # ---------------------------------------------------------------------------

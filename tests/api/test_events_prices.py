@@ -1,8 +1,6 @@
-"""End-to-end: a market with a live local book surfaces book-derived prices
+"""End-to-end: a market with a live Polymarket book surfaces book-derived prices
 (outcomePrices/bestBid/bestAsk/spread) through the Gamma event serialization,
 instead of the neutral 0.5 placeholder."""
-
-import uuid
 
 from agentpit.api.deps import get_db_session
 from agentpit.api.main import app
@@ -17,19 +15,7 @@ def _hex32(seed: str) -> str:
     return "0x" + seed.encode().hex().ljust(64, "0")[:64]
 
 
-def _insert_order(conn, *, token, side, price, remaining, status="live"):
-    conn.execute(
-        "INSERT INTO orders (API_KEY, PRICE, POST_ONLY, ORDER_TYPE, SALT, MAKER, "
-        "TAKER, SIGNER, TOKEN_ID, MAKER_AMOUNT, TAKER_AMOUNT, EXPIRATION, NONCE, "
-        "FEE_RATE_BPS, SIDE, SIGNATURE_TYPE, SIGNATURE, ORDER_JSON, STATUS, "
-        "REMAINING_AMOUNT, CREATED_AT, ORDER_ID) VALUES "
-        "('m',%s,0,'GTC','0','0x0','0x0','0x0',%s,0,0,0,0,0,%s,'EIP712','sig',"
-        "'{}',%s,%s,0,%s)",
-        (price, token, side, status, remaining, uuid.uuid4().hex),
-    )
-
-
-def test_list_events_gamma_reports_book_derived_prices():
+def test_list_events_gamma_reports_book_derived_prices(house_book):
     session = app.dependency_overrides[get_db_session]()
     req = CreateMarketRequest(
         question="Will it rain?",
@@ -47,9 +33,7 @@ def test_list_events_gamma_reports_book_derived_prices():
         TableWrite.attach_market_to_event(
             conn, market_id=market.market_id, event_id=event.event_id
         )
-        # YES book 0.14 / 0.15 -> mid 0.145; NO has no book -> complement 0.855.
-        _insert_order(conn, token="p1", side="BUY", price=140_000, remaining=5)
-        _insert_order(conn, token="p1", side="SELL", price=150_000, remaining=5)
+    house_book("p1", bids=(("0.14", "5"),), asks=(("0.15", "5"),))
 
     events = EventService(session).list_events_gamma(limit=10, offset=0)
     m = events[0].markets[0]

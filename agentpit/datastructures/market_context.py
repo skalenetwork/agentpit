@@ -6,3 +6,5 @@ class MarketContext(BaseModel):
     endDate: int | None = None
     resolvedAt: int | None = None
     winner: str | None = None
+    kickoff: int | None = None
+    trading: bool | None = None

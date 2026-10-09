@@ -86,3 +86,18 @@ def test_create_personality_and_agent_succeed_with_admin_token():
         }
         resp = client.post("/create_agent", json=agent_payload, headers=headers)
         assert resp.status_code == 200, resp.text
+
+
+def test_create_market_refuses_a_supplied_condition_id():
+    with TestClient(app) as client:
+        resp = client.post(
+            "/markets",
+            json={
+                "question": "Gate condition?",
+                "description": "x",
+                "outcome_labels": ["YES", "NO"],
+                "condition_id": {"value": "0x" + "ab" * 32},
+            },
+            headers={"X-Admin-Token": ADMIN_TOKEN},
+        )
+        assert resp.status_code == 400, resp.text

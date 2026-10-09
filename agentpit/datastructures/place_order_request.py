@@ -20,10 +20,6 @@ class PlaceOrderRequest(BaseModel):
     price: Decimal = Field(gt=0, lt=1)  # probability, 0 < p < 1
     size: Decimal = Field(gt=0)  # whole shares (× 10⁶ base units internally)
     order_type: Literal["GTC", "FOK", "FAK", "GTD"] = "GTC"
-    # unix seconds, required if GTD. `ge=0` catches a negative expiration at
-    # the boundary: place_order's `_EXPIRY_MIN_LEAD_SECONDS` floor also
-    # rejects it, but the batch path (place_resting_orders /
-    # replace_resting_orders) has no floor, so this is the only guard there.
     expiration: int = Field(default=0, ge=0)
     client_order_id: str | None = None  # optional per-user idempotency key
 

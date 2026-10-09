@@ -1,4 +1,4 @@
-import { shortDay } from "./format";
+import { etDay, until } from "./format";
 
 export const RANK_FLOOR = 10;
 
@@ -33,6 +33,8 @@ export interface MarketContext {
   readonly endDate: number | null;
   readonly resolvedAt: number | null;
   readonly winner: string | null;
+  readonly kickoff: number | null;
+  readonly trading: boolean | null;
 }
 
 interface OpenPosition extends MarketContext {
@@ -124,12 +126,37 @@ export interface WireProfile extends Omit<Profile, "money" | "positions" | "reco
 
 export const usd = (raw: string): number => Number(raw) / 1e6;
 
-const day = (at: number) => shortDay(new Date(at * 1000));
+export type Phase = { readonly kind: "starts" | "closes"; readonly at: number } | { readonly kind: "live" } | { readonly kind: "awaiting" } | { readonly kind: "settled"; readonly at: number | null };
 
-export const marketCaption = ({ eventTitle, endDate, resolvedAt, winner }: MarketContext, now: number): readonly string[] => {
-  const settled = resolvedAt ?? endDate;
-  const status =
-    winner !== null ? [settled === null ? "Settled" : `Settled ${day(settled)}`, `${winner} won`] : endDate === null ? [] : [endDate > now ? `Ends ${day(endDate)}` : `Was due ${day(endDate)}`];
+export type Timing = Pick<WireCard, "state" | "startTime" | "endDate" | "resolvedAt">;
+
+export const phase = ({ state, startTime, endDate, resolvedAt }: Timing, live: boolean | null, now: number): Phase | null =>
+  state === "settled"
+    ? { kind: "settled", at: resolvedAt }
+    : startTime !== null && now < startTime
+      ? { kind: "starts", at: startTime }
+      : startTime !== null && live !== null
+        ? { kind: live ? "live" : "awaiting" }
+        : endDate === null
+          ? null
+          : now < endDate
+            ? { kind: "closes", at: endDate }
+            : { kind: "awaiting" };
+
+const WEEK = 7 * 86_400;
+
+export const phaseText = (p: Phase, now: number): readonly [string, string?] => {
+  if (p.kind === "starts" || p.kind === "closes") {
+    const verb = p.kind === "starts" ? "Starts" : "Closes";
+    return p.at - now < WEEK ? [`${verb} in`, until(p.at - now)] : [`${verb} ${etDay(p.at, now)}`];
+  }
+  return [p.kind === "live" ? "Live" : p.kind === "awaiting" ? "Awaiting result" : p.at === null ? "Settled" : `Settled ${etDay(p.at, now)}`];
+};
+
+export const marketCaption = ({ eventTitle, endDate, resolvedAt, winner, kickoff, trading }: MarketContext, now: number): readonly string[] => {
+  const result = winner !== null ? `${winner} won` : resolvedAt !== null ? "Split 50-50" : null;
+  const p = phase({ state: result === null ? "live" : "settled", startTime: kickoff, endDate, resolvedAt: resolvedAt ?? endDate }, trading, now);
+  const status = p === null ? [] : [phaseText(p, now).join(" "), ...(result === null ? [] : [result])];
   return eventTitle === null ? status : [eventTitle, ...status];
 };
 
@@ -171,13 +198,23 @@ interface WireBet {
   readonly pnl: string;
 }
 
+export interface Team {
+  readonly logo: string | null;
+  readonly record: string | null;
+  readonly color: string | null;
+  readonly abbr: string | null;
+}
+
 interface WireOutcome {
   readonly label: string;
   readonly question: string;
   readonly slug: string;
   readonly url: string | null;
+  readonly market: number;
   readonly price: number | null;
+  readonly ask: number | null;
   readonly change24h: number | null;
+  readonly team: Team | null;
   readonly bets: readonly WireBet[];
 }
 
@@ -187,8 +224,11 @@ export interface WireCard {
   readonly icon: string | null;
   readonly category: string | null;
   readonly url: string | null;
+  readonly volume: number | null;
   readonly kind: "binary" | "multi" | "matchup" | "window";
   readonly state: "live" | "settled";
+  readonly startTime: number | null;
+  readonly trading: boolean | null;
   readonly endDate: number | null;
   readonly resolvedAt: number | null;
   readonly outcomeCount: number;
@@ -200,8 +240,8 @@ interface WireGame extends WireCard {
   readonly league: string;
   readonly leagueLabel: string;
   readonly sport: string;
-  readonly status: "upcoming" | "started" | "settled";
-  readonly startTime: number | null;
+  readonly status: "upcoming" | "live" | "started" | "settled";
+  readonly tz: string;
 }
 
 export interface BoardTab {

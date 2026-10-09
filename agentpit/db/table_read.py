@@ -3,6 +3,8 @@ import time
 import uuid
 from collections.abc import Iterable
 from datetime import date
+from typing import NamedTuple
+
 import psycopg
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
@@ -10,12 +12,14 @@ from pydantic import BaseModel
 from web3 import Web3
 
 from agentpit.utils.parse import parse_32b_hex_private_key
+from agentpit.datastructures.board import WireTeam
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.event_sort import EventSort
 from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_context import MarketContext
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.user import User
+from agentpit.domain.sports import SEASON, SERIES_WORDS
 from agentpit.liquidity.tape import MIRROR_API_KEY
 from ..datastructures.condition_id import ConditionId
 
@@ -47,6 +51,43 @@ class DailyClose(BaseModel):
     day: date
     capital: int
     deposited: int
+
+
+class MarketFields(NamedTuple):
+    slug: str
+    question: str
+    description: str
+    end_date: int | None
+    icon_url: str | None
+    outcome_label: str | None
+    price_change_24h: float | None
+
+
+class EventFields(NamedTuple):
+    slug: str
+    title: str
+    icon_url: str | None
+    start_date: int | None
+    end_date: int | None
+    volume_24hr: float | None
+    volume: float | None
+    liquidity: float | None
+    competitive: float | None
+    start_time: int | None
+    game_id: str | None
+    series_slug: str | None
+    category: str | None
+
+
+class Carried(NamedTuple):
+    market_id: int
+    pm_condition: str
+    state: MarketState
+    fields: MarketFields
+    tags: frozenset[tuple[str, str]]
+    event_id: int | None
+    pm_event_id: str | None
+    event: EventFields | None
 
 
 class PendingUserTx(BaseModel):
@@ -136,11 +177,11 @@ def _market_excluded_clause(
 
 
 _MARKET_COLS = (
-    "MARKET_ID, POLYMARKET_ID, POLYMARKET_CONDITION_ID, CONDITION_ID, "
+    "MARKET_ID, POLYMARKET_ID, POLYMARKET_CONDITION_ID, CONDITION_ID, QUESTION_ID, "
     "QUESTION, DESCRIPTION, SLUG, "
     "START_DATE, END_DATE, ERC1155_TOKENS, "
     "COALESCE(MARKET_STATE, 'DRAFT') as MARKET_STATE, "
-    "RESOLVED_OUTCOME, "
+    "PAYOUTS, "
     "EVENT_ID, OUTCOME_LABEL, ICON_URL, "
     "POLYMARKET_YES_TOKEN_ID, POLYMARKET_NO_TOKEN_ID, "
     "COALESCE(FULLY_REDEEMED, FALSE) as FULLY_REDEEMED, "
@@ -159,13 +200,14 @@ def _row_to_market(row) -> Market:
         polymarket_yes_token_id=row["POLYMARKET_YES_TOKEN_ID"],
         polymarket_no_token_id=row["POLYMARKET_NO_TOKEN_ID"],
         condition_id=ConditionId(row["CONDITION_ID"]),
+        question_id=row["QUESTION_ID"],
         description=row["DESCRIPTION"],
         slug=row["SLUG"],
         start_date=row["START_DATE"],
         end_date=row["END_DATE"],
         erc1155_tokens=erc1155_tokens,
         market_state=MarketState(row["MARKET_STATE"]),
-        resolved_outcome=row["RESOLVED_OUTCOME"],
+        payouts=row["PAYOUTS"],
         event_id=row["EVENT_ID"],
         outcome_label=row["OUTCOME_LABEL"],
         icon_url=row["ICON_URL"],
@@ -205,26 +247,13 @@ class TableRead:
         f"OR EXPIRATION > %s + {EXPIRY_GRACE_SECONDS})"
     )
 
-    #: "Not placed by anyone in this family": the self-trade rule every matcher
-    #: query shares. Takes ONE parameter, the list from `family_api_keys`, and
-    #: goes BEFORE `LIVE_ORDER` (which must stay last, it carries `now`).
+    #: One price print per Polymarket print and token: "this token traded at
+    #: this price". Only the mirrored tape prints, so nothing an agent does
+    #: moves a public price.
     #:
-    #: orders.API_KEY is nullable and `<> ALL` alone evaluates to NULL for a
-    #: NULL key, which WHERE drops, so a NULL-key maker would silently vanish
-    #: from the book. The IS NULL arm keeps it matchable. Defined once so the
-    #: NORMAL, MINT and MERGE queries cannot drift apart on this rule.
-    NOT_IN_FAMILY = "(API_KEY IS NULL OR API_KEY <> ALL(%s))"
-
-    #: One price print per (match, token): "this token traded at this price".
-    #:
-    #: The taker branch covers every non-failed row; the maker branch fires
-    #: ONLY for MINT/MERGE, because a NORMAL maker trades the same token at
-    #: the same price and its leg is not a second print. Emitting it would
-    #: double every chart point and every tape-derived volume, silently.
-    #:
-    #: For a MINT/MERGE the stored PRICE is the maker's, so the taker's token
-    #: printed at MICRO - PRICE and the maker's at PRICE — summing to the $1
-    #: the pair costs or returns.
+    #: A tape row is a YES print and stores the NO token in MAKER_ASSET_ID, so
+    #: the second branch prints NO at MICRO - PRICE on the opposite side. Rows
+    #: written before that carry MAKER_ASSET_ID = ASSET_ID and print once.
     #:
     #: Takes TWO parameters, both the SAME list of token ids: the predicate is
     #: pushed into each branch so both use an index. One filter over the union
@@ -233,72 +262,42 @@ class TableRead:
     #: Append your own `SELECT ... FROM prints`.
     TOKEN_PRINTS_CTE = """
         WITH prints AS (
-            SELECT ASSET_ID AS TOKEN_ID, MATCH_TIME, TRADE_SIZE,
-                   CASE WHEN COALESCE(MATCH_KIND, 'NORMAL') IN ('MINT', 'MERGE')
-                        THEN 1000000 - PRICE ELSE PRICE END AS PRICE,
-                   CASE WHEN COALESCE(MATCH_KIND, 'NORMAL') = 'MINT' THEN 'BUY'
-                        WHEN COALESCE(MATCH_KIND, 'NORMAL') = 'MERGE' THEN 'SELL'
-                        ELSE SIDE END AS SIDE
+            SELECT ASSET_ID AS TOKEN_ID, MATCH_TIME, TRADE_SIZE, PRICE, SIDE
             FROM trades
-            WHERE STATUS != 'FAILED' AND ASSET_ID = ANY(%s)
+            WHERE STATUS = 'MIRRORED' AND ASSET_ID = ANY(%s)
             UNION ALL
-            SELECT MAKER_ASSET_ID, MATCH_TIME, TRADE_SIZE, PRICE,
-                   CASE WHEN MATCH_KIND = 'MINT' THEN 'BUY' ELSE 'SELL' END
+            SELECT MAKER_ASSET_ID, MATCH_TIME, TRADE_SIZE, 1000000 - PRICE,
+                   CASE WHEN SIDE = 'BUY' THEN 'SELL' ELSE 'BUY' END
             FROM trades
-            WHERE STATUS != 'FAILED' AND MATCH_KIND IN ('MINT', 'MERGE')
-              AND MAKER_ASSET_ID IS NOT NULL AND MAKER_ASSET_ID = ANY(%s)
+            WHERE STATUS = 'MIRRORED' AND MAKER_ASSET_ID = ANY(%s)
+              AND MAKER_ASSET_ID <> ASSET_ID
         )
     """
 
     @staticmethod
-    def read_condition_id_by_polymarket_id(
-        db: psycopg.Connection, polymarket_id: int
-    ) -> ConditionId | None:
-        """Return CONDITION_ID for a Polymarket id, or None if not found."""
-        row = db.execute(
-            "SELECT CONDITION_ID FROM markets WHERE POLYMARKET_ID = %s LIMIT 1",
-            (polymarket_id,),
-        ).fetchone()
-        return ConditionId(str(row["CONDITION_ID"])) if row is not None else None
+    def polymarket_condition_ids(db: psycopg.Connection) -> set[str]:
+        rows = db.execute(
+            "SELECT POLYMARKET_CONDITION_ID FROM markets "
+            "WHERE POLYMARKET_CONDITION_ID IS NOT NULL"
+        ).fetchall()
+        return {row["POLYMARKET_CONDITION_ID"] for row in rows}
 
     @staticmethod
-    def get_market_status_by_condition_id(
-        db: psycopg.Connection, condition_id: str
-    ) -> tuple[MarketState, int | None] | None:
-        """
-        Fetch the market state and resolved outcome by CONDITION_ID.
-
-        Returns:
-            Tuple of (MarketState, resolved_outcome) if found, otherwise None.
-        """
-        row = db.execute(
-            "SELECT COALESCE(MARKET_STATE, 'DRAFT') as MARKET_STATE, RESOLVED_OUTCOME FROM markets WHERE CONDITION_ID = %s LIMIT 1",
-            (condition_id,),
-        ).fetchone()
-
-        if row is None:
-            return None
-
-        return MarketState(row["MARKET_STATE"]), row["RESOLVED_OUTCOME"]
+    def carried_condition_ids(
+        db: psycopg.Connection, condition_ids: list[str]
+    ) -> set[str]:
+        rows = db.execute(
+            "SELECT POLYMARKET_CONDITION_ID FROM markets "
+            "WHERE POLYMARKET_CONDITION_ID = ANY(%s)",
+            (condition_ids,),
+        ).fetchall()
+        return {row["POLYMARKET_CONDITION_ID"] for row in rows}
 
     @staticmethod
-    def get_market_state(
-        db: psycopg.Connection, condition_id: ConditionId
-    ) -> MarketState | None:
-        """
-        Fetch the market state by CONDITION_ID.
-
-        Returns:
-            MarketState if found, otherwise None.
-        """
+    def get_market_state(db: psycopg.Connection, market_id: int) -> MarketState:
         row = db.execute(
-            "SELECT COALESCE(MARKET_STATE, 'DRAFT') as MARKET_STATE FROM markets WHERE CONDITION_ID = %s LIMIT 1",
-            (condition_id.value,),
+            "SELECT MARKET_STATE FROM markets WHERE MARKET_ID = %s", (market_id,)
         ).fetchone()
-
-        if row is None:
-            return None
-
         return MarketState(row["MARKET_STATE"])
 
     @staticmethod
@@ -431,21 +430,6 @@ class TableRead:
             (owner_workos_id,),
         ).fetchall()
         return [TableRead._row_to_user(r) for r in rows]
-
-    @staticmethod
-    def family_api_keys(db: psycopg.Connection, api_key: str) -> list[str]:
-        """Every API key that trades for the same person as `api_key`: the
-        human (WORKOS_USER_ID) and all their agents (OWNER_WORKOS_ID), deleted
-        agents included -- their orders are cancelled on delete anyway. An
-        account with neither id (house, legacy) is a family of one. Always
-        contains `api_key`, even for a key with no users row."""
-        rows = db.execute(
-            "SELECT API_KEY FROM users WHERE API_KEY = %(k)s "
-            "OR COALESCE(OWNER_WORKOS_ID, WORKOS_USER_ID) = "
-            "(SELECT COALESCE(OWNER_WORKOS_ID, WORKOS_USER_ID) FROM users WHERE API_KEY = %(k)s)",
-            {"k": api_key},
-        ).fetchall()
-        return sorted({api_key, *(r["API_KEY"] for r in rows)})
 
     @staticmethod
     def get_idempotency_order_id(
@@ -847,31 +831,26 @@ class TableRead:
         return [_row_to_market(row) for row in cur.fetchall()]
 
     @staticmethod
-    def count_active_markets(
+    def count_open_markets(
         db: psycopg.Connection,
+        sided: "list[str]",
         excluded_categories: "Iterable[str] | None" = None,
         excluded_tags: "Iterable[str] | None" = None,
     ) -> int:
-        """How many markets are ACTIVE, platform-wide.
+        """How many markets are open: ACTIVE with a two-sided book, the pool MCP
+        `search_markets` reads.
 
-        This is the same predicate the UI calls "live", reduced. `to_gamma_market`
-        sets `active = (state == ACTIVE)` and `closed = (state in CLOSED, RESOLVED,
-        CANCELLED)`; the UI reads a market as live when it is active and not
-        closed, and since ACTIVE is in neither closed set that collapses to the
-        single comparison below. If either mapping changes, this must follow, or
-        the headline number stops agreeing with the grid it labels.
-
-        `excluded_categories` must be the SAME list the grid's query gets, for
-        exactly that reason: a headline counting markets the grid refuses to
-        show is the bug this docstring already warns about, in a new place.
+        `excluded_categories` must be the SAME list the grid's query gets, or the
+        headline counts markets the grid refuses to show.
         """
         sql, extra = _market_excluded_clause(
             _excluded_lower(excluded_categories), _excluded_lower(excluded_tags)
         )
         clause = f" AND {sql}" if sql else ""
-        params: list[object] = [MarketState.ACTIVE.value, *extra]
+        params: list[object] = [MarketState.ACTIVE.value, sided, *extra]
         row = db.execute(
-            f"SELECT COUNT(*) as CNT FROM markets WHERE MARKET_STATE = %s{clause}",
+            "SELECT COUNT(*) as CNT FROM markets WHERE MARKET_STATE = %s "
+            f"AND ERC1155_TOKENS::jsonb->0->>0 = ANY(%s){clause}",
             tuple(params),
         ).fetchone()
         return int(row["CNT"]) if row else 0
@@ -970,20 +949,36 @@ class TableRead:
         return {str(r["CONDITION_ID"]): str(r["CATEGORY"]) for r in rows}
 
     @staticmethod
-    def market_contexts(db: psycopg.Connection, condition_ids: "list[str]") -> "dict[str, MarketContext]":
-        """The event title only when the event groups several markets and reads
-        differently; the winner is the resolved outcome's label."""
+    def kickoffs_by_condition_id(db: psycopg.Connection, condition_ids: "list[str]") -> "dict[str, int]":
         rows = db.execute(
-            "SELECT m.CONDITION_ID, m.END_DATE, m.RESOLVED_AT, "
-            "m.ERC1155_TOKENS::jsonb -> m.RESOLVED_OUTCOME ->> 1 AS WINNER, "
+            "SELECT m.CONDITION_ID, e.START_TIME FROM markets m JOIN events e ON e.EVENT_ID = m.EVENT_ID "
+            "JOIN market_tags t ON t.MARKET_ID = m.MARKET_ID AND t.SLUG = 'games' "
+            "WHERE m.CONDITION_ID = ANY(%s) AND e.START_TIME IS NOT NULL",
+            (condition_ids,),
+        ).fetchall()
+        return {str(r["CONDITION_ID"]): r["START_TIME"] for r in rows}
+
+    @staticmethod
+    def market_contexts(
+        db: psycopg.Connection, condition_ids: "list[str]", sided: "list[str]"
+    ) -> "dict[str, MarketContext]":
+        """The event title only when the event groups several markets and reads
+        differently; the winner is the only paid outcome's label."""
+        rows = db.execute(
+            "SELECT m.CONDITION_ID, m.END_DATE, m.RESOLVED_AT, m.ERC1155_TOKENS::jsonb -> 0 ->> 0 AS YES, "
+            "m.ERC1155_TOKENS::jsonb -> (2 - array_position(m.PAYOUTS, 0)) ->> 1 AS WINNER, "
             "CASE WHEN e.TITLE <> m.QUESTION AND (SELECT COUNT(*) FROM markets s WHERE s.EVENT_ID = m.EVENT_ID) > 1 "
             "THEN e.TITLE END AS EVENT_TITLE "
             "FROM markets m LEFT JOIN events e ON e.EVENT_ID = m.EVENT_ID WHERE m.CONDITION_ID = ANY(%s)",
             (condition_ids,),
         ).fetchall()
+        kickoffs = TableRead.kickoffs_by_condition_id(db, condition_ids)
+        open_books = set(sided)
         return {
             str(r["CONDITION_ID"]): MarketContext(
-                eventTitle=r["EVENT_TITLE"], endDate=r["END_DATE"], resolvedAt=r["RESOLVED_AT"], winner=r["WINNER"]
+                eventTitle=r["EVENT_TITLE"], endDate=r["END_DATE"], resolvedAt=r["RESOLVED_AT"], winner=r["WINNER"],
+                kickoff=(kickoff := kickoffs.get(r["CONDITION_ID"])),
+                trading=None if kickoff is None else r["YES"] in open_books,
             )
             for r in rows
         }
@@ -1021,10 +1016,14 @@ class TableRead:
         clauses = [
             "EXISTS (SELECT 1 FROM markets m WHERE m.EVENT_ID = events.EVENT_ID "
             "AND (m.MARKET_STATE = %s OR (m.MARKET_STATE = %s "
-            "AND COALESCE(m.RESOLVED_AT, m.END_DATE) >= %s)))"
+            "AND COALESCE(m.RESOLVED_AT, m.END_DATE) >= %s "
+            f"AND NOT {_tag_excluded_subquery('events.EVENT_ID')})))"
         ]
         params: list[object] = [
-            MarketState.ACTIVE.value, MarketState.RESOLVED.value, settled_since
+            MarketState.ACTIVE.value,
+            MarketState.RESOLVED.value,
+            settled_since,
+            ["up-or-down"],
         ]
         if excl_sql:
             clauses.append(excl_sql)
@@ -1058,6 +1057,47 @@ class TableRead:
         ).fetchall():
             out.setdefault(int(r["EVENT_ID"]), set()).add(str(r["SLUG"]))
         return out
+
+    @staticmethod
+    def games_without_teams(
+        db: psycopg.Connection,
+    ) -> "dict[str, tuple[int, list[str]]]":
+        markets: dict[str, tuple[int, list[tuple[list[str], str]]]] = {}
+        for r in db.execute(
+            "SELECT e.EVENT_ID, e.POLYMARKET_EVENT_ID, m.ERC1155_TOKENS, "
+            "COALESCE(m.OUTCOME_LABEL, m.QUESTION) AS LABEL "
+            "FROM events e JOIN markets m ON m.EVENT_ID = e.EVENT_ID "
+            "WHERE e.GAME_ID IS NOT NULL AND e.POLYMARKET_EVENT_ID IS NOT NULL "
+            "AND m.MARKET_STATE = %s "
+            "AND NOT EXISTS (SELECT 1 FROM outcome_teams t WHERE t.EVENT_ID = e.EVENT_ID) "
+            "ORDER BY m.MARKET_ID",
+            (MarketState.ACTIVE.value,),
+        ).fetchall():
+            _, ms = markets.setdefault(
+                r["POLYMARKET_EVENT_ID"], (int(r["EVENT_ID"]), [])
+            )
+            ms.append(
+                ([label for _, label in json.loads(r["ERC1155_TOKENS"])], r["LABEL"])
+            )
+        return {
+            pm: (event_id, ms[0][0] if len(ms) == 1 else [label for _, label in ms])
+            for pm, (event_id, ms) in markets.items()
+        }
+
+    @staticmethod
+    def outcome_teams(
+        db: psycopg.Connection, event_ids: "list[int]"
+    ) -> "dict[tuple[int, str], WireTeam]":
+        return {
+            (int(r["EVENT_ID"]), r["LABEL"]): WireTeam(
+                logo=r["LOGO"], record=r["RECORD"], color=r["COLOR"], abbr=r["ABBR"]
+            )
+            for r in db.execute(
+                "SELECT EVENT_ID, LABEL, LOGO, RECORD, COLOR, ABBR FROM outcome_teams "
+                "WHERE EVENT_ID = ANY(%s) AND COALESCE(LOGO, RECORD, COLOR, ABBR) IS NOT NULL",
+                (event_ids,),
+            ).fetchall()
+        }
 
     @staticmethod
     def list_markets_by_event_id(db: psycopg.Connection, event_id: int) -> "list[Market]":
@@ -1217,8 +1257,8 @@ class TableRead:
 
         `excluded_categories` hides whole categories from BROWSING. It is a
         parameter rather than a fixed rule because the direct lookups that also
-        come through here — `pinned.py` resolving one slug — are addressing a
-        known market, not browsing, and must keep resolving it.
+        come through here are addressing a known market, not browsing, and must
+        keep resolving it.
         """
         clauses: list[str] = []
         params: list = []
@@ -1419,39 +1459,21 @@ class TableRead:
         return [_row_to_market(row) for row in cur.fetchall()]
 
     @staticmethod
-    def list_bot_users(db: psycopg.Connection) -> "list[User]":
-        """Every house/bot account — used by the liquidity engine on startup."""
-        rows = db.execute(
-            f"SELECT {TableRead._USER_COLS} FROM users WHERE IS_BOT = 1 "
-            "ORDER BY CREATED_AT, USER_ID"
-        ).fetchall()
-        return [TableRead._row_to_user(r) for r in rows]
-
-    @staticmethod
     def list_active_synced_markets(
         db: psycopg.Connection,
         excluded_categories: "Iterable[str] | None" = None,
         excluded_tags: "Iterable[str] | None" = None,
     ) -> "list[Market]":
-        """Markets the liquidity engine should make liquidity for.
+        """Markets the house quotes from Polymarket's book.
 
         Criteria: MARKET_STATE = 'ACTIVE' AND POLYMARKET_CONDITION_ID IS NOT NULL,
-        minus any market in an excluded category.
+        minus any market in an excluded category or tag.
 
-        Quoting a market the catalogue refuses to list is pure cost: the mirror
-        splits collateral, signs orders and burns gas on a book nobody can
-        reach. Sports alone was 68.6% of the standing catalogue when this was
-        added, so the exclusion is also the largest single reduction in the
-        engine's on-chain footprint.
-
-        Returned busiest first, and that order is load-bearing rather than
-        cosmetic: the mirror deepens books in this sequence, and on a chain
-        where a reconcile pass costs most of a second the sequence decides
-        which markets look finished first. Volume lives on the event, so it is
-        read through a correlated subquery rather than a join — `_MARKET_COLS`
-        is unqualified and a join would make every column name ambiguous.
-        Markets whose event has no captured volume sort last, then by id, so
-        the order is total and stable across restarts.
+        Returned busiest first, so the feed subscribes them in that order.
+        Volume lives on the event, so it is read through a correlated subquery
+        rather than a join: `_MARKET_COLS` is unqualified and a join would make
+        every column name ambiguous. Markets whose event has no captured volume
+        sort last, then by id, so the order is total and stable across restarts.
         """
         sql, extra = _market_excluded_clause(
             _excluded_lower(excluded_categories), _excluded_lower(excluded_tags)
@@ -1470,30 +1492,77 @@ class TableRead:
         return [_row_to_market(row) for row in rows]
 
     @staticmethod
+    def list_carried(db: psycopg.Connection) -> "list[Carried]":
+        rows = db.execute(
+            "SELECT m.MARKET_ID, m.POLYMARKET_CONDITION_ID, m.MARKET_STATE, "
+            "m.SLUG, m.QUESTION, m.DESCRIPTION, m.END_DATE, m.ICON_URL, m.OUTCOME_LABEL, "
+            "m.PRICE_CHANGE_24H, m.EVENT_ID, e.POLYMARKET_EVENT_ID, e.TITLE AS E_TITLE, "
+            "e.ICON_URL AS E_ICON_URL, e.START_DATE AS E_START_DATE, e.END_DATE AS E_END_DATE, "
+            "e.VOLUME_24HR AS E_VOLUME_24HR, e.VOLUME AS E_VOLUME, e.LIQUIDITY AS E_LIQUIDITY, "
+            "e.COMPETITIVE AS E_COMPETITIVE, e.START_TIME AS E_START_TIME, e.SLUG AS E_SLUG, "
+            "e.GAME_ID AS E_GAME_ID, e.SERIES_SLUG AS E_SERIES_SLUG, e.CATEGORY AS E_CATEGORY, "
+            "(SELECT array_agg(ARRAY[t.SLUG, t.LABEL]) FROM market_tags t "
+            "WHERE t.MARKET_ID = m.MARKET_ID) AS TAGS "
+            "FROM markets m LEFT JOIN events e ON e.EVENT_ID = m.EVENT_ID "
+            "WHERE m.MARKET_STATE IN ('ACTIVE', 'CLOSED') "
+            "AND m.POLYMARKET_CONDITION_ID IS NOT NULL"
+        ).fetchall()
+        return [
+            Carried(
+                market_id=r["MARKET_ID"],
+                pm_condition=r["POLYMARKET_CONDITION_ID"],
+                state=MarketState(r["MARKET_STATE"]),
+                fields=MarketFields(*(r[c] for c in MarketFields._fields)),
+                tags=frozenset((slug, label) for slug, label in r["TAGS"] or ()),
+                event_id=r["EVENT_ID"],
+                pm_event_id=r["POLYMARKET_EVENT_ID"],
+                event=(
+                    EventFields(*(r[f"e_{c}"] for c in EventFields._fields))
+                    if r["e_title"] is not None
+                    else None
+                ),
+            )
+            for r in rows
+        ]
+
+    @staticmethod
+    def ended_unresolved(
+        db: psycopg.Connection, since: int, until: int, limit: int
+    ) -> "dict[str, int]":
+        rows = db.execute(
+            "SELECT POLYMARKET_CONDITION_ID, MARKET_ID FROM markets "
+            "WHERE MARKET_STATE IN ('ACTIVE', 'CLOSED') "
+            "AND POLYMARKET_CONDITION_ID IS NOT NULL "
+            "AND END_DATE BETWEEN %s AND %s "
+            "ORDER BY END_DATE DESC LIMIT %s",
+            (since, until, limit),
+        ).fetchall()
+        return {r["POLYMARKET_CONDITION_ID"]: r["MARKET_ID"] for r in rows}
+
+    @staticmethod
     def search_live_markets(
         db: psycopg.Connection,
         *,
         query: str | None,
         limit: int,
+        sided: list[str],
         excluded_categories: "Iterable[str] | None" = None,
         excluded_tags: "Iterable[str] | None" = None,
     ) -> "list[Market]":
-        now = int(time.time())
-        clauses = ["MARKET_STATE = 'ACTIVE'"]
-        params: list[object] = []
-        for side in ("BUY", "SELL"):
-            clauses.append(
-                "EXISTS (SELECT 1 FROM orders o WHERE o.TOKEN_ID = markets.ERC1155_TOKENS::jsonb->0->>0 "
-                f"AND o.SIDE = %s AND {TableRead.LIVE_ORDER})"
-            )
-            params += [side, now]
+        clauses = [
+            "MARKET_STATE = 'ACTIVE'",
+            "ERC1155_TOKENS::jsonb->0->>0 = ANY(%s)",
+        ]
+        params: list[object] = [sided]
         if query:
             clauses.append(
                 "to_tsvector('english', concat_ws(' ', QUESTION, "
-                "(SELECT concat_ws(' ', e.TITLE, e.CATEGORY) FROM events e WHERE e.EVENT_ID = markets.EVENT_ID))) "
+                "(SELECT concat_ws(' ', e.TITLE, e.CATEGORY, e.SERIES_SLUG, "
+                "%s::jsonb ->> regexp_replace(e.SERIES_SLUG, %s, '')) "
+                "FROM events e WHERE e.EVENT_ID = markets.EVENT_ID))) "
                 "@@ websearch_to_tsquery('english', %s)"
             )
-            params.append(query)
+            params += [json.dumps(SERIES_WORDS), SEASON.pattern, query]
         excl_sql, excl_params = _market_excluded_clause(
             _excluded_lower(excluded_categories), _excluded_lower(excluded_tags)
         )
@@ -1509,43 +1578,13 @@ class TableRead:
         return [_row_to_market(r) for r in rows]
 
     @staticmethod
-    def book_tops_for_tokens(
-        db: psycopg.Connection, token_ids: "list[str]"
-    ) -> "dict[str, tuple[int | None, int | None]]":
-        """Best bid / best ask (scaled price ints) per token from the live book.
-
-        One aggregate query over `orders` for every token in `token_ids`, so a
-        page of markets costs a single round-trip. Tokens with no resting orders
-        are absent from the result; a present token may still be None on a side
-        that has no orders.
-        """
-        if not token_ids:
-            return {}
-        rows = db.execute(
-            "SELECT TOKEN_ID, "
-            "MAX(PRICE) FILTER (WHERE SIDE = 'BUY')  AS BEST_BID, "
-            "MIN(PRICE) FILTER (WHERE SIDE = 'SELL') AS BEST_ASK "
-            f"FROM orders WHERE TOKEN_ID = ANY(%s) AND {TableRead.LIVE_ORDER} "
-            "GROUP BY TOKEN_ID",
-            (list(token_ids), int(time.time())),
-        ).fetchall()
-        out: "dict[str, tuple[int | None, int | None]]" = {}
-        for r in rows:
-            bid, ask = r["BEST_BID"], r["BEST_ASK"]
-            out[r["TOKEN_ID"]] = (
-                int(bid) if bid is not None else None,
-                int(ask) if ask is not None else None,
-            )
-        return out
-
-    @staticmethod
     def last_trade_prices_for_tokens(
         db: psycopg.Connection, token_ids: "list[str]"
     ) -> "dict[str, int]":
         """Most-recent price print per token, batched.
 
-        Reads prints rather than raw rows: a MINT prints on BOTH tokens, and
-        the complement's price is the one the maker actually paid.
+        Reads prints rather than raw rows: a YES print also prints NO at
+        MICRO - p.
         """
         if not token_ids:
             return {}
@@ -1559,59 +1598,13 @@ class TableRead:
         return {r["TOKEN_ID"]: int(r["PRICE"]) for r in rows}
 
     @staticmethod
-    def list_unresolved_ended_markets(
-        db: psycopg.Connection, now: int
-    ) -> "list[Market]":
-        """Resolution candidates: not RESOLVED/CANCELLED and past END_DATE.
-
-        Bounds the resolution mirror to markets that could plausibly be settled
-        upstream, instead of every unresolved market.
-        """
-        rows = db.execute(
-            f"SELECT {_MARKET_COLS} FROM markets "
-            "WHERE MARKET_STATE NOT IN ('RESOLVED', 'CANCELLED') "
-            "AND END_DATE IS NOT NULL AND END_DATE < %s "
-            "ORDER BY MARKET_ID",
-            (now,),
-        ).fetchall()
-        return [_row_to_market(row) for row in rows]
-
-    @staticmethod
-    def list_unresolved_markets_after(
-        db: psycopg.Connection, after_market_id: int, limit: int
-    ) -> "list[Market]":
-        """Unsettled markets by id, for a scan that resumes where it left off.
-
-        Deliberately NOT filtered on END_DATE. Polymarket dates a short-lived
-        sports market to the end of its tournament rather than the end of the
-        match, so a market can be closed and settled upstream for days while its
-        stated end date is still in the future -- which `list_unresolved_ended_markets`
-        cannot see. Measured on production: 208 of 211 book-less ACTIVE markets
-        were in exactly that state.
-
-        The end-date filter was also a cost bound (one upstream fetch per
-        candidate per pass), so this replaces it with a slice: the caller walks
-        the table a batch at a time and wraps around at the end.
-        """
-        rows = db.execute(
-            f"SELECT {_MARKET_COLS} FROM markets "
-            "WHERE MARKET_STATE NOT IN ('RESOLVED', 'CANCELLED') "
-            "AND MARKET_ID > %s "
-            "ORDER BY MARKET_ID LIMIT %s",
-            (after_market_id, limit),
-        ).fetchall()
-        return [_row_to_market(row) for row in rows]
-
-    @staticmethod
-    def list_resolved_unredeemed_markets(
-        db: psycopg.Connection,
-    ) -> "list[Market]":
+    def list_resolved_unredeemed_markets(db: psycopg.Connection) -> "list[Market]":
         """Auto-redeem candidates: RESOLVED and not yet fully redeemed."""
         rows = db.execute(
             f"SELECT {_MARKET_COLS} FROM markets "
             "WHERE MARKET_STATE = 'RESOLVED' "
             "AND COALESCE(FULLY_REDEEMED, FALSE) = FALSE "
-            "ORDER BY MARKET_ID"
+            "ORDER BY MARKET_ID DESC"
         ).fetchall()
         return [_row_to_market(row) for row in rows]
 
@@ -1728,55 +1721,6 @@ class TableRead:
         return row is not None
 
     @staticmethod
-    def non_bot_api_keys(db: psycopg.Connection, api_keys: list[str]) -> set[str]:
-        """Those of `api_keys` that belong to a real account: the house
-        (IS_BOT) and keys nobody holds are dropped. Who is charged for a
-        house-taker fill."""
-        if not api_keys:
-            return set()
-        rows = db.execute(
-            "SELECT API_KEY FROM users WHERE API_KEY = ANY(%s) AND IS_BOT = 0",
-            (list(set(api_keys)),),
-        ).fetchall()
-        return {r["API_KEY"] for r in rows}
-
-    @staticmethod
-    def list_live_order_levels(
-        db: psycopg.Connection, api_key: str, token_ids: list[str]
-    ) -> list[dict]:
-        """The mirror account's live orders on the given tokens — the
-        'current' side of the reconciler diff."""
-        if not token_ids:
-            return []
-        placeholders = ",".join("%s" for _ in token_ids)
-        return db.execute(
-            "SELECT ORDER_ID, TOKEN_ID, SIDE, PRICE, REMAINING_AMOUNT FROM orders "
-            f"WHERE API_KEY = %s AND TOKEN_ID IN ({placeholders}) AND {TableRead.LIVE_ORDER}",
-            [api_key, *token_ids, int(time.time())],
-        ).fetchall()
-
-    @staticmethod
-    def foreign_touch(
-        db: psycopg.Connection, own_api_key: str, token_id: str
-    ) -> tuple[int | None, int | None]:
-        """(best_bid, best_ask) among OTHER owners' live orders on one token.
-        The reconciler uses this to budget placements that would cross a real
-        user's order (an intentional fill — spec §7)."""
-        rows = db.execute(
-            "SELECT SIDE, MAX(PRICE) AS MX, MIN(PRICE) AS MN FROM orders "
-            f"WHERE TOKEN_ID = %s AND API_KEY != %s AND {TableRead.LIVE_ORDER} "
-            "GROUP BY SIDE",
-            (token_id, own_api_key, int(time.time())),
-        ).fetchall()
-        bid = ask = None
-        for r in rows:
-            if r["SIDE"] == "BUY":
-                bid = int(r["MX"])
-            elif r["SIDE"] == "SELL":
-                ask = int(r["MN"])
-        return bid, ask
-
-    @staticmethod
     def list_trades_for_api_key(
         db: psycopg.Connection,
         api_key: str,
@@ -1833,6 +1777,28 @@ class TableRead:
         # Keep the case-insensitive dict rows — a plain dict(r) would lower-case
         # the keys and break the upper-case access in TradeService.
         return list(cur.fetchall())
+
+    @staticmethod
+    def pending_settlements(
+        db: psycopg.Connection, before: int
+    ) -> list[tuple[str, int, list[str]]]:
+        rows = db.execute(
+            "SELECT TRANSACTION_HASH, MIN(MATCH_TIME) AS MATCH_TIME, "
+            "ARRAY_AGG(TRADE_ID) AS TRADE_IDS FROM trades "
+            "WHERE STATUS = 'PENDING' AND TRANSACTION_HASH <> '' AND MATCH_TIME < %s "
+            "GROUP BY TRANSACTION_HASH",
+            (before,),
+        ).fetchall()
+        return [(r["TRANSACTION_HASH"], r["MATCH_TIME"], r["TRADE_IDS"]) for r in rows]
+
+    @staticmethod
+    def unsent_settlements(db: psycopg.Connection, before: int) -> list[dict]:
+        return db.execute(
+            "SELECT t.TRADE_ID, o.ORDER_JSON FROM trades t "
+            "JOIN orders o ON o.ORDER_ID = (t.MAKER_ORDERS::jsonb -> 0 ->> 'order_id') "
+            "WHERE t.STATUS = 'PENDING' AND t.TRANSACTION_HASH IS NULL AND t.MATCH_TIME < %s",
+            (before,),
+        ).fetchall()
 
     @staticmethod
     def get_transaction_history(db: psycopg.Connection, api_key: str) -> list:

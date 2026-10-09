@@ -14,6 +14,7 @@ from web3.exceptions import Web3RPCError
 from agentpit.onchain.admin import _MAX_UINT256, OnchainAdmin
 from agentpit.onchain.chain_rpc import is_balance_low
 from agentpit.onchain.ctf_ids import binary_market_ids
+from agentpit.onchain.tx_sender import PendingTx
 from tests.onchain import _helpers as h
 
 HOLDER = "0x9D22FB092E79515611e8380026583929F88815b9"
@@ -31,6 +32,14 @@ def _condition(admin: OnchainAdmin) -> tuple[bytes, bytes, list[int]]:
         admin.oracle_address, admin.collateral_address, question_id
     )
     return question_id, condition_id, tokens
+
+
+def _report(admin: OnchainAdmin, question_id: bytes, payouts: tuple[int, int]) -> None:
+    """`reportPayouts` as `pay_out` sends it: an essential batch, then its receipt."""
+    (sent,) = admin.submit_many([admin.report_payouts_call(question_id, payouts)])
+    assert isinstance(sent, PendingTx)
+    (receipt,) = admin.wait_all([sent], timeout=60)
+    assert not isinstance(receipt, Exception) and receipt["status"] == 1
 
 
 def _sized(admin: OnchainAdmin, fn, address: str) -> int:
@@ -81,14 +90,14 @@ def test_an_estimate_carries_no_fee_fields():
 @pytest.mark.parametrize(
     ("payouts", "expected"),
     # The denominator is the numerators' sum: each side of a 50/50 pays half.
-    [([1, 0], (1, [1, 0])), ([0, 1], (1, [0, 1])), ([1, 1], (2, [1, 1]))],
+    [((1, 0), (1, [1, 0])), ((0, 1), (1, [0, 1])), ((1, 1), (2, [1, 1]))],
     ids=["yes-wins", "no-wins", "split-resolution"],
 )
 def test_payout_vector_before_and_after_report_payouts(admin, payouts, expected):
     question_id, condition_id, _tokens = _condition(admin)
     assert admin.payout_vector(condition_id) == (0, [0, 0])
 
-    admin.report_payouts(question_id, payouts)
+    _report(admin, question_id, payouts)
     assert admin.payout_vector(condition_id) == expected
 
 
@@ -108,7 +117,7 @@ def test_an_empty_wallet_can_be_estimated(admin):
 def test_a_claim_with_nothing_to_claim_still_estimates(admin):
     """`redeemPositions` succeeds with zero holdings: the sponsor must gate a worthless claim."""
     question_id, condition_id, _tokens = _condition(admin)
-    admin.report_payouts(question_id, [1, 0])
+    _report(admin, question_id, (1, 0))
 
     claim = admin.redeem_call(condition_id, [1, 2])
     assert admin.estimate_user_gas(claim, Account.create().address) > 21_000
@@ -231,7 +240,7 @@ def test_split_merge_and_redeem_calls_move_collateral_and_tokens(admin):
     assert admin.ctf_balances(wallet.address, tokens) == [3_000_000, 3_000_000]
     assert admin.usd_balance(wallet.address) == usd_start - 3_000_000
 
-    admin.report_payouts(question_id, [1, 0])  # index set 1 wins
+    _report(admin, question_id, (1, 0))  # index set 1 wins
     send(admin.redeem_call(condition_id, [1, 2]))
     # The winner pays 1:1, and the loser burns in the same transaction.
     assert admin.ctf_balances(wallet.address, tokens) == [0, 0]

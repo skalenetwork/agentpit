@@ -90,9 +90,16 @@ from agentpit.api.main import app
 from agentpit.auth.authkit_tokens import AuthKitVerifier
 from agentpit.auth.dependencies import make_current_user_dep
 from agentpit.auth.workos_client import FakeWorkOsClient
+from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_create import TableCreate
-from tests.db_helpers import TEST_DSN, fresh_test_db
+from agentpit.db.table_read import TableRead
+from agentpit.db.table_write import TableWrite
+from agentpit.liquidity import feed
+from agentpit.liquidity.feed import House, MarketRef, MirrorState
+from agentpit.liquidity.replica import BookReplica
+from agentpit.polymarket.resolve import resolve_by_token_id
+from tests.db_helpers import TEST_DSN, fresh_test_conn, fresh_test_db
 
 # Ensure the schema exists once up-front (before the first truncate).
 _boot = psycopg.connect(TEST_DSN, autocommit=True)
@@ -177,9 +184,9 @@ def _isolated_db_session():
     _leaderboard_service._dirty.clear()
     # Same reason again: a claim backoff left by a previous test would make
     # the next test's auto-redeem pass skip a holder it should claim for.
-    from agentpit.polymarket import polymarket_sync as _polymarket_sync
+    from agentpit.services import market_service as _market_service
 
-    _polymarket_sync._claim_backoff_until.clear()
+    _market_service._claim_backoff_until.clear()
     before = {id(s) for s in DbSession._open}
     fresh = fresh_test_db()
     previous = app.dependency_overrides.get(get_db_session)
@@ -196,3 +203,49 @@ def _isolated_db_session():
         for s in list(DbSession._open):
             if id(s) not in before:
                 s.close()
+
+
+Levels = tuple[tuple[str, str], ...]
+
+
+@pytest.fixture
+def house_book():
+    state = MirrorState([])
+
+    def install(
+        yes: str, *, bids: Levels = (), asks: Levels = (), user: User | None = None
+    ) -> BookReplica:
+        with fresh_test_conn() as conn:
+            resolved = resolve_by_token_id(conn, yes)
+            if user is None:
+                user = (
+                    feed.HOUSE.user
+                    if feed.HOUSE
+                    else TableRead.get_user_by_api_key(
+                        conn, TableWrite.create_user(conn, None, None)[2]
+                    )
+                )
+        assert resolved is not None and user is not None
+        tokens = resolved.market.erc1155_tokens
+        ref = MarketRef(
+            resolved.market.market_id,
+            resolved.condition_id,
+            tokens[0][0],
+            tokens[1][0],
+            f"pm-{yes}",
+            f"pm-{resolved.condition_id}",
+        )
+        state.set_targets([*state.by_asset.values(), ref])
+        rep = state.replicas[ref.pm_yes_token]
+        rep.apply_book(
+            {
+                "asset_id": ref.pm_yes_token,
+                "bids": [{"price": p, "size": s} for p, s in bids],
+                "asks": [{"price": p, "size": s} for p, s in asks],
+            }
+        )
+        feed.HOUSE = House(user, state)
+        return rep
+
+    yield install
+    feed.HOUSE = None

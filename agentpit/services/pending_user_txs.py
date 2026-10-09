@@ -12,7 +12,7 @@ refusal or a revert deletes it. An unknown outcome keeps it: the caller gets
 `TransactionPendingError` (503), and a new action on that market is a 409
 while the row is younger than `_PENDING_TTL_SECONDS`.
 `reconcile_pending_user_txs` settles the rest from the chain, at the start of
-every auto-redeem pass (or on its own when auto-redeem is off).
+every auto-redeem pass.
 """
 
 import logging
@@ -26,10 +26,10 @@ from agentpit.onchain.admin import OnchainAdmin
 logger = logging.getLogger(__name__)
 
 # How long a pending row counts as a transaction still on its way. Far beyond
-# the receipt timeout (30 s) and the auto-redeem cadence (a pass every 20 s on
-# the pin loop), so a transaction that mines late is settled long before. A
-# row this old with no receipt is a transaction the node lost or never took:
-# the reconciler drops it, and the account's market is free again.
+# the receipt timeout (30 s) and the auto-redeem cadence (a pass every 20 s),
+# so a transaction that mines late is settled long before. A row this old
+# with no receipt is a transaction the node lost or never took: the
+# reconciler drops it, and the account's market is free again.
 _PENDING_TTL_SECONDS = 600
 
 

@@ -10,14 +10,15 @@ from web3 import Web3
 from web3.logs import DISCARD
 
 from agentpit.config import Settings
+from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.split_position_request import (
     MergePositionRequest,
     SplitPositionRequest,
 )
-from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import MarketStateError, NothingToClaimError
 from agentpit.onchain.tx_sender import TRANSFER_GAS
 from agentpit.services.account_service import AccountService
+from agentpit.services.market_service import transition
 from agentpit.utils.parse import hex2bytes
 from tests.onchain import _helpers as h
 
@@ -114,13 +115,13 @@ def test_consecutive_claims_never_leave_more_than_one_claims_need(admin, db):
     """A top-up comes only when short, and to exactly the need: the balance never creeps up."""
     user = h.onboarded_account(db, admin)
     markets = [h.synced_market(db, admin) for _ in range(3)]
-    for market, _pm in markets:
+    for market in markets:
         h.split(db, admin, user, market, 20_000_000)
-    h.resolve_yes(db, admin, *(pm for _market, pm in markets))
+    h.resolve_yes(db, admin, *markets)
     h.drain_native_balance(admin, user.eth_address)
 
     needs: list[int] = []
-    for market, _pm in markets:
+    for market in markets:
         cid = hex2bytes(market.condition_id.value)
         needs.append(_need(admin, admin.redeem_call(cid, _PARTITION), user.eth_address))
         before = admin.native_balance(user.eth_address)
@@ -142,7 +143,7 @@ def test_consecutive_claims_never_leave_more_than_one_claims_need(admin, db):
 )
 def test_nothing_worth_claiming_is_refused_without_a_transaction(admin, db, gift):
     """`redeemPositions` succeeds with nothing to redeem: ungated, each would cost a top-up."""
-    market, pm = h.synced_market(db, admin)
+    market = h.synced_market(db, admin)
     whale = h.onboarded_account(db, admin)
     h.split(db, admin, whale, market, 100_000_000)
     claimant = h.new_account(db)
@@ -150,7 +151,7 @@ def test_nothing_worth_claiming_is_refused_without_a_transaction(admin, db, gift
         index, amount = gift
         token = int(market.erc1155_tokens[index][0])
         h.give_tokens(admin, whale, claimant.eth_address, token, amount)
-    h.resolve_yes(db, admin, pm)
+    h.resolve_yes(db, admin, market)
     assert admin.native_balance(claimant.eth_address) == 0  # a claim would need a top-up
 
     _refused_without_a_transaction(
@@ -160,11 +161,10 @@ def test_nothing_worth_claiming_is_refused_without_a_transaction(admin, db, gift
 
 def test_a_market_the_chain_has_not_resolved_is_refused_without_a_transaction(admin, db):
     """RESOLVED in the DB, no `reportPayouts` on chain: the claim would revert after the top-up."""
-    market, _pm = h.synced_market(db, admin)
+    market = h.synced_market(db, admin)
     user = h.onboarded_account(db, admin)
     h.split(db, admin, user, market, 100_000_000)
-    with db.write() as conn:
-        TableWrite.resolve_market(conn, market_id=market.market_id, winning_outcome_index=0)
+    transition(db, market.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0))
     h.drain_native_balance(admin, user.eth_address)
     assert admin.payout_vector(hex2bytes(market.condition_id.value))[0] == 0
 
@@ -174,7 +174,7 @@ def test_a_market_the_chain_has_not_resolved_is_refused_without_a_transaction(ad
 
 
 def test_split_and_merge_from_an_empty_wallet_are_topped_up_and_booked(admin, db):
-    market, _pm = h.synced_market(db, admin)
+    market = h.synced_market(db, admin)
     user = h.onboarded_account(db, admin)
     positions = h.position_service(db, admin)
     cid = hex2bytes(market.condition_id.value)
@@ -250,13 +250,13 @@ def test_a_claim_is_logged_at_the_ctf_payout_whatever_the_wallet_does_meanwhile(
 
 def test_a_split_on_a_market_that_resolves_during_its_top_up_is_refused(admin, db, monkeypatch):
     """Resolved during the top-up, a split would mint a claimable winner: refused unsigned."""
-    market, pm = h.synced_market(db, admin)
+    market = h.synced_market(db, admin)
     user = h.onboarded_account(db, admin)
     tokens = [int(t) for t, _label in market.erc1155_tokens]
     h.drain_native_balance(admin, user.eth_address)
     usd = admin.usd_balance(user.eth_address)
     nonce, booked = admin.transaction_count(user.eth_address), h.sponsored_gas(db, user.api_key)
-    _after_top_up(monkeypatch, admin, user, lambda: h.resolve_yes(db, admin, pm))
+    _after_top_up(monkeypatch, admin, user, lambda: h.resolve_yes(db, admin, market))
 
     with pytest.raises(MarketStateError, match="split only runs on ACTIVE markets"):
         h.position_service(db, admin).split(
@@ -294,9 +294,9 @@ def test_a_claim_whose_tokens_left_during_its_top_up_is_refused(admin, db, monke
 
 def test_a_claim_that_mines_with_no_payout_writes_no_row(admin, db, monkeypatch):
     """Gate and re-check pass (balances faked), the claim mines for nothing: gas booked, no row."""
-    market, pm = h.synced_market(db, admin)
+    market = h.synced_market(db, admin)
     user = h.onboarded_account(db, admin)  # holds no outcome token at all
-    h.resolve_yes(db, admin, pm)
+    h.resolve_yes(db, admin, market)
     h.drain_native_balance(admin, user.eth_address)
     me, real = user.eth_address.lower(), admin.ctf_balances
     # Nothing real can empty the wallet between the re-check and the block, so lie about it.

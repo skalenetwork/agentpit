@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
@@ -25,36 +25,28 @@ class Settings(BaseSettings):
         default=600.0, validation_alias="AGENTPIT_POOL_MAX_IDLE"
     )
     sync_enabled: bool = Field(default=False, validation_alias="SYNC")
-    sync_interval_seconds: int = Field(
-        default=60 * 60, validation_alias="AGENTPIT_SYNC_INTERVAL_SECONDS"
+    sync_min_volume_24h: float = Field(
+        default=1_000.0, validation_alias="AGENTPIT_SYNC_MIN_VOLUME_24H"
     )
-    # Trending sync (top-N by 24h volume) + decoupled resolution/redeem loop
-    sync_max_markets: int = Field(
-        default=300, validation_alias="SYNC_MAX_MARKETS"
+    sync_game_tag_ids: list[int] = Field(
+        default=[100351, 450], validation_alias="AGENTPIT_SYNC_GAME_TAG_IDS"
     )
-    sync_liquidity_min: float = Field(
-        default=0.0, validation_alias="SYNC_LIQUIDITY_MIN"
+    sync_min_game_liquidity: float = Field(
+        default=10_000.0, validation_alias="AGENTPIT_SYNC_MIN_GAME_LIQUIDITY"
     )
-    # When a market qualifies, its sibling outcomes come with it, capped at
-    # this many per event (busiest first by 24h volume). The median upstream
-    # event has 11 open outcomes, so 12 lets most through whole; the largest
-    # carry 128 and nobody trades their tail. Measured cost at 12: 2302
-    # markets per pass against 1000 without it. 0 disables the expansion.
-    sync_event_max_outcomes: int = Field(
-        default=12, validation_alias="SYNC_EVENT_MAX_OUTCOMES"
+    sync_series_ids: list[int] = Field(
+        default=[], validation_alias="AGENTPIT_SYNC_SERIES_IDS"
     )
     # Drop the two upstream series that regenerate faster than anyone reads
     # them: the daily temperature markets (49 cities x ~3.4 thresholds = ~166
     # born every day, median life 55.9h -- 11% of the standing catalogue but 23%
     # of every market ever created and resolved) and the sports prop tail
-    # (spreads, totals, team totals, per-half, per-map, nrfi -- all hung off a
+    # (spreads, totals, team totals, per-half, nrfi -- all hung off a
     # game we already carry). Together they are 89% of new market creations, and
     # each creation costs prepareCondition + registerToken + a first
     # splitPosition on chain with a reportPayouts at the end: ~870M gas/day,
-    # real money once the chain moves to SKALE on Base. Decided by upstream
-    # fields only (feeType / sportsMarketType), never by parsing slugs --
-    # see `_is_churn_series`. True is the decision already made; the flag exists
-    # so it can be reversed without a code change.
+    # real money once the chain moves to SKALE on Base. True is the decision
+    # already made; the flag exists so it can be reversed without a code change.
     sync_exclude_churn_series: bool = Field(
         default=True, validation_alias="AGENTPIT_SYNC_EXCLUDE_CHURN_SERIES"
     )
@@ -62,112 +54,22 @@ class Settings(BaseSettings):
     # above -- which drops the prop tail and keeps the headline game -- this
     # drops the whole category: no sync, no listing, no mirrored liquidity.
     #
-    # Sports is here because the UI has no rendering for it: a match resolves
-    # in hours and its book empties the moment it does, so the grid fills with
-    # rows that read as broken (see the "<1% chance" beside a 71% chart that
-    # started this). Esports needs no entry of its own -- `resolve_category`
-    # files it under Sports, which is 68.6% of the standing catalogue (1097 of
-    # 1600 events measured on production 2026-08-12), so this is the single
-    # biggest lever on gas and anvil growth as well.
-    #
     # Matched case-insensitively against the labels in CATEGORY_PRIORITY.
-    # Empty list = carry everything, which is the pre-2026-08-12 behaviour.
     excluded_categories: list[str] = Field(
-        default=["Sports"], validation_alias="AGENTPIT_EXCLUDED_CATEGORIES"
+        default=[], validation_alias="AGENTPIT_EXCLUDED_CATEGORIES"
     )
-    # The same decision, reached through the tag graph instead of the CATEGORY
-    # column. Upstream does not file everything sporting under Sports: three
-    # esports events (two season-winner futures and a game-release question)
-    # sat in the catalogue carrying the `esports` tag with a Technology or
-    # Culture category, so a category-only rule left an Esports sidebar entry
-    # that still listed them.
-    #
     # Matched against `market_tags.SLUG`, which is Polymarket's own slug — an
     # event is excluded when ANY of its markets carries one of these.
     excluded_tags: list[str] = Field(
-        default=["sports", "esports"], validation_alias="AGENTPIT_EXCLUDED_TAGS"
-    )
-    resolution_mirror_enabled: bool | None = Field(
-        default=None, validation_alias="RESOLUTION_MIRROR_ENABLED"
-    )
-    # How many markets the rotating resolution scan examines per cycle. The
-    # scan exists because Polymarket dates short-lived sports markets to the end
-    # of the tournament, so `END_DATE < now` never selects them while they are
-    # already settled upstream. One upstream fetch per market per cycle, so this
-    # is the cost knob: 200 every 5 minutes walks ~2,400 markets in an hour.
-    resolution_scan_batch: int = Field(
-        default=200, validation_alias="AGENTPIT_RESOLUTION_SCAN_BATCH"
-    )
-    resolution_mirror_interval_seconds: int = Field(
-        default=300, validation_alias="RESOLUTION_MIRROR_INTERVAL_SECONDS"
-    )
-    auto_redeem_enabled: bool = Field(
-        default=True, validation_alias="AUTO_REDEEM_ENABLED"
+        default=[], validation_alias="AGENTPIT_EXCLUDED_TAGS"
     )
 
-    # Pinned-series sync (force-sync the current window of recurring markets).
-    pinned_series_raw: str = Field(
-        default="btc-updown-5m:300", validation_alias="PINNED_SERIES"
-    )
-    pin_sync_enabled: bool | None = Field(
-        default=None, validation_alias="PIN_SYNC_ENABLED"
-    )
-    pin_sync_offset_seconds: int = Field(
-        default=10, validation_alias="PIN_SYNC_OFFSET_SECONDS"
-    )
-    # How often the live window of each pinned series is re-mirrored from the
-    # real Polymarket book. The shared reconciler can take minutes for a full
-    # pass over hundreds of markets — far longer than a window's ~5-min life —
-    # so the live windows get their own fast loop. With batched placement a
-    # re-quote is ~1s, so a 1s interval tracks upstream within ~2s.
-    pin_requote_seconds: float = Field(
-        default=1.0, validation_alias="AGENTPIT_PIN_REQUOTE_SECONDS"
-    )
-    # How often just-ended pinned windows are checked for upstream resolution +
-    # auto-redeem. The full resolution loop runs every few minutes (fine for
-    # long-dated markets), but a 5-min window's winner should be paid within
-    # seconds of the upstream market closing, so its windows get their own fast
-    # poll. Cheap: scoped to the few most-recently-ended pinned windows.
-    pin_resolve_seconds: float = Field(
-        default=20.0, validation_alias="AGENTPIT_PIN_RESOLVE_SECONDS"
-    )
-    # Fast re-quoting cancels + re-places the whole book every second, so the
-    # orders table fills with dead 'cancelled' rows. They never slow the live
-    # queries (a partial index covers only live rows), but unbounded growth eats
-    # disk, so purge cancelled rows older than the retention on a slow loop.
     order_cleanup_interval_seconds: float = Field(
         default=60.0, validation_alias="AGENTPIT_ORDER_CLEANUP_INTERVAL_SECONDS"
-    )
-    order_cancelled_retention_seconds: int = Field(
-        default=600, validation_alias="AGENTPIT_ORDER_CANCELLED_RETENTION_SECONDS"
     )
     idempotency_key_retention_seconds: int = Field(
         default=86400, validation_alias="AGENTPIT_IDEMPOTENCY_KEY_RETENTION_SECONDS"
     )
-
-    @model_validator(mode="after")
-    def _default_resolution_mirror_enabled(self) -> "Settings":
-        # When RESOLUTION_MIRROR_ENABLED is unset, follow SYNC.
-        if self.resolution_mirror_enabled is None:
-            self.resolution_mirror_enabled = self.sync_enabled
-        return self
-
-    @model_validator(mode="after")
-    def _default_pin_sync_enabled(self) -> "Settings":
-        # When PIN_SYNC_ENABLED is unset, follow SYNC.
-        if self.pin_sync_enabled is None:
-            self.pin_sync_enabled = self.sync_enabled
-        return self
-
-    @property
-    def pinned_series(self) -> list[tuple[str, int]]:
-        """Parsed ``[(base, interval), ...]`` from ``PINNED_SERIES``.
-
-        Imported lazily to avoid a config<->polymarket import cycle.
-        """
-        from agentpit.polymarket.pinned import parse_pinned_series
-
-        return parse_pinned_series(self.pinned_series_raw)
 
     leaderboard_enabled: bool = Field(
         default=False, validation_alias="AGENTPIT_LEADERBOARD_ENABLED"
@@ -297,17 +199,16 @@ class Settings(BaseSettings):
     rpc_url_override: str | None = Field(default=None, validation_alias="RPC_URL")
     # Users get no gas at signup (AGENTPIT_SIGNUP_GAS_GRANT_WEI is gone; an old
     # .env that sets it still loads): every transaction a user signs is topped
-    # up to exactly its own need (`UserGasSponsor`). The house is funded at
-    # liquidity_gas_floor_wei.
+    # up to exactly its own need (`UserGasSponsor`). The house is funded with
+    # exactly its approvals' gas.
     #
     # True while the chain can be wiped out from under the database (a local
-    # anvil). There, an onboarded account the chain forgot is repaired by
-    # running onboarding again: a user whose nonce is 0 (exact top-ups leave
-    # every wallet near zero, so a balance says nothing), or the house at a
-    # zero native balance (`top_up_gas` keeps it above its floor). On a durable
-    # chain the repair could only onboard an account twice, faucet drip
-    # included. Set false before pointing at a real chain; the chain id is
-    # checked as well (`is_disposable_chain`).
+    # anvil). There, an onboarded account the chain forgot (its nonce is 0;
+    # exact top-ups leave every wallet near zero, so a balance says nothing)
+    # is repaired by running onboarding again. On a durable chain the repair
+    # could only onboard an account twice, faucet drip included. Set false
+    # before pointing at a real chain; the chain id is checked as well
+    # (`is_disposable_chain`).
     simulated_chain: bool = Field(
         default=True, validation_alias="AGENTPIT_SIMULATED_CHAIN"
     )
@@ -339,24 +240,20 @@ class Settings(BaseSettings):
     max_live_orders_per_account: int = Field(
         default=200, ge=1, validation_alias="AGENTPIT_MAX_LIVE_ORDERS_PER_ACCOUNT"
     )
-    # Resting orders one taker may fill in one placement. A 200-maker MINT sweep
-    # measured 19.7M gas in a single admin-paid transaction.
-    max_makers_per_match: int = Field(
-        default=20, ge=1, validation_alias="AGENTPIT_MAX_MAKERS_PER_MATCH"
-    )
-    # Gas one non-house account may make the admin spend per UTC day. Fills as
-    # a taker (receipt gasUsed) and sponsored split/merge top-ups are refused
-    # past it. Claims and onboarding are never refused, but their gas is
-    # booked to the same daily row. ~100 fills. 0 disables.
+    # Gas one non-house account may make the admin spend per UTC day. Fills
+    # (250k each, placements and sweeper fills alike) and sponsored split/merge
+    # top-ups are refused past it. Claims and onboarding are never refused,
+    # but their gas is booked to the same daily row. ~80 fills. 0 disables.
     daily_sponsored_gas_per_account: int = Field(
         default=20_000_000, ge=0, validation_alias="AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT"
     )
     # Admin-wallet floors, in GAS valued at the current eth_gasPrice, so the same
     # numbers mean 20 / 5 CREDIT on mainnet (47.6 gwei) and do not trip on the
     # testnet, where gas is ~476,000x cheaper. Below the alarm the balance loop
-    # logs ERROR; below the stop every sponsored admin send is refused (only the
-    # oracle, the catalogue sync and the settlement of a placement already
-    # admitted still go out). 0 disables either.
+    # logs ERROR; below the stop every sponsored admin send is refused and the
+    # sweeper leaves resting orders resting (only the oracle, the catalogue
+    # sync and the settlement of a fill already admitted still go out). 0
+    # disables either.
     admin_gas_alarm_gas: int = Field(
         default=420_000_000, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_ALARM_GAS"
     )
@@ -397,9 +294,8 @@ class Settings(BaseSettings):
         default=10_000, ge=1, validation_alias="AGENTPIT_MIN_CLAIM_MICRO"
     )
     # Sponsored claims one auto-redeem pass sends before it stops; the rest
-    # wait for the next pass. The pass is serial at ~2 blocks per holder and
-    # holds the lock both resolution loops share, so with auto-redeem on for
-    # everyone an uncapped pass would stall them for minutes.
+    # wait for the next pass. The pass is serial at ~2 blocks per holder, so
+    # with auto-redeem on for everyone an uncapped pass would run for minutes.
     auto_redeem_max_per_pass: int = Field(
         default=20, ge=1, validation_alias="AGENTPIT_AUTO_REDEEM_MAX_PER_PASS"
     )
@@ -414,16 +310,8 @@ class Settings(BaseSettings):
     liquidity_engine_enabled: bool = Field(
         default=False, validation_alias="LIQUIDITY_ENGINE"
     )
-    liquidity_interval_seconds: float = Field(
-        default=2.0, validation_alias="AGENTPIT_LIQUIDITY_INTERVAL_SECONDS"
-    )
-    # ONE mirror account owns every mirror order (spec §6). >1 is unused but
-    # kept for provisioning flexibility.
-    liquidity_house_account_count: int = Field(
-        default=1, validation_alias="AGENTPIT_LIQUIDITY_HOUSE_ACCOUNTS"
-    )
-    # apUSD is 6-decimal, so every figure here is raw. The house needs ~150bn
-    # to seed every mirrored market; 1e18 is headroom chosen deliberately.
+    # apUSD is 6-decimal, so every figure here is raw. The house pays its side
+    # of every fill from this; 1e18 apUSD is headroom chosen deliberately.
     house_mint_raw: int = Field(
         default=10**24, validation_alias="AGENTPIT_HOUSE_MINT_RAW"
     )
@@ -434,84 +322,18 @@ class Settings(BaseSettings):
     topup_cooldown_seconds: int = Field(
         default=86_400, validation_alias="AGENTPIT_TOPUP_COOLDOWN_SECONDS"
     )
-    # House gas. The mirror signs its own split transactions, so the account
-    # spends gas continuously and no one-off amount lasts: production burned
-    # the old signup grant in ~82 minutes and the mirror then failed silently.
-    # A new house account is funded with at least the floor, and enough for its
-    # approvals (`HouseAccountProvisioner._fund`), and the top-up loop lifts it
-    # to the target within one check interval. A floor of 5 ETH is ~45 hours of
-    # headroom at the observed post-fix rate (0.111 ETH/h), so a refill is
-    # never urgent. Topping up is gas ONLY. The zero-balance path in
-    # HouseAccountProvisioner means "the chain was reset, re-onboard from
-    # scratch", and the two must stay apart.
-    liquidity_gas_floor_wei: int = Field(
-        default=5 * 10**18, validation_alias="AGENTPIT_LIQUIDITY_GAS_FLOOR_WEI"
-    )
-    liquidity_gas_target_wei: int = Field(
-        default=100 * 10**18, validation_alias="AGENTPIT_LIQUIDITY_GAS_TARGET_WEI"
-    )
-    liquidity_gas_check_interval_seconds: float = Field(
-        default=300.0,
-        validation_alias="AGENTPIT_LIQUIDITY_GAS_CHECK_INTERVAL_SECONDS",
-    )
     mirror_assets_per_connection: int = Field(
-        default=200, validation_alias="AGENTPIT_MIRROR_ASSETS_PER_CONNECTION"
-    )
-    mirror_reconcile_min_interval_seconds: float = Field(
-        default=0.5, validation_alias="AGENTPIT_MIRROR_RECONCILE_MIN_INTERVAL_SECONDS"
+        default=120, validation_alias="AGENTPIT_MIRROR_ASSETS_PER_CONNECTION"
     )
     mirror_watchdog_seconds: float = Field(
-        default=120.0, validation_alias="AGENTPIT_MIRROR_WATCHDOG_SECONDS"
-    )
-    mirror_inventory_buffer: float = Field(
-        default=1.2, validation_alias="AGENTPIT_MIRROR_INVENTORY_BUFFER"
-    )
-    # Headroom minted above the requirement whenever the house is short, in
-    # micro-apUSD. The requirement only ever grows, so exact top-ups cost a
-    # transaction per upstream depth record; one generous block instead lets a
-    # market converge in a single split. 1e14 micro = 100M apUSD, comfortably
-    # above the largest requirement observed in production (39M). Collateral is
-    # minted freely on the simulated chain, so the block can be this generous —
-    # lower it on a chain where collateral costs real money. 0 restores exact
-    # top-ups.
-    mirror_inventory_seed_micro: int = Field(
-        default=100_000_000_000_000,
-        validation_alias="AGENTPIT_MIRROR_INVENTORY_SEED_MICRO",
-    )
-    mirror_max_settlements_per_cycle: int = Field(
-        default=1, validation_alias="AGENTPIT_MIRROR_MAX_SETTLEMENTS_PER_CYCLE"
+        default=5.0, validation_alias="AGENTPIT_MIRROR_WATCHDOG_SECONDS"
     )
     mirror_tape_enabled: bool = Field(
         default=True, validation_alias="AGENTPIT_MIRROR_TAPE_ENABLED"
     )
     # How often the mirror re-scans the active-market set. Kept short so a new
-    # rotating-series window (live for only ~5 min) is picked up and quoted
-    # promptly; a no-change scan is a cheap DB read (resubscribe fires only when
-    # the set actually changes).
+    # market is picked up and quoted promptly; a no-change scan is a cheap DB
+    # read.
     mirror_target_refresh_seconds: float = Field(
         default=15.0, validation_alias="AGENTPIT_MIRROR_TARGET_REFRESH_SECONDS"
-    )
-    # Total depth cap per side. The cold sweep converges the local book to this
-    # many levels; 0 = unbounded (full 1:1). This is a convergence target, not
-    # a hard ceiling: a hot pass never cancels a cold-classified order, so the
-    # live count between sweeps can exceed it on a fast-moving market. Each
-    # level is ~4 DB order ops, and reconcile_market reads ALL house levels
-    # for the market on every hot pass, so hot-path cost tracks that
-    # accumulated live set, not mirror_hot_depth.
-    mirror_book_depth: int = Field(
-        default=8, validation_alias="AGENTPIT_MIRROR_BOOK_DEPTH"
-    )
-    # Levels per side reconciled on EVERY book update. These carry the price the
-    # user sees and the spread a bot trades against, so they must stay live.
-    # Everything between this and mirror_book_depth is the cold band, refreshed
-    # only by the sweep below. hot == book depth means no cold band at all,
-    # which is byte-identical to the pre-two-tier behaviour.
-    mirror_hot_depth: int = Field(
-        default=8, validation_alias="AGENTPIT_MIRROR_HOT_DEPTH"
-    )
-    # How often each market's deep levels are reconciled. Deep levels move
-    # rarely and nobody trades against them, so this is deliberately slow — it
-    # is what keeps a 50-level book from multiplying the hot path.
-    mirror_cold_interval_seconds: float = Field(
-        default=1800.0, validation_alias="AGENTPIT_MIRROR_COLD_INTERVAL_SECONDS"
     )

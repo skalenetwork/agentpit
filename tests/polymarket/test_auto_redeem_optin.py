@@ -1,8 +1,9 @@
-"""Auto-redeem claims only for accounts that have it switched on, and for bots.
+"""Auto-redeem claims only for accounts that have it switched on, never for bots.
 
 A redeem is settlement rather than a decision, which is the case for doing it
 automatically. The wallet is still the account's, though, so an account that
-switched the Settings toggle off is never claimed for.
+switched the Settings toggle off is never claimed for. The house only buys at
+fill time and sends nothing after provisioning, so it is never claimed for.
 """
 
 from __future__ import annotations
@@ -14,9 +15,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from agentpit.config import Settings
+from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.polymarket.polymarket_sync import auto_redeem_resolved_markets
-from agentpit.services import gas_sponsor
+from agentpit.services import market_service
+from agentpit.services.market_service import redeem_resolved_markets
 from agentpit.services.position_service import PositionService
 from tests.db_helpers import fresh_test_db
 
@@ -48,11 +50,12 @@ def _seed(*labels: str, auto_redeem: bool = False):
     yes, no = (str(int.from_bytes(secrets.token_bytes(8), "big")) for _ in range(2))
     with db.write() as conn:
         row = conn.execute(
-            "INSERT INTO markets (CONDITION_ID, QUESTION, SLUG, DESCRIPTION, "
-            "ERC1155_TOKENS, START_DATE, MARKET_STATE, RESOLVED_OUTCOME) "
-            "VALUES (%s, 'Already won?', %s, 'd', %s, 100, 'RESOLVED', 0) "
+            "INSERT INTO markets (CONDITION_ID, QUESTION_ID, QUESTION, SLUG, DESCRIPTION, "
+            "ERC1155_TOKENS, START_DATE, MARKET_STATE, PAYOUTS) "
+            "VALUES (%s, %s, 'Already won?', %s, 'd', %s, 100, 'RESOLVED', '{1,0}') "
             "RETURNING MARKET_ID",
             (
+                f"0x{secrets.token_hex(32)}",
                 f"0x{secrets.token_hex(32)}",
                 f"already-won-{secrets.token_hex(4)}",
                 json.dumps([[yes, "YES"], [no, "NO"]]),
@@ -95,9 +98,7 @@ def redeemed_for(monkeypatch) -> list[str]:
 )
 def test_only_an_account_that_opted_in_is_claimed_for(auto_redeem, claimed):
     db, yes_token, _ = _seed("redeem", auto_redeem=auto_redeem)
-    assert (
-        auto_redeem_resolved_markets(db, _won_chain(yes_token), _settings()) == claimed
-    )
+    assert redeem_resolved_markets(db, _won_chain(yes_token), _settings()) == claimed
 
 
 def test_the_pass_pays_gas_only_through_the_sponsor(monkeypatch):
@@ -110,28 +111,27 @@ def test_the_pass_pays_gas_only_through_the_sponsor(monkeypatch):
             built.append(settings)
             self.min_claim_micro = settings.min_claim_micro
 
-    monkeypatch.setattr(gas_sponsor, "UserGasSponsor", _RecordingSponsor)
+    monkeypatch.setattr(market_service, "UserGasSponsor", _RecordingSponsor)
     db, yes_token, _ = _seed("redeem", auto_redeem=True)
     admin, settings = _won_chain(yes_token), _settings()
 
-    assert auto_redeem_resolved_markets(db, admin, settings) == 1
+    assert redeem_resolved_markets(db, admin, settings) == 1
     assert built == [settings]
     assert not admin.fund_gas.called
     assert not admin.send_as_user.called
 
 
-def test_the_bot_is_claimed_for_while_the_opted_out_human_beside_it_is_not(
-    redeemed_for,
-):
-    """C1: the gate must discriminate, so both sit in one market and one pass, both
-    holding the winning token, neither opted in. The bot (e.g. the liquidity mirror,
-    a maker on nearly every trade) has no one to ask for consent: it is claimed for."""
-    db, yes_token, ((human_id, _), (bot_id, bot_key)) = _seed("human", "bot")
+def test_the_house_is_never_claimed_for_and_does_not_hold_the_market_open(redeemed_for):
+    """Both opted in (the column default) and both holding the winning token in one
+    pass: the human is claimed for, the bot (the house, a maker on nearly every
+    trade) is not, and the market is done all the same."""
+    db, yes_token, ((human_id, _), (_bot_id, bot_key)) = _seed(
+        "human", "bot", auto_redeem=True
+    )
     with db.write() as conn:
         TableWrite.mark_user_as_bot(conn, bot_key)
 
-    count = auto_redeem_resolved_markets(db, _won_chain(yes_token), _settings())
-
-    assert count == 1
-    assert redeemed_for == [bot_id]
-    assert human_id not in redeemed_for
+    assert redeem_resolved_markets(db, _won_chain(yes_token), _settings()) == 1
+    assert redeemed_for == [human_id]
+    with db.read() as conn:
+        assert TableRead.list_resolved_unredeemed_markets(conn) == []

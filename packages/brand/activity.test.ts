@@ -19,6 +19,7 @@ const fill = (at: number, change: Partial<Fill> = {}): Fill => ({
   endDate: null,
   resolvedAt: null,
   winner: null,
+  kickoff: null, trading: null,
   ...change,
 });
 

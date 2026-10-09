@@ -18,7 +18,8 @@ SPORTS = {
 
 CATCH_ALLS = ("soccer", "tennis", "esports", "basketball", "baseball", "hockey", "cricket")
 
-_SEASON = re.compile(r"-\d{4}(-\d{2})?$")
+SEASON = re.compile(r"-\d{4}(-\d{2})?$")
+ET = "America/New_York"
 
 
 @dataclass(frozen=True)
@@ -27,19 +28,24 @@ class League:
     label: str
     sport: str
     slugs: tuple[str, ...] = ()
+    tz: str = "UTC"
 
     @property
     def names(self) -> tuple[str, ...]:
         return self.slugs or (self.key,)
 
+    @property
+    def words(self) -> str:
+        return " ".join((self.key, self.label, self.sport, *self.names))
+
 
 LEAGUES = (
-    League("nfl", "NFL", "football"),
-    League("cfb", "College football", "football"),
-    League("nba", "NBA", "basketball"),
-    League("wnba", "WNBA", "basketball"),
-    League("nhl", "NHL", "hockey"),
-    League("mlb", "MLB", "baseball"),
+    League("nfl", "NFL", "football", tz=ET),
+    League("cfb", "College football", "football", ("cfb", "ncaaf"), ET),
+    League("nba", "NBA", "basketball", tz=ET),
+    League("wnba", "WNBA", "basketball", tz=ET),
+    League("nhl", "NHL", "hockey", tz=ET),
+    League("mlb", "MLB", "baseball", tz=ET),
     League("kbo", "KBO", "baseball"),
     League("epl", "Premier League", "soccer", ("epl", "premier-league")),
     League("ucl", "Champions League", "soccer", ("ucl", "champions-league")),
@@ -67,10 +73,11 @@ LEAGUES = (
 )
 
 OTHER = League("other", "Other", "other")
+SERIES_WORDS = {name: league.words for league in LEAGUES for name in league.names}
 
 
 def league_of(series_slug: str | None, tags: set[str]) -> League:
-    series = _SEASON.sub("", series_slug or "")
+    series = SEASON.sub("", series_slug or "")
     return (
         next((league for league in LEAGUES if series in league.names), None)
         or next((league for league in LEAGUES if tags.intersection(league.names)), None)

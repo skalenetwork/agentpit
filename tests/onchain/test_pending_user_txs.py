@@ -79,7 +79,7 @@ def test_a_claim_whose_receipt_was_lost_is_settled_at_its_exact_payout(monkeypat
 )
 def test_a_split_whose_answer_was_lost_is_not_split_twice(monkeypatch, error):
     client, admin, db = h.app_world()
-    market, _pm = h.synced_market(db, admin)
+    market = h.synced_market(db, admin)
     mid = market.market_id
     user = h.onboarded_account(db, admin)
     h.drain_native_balance(admin, user.eth_address)

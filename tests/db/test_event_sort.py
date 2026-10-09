@@ -169,8 +169,8 @@ def test_extract_event_metadata_reads_both_metrics():
         _pm_market(liquidity=1976643.77453, competitive=0.9846153846153846)
     )
     assert meta is not None
-    assert abs(meta["liquidity"] - 1976643.77453) < 1e-6
-    assert abs(meta["competitive"] - 0.9846153846153846) < 1e-12
+    assert abs(meta.liquidity - 1976643.77453) < 1e-6
+    assert abs(meta.competitive - 0.9846153846153846) < 1e-12
 
 
 def test_extract_event_metadata_reads_them_from_strings():
@@ -178,8 +178,8 @@ def test_extract_event_metadata_reads_them_from_strings():
     that way, so the same coercion has to cover these."""
     meta = _extract_event_metadata(_pm_market(liquidity="123.5", competitive="0.42"))
     assert meta is not None
-    assert abs(meta["liquidity"] - 123.5) < 1e-6
-    assert abs(meta["competitive"] - 0.42) < 1e-9
+    assert abs(meta.liquidity - 123.5) < 1e-6
+    assert abs(meta.competitive - 0.42) < 1e-9
 
 
 def test_extract_event_metadata_leaves_absent_metrics_none():
@@ -187,16 +187,16 @@ def test_extract_event_metadata_leaves_absent_metrics_none():
     signal update_event_metrics acts on."""
     meta = _extract_event_metadata(_pm_market())
     assert meta is not None
-    assert meta["liquidity"] is None
-    assert meta["competitive"] is None
+    assert meta.liquidity is None
+    assert meta.competitive is None
 
 
 def test_extract_event_metadata_survives_unparseable_metrics():
     """A raise here would permanently skip this market on every future pass."""
     meta = _extract_event_metadata(_pm_market(liquidity="n/a", competitive={}))
     assert meta is not None
-    assert meta["liquidity"] is None
-    assert meta["competitive"] is None
+    assert meta.liquidity is None
+    assert meta.competitive is None
 
 
 # ----- ordering the listing ---------------------------------------------------

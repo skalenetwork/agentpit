@@ -1,4 +1,5 @@
-"""Idempotent provisioning of the engine's house (bot) accounts."""
+"""Idempotent provisioning of the house account."""
+
 import logging
 
 from agentpit.auth.passwords import hash_password
@@ -7,34 +8,14 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import AdminGasPausedError
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.deployment import is_disposable_chain
 from agentpit.onchain.user_wallet import GAS_BUFFER_PCT
 
 log = logging.getLogger(__name__)
 
-_EMAIL = "house-bot-{i}@agentpit.local"
+_EMAIL = "house-bot-0@agentpit.local"
 _PASSWORD = "house-bot-fixed-secret-pw"  # house accounts never log in via HTTP
-
-
-def email_for(i: int) -> str:
-    """Deterministic house-account email; index 0 is the mirror account."""
-    return _EMAIL.format(i=i)
-
-
-def gas_topup_wei(balance_wei: int, floor_wei: int, target_wei: int) -> int:
-    """Wei to send so the account sits at `target_wei`; 0 while it is above the floor.
-
-    Triggering on a floor rather than on exhaustion is the whole point. The
-    account signs a transaction per inventory split, so it drains steadily, and
-    it cannot pay for the transaction that would refill it once it is empty --
-    production stalled on dust (0.0000112 ETH), a balance that is starved but
-    emphatically not zero.
-    """
-    if floor_wei <= 0 or balance_wei >= floor_wei:
-        return 0
-    return max(0, target_wei - balance_wei)
 
 
 class HouseAccountProvisioner:
@@ -43,31 +24,25 @@ class HouseAccountProvisioner:
         self._onchain = onchain
         self._settings = settings
 
-    def ensure_provisioned(self) -> list[User]:
-        target = self._settings.liquidity_house_account_count
+    def ensure_provisioned(self) -> User:
         with self._db.read() as conn:
-            existing = {u.email: u for u in TableRead.list_bot_users(conn)}
+            user = TableRead.get_user_by_email(conn, _EMAIL)
+        if user is None or not user.is_bot:
+            return self._create_and_onboard()
+        self._maybe_reonboard(user)
+        return user
 
-        for u in existing.values():           # re-onboard accounts the chain forgot
-            self._maybe_reonboard(u)
-
-        users: list[User] = list(existing.values())
-        for i in range(target):
-            email = email_for(i)
-            if email in existing:
-                continue
-            users.append(self._create_and_onboard(email))
-        log.info("house accounts: %d provisioned (target %d)", len(users), target)
-        return users
-
-    def _create_and_onboard(self, email: str) -> User:
+    def _create_and_onboard(self) -> User:
         with self._db.write() as conn:
-            prior = TableRead.get_user_by_email(conn, email)
-            if prior is not None:             # partial-create recovery
+            prior = TableRead.get_user_by_email(conn, _EMAIL)
+            if prior is not None:  # partial-create recovery
                 user_id, acct, api_key = prior.user_id, prior.eth_key, prior.api_key
             else:
                 user_id, acct, api_key = TableWrite.create_user(
-                    conn, email=email, password_hash=hash_password(_PASSWORD), handle=None
+                    conn,
+                    email=_EMAIL,
+                    password_hash=hash_password(_PASSWORD),
+                    handle=None,
                 )
         self._fund(acct)
         with self._db.write() as conn:
@@ -76,6 +51,7 @@ class HouseAccountProvisioner:
         with self._db.read() as conn:
             user = TableRead.get_user_by_userid(conn, user_id)
         assert user is not None
+        log.info("house account %s provisioned", _EMAIL)
         return user
 
     def _approvals_need_wei(self, address: str) -> int:
@@ -88,85 +64,38 @@ class HouseAccountProvisioner:
         return gas * self._onchain.gas_price()
 
     def _fund(self, acct) -> None:
-        """Mint the collateral, fund the gas, send the approvals.
-
-        Funded to the floor, not the target: `top_up_gas` lifts it within one
-        check interval, and the target (100 native by default) on every
-        provisioning of the persistent local anvil, every test run included,
-        would drain the admin. Never less than the approvals need, though, or
-        a floor of 0 or a tiny one would fail startup.
-        """
+        """Mint the collateral, fund exactly the approvals' gas, send the
+        approvals. The house sends nothing after them: fills are the admin's
+        matchOrders."""
         timeout = self._settings.tx_confirmations_timeout_s
         self._onchain.mint_to(
             acct.address, self._settings.house_mint_raw, timeout=timeout
         )
         self._onchain.fund_gas(
-            acct.address,
-            max(
-                self._settings.liquidity_gas_floor_wei,
-                self._approvals_need_wei(acct.address),
-            ),
-            timeout=timeout,
+            acct.address, self._approvals_need_wei(acct.address), timeout=timeout
         )
         self._onchain.grant_user_approvals(acct, timeout=timeout)
 
-    def top_up_gas(self, users: list[User]) -> int:
-        """Refill any house account that has dropped below the gas floor.
-
-        Gas ONLY. `_fund` also drips collateral and re-sends the three approvals,
-        which is right for a fresh or chain-reset account and wrong for a routine
-        refill -- the approvals are already set, and each one costs the very gas
-        we are short of. Returns the number of accounts funded.
-        """
-        floor = self._settings.liquidity_gas_floor_wei
-        target = self._settings.liquidity_gas_target_wei
-        funded = 0
-        for user in users:
-            try:
-                balance = self._onchain.native_balance(user.eth_address)
-            except Exception as exc:
-                log.warning("gas balance check failed for %s: %s", user.email, exc)
-                continue
-            add = gas_topup_wei(balance, floor, target)
-            if add <= 0:
-                continue
-            try:
-                self._onchain.fund_gas(
-                    user.eth_address, add,
-                    timeout=self._settings.tx_confirmations_timeout_s,
-                )
-            except AdminGasPausedError:
-                log.warning("gas top-up for %s skipped: the admin gas breaker is paused", user.email)
-                continue
-            except Exception:
-                log.exception("gas top-up failed for %s", user.email)
-                continue
-            log.info(
-                "house account %s gas topped up: %.4f -> %.4f ETH",
-                user.email, balance / 1e18, (balance + add) / 1e18,
-            )
-            funded += 1
-        return funded
-
     def _maybe_reonboard(self, user: User) -> None:
-        """Repair an account the chain forgot — a wipe, not ordinary spending.
+        """Repair an account the chain forgot: a wipe, not ordinary spending.
 
         Gated on `simulated_chain` and on the chain id (`is_disposable_chain`) for
         the same reason as the user-facing path: only a disposable chain can
-        forget a funded account. Routine depletion is `top_up_gas`'s job, and it
-        triggers on a floor rather than on zero.
+        forget an account. The nonce is the signal, as for users: exact funding
+        leaves the house's balance near zero, while its approvals leave a nonce
+        of 3.
         """
         if not self._settings.simulated_chain or not is_disposable_chain(
             self._onchain.chain_id
         ):
             return
         try:
-            if self._onchain.native_balance(user.eth_address) > 0:
+            if self._onchain.transaction_count(user.eth_address) > 0:
                 return
         except Exception as exc:
-            log.warning("native balance check failed for %s: %s", user.user_id, exc)
+            log.warning("chain nonce check failed for %s: %s", user.user_id, exc)
             return
-        log.info("house account %s unfunded (chain reset) — re-onboarding", user.email)
+        log.info("house account %s unknown to the chain (reset), re-onboarding", user.email)
         try:
             self._fund(user.eth_key)
         except Exception:

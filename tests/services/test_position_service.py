@@ -178,7 +178,9 @@ def _setup(state: MarketState):
         )
         market = TableWrite.create_market(conn, request, is_polygon_market=False)
         if state == MarketState.RESOLVED:
-            TableWrite.resolve_market(conn, market_id=market.market_id, winning_outcome_index=0)
+            TableWrite.set_market_state(
+                conn, market.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0)
+            )
         user = TableRead.get_user_by_userid(conn, user_id)
     assert user is not None
     return db, user, market.market_id
@@ -535,7 +537,9 @@ def test_a_split_on_a_market_that_stopped_trading_during_the_top_up_is_refused(s
     def market_stops_trading():
         with db.write() as conn:
             if state == MarketState.RESOLVED:  # a resolved market names its winner
-                TableWrite.resolve_market(conn, market_id=mid, winning_outcome_index=0)
+                TableWrite.set_market_state(
+                    conn, mid, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0)
+                )
             else:
                 conn.execute(
                     "UPDATE markets SET MARKET_STATE = %s WHERE MARKET_ID = %s",

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from agentpit.api.deps import AccountServiceDep, LeaderboardServiceDep, SessionDep
 from agentpit.db.table_read import TableRead
+from agentpit.liquidity import feed
 from agentpit.domain.runner import Runner, runner_for
 from agentpit.services.agent_profile import ACTIVITY, AgentProfile, build_profile
 from agentpit.services.leaderboard_service import SORTS, rank_rows
@@ -113,7 +114,7 @@ def get_agent(
     ids = [p.conditionId for p in (*held.positions, *held.closed, *fills)]
     with db.read() as conn:
         categories = TableRead.categories_by_condition_id(conn, ids)
-        contexts = TableRead.market_contexts(conn, ids)
+        contexts = TableRead.market_contexts(conn, ids, feed.sided())
     return build_profile(row, board, held, fills, categories, contexts, int(time.time()))
 
 

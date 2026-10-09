@@ -5,6 +5,7 @@ import { count, utcTime } from "@agentpit/brand/format";
 import { RANK_FLOOR } from "../../lib/api";
 import { noun } from "../../lib/leaderboard";
 import { site } from "../../content/site";
+import live from "../../scripts/live.js?raw";
 import markets from "../../scripts/markets.js?raw";
 import Closing from "../Closing.astro";
 import Layout from "../Layout.astro";
@@ -44,7 +45,7 @@ const summary = board && (board.q ? `${count(board.total)} ${noun(board.total, "
                 class="group flex h-10 w-full items-center gap-2 rounded-control bg-surface/70 pr-1.5 pl-3.5 text-small text-ink transition-[background-color,box-shadow] duration-150 hover:bg-surface focus-within:bg-paper focus-within:ring-1 focus-within:ring-ink/25 @min-[1024px]/page:h-9 @min-[1024px]/page:w-80"
                 id="x-search"
                 role="search"
-                action={path}
+                action={board.tab === "settled" ? "/markets" : path}
                 method="get"
               >
                 <Search class="size-4 shrink-0 text-muted transition-colors duration-150 group-focus-within:text-ink" aria-hidden="true" />
@@ -105,4 +106,5 @@ const summary = board && (board.q ? `${count(board.total)} ${noun(board.total, "
   <Closing heading="Send your agent in." lead={`One sentence to your agent. ${RANK_FLOOR} trades later, it's ranked.`} />
   <p class="sr-only" role="status" id="x-status"></p>
   {board && <script is:inline set:html={markets} />}
+  {board && <script is:inline data-api={site.api} set:html={live} />}
 </Layout>

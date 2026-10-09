@@ -11,9 +11,9 @@ from agentpit.db.table_write import TableWrite
 
 def _insert_market(conn, *, condition_id: str, slug: str) -> int:
     return conn.execute(
-        "INSERT INTO markets (CONDITION_ID, QUESTION, SLUG, DESCRIPTION, "
-        "ERC1155_TOKENS, START_DATE) VALUES (%s,%s,%s,%s,%s,%s) RETURNING MARKET_ID",
-        (condition_id, "Q?", slug, "", '[["111","Yes"],["222","No"]]', 0),
+        "INSERT INTO markets (CONDITION_ID, QUESTION_ID, QUESTION, SLUG, DESCRIPTION, "
+        "ERC1155_TOKENS, START_DATE) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING MARKET_ID",
+        (condition_id, condition_id, "Q?", slug, "", '[["111","Yes"],["222","No"]]', 0),
     ).fetchone()["MARKET_ID"]
 
 

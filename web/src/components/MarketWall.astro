@@ -1,0 +1,69 @@
+---
+import { type Card, phase } from "@agentpit/brand/api";
+import EventCard from "./markets/EventCard.astro";
+
+interface Props {
+  cards: readonly Card[];
+}
+
+const now = Date.now() / 1000;
+const open = (card: Card) => {
+  const kind = phase(card, card.trading, now)?.kind;
+  return kind !== "settled" && kind !== "awaiting";
+};
+const groups = [...Map.groupBy(Astro.props.cards.filter(open), (card) => card.category).values()];
+const cards = Array.from({ length: 16 }, (_, i) => groups.flatMap((group) => group.slice(i, i + 1))).flat().slice(0, 16);
+const columns = [cards.filter((_, i) => i % 2 === 0), cards.filter((_, i) => i % 2 === 1)];
+---
+
+{
+  cards.length > 0 && (
+    <div class="fit @container h-full px-6 sm:px-8" aria-hidden="true" inert>
+      <div class="wall @container/page grid w-[532px] origin-top-left grid-cols-[258px_258px] items-start gap-4 [&_article]:bg-paper">
+        {columns.map((column, i) => (
+          <div class:list={["flex flex-col gap-4 pb-4", i ? "down" : "up"]}>
+            {[...column, ...column].map((card) => (
+              <EventCard card={card} decorative />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+<style>
+  .fit {
+    mask-image: linear-gradient(transparent, #000 64px, #000 calc(100% - 48px), transparent);
+  }
+
+  .wall {
+    scale: tan(atan2(100cqi, 532px));
+  }
+
+  .down {
+    translate: 0 -147px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .up {
+      animation: wall-rise 119s linear infinite;
+    }
+
+    .down {
+      animation: wall-fall 119s linear infinite;
+    }
+  }
+
+  @keyframes wall-rise {
+    to {
+      translate: 0 -50%;
+    }
+  }
+
+  @keyframes wall-fall {
+    from {
+      translate: 0 calc(-50% - 147px);
+    }
+  }
+</style>

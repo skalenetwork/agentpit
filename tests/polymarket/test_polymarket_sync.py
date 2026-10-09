@@ -1,430 +1,180 @@
-import secrets
-from unittest.mock import patch
+import dataclasses
+import time
 
+import httpx
 import pytest
 
-from agentpit.common import check_state
-from agentpit.datastructures.condition_id import ConditionId
-from agentpit.datastructures.event import Event
-from agentpit.datastructures.market import Market
-from agentpit.db.table_read import TableRead
-from agentpit.polymarket.conditional_token_framework import ConditionalTokenFramework
+from agentpit.config import Settings
 from agentpit.polymarket import polymarket_sync
 from agentpit.polymarket.polymarket_sync import (
-    POLYMARKET_GAMMA_URL,
-    _is_market_over,
-    _normalize_market_fields,
-    _passes_market_filters,
-    _polymarket_to_erc1155_tokens,
-    build_create_market_request_from_json,
-    create_polymarket_markets_if_needed,
-    fetch_all_polymarket_markets,
-    fetch_polymarket_market,
+    CoveragePolicy,
+    UpstreamMarket,
+    Verdict,
+    parse,
+    resolutions,
+    walk_admissions,
 )
-from tests.chain_fakes import as_batch
-from tests.db_helpers import fresh_test_conn
+from agentpit.utils.parse import _iso_to_unix
+from tests.chain_fakes import gamma_row
+
+POLICY = CoveragePolicy(
+    10_000.0,
+    True,
+    frozenset({"sports"}),
+    frozenset({"sports", "esports"}),
+    (),
+    10_000.0,
+)
+GAMES = CoveragePolicy(
+    10_000.0, True, frozenset(), frozenset(), (100351, 450), 10_000.0
+)
 
 
-@pytest.fixture()
-def db():
-    """Postgres test database connection with all tables created."""
-    conn = fresh_test_conn()
-    yield conn
-    conn.close()
-
-
-def test_sync_polymarket_markets_syncs_real_markets_to_db(db):
-    """Test syncing live Polymarket markets into a local DB.
-
-    Hits the real Polymarket API and mirrors each market onto the local
-    CTF + Exchange — so anvil and the deployed exchange must be up.
-    """
-    from agentpit.config import Settings
-    from agentpit.onchain.admin import OnchainAdmin
-    from agentpit.onchain.contracts import Contracts
-    from agentpit.onchain.deployment import Deployment
-    from agentpit.onchain.web3_client import Web3Client
-
-    settings = Settings()
-    deployment = Deployment.load(settings.deployment_path)
-    client = Web3Client(settings, deployment)
-    admin = OnchainAdmin(client, Contracts(client.web3, deployment))
-
-    # Capture a small, single-page trending set ONCE. `order=volume24hr` is a
-    # live, churning feed, so re-fetching between syncs is non-deterministic
-    # (the top-N shifts) — capture the upstream set and reuse it so the
-    # idempotency check below is stable. A small cap also keeps the on-chain
-    # prepareCondition work fast.
-    pm_markets = fetch_all_polymarket_markets(
-        order="volume24hr", max_markets=25, liquidity_threshold=0
-    )
-    created_markets = create_polymarket_markets_if_needed(db, pm_markets, admin)
-
-    # We expect many markets to be created, but the exact number varies.
-    assert len(created_markets) > 5
-
-    db_markets, total = TableRead.list_markets(db, limit=len(created_markets) + 1)
-    assert total == len(created_markets)
-    assert len(db_markets) == len(created_markets)
-
-    # list_markets returns newest-first (MARKET_ID DESC), which need not match
-    # creation order, so match the synced row by id rather than by position.
-    first_synced = created_markets[0]
-    first_db = next(m for m in db_markets if m.market_id == first_synced.market_id)
-
-    assert first_db.question == first_synced.question
-    assert first_db.description == first_synced.description
-    assert len(first_db.erc1155_tokens) > 0
-
-    # Idempotent: re-syncing the SAME captured upstream set adds nothing.
-    assert create_polymarket_markets_if_needed(db, pm_markets, admin) == []
-
-
-def test_build_request_extracts_upstream_token_ids():
-    pm_market = {
-        "question": "Q",
-        "description": "D",
-        "id": 99,
-        "conditionId": "0xcond",
-        "slug": "q",
-        "startDate": "2026-01-01T00:00:00Z",
-        "endDate": "2026-12-31T00:00:00Z",
-        "active": True,
-        "closed": False,
-        "tokens": [
-            {"token_id": "777", "outcome": "Yes"},
-            {"token_id": "888", "outcome": "No"},
-        ],
-    }
-    req = build_create_market_request_from_json(pm_market)
-    assert req.polymarket_yes_token_id == "777"
-    assert req.polymarket_no_token_id == "888"
-
-
-def test_fetch_all_polymarket_markets_requests_tags(monkeypatch):
-    """Without include_tag=true every market comes back with `tags: null`."""
-    from agentpit.polymarket import polymarket_sync
-
-    seen: list[str] = []
-
-    def fake_get(url: str):
-        seen.append(url)
-        return []
-
-    monkeypatch.setattr(polymarket_sync, "get", fake_get)
-    polymarket_sync.fetch_all_polymarket_markets(host="https://gamma.test")
-
-    assert seen
-    assert "include_tag=true" in seen[0]
-
-
-# ----- a lapsed deadline is not the same as a finished market ----------------
-
-
-def _overdue(**over):
-    """A market whose stated end date passed two months ago."""
-    m = {
-        "conditionId": "0x" + "ab" * 32,
-        "question": "Will the deadline slip again?",
-        "endDate": "2026-06-01T00:00:00Z",
-        "liquidity": "19002",
-        "volumeNum": "76722445",
-        "closed": False,
-        "active": True,
-        "archived": False,
-        "acceptingOrders": True,
-    }
-    m.update(over)
+def _market(**over) -> UpstreamMarket:
+    m = parse(gamma_row(**over))
+    assert isinstance(m, UpstreamMarket), m
     return m
 
 
-def test_an_overdue_market_still_taking_orders_is_kept():
-    """The Ethiopia case: endDate 2026-06-01, and $678k traded in the last 24
-    hours. The deadline lapsed; the question did not."""
-    m = _normalize_market_fields(_overdue())
-    assert _is_market_over(m) is False
 
 
-def test_an_overdue_market_no_longer_taking_orders_is_dropped():
-    m = _normalize_market_fields(_overdue(acceptingOrders=False))
-    assert _is_market_over(m) is True
-
-
-def test_without_the_upstream_signal_the_date_still_decides():
-    """Older Gamma shapes and fixtures carry no acceptingOrders. Falling back
-    to the date keeps their behaviour rather than silently admitting them."""
-    m = _overdue()
-    del m["acceptingOrders"]
-    m = _normalize_market_fields(m)
-    assert _is_market_over(m) is True
-
-
-def test_a_future_deadline_is_never_over_whatever_upstream_says():
-    m = _normalize_market_fields(
-        _overdue(endDate="2099-01-01T00:00:00Z", acceptingOrders=False)
+def test_a_gamma_row_parses_into_a_typed_binary_market():
+    row = gamma_row(
+        clobTokenIds='["111", "222"]',
+        outcomes='["Up", "Down"]',
+        groupItemTitle="Up",
+        image="https://img/up.png",
+        oneDayPriceChange=0.04,
+        liquidityNum=12_500.5,
+        tags=[{"slug": "crypto", "label": "Crypto"}],
     )
-    assert _is_market_over(m) is False
-
-
-def test_accepting_orders_is_coerced_from_its_string_forms():
-    for raw, expected in (("true", True), ("false", False), (1, True), (0, False)):
-        m = _normalize_market_fields(_overdue(acceptingOrders=raw))
-        assert m["accepting_orders"] is expected, raw
-
-
-# ----- an event is one question; half an answer is worse than none ----------
-
-
-def _sib(name, *, v24, liq=20_000, closed=False, vol=1_000_000):
-    """One outcome of a multi-outcome event.
-
-    `vol` (cumulative volumeNum) defaults high so tests that only care about
-    the `liq` knob aren't accidentally tripped by the filter's "stronger of
-    liquidity or volume" rule. The illiquid-placeholder case below overrides
-    it to 0 — a `Person C` nobody has ever traded has zero of both.
-    """
-    return {
-        "conditionId": "0x" + name.encode().hex().ljust(64, "0")[:64],
-        "question": f"Will {name} win?",
-        "groupItemTitle": name,
-        "volume24hr": v24,
-        "volumeNum": vol,
-        "liquidity": liq,
-        "closed": closed,
-        "active": True,
-        "archived": False,
-        "acceptingOrders": True,
-        "endDate": "2099-01-01T00:00:00Z",
-    }
-
-
-def _event(*markets):
-    return {
-        "id": "77",
-        "slug": "who-wins",
-        "title": "Who wins?",
-        "markets": list(markets),
-    }
-
-
-def _primary(name):
-    """The market that qualified in the top-1000 window on its own merit."""
-    m = _sib(name, v24=678_000)
-    m["events"] = [{"id": "77"}]
-    return m
-
-
-def _fetcher_for(event):
-    def fetch(ids, host):
-        assert ids == ["77"], ids
-        return [event]
-    return fetch
-
-
-def test_the_siblings_of_a_qualifying_market_come_with_it():
-    favourite = _primary("Adanech")
-    event = _event(favourite, _sib("Abiy", v24=328), _sib("Demeke", v24=1033))
-    extra = polymarket_sync.fetch_event_siblings(
-        [favourite], cap=12, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
+    m = parse(row)
+    assert isinstance(m, UpstreamMarket)
+    assert (m.liquidity, _market().liquidity) == (12_500.5, 0.0)
+    assert (m.pm_id, m.condition, m.tokens, m.labels) == (
+        int(row["id"]),
+        row["conditionId"],
+        ("111", "222"),
+        ("Up", "Down"),
     )
-    assert sorted(m["groupItemTitle"] for m in extra) == ["Abiy", "Demeke"]
-
-
-def test_the_market_that_already_qualified_is_not_returned_twice():
-    favourite = _primary("Adanech")
-    event = _event(favourite, _sib("Abiy", v24=328))
-    extra = polymarket_sync.fetch_event_siblings(
-        [favourite], cap=12, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
+    assert (m.label, m.icon, m.price_change_24h, m.tags, m.category) == (
+        "Up",
+        "https://img/up.png",
+        0.04,
+        (("crypto", "Crypto"),),
+        "Crypto",
     )
-    assert [m["groupItemTitle"] for m in extra] == ["Abiy"]
-
-
-def test_the_cap_keeps_the_busiest_outcomes():
-    favourite = _primary("Adanech")
-    others = [_sib(f"P{i}", v24=100 - i) for i in range(10)]
-    event = _event(favourite, *others)
-    extra = polymarket_sync.fetch_event_siblings(
-        [favourite], cap=3, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
+    assert (m.start_date, m.end_date, m.closed, m.accepting) == (
+        1767225600,
+        4070908800,
+        False,
+        True,
     )
-    # cap 3 covers the favourite plus the two busiest siblings.
-    assert [m["groupItemTitle"] for m in extra] == ["P0", "P1"]
+    assert m.event is not None and m.event.slug == row["events"][0]["slug"]
 
 
-def test_an_illiquid_placeholder_sibling_is_dropped():
-    """Upstream keeps zero-liquidity placeholders for unnamed candidates —
-    `Person C`, `Person D`. Four of the Ethiopia event's 33 are exactly that."""
-    favourite = _primary("Adanech")
-    event = _event(favourite, _sib("Person C", v24=0, liq=0, vol=0))
-    extra = polymarket_sync.fetch_event_siblings(
-        [favourite], cap=12, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
+def test_only_binary_v1_rows_parse():
+    assert (
+        parse(gamma_row(outcomes='["A", "B", "C"]', clobTokenIds='["1", "2", "3"]'))
+        is Verdict.NOT_BINARY
     )
-    assert extra == []
+    assert parse(gamma_row(version="v2")) is Verdict.NOT_V1
+    assert parse(gamma_row(version=None)) is Verdict.NOT_V1
 
 
-def test_a_closed_sibling_is_never_pulled():
-    favourite = _primary("Adanech")
-    event = _event(favourite, _sib("Gone", v24=5000, closed=True))
-    extra = polymarket_sync.fetch_event_siblings(
-        [favourite], cap=12, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"conditionId": "0x12"},
+        {"conditionId": None},
+        {"id": "x"},
+        {"question": " "},
+        {"description": ""},
+        {"slug": None},
+        {"startDate": "soon"},
+        {"endDate": "2025-01-01T00:00:00Z"},
+        {"clobTokenIds": '["a", "b"]'},
+        {"tags": None},
+        {"tags": "politics"},
+    ],
+)
+def test_a_malformed_row_is_a_verdict_never_a_raise(over):
+    assert parse(gamma_row(**over)) is Verdict.MALFORMED
+
+
+def test_anything_but_a_dict_is_malformed():
+    for row in (None, [], "row", 3):
+        assert parse(row) is Verdict.MALFORMED
+
+
+def test_the_event_start_time_wins_over_the_market_game_start_time():
+    meta = polymarket_sync._extract_event_metadata(
+        {
+            "gameStartTime": "2026-10-05 13:00:00+00",
+            "gameId": "1711434",
+            "events": [
+                {
+                    "id": "1",
+                    "slug": "cs2",
+                    "title": "CS2",
+                    "startTime": "2026-10-05T14:00:00Z",
+                    "gameId": 1711434,
+                    "seriesSlug": "counter-strike",
+                }
+            ],
+        }
     )
-    assert extra == []
-
-
-def test_a_market_with_no_event_contributes_nothing():
-    lone = _sib("Solo", v24=678_000)      # no "events" key at all
-    assert polymarket_sync.fetch_event_siblings(
-        [lone], cap=12, liquidity_threshold=5000,
-        fetcher=lambda ids, host: pytest.fail("must not fetch"),
-    ) == []
-
-
-def test_siblings_carry_the_events_entry_they_came_from():
-    """Markets nested under `/events` carry no `events` key of their own —
-    verified 0 of 33 on the live Ethiopia event. Without attaching one here,
-    every sibling lands as an orphan and gets wrapped in its own singleton
-    event downstream instead of joining the group it actually belongs to."""
-    favourite = _primary("Adanech")
-    event = _event(favourite, _sib("Abiy", v24=328))
-    extra = polymarket_sync.fetch_event_siblings(
-        [favourite], cap=12, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
+    assert meta is not None
+    assert (meta.start_time, meta.game_id, meta.series_slug) == (
+        1791208800,
+        "1711434",
+        "counter-strike",
     )
-    assert len(extra) == 1
-    events = extra[0].get("events")
-    assert events is not None
-    assert events[0]["id"] == event["id"]
-    assert events[0]["slug"] == event["slug"]
 
 
-def test_a_sibling_survives_even_when_its_event_has_no_bindable_metadata():
-    """Malformed upstream event (no title): tradeable beats grouped. The
-    sibling is still returned; the startup orphan-wrap gives it a singleton
-    event, same reasoning as pinned.py's sync_pinned_series."""
-    favourite = _primary("Adanech")
-    event = {
-        "id": "77",
-        "slug": "who-wins",
-        # no "title" -> _event_entry can't build a bindable entry
-        "markets": [favourite, _sib("Abiy", v24=328)],
-    }
-    extra = polymarket_sync.fetch_event_siblings(
-        [favourite], cap=12, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
+def test_the_start_time_falls_back_to_the_market_game_start_time():
+    meta = polymarket_sync._extract_event_metadata(
+        {
+            "gameStartTime": "2026-10-05 14:00:00+00",
+            "gameId": "1711434",
+            "events": [{"id": "1", "slug": "cs2", "title": "CS2"}],
+        }
     )
-    assert [m["groupItemTitle"] for m in extra] == ["Abiy"]
-    assert "events" not in extra[0]
-
-
-def test_the_cap_falls_back_to_lifetime_volume_when_24h_volume_is_missing():
-    """volume24hr is frequently absent on markets nested under `/events`.
-    `_as_float(None)` is 0.0, so without a fallback every such sibling ties
-    and the cap keeps whichever upstream happened to list first — not the
-    busiest. Lifetime volume (volumeNum) breaks the tie."""
-    favourite = _primary("Adanech")
-    quiet = _sib("Quiet", v24=0, vol=50)
-    busy = _sib("Busy", v24=0, vol=999)
-    del quiet["volume24hr"]
-    del busy["volume24hr"]
-    event = _event(favourite, quiet, busy)
-    extra = polymarket_sync.fetch_event_siblings(
-        [favourite], cap=2, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
+    assert meta is not None
+    assert (meta.start_time, meta.game_id, meta.series_slug) == (
+        1791208800,
+        "1711434",
+        None,
     )
-    # cap 2 covers the favourite plus the one busier by lifetime volume.
-    assert [m["groupItemTitle"] for m in extra] == ["Busy"]
-
-
-# ----- claim gas is sized per transaction, never granted ---------------------
-
-
-def test_the_redeem_loop_never_funds_gas_itself():
-    """Claims are sponsored since 2026-10-08, but only through
-    `UserGasSponsor`, which tops a wallet up to exactly one claim's need.
-    Before 2026-08-10 this loop sent a whole coin, 227x the need, before every
-    single claim; it must never send gas itself again."""
-    import inspect
-    from agentpit.polymarket import polymarket_sync
-
-    src = inspect.getsource(polymarket_sync.auto_redeem_resolved_markets)
-    assert "fund_gas" not in src
-    assert "gas_topup_wei" not in src
-    assert "UserGasSponsor" in src
-
-
-def test_the_redeem_loop_takes_settings_and_no_gas_argument():
-    """`settings` carries the claim minimum, the per-pass cap and, through the
-    sponsor, the kill switch and the top-up ceiling. A gas amount is never a
-    parameter."""
-    import inspect
-    from agentpit.polymarket import polymarket_sync
-
-    params = inspect.signature(
-        polymarket_sync.auto_redeem_resolved_markets
-    ).parameters
-    assert list(params) == ["db", "admin", "settings"]
 
 
 # ----- the series that regenerate faster than anyone reads them --------------
 
 
-def _candidate(**over):
-    """A market that clears every OTHER filter, so only the churn check can
-    reject it.
-
-    Built in camelCase and pushed through `_normalize_market_fields`, the way
-    upstream payloads actually arrive: `_passes_market_filters` reads snake_case
-    only, so this covers the normalization path too.
-    """
-    m = {
-        "conditionId": "0x" + "cd" * 32,
-        "question": "Highest temperature in Munich on June 10?",
-        "endDate": "2099-01-01T00:00:00Z",
-        "liquidity": "19002",
-        "volumeNum": "76722445",
-        "closed": False,
-        "active": True,
-        "archived": False,
-        "acceptingOrders": True,
-    }
-    m.update(over)
-    return m
-
-
-def _kept(*, exclude_churn_series=True, excluded_categories=(), **over):
+def _kept(
+    *, exclude_churn_series=True, excluded_categories=(), excluded_tags=(), **over
+):
     """Does this market survive the catalogue filter?"""
-    m = _normalize_market_fields(_candidate(**over))
-    return _passes_market_filters(
-        m,
-        liquidity_threshold=0,
-        closed=False,
-        archived=False,
-        exclude_churn_series=exclude_churn_series,
-        excluded_categories=excluded_categories,
+    policy = CoveragePolicy.from_settings(
+        Settings(
+            _env_file=None,
+            sync_min_volume_24h=0,
+            sync_exclude_churn_series=exclude_churn_series,
+            excluded_categories=list(excluded_categories),
+            excluded_tags=list(excluded_tags),
+        )
     )
+    return policy.admits(_market(**over)) is Verdict.CARRY
 
 
-def test_a_weather_market_with_no_tags_at_all_is_dropped_by_its_fee_type():
-    """49 cities x ~3.4 thresholds = ~166 born every day, median life 55.9h:
-    23% of every market we have ever created and resolved on chain.
-
-    Markets nested under `/events` carry `feeType` but no `tags` key, so with
-    nothing else to go on the fee type decides.
-    """
-    assert _kept(feeType="weather_fees") is False
-
-
-def test_the_fee_type_alone_never_drops_a_tagged_weather_market():
+def test_the_fee_type_alone_never_drops_a_weather_market():
     """`weather_fees` is upstream's schedule for the WHOLE weather / science /
     natural-disaster bucket, not a name for the daily-temperature series. Of
     158 rows carrying it in a live 2000-row sample, 5 are long-lived markets
     nothing like the churn series — dropping on the fee type alone thinned that
     category silently, with no error and no log line."""
     survivors = (
+        [],
         # $412k book, $17.7M lifetime volume, endDate 2026-12-31.
         ["pandemics", "weather", "hantavirus"],
         ["science", "weather", "climate-science", "global-temp"],
@@ -476,20 +226,16 @@ def test_the_daily_temperature_tag_alone_is_enough():
 
 def test_a_sports_prop_is_dropped():
     """Spreads and team totals hang off a game we already carry."""
-    for prop in ("spreads", "team_totals"):
-        assert (
-            _kept(feeType="sports_fees_v2", sportsMarketType=prop) is False
-        ), prop
+    for prop in ("spreads", "team_totals", "soccer_exact_score"):
+        assert _kept(feeType="sports_fees_v2", sportsMarketType=prop) is False, prop
 
 
-def test_the_game_itself_is_kept():
-    """moneyline IS the game — the one sportsMarketType worth a condition."""
-    assert _kept(feeType="sports_fees_v2", sportsMarketType="moneyline") is True
+def test_the_game_and_its_per_game_winners_are_kept():
+    for kind in ("moneyline", "child_moneyline"):
+        assert _kept(feeType="sports_fees_v2", sportsMarketType=kind) is True, kind
 
 
 def test_a_market_carrying_neither_field_is_kept():
-    """Older Gamma shapes and every fixture send neither field. Absence must
-    never exclude: this drops only on positive evidence."""
     assert _kept() is True
 
 
@@ -499,154 +245,22 @@ def test_a_crypto_market_is_kept():
     assert _kept(feeType="crypto_fees_v2") is True
 
 
-def test_malformed_tags_never_raise():
-    """`tags` is whatever upstream sent — null without include_tag=true, a bare
-    string, entries that aren't dicts. A discovery filter that raises here would
-    kill the whole sync pass."""
-    for tags in (None, "daily-temperature", ["daily-temperature"], [None, 3]):
+def test_malformed_tag_entries_are_skipped_not_raised_on():
+    for tags in (["daily-temperature"], [None, 3], [{"slug": None}]):
         assert _kept(tags=tags) is True, tags
 
 
 def test_the_flag_switches_the_exclusion_back_off():
     """The operator can reverse the decision without a code change."""
-    assert _kept(feeType="weather_fees", exclude_churn_series=False) is True
-
-
-# ----- the predicate is only worth what the call sites do with it -----------
-
-
-def _prop(name, *, v24, **over):
-    """A sports prop sibling: a real Gamma payload shape, camelCase."""
-    m = _sib(name, v24=v24)
-    m["feeType"] = "sports_fees_v2"
-    m["sportsMarketType"] = "spreads"
-    m.update(over)
-    return m
-
-
-def test_a_prop_sibling_never_reaches_the_catalogue():
-    """The sibling outcomes of a game event are exactly where the prop tail
-    hangs, so the primary window dropping props is only half the job."""
-    game = _primary("Game")
-    event = _event(game, _prop("Spread", v24=5000))
-    extra = polymarket_sync.fetch_event_siblings(
-        [game], cap=12, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
-    )
-    assert extra == []
-
-
-def test_the_sibling_pass_still_returns_props_when_the_flag_is_off():
-    """Proves the assertion above is the flag working, not the fixture."""
-    game = _primary("Game")
-    event = _event(game, _prop("Spread", v24=5000))
-    extra = polymarket_sync.fetch_event_siblings(
-        [game], cap=12, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
-        exclude_churn_series=False,
-    )
-    assert [m["groupItemTitle"] for m in extra] == ["Spread"]
-
-
-def test_props_do_not_eat_the_cap_before_the_real_second_leg():
-    """Every prop out-trades the second real leg of a game, so a cap applied
-    before the churn filter is spent entirely on markets about to be dropped —
-    the event contributes nothing and a genuine keeper is lost, which is worse
-    than not excluding at all."""
-    game = _primary("Game")
-    props = [_prop(f"Spread{i}", v24=5000) for i in range(12)]
-    second_leg = _sib("SecondLeg", v24=328)
-    event = _event(game, *props, second_leg)
-    extra = polymarket_sync.fetch_event_siblings(
-        [game], cap=12, liquidity_threshold=5000,
-        fetcher=_fetcher_for(event),
-    )
-    assert [m["groupItemTitle"] for m in extra] == ["SecondLeg"]
-
-
-def _page_of(*markets):
-    """A one-page Gamma `/markets` response followed by the empty page that
-    stops pagination."""
-    pages = [list(markets), []]
-
-    def fake_get(url):
-        return pages.pop(0) if pages else []
-
-    return fake_get
-
-
-def test_the_primary_window_drops_the_churn_series(monkeypatch):
-    """`fetch_all_polymarket_markets` is the other half of the threading: the
-    predicate cannot see its own call sites."""
-    keeper = _sib("Game", v24=678_000)
-    keeper["sportsMarketType"] = "moneyline"
-    keeper["feeType"] = "sports_fees_v2"
-    weather = _sib("Munich 30C", v24=19_000)
-    weather["feeType"] = "weather_fees"
-    monkeypatch.setattr(
-        polymarket_sync, "get", _page_of(keeper, weather, _prop("Spread", v24=5000))
-    )
-
-    out = polymarket_sync.fetch_all_polymarket_markets(liquidity_threshold=5000)
-
-    assert [m["groupItemTitle"] for m in out] == ["Game"]
-
-
-def test_the_primary_window_keeps_everything_when_the_flag_is_off(monkeypatch):
-    keeper = _sib("Game", v24=678_000)
-    weather = _sib("Munich 30C", v24=19_000)
-    weather["feeType"] = "weather_fees"
-    monkeypatch.setattr(
-        polymarket_sync, "get", _page_of(keeper, weather, _prop("Spread", v24=5000))
-    )
-
-    out = polymarket_sync.fetch_all_polymarket_markets(
-        liquidity_threshold=5000, exclude_churn_series=False
-    )
-
-    assert sorted(m["groupItemTitle"] for m in out) == [
-        "Game", "Munich 30C", "Spread",
-    ]
-
-
-def test_the_sync_entry_point_forwards_the_flag_to_both_passes(monkeypatch):
-    """`fetch_and_sync_polymarket_markets` is where the Settings value lands;
-    if it forwards a hardcoded False the whole feature is off in production."""
-    seen = {}
-
-    def fake_fetch_all(host, **kw):
-        seen["primary"] = kw["exclude_churn_series"]
-        return [{"condition_id": "0x01", "events": [{"id": "77"}]}]
-
-    def fake_siblings(pm_markets, **kw):
-        seen["siblings"] = kw["exclude_churn_series"]
-        return []
-
-    monkeypatch.setattr(
-        polymarket_sync, "fetch_all_polymarket_markets", fake_fetch_all
-    )
-    monkeypatch.setattr(polymarket_sync, "fetch_event_siblings", fake_siblings)
-    monkeypatch.setattr(
-        polymarket_sync.TableWrite, "clear_price_changes", lambda db: None
-    )
-    monkeypatch.setattr(
-        polymarket_sync, "create_polymarket_markets_if_needed",
-        lambda db, pm_markets, admin: [],
-    )
-
-    for flag in (True, False):
-        polymarket_sync.fetch_and_sync_polymarket_markets(
-            db=None, admin=None, event_max_outcomes=12, exclude_churn_series=flag,
+    assert (
+        _kept(
+            tags=[{"slug": "daily-temperature", "label": "Daily Temperature"}],
+            exclude_churn_series=False,
         )
-        assert seen == {"primary": flag, "siblings": flag}, flag
+        is True
+    )
 
 
-# ----- categories the product does not carry at all --------------------------
-#
-# Distinct from the churn filter above: that one drops the prop tail and keeps
-# the headline game, this one drops the whole category. Sports is excluded
-# because the UI has no rendering for it — a match resolves in hours and its
-# book empties the moment it does, leaving rows that read as broken.
 
 
 def test_a_sports_market_is_dropped_by_its_category():
@@ -672,10 +286,6 @@ def test_an_esports_market_is_dropped_though_it_carries_no_tags():
 
 
 def test_a_headline_game_is_dropped_even_though_the_churn_filter_keeps_it():
-    """`moneyline` is the one sportsMarketType the churn filter allows through
-    — it is the game, not a prop. Excluding the category has to drop it anyway,
-    or the filter removes the props and leaves exactly the rows complained
-    about."""
     assert _kept(sportsMarketType="moneyline") is True
     assert _kept(sportsMarketType="moneyline", excluded_categories=["Sports"]) is False
 
@@ -684,8 +294,7 @@ def test_the_category_match_is_case_insensitive():
     """The setting is operator-typed; `resolve_category` returns "Sports"."""
     for spelling in ("sports", "SPORTS", "  Sports  "):
         assert (
-            _kept(excluded_categories=[spelling], sportsMarketType="moneyline")
-            is False
+            _kept(excluded_categories=[spelling], sportsMarketType="moneyline") is False
         ), spelling
 
 
@@ -700,13 +309,10 @@ def test_a_market_outside_the_excluded_categories_is_untouched():
 
 
 def test_an_empty_exclusion_list_carries_everything():
-    """Restores the pre-2026-08-12 catalogue without a code change."""
     assert _kept(excluded_categories=[], sportsMarketType="moneyline") is True
 
 
 def test_the_exclusion_is_independent_of_the_churn_flag():
-    """Two separate decisions: someone turning the churn filter off to get the
-    prop tail back must not silently re-admit a category the UI cannot draw."""
     assert (
         _kept(
             exclude_churn_series=False,
@@ -717,163 +323,318 @@ def test_the_exclusion_is_independent_of_the_churn_flag():
     )
 
 
-# ----- refresh of known rows, 24 h change, start time ------------------------
+def test_an_excluded_tag_keeps_a_market_out_whatever_its_category():
+    esports = [
+        {"slug": "esports", "label": "Esports"},
+        {"slug": "tech", "label": "Tech"},
+    ]
+    assert _kept(tags=esports) is True
+    assert _kept(tags=esports, excluded_tags=[" Esports "]) is False
 
 
-def _fake_prepare(admin, question, labels):
-    return ConditionId("0x" + secrets.token_hex(32)), [
-        (str(int(secrets.token_hex(8), 16)), label) for label in labels
+def test_the_floor_and_the_trading_flags_gate_admission():
+    assert POLICY.admits(_market(volume24hr=10_000)) is Verdict.CARRY
+    assert POLICY.admits(_market(volume24hr=9_999.99)) is Verdict.LOW_VOLUME
+    assert POLICY.admits(_market(closed=True)) is Verdict.NOT_TRADING
+    assert POLICY.admits(_market(acceptingOrders=False)) is Verdict.NOT_TRADING
+    assert POLICY.admits(_market(acceptingOrders=None)) is Verdict.NOT_TRADING
+    assert POLICY.admits(_market(active=False)) is Verdict.NOT_TRADING
+
+
+def test_a_game_is_admitted_by_book_depth_whatever_its_volume():
+    game = {"sportsMarketType": "moneyline", "volume24hr": 0, "liquidityNum": 10_000}
+
+    def verdict(policy: CoveragePolicy = GAMES, **over) -> Verdict:
+        return policy.admits_game(_market(**game | over))
+
+    assert verdict() is Verdict.CARRY
+    assert verdict(liquidityNum=9_999.99) is Verdict.THIN_BOOK
+    for kind in ("spreads", "totals", None):
+        assert verdict(sportsMarketType=kind) is Verdict.THIN_BOOK, kind
+    assert verdict(closed=True) is Verdict.NOT_TRADING
+    sports = [{"slug": "sports", "label": "Sports"}]
+    assert verdict(POLICY, tags=sports) is Verdict.EXCLUDED
+
+
+def test_the_defaults_exclude_nothing_and_walk_football_by_depth():
+    assert CoveragePolicy.from_settings(Settings(_env_file=None)) == CoveragePolicy(
+        1_000.0, True, frozenset(), frozenset(), (100351, 450), 10_000.0
+    )
+
+
+def _gamma(pages: list[list[dict]], seen: list[httpx.Request]) -> httpx.Client:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/events":
+            return httpx.Response(200, json=[])
+        seen.append(request)
+        i = len(seen) - 1
+        body: dict = {"markets": pages[i]}
+        if i + 1 < len(pages):
+            body["next_cursor"] = f"c{i + 1}"
+        return httpx.Response(200, json=body)
+
+    return httpx.Client(
+        base_url="https://gamma.test", transport=httpx.MockTransport(handler)
+    )
+
+
+def test_the_walk_pages_by_24h_volume_until_the_floor():
+    rows = [
+        gamma_row(volume24hr=v) for v in (90_000, 40_000, 20_000, 12_000, 9_000, 8_000)
+    ]
+    seen: list[httpx.Request] = []
+    admitted = walk_admissions(
+        _gamma([rows[:2], rows[2:4], rows[4:], [gamma_row()]], seen), POLICY, set()
+    )
+    assert [m.volume_24hr for m in admitted] == [90_000, 40_000, 20_000, 12_000]
+    assert len(seen) == 3
+    params = seen[0].url.params
+    assert (params["order"], params["ascending"], params["limit"]) == (
+        "volume24hr",
+        "false",
+        "100",
+    )
+    assert (params["closed"], params["include_tag"]) == ("false", "true")
+    assert "after_cursor" not in params
+    assert [r.url.params.get("after_cursor") for r in seen[1:]] == ["c1", "c2"]
+    assert len({r.url.params["_cb"] for r in seen}) == 3
+
+
+def test_the_walk_admits_only_what_the_policy_carries():
+    page = [
+        gamma_row(),
+        gamma_row(sportsMarketType="spreads"),
+        gamma_row(version="v2"),
+        gamma_row(acceptingOrders=False),
+        gamma_row(tags=[{"slug": "sports", "label": "Sports"}]),
+    ]
+    assert [
+        m.condition for m in walk_admissions(_gamma([page], []), POLICY, set())
+    ] == [page[0]["conditionId"]]
+
+
+def test_each_game_tag_is_walked_by_depth_after_the_volume_walk():
+    game = {"sportsMarketType": "moneyline", "volume24hr": 0, "liquidityNum": 20_000}
+    cfb, later = gamma_row(**game), gamma_row(**game)
+    spread = gamma_row(**game | {"sportsMarketType": "spreads"})
+    thin = gamma_row(**game | {"liquidityNum": 9_000})
+    pages = {
+        (None, None): {"markets": [gamma_row(volume24hr=5_000)], "next_cursor": "v1"},
+        ("100351", None): {"markets": [cfb, spread], "next_cursor": "c1"},
+        ("100351", "c1"): {"markets": [later]},
+        ("450", None): {"markets": [thin]},
+    }
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/events":
+            return httpx.Response(200, json=[])
+        seen.append(request)
+        params = request.url.params
+        return httpx.Response(
+            200, json=pages[params.get("tag_id"), params.get("after_cursor")]
+        )
+
+    gamma = httpx.Client(
+        base_url="https://gamma.test", transport=httpx.MockTransport(handler)
+    )
+    admitted = walk_admissions(gamma, GAMES, set())
+    assert [m.condition for m in admitted] == [cfb["conditionId"], later["conditionId"]]
+    assert len(seen) == 4
+    params = seen[1].url.params
+    assert "order" not in params
+    assert (params["sports_market_types"], params["liquidity_num_min"]) == (
+        "moneyline",
+        "10000.0",
+    )
+
+
+def test_a_gamma_error_fails_the_walk():
+    gamma = httpx.Client(
+        base_url="https://gamma.test",
+        transport=httpx.MockTransport(lambda request: httpx.Response(503)),
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        walk_admissions(gamma, POLICY, set())
+
+
+def _event_walk(
+    page: list[dict], events: dict[str, list[dict]], seen: list[httpx.Request]
+) -> httpx.Client:
+    rows = {r["conditionId"]: r for members in events.values() for r in members}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        params = request.url.params
+        if request.url.path == "/markets/keyset":
+            return httpx.Response(200, json={"markets": page})
+        if request.url.path == "/events":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": i,
+                        "tags": [],
+                        "markets": [
+                            {k: v for k, v in r.items() if k not in ("tags", "events")}
+                            for r in events[i]
+                        ],
+                    }
+                    for i in params.get_list("id")
+                ],
+            )
+        closed = params["closed"] == "true"
+        return httpx.Response(
+            200,
+            json=[
+                rows[c]
+                for c in params.get_list("condition_ids")
+                if (rows[c]["closed"] is True) == closed
+            ],
+        )
+
+    return httpx.Client(
+        base_url="https://gamma.test", transport=httpx.MockTransport(handler)
+    )
+
+
+def test_a_sibling_excluded_on_its_own_tags_still_uses_one_of_the_twelve_slots():
+    event = {"id": "e1", "slug": "e1", "title": "E1"}
+    parent = gamma_row(events=[event])
+    ranked = [gamma_row(volume24hr=v, events=[event]) for v in range(13, 0, -1)]
+    ranked[0]["tags"] = [{"slug": "esports", "label": "Esports"}]
+    prop = gamma_row(volume24hr=40_000, sportsMarketType="spreads", events=[event])
+    shut = gamma_row(volume24hr=30_000, closed=True, events=[event])
+    seen: list[httpx.Request] = []
+    gamma = _event_walk([parent], {"e1": [shut, prop, *ranked, parent]}, seen)
+
+    admitted = walk_admissions(gamma, POLICY, set())
+
+    assert [m.condition for m in admitted] == [
+        r["conditionId"] for r in [parent, *ranked[1:11]]
+    ]
+    _, events, markets = seen
+    assert events.url.params.get_list("id") == ["e1"]
+    assert (events.url.params["limit"], "_cb" in events.url.params) == ("40", True)
+    assert markets.url.params.get_list("condition_ids") == [
+        r["conditionId"] for r in ranked[:11]
     ]
 
 
-def _gamma_market(**over):
-    tag = secrets.token_hex(4)
-    pm = {
-        "id": int(secrets.token_hex(4), 16),
-        "conditionId": "0x" + secrets.token_hex(32),
-        "question": f"Refresh {tag}?",
-        "description": "d",
-        "slug": f"refresh-{tag}",
-        "startDate": "2026-01-01T00:00:00Z",
-        "endDate": "2026-12-01T00:00:00Z",
-        "active": True,
-        "closed": False,
-        "image": "https://img/old.png",
-        "oneDayPriceChange": 0.04,
-        "tokens": [
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "Yes"},
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "No"},
-        ],
-        "events": [
-            {"id": f"ev-{tag}", "slug": f"event-{tag}", "title": "Old title"}
-        ],
+def test_events_are_asked_forty_and_siblings_fifty_at_a_time():
+    events = [{"id": f"e{i}", "slug": f"e{i}", "title": f"E{i}"} for i in range(41)]
+    members = {e["id"]: [gamma_row(events=[e]) for _ in range(3)] for e in events}
+    seen: list[httpx.Request] = []
+    gamma = _event_walk(
+        [rows[0] for rows in members.values()] + [members["e0"][1]], members, seen
+    )
+
+    admitted = walk_admissions(gamma, POLICY, set())
+
+    assert len({m.condition for m in admitted}) == 41 * 3
+    assert [
+        (
+            r.url.path,
+            len(r.url.params.get_list("id") or r.url.params.get_list("condition_ids")),
+        )
+        for r in seen[1:]
+    ] == [("/events", 40), ("/events", 1), ("/markets", 50), ("/markets", 31)]
+
+
+def test_only_a_market_not_yet_carried_outside_a_game_brings_its_event():
+    carried, game, new = (
+        gamma_row(events=[{"id": i, "slug": i, "title": i} | extra])
+        for i, extra in (("e1", {}), ("e2", {"gameId": 7}), ("e3", {}))
+    )
+    seen: list[httpx.Request] = []
+    gamma = _event_walk(
+        [carried, game, new], {"e1": [carried], "e2": [game], "e3": [new]}, seen
+    )
+
+    walk_admissions(gamma, POLICY, {carried["conditionId"]})
+
+    assert [r.url.params.get_list("id") for r in seen[1:]] == [["e3"]]
+
+
+def test_series_windows_come_from_one_events_call_without_a_sibling_fetch():
+    up = [{"slug": "up-or-down", "label": "Up or Down"}]
+    live, next_, shut = (
+        gamma_row(outcomes='["Up", "Down"]', **over)
+        for over in ({}, {}, {"acceptingOrders": False})
+    )
+    events = [
+        {
+            "id": str(i),
+            "slug": f"btc-updown-5m-{i}",
+            "title": "Bitcoin Up or Down",
+            "tags": up,
+            "markets": [{k: v for k, v in row.items() if k not in ("tags", "events")}],
+        }
+        for i, row in enumerate((live, next_, shut))
+    ]
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/events":
+            return httpx.Response(200, json=events)
+        return httpx.Response(200, json={"markets": []})
+
+    gamma = httpx.Client(
+        base_url="https://gamma.test", transport=httpx.MockTransport(handler)
+    )
+    before = int(time.time())
+    admitted = walk_admissions(
+        gamma, dataclasses.replace(POLICY, series_ids=(10684, 10192)), set()
+    )
+
+    assert [(m.condition, m.tags, m.event and m.event.slug) for m in admitted] == [
+        (live["conditionId"], (("up-or-down", "Up or Down"),), "btc-updown-5m-0"),
+        (next_["conditionId"], (("up-or-down", "Up or Down"),), "btc-updown-5m-1"),
+    ]
+    assert [r.url.path for r in seen] == ["/markets/keyset", "/events"]
+    params = seen[1].url.params
+    assert params.get_list("series_id") == ["10684", "10192"]
+    assert (params["closed"], params["limit"]) == ("false", "100")
+    start, end = (_iso_to_unix(params[k]) for k in ("end_date_min", "end_date_max"))
+    assert before <= start <= before + 5 and end - start == 1800
+
+
+def test_resolutions_keep_only_exact_payouts_in_one_call():
+    conditions = [f"0x{i:064x}" for i in range(21)]
+    rows = {
+        conditions[0]: {"status": "resolved", "payouts": [1_000_000, 0]},
+        conditions[1]: {"status": "resolved", "payouts": [0, 1_000_000]},
+        conditions[2]: {"status": "resolved", "payouts": [500_000, 500_000]},
+        conditions[3]: {"status": "resolved", "payouts": [700_000, 300_000]},
+        conditions[4]: {"status": "resolved", "question_id": "0x1", "price": "0"},
+        conditions[5]: {"status": "proposed", "payouts": [1_000_000, 0]},
+        conditions[20]: {"status": "resolved", "payouts": [0, 1_000_000]},
     }
-    pm.update(over)
-    return pm
+    asked: list[list[str]] = []
 
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/resolutions"
+        batch = request.url.params["condition"].split(",")
+        asked.append(batch)
+        unasked = {"condition_id": "0x" + "f" * 64} | rows[conditions[0]]
+        data = [{"condition_id": c} | rows[c] for c in batch if c in rows]
+        return httpx.Response(200, json={"data": [*data, unasked]})
 
-def _sync(db, monkeypatch, pm_markets):
-    monkeypatch.setattr(polymarket_sync, "prepare_markets_on_chain", as_batch(_fake_prepare))
-    monkeypatch.setattr(
-        polymarket_sync, "fetch_all_polymarket_markets", lambda host, **kw: pm_markets
-    )
-    polymarket_sync.fetch_and_sync_polymarket_markets(db, admin=None)
-
-
-def _market_of(db, pm) -> Market:
-    cid = TableRead.read_condition_id_by_polymarket_id(db, pm["id"])
-    assert cid is not None
-    market = TableRead.read_market_by_condition_id(db, cid)
-    assert market is not None
-    return market
-
-
-def _event_of(db, pm) -> Event:
-    event_id = _market_of(db, pm).event_id
-    assert event_id is not None
-    event = TableRead.get_event_by_id(db, event_id)
-    assert event is not None
-    return event
-
-
-def test_a_known_market_and_event_pick_up_upstream_changes(db, monkeypatch):
-    pm = _gamma_market()
-    _sync(db, monkeypatch, [pm])
-    before = _event_of(db, pm).event_id
-    renamed = dict(
-        pm,
-        question="A reworded question?",
-        slug="renamed-market",
-        endDate="2026-12-31T00:00:00Z",
-        image="https://img/new.png",
-        events=[dict(pm["events"][0], slug="renamed-event", title="New title",
-                     image="https://img/event.png")],
-    )
-    _sync(db, monkeypatch, [renamed])
-
-    market = _market_of(db, pm)
-    assert market.question == pm["question"]
-    assert market.slug == "renamed-market"
-    assert market.end_date == 1798675200
-    assert market.icon_url == "https://img/new.png"
-    assert market.url == "https://polymarket.com/market/renamed-market"
-    event = _event_of(db, pm)
-    assert (event.event_id, event.slug, event.title, event.icon_url) == (
-        before, "renamed-event", "New title", "https://img/event.png"
-    )
-    assert event.url == "https://polymarket.com/event/renamed-event"
-
-
-def test_an_event_slug_held_by_another_event_is_not_taken(db, monkeypatch):
-    first, second = _gamma_market(), _gamma_market()
-    _sync(db, monkeypatch, [first, second])
-    taken = second["events"][0]["slug"]
-    _sync(db, monkeypatch, [
-        dict(first, events=[dict(first["events"][0], slug=taken, title="Moved")])
-    ])
-
-    event = _event_of(db, first)
-    assert (event.slug, event.title) == (first["events"][0]["slug"], "Moved")
-
-
-def test_the_24h_change_is_set_each_pass_and_cleared_when_unseen(db, monkeypatch):
-    moving = _gamma_market(oneDayPriceChange=-0.07)
-    flat = _gamma_market(oneDayPriceChange=None)
-    _sync(db, monkeypatch, [moving, flat])
-    assert _market_of(db, moving).price_change_24h == -0.07
-    assert _market_of(db, flat).price_change_24h == 0.0
-
-    _sync(db, monkeypatch, [dict(moving, oneDayPriceChange=0.02)])
-    assert _market_of(db, moving).price_change_24h == 0.02
-    assert _market_of(db, flat).price_change_24h is None
-
-
-def test_the_event_start_time_wins_over_the_market_game_start_time():
-    meta = polymarket_sync._extract_event_metadata({
-        "gameStartTime": "2026-10-05 13:00:00+00",
-        "gameId": "1711434",
-        "events": [{
-            "id": "1", "slug": "cs2", "title": "CS2",
-            "startTime": "2026-10-05T14:00:00Z", "gameId": 1711434,
-            "seriesSlug": "counter-strike",
-        }],
-    })
-    assert meta is not None
-    assert (meta["start_time"], meta["game_id"], meta["series_slug"]) == (
-        1791208800, "1711434", "counter-strike"
+    found = resolutions(
+        httpx.Client(transport=httpx.MockTransport(handler)), conditions
     )
 
-
-def test_the_start_time_falls_back_to_the_market_game_start_time():
-    meta = polymarket_sync._extract_event_metadata({
-        "gameStartTime": "2026-10-05 14:00:00+00",
-        "gameId": "1711434",
-        "events": [{"id": "1", "slug": "cs2", "title": "CS2"}],
-    })
-    assert meta is not None
-    assert (meta["start_time"], meta["game_id"], meta["series_slug"]) == (
-        1791208800, "1711434", None
-    )
+    assert [len(batch) for batch in asked] == [21]
+    assert found == {
+        conditions[0]: (1, 0),
+        conditions[1]: (0, 1),
+        conditions[2]: (1, 1),
+        conditions[20]: (0, 1),
+    }
 
 
-def test_a_sibling_event_entry_carries_the_game_fields():
-    entry = polymarket_sync._event_entry({
-        "id": "1", "slug": "cs2", "title": "CS2",
-        "startTime": "2026-10-05T14:00:00Z", "gameId": 1711434,
-        "seriesSlug": "counter-strike",
-    })
-    assert entry is not None
-    assert (entry["startTime"], entry["gameId"], entry["seriesSlug"]) == (
-        "2026-10-05T14:00:00Z", 1711434, "counter-strike"
-    )
-
-
-def test_the_sync_stores_the_game_fields_on_the_event(db, monkeypatch):
-    pm = _gamma_market(gameStartTime="2026-10-05 14:00:00+00")
-    pm["events"][0].update(gameId=19517, seriesSlug="nfl-2026")
-    _sync(db, monkeypatch, [pm])
-
-    event = _event_of(db, pm)
-    assert (event.start_time, event.game_id, event.series_slug) == (
-        1791208800, "19517", "nfl-2026"
-    )
+def test_a_failed_or_empty_resolutions_read_finds_nothing():
+    failing = httpx.MockTransport(lambda request: httpx.Response(503))
+    assert resolutions(httpx.Client(transport=failing), ["0x1"]) == {}
+    assert resolutions(httpx.Client(transport=failing), []) == {}

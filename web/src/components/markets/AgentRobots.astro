@@ -7,9 +7,11 @@ import AgentAvatar from "../AgentAvatar.astro";
 interface Props {
   bets: readonly CardBet[];
   max?: number;
+  decorative?: boolean;
 }
 
-const { bets, max = 6 } = Astro.props;
+const { bets, max = 6, decorative = false } = Astro.props;
+const Robot = decorative ? "span" : "a";
 const shown = bets.length > max ? bets.slice(0, max - 1) : bets;
 const more = bets.length - shown.length;
 ---
@@ -18,9 +20,14 @@ const more = bets.length - shown.length;
   bets.length ? (
     <span class="robots flex min-w-0 items-center">
       {shown.map((bet) => (
-        <a class:list={["relative block shrink-0 rounded-robot", bet.lost && "lost"]} data-i={bet.i} href={`/agents/${bet.agent}`} aria-label={`${bet.name}, ${bet.outcome} at ${cents(bet.avgPrice)}, ${signedDollars(bet.pnl)}`}>
+        <Robot
+          class:list={["robot relative block shrink-0 rounded-robot", bet.lost && "lost"]}
+          data-i={bet.i}
+          href={decorative ? undefined : `/agents/${bet.agent}`}
+          aria-label={decorative ? undefined : `${bet.name}, ${bet.outcome} at ${cents(bet.avgPrice)}, ${signedDollars(bet.pnl)}`}
+        >
           <AgentAvatar address={bet.agent} class="block size-5 ring-1 ring-paper" loading="lazy" />
-        </a>
+        </Robot>
       ))}
       {more > 0 && <span class="ml-0.5 px-0.5 text-caption font-medium text-muted tabular-nums">+{more}</span>}
     </span>
@@ -32,7 +39,7 @@ const more = bets.length - shown.length;
 }
 
 <style>
-  a + a {
+  .robot + .robot {
     margin-left: 2px;
   }
 
@@ -44,55 +51,55 @@ const more = bets.length - shown.length;
     opacity: 1;
   }
 
-  a:nth-child(1) {
+  .robot:nth-child(1) {
     --i: 0;
     z-index: 6;
   }
 
-  a:nth-child(2) {
+  .robot:nth-child(2) {
     --i: 1;
     z-index: 5;
   }
 
-  a:nth-child(3) {
+  .robot:nth-child(3) {
     --i: 2;
     z-index: 4;
   }
 
-  a:nth-child(4) {
+  .robot:nth-child(4) {
     --i: 3;
     z-index: 3;
   }
 
-  a:nth-child(5) {
+  .robot:nth-child(5) {
     --i: 4;
     z-index: 2;
   }
 
-  a:nth-child(6) {
+  .robot:nth-child(6) {
     --i: 5;
     z-index: 1;
   }
 
   @media (prefers-reduced-motion: no-preference) {
-    a {
+    .robot {
       transition:
         translate 150ms ease-out,
         opacity 150ms,
         margin-left 200ms cubic-bezier(0.16, 1, 0.3, 1) calc(var(--i) * 20ms);
     }
 
-    a:is(:hover, :focus-visible) {
+    .robot:is(:hover, :focus-visible) {
       translate: 0 -2px;
     }
   }
 
   @media (hover: hover) and (prefers-reduced-motion: no-preference) {
-    a + a {
+    .robot + .robot {
       margin-left: -8px;
     }
 
-    .robots:is(:hover, :focus-within) a + a {
+    .robots:is(:hover, :focus-within) .robot + .robot {
       margin-left: 2px;
     }
   }

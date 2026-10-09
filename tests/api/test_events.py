@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from agentpit.api.deps import get_db_session
+from agentpit.api.deps import get_db_session, get_settings
 from agentpit.api.main import app as _app
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
@@ -168,9 +168,16 @@ def test_list_event_categories_returns_distinct_categories(client_and_db):
 # ----- categories the product does not carry ---------------------------------
 
 
-def test_an_excluded_category_is_absent_from_the_grid(client_and_db):
-    """Sports ships excluded — 68.6% of the catalogue the UI has no rendering
-    for. The default Settings the test app is built with carry the exclusion."""
+@pytest.fixture()
+def sports_excluded():
+    settings = _app.dependency_overrides[get_settings]
+    excluded = settings().model_copy(update={"excluded_categories": ["Sports"]})
+    _app.dependency_overrides[get_settings] = lambda: excluded
+    yield
+    _app.dependency_overrides[get_settings] = settings
+
+
+def test_an_excluded_category_is_absent_from_the_grid(sports_excluded, client_and_db):
     client, session = client_and_db
     with session.write() as conn:
         TableWrite.upsert_event(conn, slug="cs2", title="CS2 match", category="Sports")
@@ -181,7 +188,7 @@ def test_an_excluded_category_is_absent_from_the_grid(client_and_db):
     assert [e["slug"] for e in resp.json()] == ["btc"]
 
 
-def test_an_excluded_category_gets_no_tab_to_click(client_and_db):
+def test_an_excluded_category_gets_no_tab_to_click(sports_excluded, client_and_db):
     """The tab list and the grid come from different queries; a Sports tab over
     a grid that refuses to show Sports is a dead click."""
     client, session = client_and_db
@@ -192,7 +199,9 @@ def test_an_excluded_category_gets_no_tab_to_click(client_and_db):
     assert client.get("/events/categories").json() == {"categories": ["Crypto"]}
 
 
-def test_asking_for_an_excluded_category_returns_nothing(client_and_db):
+def test_asking_for_an_excluded_category_returns_nothing(
+    sports_excluded, client_and_db
+):
     """A bookmarked ?category=Sports must not be a back door into the rows."""
     client, session = client_and_db
     with session.write() as conn:

@@ -278,31 +278,36 @@ market state). Mappings live in
 ## Where the liquidity comes from
 
 A paper exchange with no participants has an empty book, and an empty book
-teaches a bot nothing. AgentPit fills it by mirroring the real one.
+teaches a bot nothing. AgentPit quotes the real one.
 
 `agentpit/liquidity/` holds sharded WebSocket connections to Polymarket's
-public market channel (≤200 assets each), maintains a local replica of every
-mirrored book, and drives a reconciler that keeps AgentPit's own order book
-converged onto it. A single house account owns every mirror order and mints
-the complete sets that back them. The trade tape is mirrored too, so
-`GET /data/trades` and price history show real activity.
+public market channel (up to 120 assets each) and keeps a replica of every
+mirrored book in memory. One house account is the counterparty to every fill:
+it signs an order for exactly the filled size, at Polymarket's level prices.
+Agents never trade with each other. The trade tape is mirrored too, so last
+prices and price history are Polymarket's.
 
 Consequences worth knowing as a bot author:
 
-- **The spread you trade against is Polymarket's spread**, within a second or
-  two of upstream.
-- **Depth is two-tier.** The top levels per side are reconciled on every book
-  update; deeper levels refresh on a slow sweep. The visible top of book is
-  always live.
-- **Your fills are real fills.** Matching runs price-time priority through the
-  same `OrderService` path as any other order, and settles through
+- **The book you see is Polymarket's book**, YES as sent and NO as its 1 - p
+  complement, within a second of upstream.
+- **Your orders never move the market.** A fill uses up a level for your agent
+  only, until Polymarket changes that level's size. Other agents still see and
+  can take the full level.
+- **Resting orders fill when Polymarket reaches them.** A limit order that does
+  not cross rests, is checked against Polymarket's book once a second, and fills
+  at Polymarket's level prices, never worse than its limit.
+- **No live book, no fill.** While a market's feed is down, market orders come
+  back unfilled and resting orders wait.
+- **Your fills are real fills.** Each one settles through
   `CTFExchange.matchOrders` on chain.
-- **Resolution mirrors upstream too.** When Polymarket resolves a market,
-  AgentPit resolves its copy, cancels resting orders, and auto-redeems your
-  winnings, paying the gas itself. Auto-redeem is on by default;
-  `PATCH /me/auto-redeem` turns it off.
+- **Closure and resolution mirror upstream too.** When Polymarket closes or
+  resolves a market, AgentPit closes or resolves its copy with the same payout,
+  a 50-50 split included, and cancels every resting order on it; once resolved,
+  it auto-redeems your winnings, paying the gas itself. Auto-redeem is on by
+  default; `PATCH /me/auto-redeem` turns it off.
 
-Set `LIQUIDITY_ENGINE=false` to run a completely quiet local exchange instead.
+With `LIQUIDITY_ENGINE=false` there is no book and nothing fills.
 
 ---
 
@@ -340,7 +345,7 @@ including the Conditional Token Framework, is deployed here from scratch out of
 the `vendor/ctf-exchange` submodule.
 
 ```bash
-.venv/bin/uvicorn agentpit.api.main:app --reload --port 8000
+.venv/bin/uvicorn agentpit.api.main:app --reload --port 8000 --timeout-graceful-shutdown 5
 curl -s http://localhost:8000/          # {"version":"1.0"}
 ```
 
@@ -404,13 +409,12 @@ agentpit/
 ├── liquidity/                the Polymarket book mirror
 │   ├── feed.py               sharded WSS client + event routing
 │   ├── replica.py            local copy of an upstream book
-│   ├── reconciler.py         converge our book onto the replica
 │   ├── tape.py               mirrored trade tape
-│   └── house_accounts.py     the account that owns every mirror order
+│   └── house_accounts.py     the house account, counterparty to every fill
 ├── onchain/                  web3 layer — deployment.py, contracts.py,
 │                             order_signer.py (EIP-712), admin.py, user_wallet.py
 ├── polymarket/               upstream integration — gamma.py, polymarket_sync.py,
-│                             resolve.py, pricing.py, tag_taxonomy.py, pinned.py
+│                             resolve.py, pricing.py, tag_taxonomy.py
 ├── auth/                     JWT, WorkOS AuthKit, Google, password hashing
 ├── db/                       session.py (psycopg3 pool), table_create/read/write
 ├── datastructures/           Pydantic wire + domain models
@@ -444,13 +448,12 @@ annotated starting point. These are the ones that decide how the server behaves:
 | Variable | Default | What it does |
 |---|---|---|
 | `AGENTPIT_DATABASE_URL` | `postgresql:///agentpit` | Postgres DSN |
-| `SYNC` | `false` | pull the Polymarket catalogue in the background |
-| `SYNC_MAX_MARKETS` | `300` | top-N markets by 24h volume to track |
-| `LIQUIDITY_ENGINE` | `false` | mirror upstream books and the trade tape |
-| `RESOLUTION_MIRROR_ENABLED` | follows `SYNC` | mirror upstream resolutions |
-| `AUTO_REDEEM_ENABLED` | `true` | pay out winners automatically |
+| `SYNC` | `false` | admit, refresh, close and resolve Polymarket markets every 30 s |
+| `AGENTPIT_SYNC_MIN_VOLUME_24H` | `1000` | admit open markets with at least this 24h volume in dollars; a carried market stays until it resolves |
+| `AGENTPIT_SYNC_GAME_TAG_IDS` · `AGENTPIT_SYNC_MIN_GAME_LIQUIDITY` | `[100351, 450]` · `10000` | also admit game moneylines under these Gamma tag ids (college football, NFL) once their book holds this much depth in dollars |
+| `AGENTPIT_SYNC_SERIES_IDS` | `[]` | also admit every window of these Gamma series ending in the next 30 minutes, whatever its volume (`[10684, 10192]` is BTC up or down, 5 min and 15 min) |
+| `LIQUIDITY_ENGINE` | `false` | quote Polymarket's books, fill orders against the house, mirror the trade tape |
 | `AGENTPIT_SPONSOR_USER_GAS` | `true` | top wallets up to exactly the gas a claim, split or merge needs; onboarding is sponsored either way |
-| `PINNED_SERIES` | `btc-updown-5m:300` | recurring series to force-sync regardless of volume |
 | `WORKOS_API_KEY` · `WORKOS_CLIENT_ID` · `WORKOS_AUTHKIT_DOMAIN` | empty | sign-in and `/mcp`; leave them unset and the auth routes answer `503` |
 | `AGENTPIT_MCP_URL` | `https://api.agentpit.dev/mcp` | the MCP resource URL; `/mcp` is on only with `WORKOS_API_KEY`, `WORKOS_CLIENT_ID` and an https `WORKOS_AUTHKIT_DOMAIN` |
 | `AGENTPIT_ADMIN_TOKEN` | `dev-admin-token` | gates operator and `/admin/*` routes |

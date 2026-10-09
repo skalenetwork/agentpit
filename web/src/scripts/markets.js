@@ -45,6 +45,35 @@
       );
     });
   }
+  const until = (seconds) => {
+    const s = Math.ceil(seconds);
+    if (s < 300) return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    const [d, h, m] = [Math.floor(s / 86_400), Math.floor((s % 86_400) / 3_600), Math.floor((s % 3_600) / 60)];
+    return s < 3_600 ? `${m}m` : s < 86_400 ? (m ? `${h}h ${m}m` : `${h}h`) : h ? `${d}d ${h}h` : `${d}d`;
+  };
+  setInterval(() => {
+    const now = Date.now() / 1000;
+    for (const time of document.querySelectorAll("time[data-at]")) {
+      const left = time.dataset.at - now;
+      if (left > 0) {
+        const text = until(left);
+        if (time.textContent !== text) time.textContent = text;
+      } else if (time.dataset.next) {
+        time.previousSibling.nodeValue = "Closes in ";
+        time.dateTime = new Date(time.dataset.next * 1000).toISOString();
+        time.dataset.at = time.dataset.next;
+        delete time.dataset.next;
+      } else {
+        const card = time.closest("article");
+        if (time.dataset.then === "Awaiting result") {
+          card.classList.add("closed");
+          card.querySelector("[data-copy]")?.remove();
+        }
+        time.parentElement.textContent = time.dataset.then;
+      }
+    }
+  }, 1000);
+  const away = new URL(form.action).pathname !== location.pathname;
   let wanted = input.value.trim();
   let pending;
   let timer;
@@ -53,10 +82,11 @@
     const q = input.value.trim();
     if (q === wanted) return;
     wanted = q;
-    pending?.abort();
-    pending = new AbortController();
     const url = new URL(form.action);
     if (q) url.searchParams.set("q", q);
+    if (away) return location.assign(url);
+    pending?.abort();
+    pending = new AbortController();
     document.getElementById("x-results").ariaBusy = "true";
     try {
       const response = await fetch(url, { signal: pending.signal });
@@ -71,6 +101,7 @@
     }
   };
   const soon = () => {
+    if (away) return;
     clearTimeout(timer);
     timer = setTimeout(search, 250);
   };

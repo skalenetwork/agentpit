@@ -188,7 +188,7 @@ def main() -> int:
                 random.randint(1, 100) * _PRICE_MICRO_UNIT,  # TRADE_SIZE (micro-shares)
                 0,                          # REMAINING_SIZE
                 "BUY",                      # SIDE
-                "PENDING",                  # STATUS — anything != FAILED counts
+                "CONFIRMED",                # STATUS
                 t,                          # MATCH_TIME
                 "",                         # TRANSACTION_HASH
                 0,                          # BUCKET_INDEX

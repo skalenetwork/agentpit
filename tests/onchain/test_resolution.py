@@ -52,10 +52,7 @@ def test_resolve_then_winner_redeems():
     db = DbSession(settings.database_url)
     with db.read() as conn:
         user_a_row = TableRead.get_user_by_email(conn, user_a["user"]["email"])
-    question_id = (
-        # mirror MarketService: keccak(question)
-        __import__("eth_utils").keccak(text=market["question"])
-    )
+    question_id = bytes.fromhex(market["question_id"][2:])
     # admin.reportPayouts(questionId, [1, 0]) — YES wins
     fn = admin._contracts.ctf.functions.reportPayouts(question_id, [1, 0])
     from agentpit.onchain.user_wallet import send_admin_tx

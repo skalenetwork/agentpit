@@ -14,7 +14,7 @@ def test_order_on_a_draft_market_is_refused():
     yes = market["erc1155_tokens"][0][0]
     r = client.post("/order", headers=hdr(key), json={"token_id": yes, "side": "BUY", "price": "0.5", "size": 10})
     assert r.status_code == 400
-    assert "not open for trading" in r.json()["detail"]
+    assert "is draft" in r.json()["detail"]
     assert _order_rows(key) == 0
 
 
@@ -26,7 +26,7 @@ def test_order_on_a_closed_market_is_refused():
     yes = market["erc1155_tokens"][0][0]
     r = client.post("/order", headers=hdr(key), json={"token_id": yes, "side": "BUY", "price": "0.5", "size": 10})
     assert r.status_code == 400
-    assert "not open for trading" in r.json()["detail"]
+    assert "is closed" in r.json()["detail"]
 
 
 def test_split_is_refused_once_resolved_but_merge_still_works():

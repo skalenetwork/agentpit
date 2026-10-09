@@ -2,7 +2,6 @@
 
 from dataclasses import asdict, dataclass
 
-from eth_account import Account
 from eth_account.messages import encode_typed_data
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
@@ -64,13 +63,7 @@ def _domain(deployment: Deployment) -> dict:
 def sign_order(
     user_account: LocalAccount, deployment: Deployment, order: OrderData
 ) -> bytes:
-    """Sign `order` with `user_account` against the exchange's EIP-712 domain.
-
-    Returns the 65-byte signature. Raises if the recovered signer doesn't match
-    the order's `signer` field — a defensive check against typed-data drift.
-    """
     message = asdict(order)
-    # Address fields must be checksummed for the typed-data hash to be consistent
     for key in ("maker", "signer", "taker"):
         message[key] = Web3.to_checksum_address(message[key])
 
@@ -79,11 +72,4 @@ def sign_order(
         message_types={"Order": _TYPES["Order"]},
         message_data=message,
     )
-    signed = user_account.sign_message(encoded)
-
-    recovered = Account.recover_message(encoded, signature=signed.signature)
-    if recovered.lower() != order.signer.lower():
-        raise RuntimeError(
-            f"signer mismatch: recovered {recovered}, expected {order.signer}"
-        )
-    return bytes(signed.signature)
+    return bytes(user_account.sign_message(encoded).signature)

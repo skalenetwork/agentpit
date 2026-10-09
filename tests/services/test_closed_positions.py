@@ -79,7 +79,7 @@ def test_list_closed_positions_redeem_driven_dedup_and_pnl():
             state=MarketState.ACTIVE,
         )
         m = TableWrite.create_market(conn, req, is_polygon_market=False)
-        TableWrite.resolve_market(conn, market_id=m.market_id, winning_outcome_index=0)
+        TableWrite.set_market_state(conn, m.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0))
         # Bought 100 YES @ 0.40 (the winning side).
         _insert_trade(conn, asset="yt", price=400_000, size=100_000_000,
                       taker_api_key=api_key)
@@ -121,7 +121,7 @@ def test_list_closed_positions_includes_losses():
         )
         m = TableWrite.create_market(conn, req, is_polygon_market=False)
         # YES (idx 0) won; the user bought NO — the losing side.
-        TableWrite.resolve_market(conn, market_id=m.market_id, winning_outcome_index=0)
+        TableWrite.set_market_state(conn, m.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0))
         _insert_trade(conn, asset="nt2", price=500_000, size=50_000_000,
                       taker_api_key=api_key)  # 50 NO @ 0.50
         TableWrite.log_transaction(
@@ -171,8 +171,12 @@ def _sell_closed_fixture(email, seed, token, *, buys, sells, resolve=None):
         )
         m = TableWrite.create_market(conn, req, is_polygon_market=False)
         if resolve is not None:
-            TableWrite.resolve_market(
-                conn, market_id=m.market_id, winning_outcome_index=resolve
+            TableWrite.set_market_state(
+                conn,
+                m.market_id,
+                MarketState.ACTIVE,
+                MarketState.RESOLVED,
+                (int(resolve == 0), int(resolve == 1)),
             )
         for price, size, t in buys:
             _insert_trade(
@@ -187,6 +191,39 @@ def _sell_closed_fixture(email, seed, token, *, buys, sells, resolve=None):
                 taker_api_key=api_key, side="SELL", maker_side="BUY", match_time=t,
             )
     return db, acct.address, m
+
+
+def test_a_split_redeem_shows_the_side_the_user_held():
+    db = DbSession(Settings().database_url)
+    with db.write() as conn:
+        _uid, acct, api_key = TableWrite.create_user(
+            conn,
+            email="split@x.com",
+            password_hash=hash_password("pw12pw12pw12"),
+            handle=None,
+        )
+        req = CreateMarketRequest(
+            question="Split?",
+            description="d",
+            erc1155_tokens=[("ys", "Yes"), ("ns", "No")],
+            slug="split-q",
+            condition_id=ConditionId(_hex32("c-split")),
+            state=MarketState.ACTIVE,
+        )
+        m = TableWrite.create_market(conn, req, is_polygon_market=False)
+        TableWrite.set_market_state(conn, m.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 1))
+        _insert_trade(conn, asset="ns", price=300_000, size=40_000_000,
+                      taker_api_key=api_key, market=m.condition_id.value)
+        TableWrite.log_transaction(
+            conn, api_key, "REDEEM", m.market_id, {"collateral_amount": 20_000_000}
+        )
+
+    (p,) = AccountService(db, onchain=None).list_closed_positions(  # type: ignore[arg-type]
+        acct.address
+    )
+    assert p.outcome == "No"
+    assert abs(p.avgPrice - 0.30) < 1e-6
+    assert abs(p.size - 40.0) < 1e-6
 
 
 def test_sold_out_position_appears_in_closed_with_realized_pnl():

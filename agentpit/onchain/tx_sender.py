@@ -67,7 +67,7 @@ TRANSFER_GAS = 21_000
 # How long an estimate that reverted waits for our in-flight txs to land.
 _DRAIN_TIMEOUT_S = 60.0
 # Receipts nobody collected (their waiter timed out) are forgotten after this.
-_FORGET_DONE_AFTER_S = 600.0
+FORGET_DONE_AFTER_S = 600.0
 # How long a transaction may sit unmined before the sender checks whether the
 # node lost it.
 _STALL_AFTER_S = 15.0
@@ -95,6 +95,12 @@ class PendingTx:
 
     tx_hash: bytes
     nonce: int
+
+
+class TxUnknown(RuntimeError):
+    def __init__(self, pending: PendingTx) -> None:
+        super().__init__(f"outcome of admin tx 0x{pending.tx_hash.hex()} is unknown")
+        self.pending = pending
 
 
 class TxDropped(RuntimeError):
@@ -246,11 +252,10 @@ class AdminTxSender:
             self.check_sponsored()
 
     def _debit(self, receipt, value: int = 0) -> None:
-        """Take a mined send's cost off the cached balance, so a burst between
-        two refreshes still trips the breaker: its gas, plus the `value` it
-        sent unless it reverted (a gas top-up is all value). Fillers and
-        receipts nobody waits for are not debited; the next refresh corrects
-        for them."""
+        """Take a mined send's cost off the cached balance when its receipt is
+        recorded, waited for or not, so a burst between two refreshes still
+        trips the breaker: its gas, plus the `value` it sent unless it
+        reverted (a gas top-up is all value)."""
         used = receipt.get("gasUsed")
         price = receipt.get("effectiveGasPrice")
         if used is None or price is None:
@@ -611,10 +616,9 @@ class AdminTxSender:
                 # node's answer contradicts, a same-nonce answer after a wait,
                 # or our lower nonces never landing: unknowable. Count the
                 # nonce as used and keep watching the FIRST hash (stall
-                # healing marks it dropped if it never mines), and raise the
-                # first error.
-                self._accept(tx_hash, nonce, value)
-                raise pinned[3]
+                # healing marks it dropped if it never mines), and raise
+                # TxUnknown from the first error.
+                raise TxUnknown(self._accept(tx_hash, nonce, value)) from pinned[3]
             if kind is SendError.TRANSPORT:
                 # No answer. A queued transaction is invisible to a lookup by
                 # hash, so send the identical bytes once more: same hash, same
@@ -811,8 +815,6 @@ class AdminTxSender:
                         )
                     elif entry.receipt is not None:
                         results[tx_hash] = entry.receipt
-                        # _state, then _gas_lock
-                        self._debit(entry.receipt, entry.value)
                         del self._entries[tx_hash]
                     elif entry.dropped:
                         results[tx_hash] = TxDropped(
@@ -941,6 +943,7 @@ class AdminTxSender:
             if receipt is not None:
                 entry.receipt = receipt
                 entry.done_at = now
+                self._debit(receipt, entry.value)
                 return
             if entry.suspect_since is None:
                 entry.suspect_since = now
@@ -1038,7 +1041,7 @@ class AdminTxSender:
                 for tx_hash in [
                     h
                     for h, e in self._entries.items()
-                    if e.done_at is not None and now - e.done_at > _FORGET_DONE_AFTER_S
+                    if e.done_at is not None and now - e.done_at > FORGET_DONE_AFTER_S
                 ]:
                     del self._entries[tx_hash]
                 waiting = [e for e in self._entries.values() if not e.done]
@@ -1054,9 +1057,10 @@ class AdminTxSender:
                 return
             with self._state:
                 for entry, receipt in pairs:
-                    if receipt is not None:
+                    if receipt is not None and entry.receipt is None:
                         entry.receipt = receipt
                         entry.done_at = now
+                        self._debit(receipt, entry.value)
                 # Until nothing changes: a lost filler can itself have been
                 # superseded by a later one (original -> filler -> filler).
                 changed = True
@@ -1105,9 +1109,10 @@ def stops_sending(exc: BaseException) -> bool:
     `TimeExhausted` of a slot wait; a submit never waits for a receipt, so
     its `TimeExhausted` is always that one.
     """
+    cause = exc.__cause__ if isinstance(exc, TxUnknown) else exc
     return (
-        isinstance(exc, TimeExhausted)
-        or classify_send_error(exc) is SendError.TRANSPORT
+        isinstance(cause, TimeExhausted)
+        or classify_send_error(cause) is SendError.TRANSPORT
     )
 
 

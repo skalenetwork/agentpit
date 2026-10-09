@@ -1,18 +1,20 @@
 import json
 import time as _time
 import uuid
+from typing import Literal
+
 import psycopg
 from web3 import Web3
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 
 from agentpit.common import check_state
-from agentpit.datastructures.condition_id import ConditionId
+from agentpit.datastructures.board import WireTeam
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.event import Event
-from agentpit.datastructures.market import Market
+from agentpit.datastructures.market import Market, Payouts
 from agentpit.datastructures.market_state import MarketState
-from agentpit.db.table_read import TableRead
+from agentpit.db.table_read import EventFields, MarketFields, TableRead
 
 
 class TableWrite:
@@ -609,8 +611,7 @@ class TableWrite:
         """Refresh an event's captured upstream volumes.
 
         Each figure is skipped independently when None, so a degraded sync pass
-        (e.g. a recurring window with no series metadata, whose own 24h volume is
-        null) never clobbers a previously-captured good value -- and a payload
+        (e.g. an event whose own 24h volume is null) never clobbers a previously-captured good value -- and a payload
         carrying only one of the two updates only that one. Called on every bind
         pass so the figures track the latest sync.
         """
@@ -702,65 +703,6 @@ class TableWrite:
         )
 
     @staticmethod
-    def clear_price_changes(db: psycopg.Connection) -> None:
-        db.execute(
-            "UPDATE markets SET PRICE_CHANGE_24H = NULL WHERE PRICE_CHANGE_24H IS NOT NULL"
-        )
-
-    @staticmethod
-    def refresh_market(
-        db: psycopg.Connection,
-        *,
-        market_id: int,
-        slug: str | None,
-        end_date: int | None,
-        icon_url: str | None,
-        price_change_24h: float,
-    ) -> None:
-        db.execute(
-            """
-            UPDATE markets
-            SET SLUG = COALESCE(%s, SLUG),
-                END_DATE = COALESCE(%s, END_DATE),
-                ICON_URL = COALESCE(%s, ICON_URL),
-                PRICE_CHANGE_24H = %s
-            WHERE MARKET_ID = %s
-            """,
-            (slug, end_date, icon_url, price_change_24h, market_id),
-        )
-
-    @staticmethod
-    def update_market_slug(db: psycopg.Connection, market_id: int, slug: str) -> None:
-        db.execute("UPDATE markets SET SLUG = %s WHERE MARKET_ID = %s", (slug, market_id))
-
-    @staticmethod
-    def update_market_polymarket_tokens(
-        db: psycopg.Connection,
-        *,
-        polymarket_id: int,
-        yes_token_id: str | None,
-        no_token_id: str | None,
-    ) -> None:
-        """Backfill the upstream Polymarket token-id cross-reference on an
-        already-synced market (matched by polymarket_id).
-
-        COALESCE so a None never clobbers an existing id; no-op when both are
-        None. Lets the book mirror resolve markets synced before positional
-        token capture existed (e.g. Up/Down windows, whose yes/no ids were null).
-        """
-        if yes_token_id is None and no_token_id is None:
-            return
-        db.execute(
-            """
-            UPDATE markets
-            SET POLYMARKET_YES_TOKEN_ID = COALESCE(%s, POLYMARKET_YES_TOKEN_ID),
-                POLYMARKET_NO_TOKEN_ID  = COALESCE(%s, POLYMARKET_NO_TOKEN_ID)
-            WHERE POLYMARKET_ID = %s
-            """,
-            (yes_token_id, no_token_id, polymarket_id),
-        )
-
-    @staticmethod
     def attach_market_to_event(
         db: psycopg.Connection,
         *,
@@ -810,6 +752,28 @@ class TableWrite:
             )
 
     @staticmethod
+    def insert_outcome_teams(
+        db: psycopg.Connection, rows: "list[tuple[int, str, WireTeam | None]]"
+    ) -> None:
+        with db.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO outcome_teams (EVENT_ID, LABEL, LOGO, RECORD, COLOR, ABBR) "
+                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                [
+                    (
+                        event_id,
+                        label,
+                        *(
+                            (team.logo, team.record, team.color, team.abbr)
+                            if team
+                            else (None,) * 4
+                        ),
+                    )
+                    for event_id, label, team in rows
+                ],
+            )
+
+    @staticmethod
     def update_event_category(
         db: psycopg.Connection, *, event_id: int, category: str
     ) -> None:
@@ -829,10 +793,6 @@ class TableWrite:
     def create_market(
         db: psycopg.Connection, request: CreateMarketRequest, is_polygon_market: bool
     ) -> Market:
-
-        # The local create-market path now sets `request.condition_id` upstream
-        # (in MarketService) using the on-chain `getConditionId` view, so by the
-        # time we get here the condition_id is always present.
         check_state(
             request.condition_id is not None,
             "request.condition_id must be set before TableWrite.create_market",
@@ -840,13 +800,11 @@ class TableWrite:
         condition_id = request.condition_id
 
         erc1155_tokens_json = json.dumps(request.erc1155_tokens, separators=(",", ":"))
-
-        # MARKET_ID is a BIGINT IDENTITY column — let Postgres assign it (avoids
-        # the old racy MAX(MARKET_ID)+1) and read it back with RETURNING.
         new_market_id = int(
             db.execute(
                 """
                 INSERT INTO markets (CONDITION_ID,
+                                     QUESTION_ID,
                                      POLYMARKET_ID,
                                      POLYMARKET_CONDITION_ID,
                                      QUESTION,
@@ -861,11 +819,12 @@ class TableWrite:
                                      ICON_URL,
                                      POLYMARKET_YES_TOKEN_ID,
                                      POLYMARKET_NO_TOKEN_ID)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING MARKET_ID
                 """,
                 (
                     condition_id.value,
+                    request.question_id,
                     request.polymarket_id,
                     request.polymarket_condition_id,
                     request.question,
@@ -892,77 +851,16 @@ class TableWrite:
             polymarket_yes_token_id=request.polymarket_yes_token_id,
             polymarket_no_token_id=request.polymarket_no_token_id,
             condition_id=condition_id,
+            question_id=request.question_id,
             description=request.description,
             slug=request.slug,
             erc1155_tokens=request.erc1155_tokens,
             market_state=MarketState(request.state),
             start_date=request.start_date,
             end_date=request.end_date,
-            resolved_outcome=None,
             event_id=request.event_id,
             outcome_label=request.outcome_label,
             icon_url=request.icon_url,
-        )
-
-    @staticmethod
-    def update_market_state_if_needed(
-        db: psycopg.Connection, request: CreateMarketRequest
-    ) -> Market:
-        # Compute condition_id from question and number of outcomes
-        erc1155_tokens_json = json.dumps(request.erc1155_tokens, separators=(",", ":"))
-
-        # Fetch existing market details to preserve state and IDs
-        cursor = db.execute(
-            "SELECT MARKET_ID, RESOLVED_OUTCOME FROM markets WHERE POLYMARKET_ID = %s",
-            (request.polymarket_id,),
-        )
-        row = cursor.fetchone()
-        if not row:
-            raise ValueError(
-                f"Market with Polymarket ID {request.polymarket_id} not found"
-            )
-
-        market_id = row["MARKET_ID"]
-        resolved_outcome = row["RESOLVED_OUTCOME"]
-
-        db.execute(
-            """
-            UPDATE markets
-            SET CONDITION_ID   = %s,
-                QUESTION       = %s,
-                DESCRIPTION    = %s,
-                SLUG           = %s,
-                START_DATE     = %s,
-                END_DATE       = %s,
-                ERC1155_TOKENS = %s,
-                MARKET_STATE  = %s
-            WHERE POLYMARKET_ID = %s
-            """,
-            (
-                request.condition_id,
-                request.question,
-                request.description,
-                request.slug,
-                request.start_date,
-                request.end_date,
-                erc1155_tokens_json,
-                request.state,
-                request.polymarket_id,
-            ),
-        )
-
-        return Market(
-            question=request.question,
-            market_id=market_id,
-            polymarket_id=request.polymarket_id,
-            condition_id=request.condition_id,
-            description=request.description,
-            slug=request.slug,
-            erc1155_tokens=request.erc1155_tokens,
-            market_state=MarketState(request.state),
-            start_date=request.start_date,
-            end_date=request.end_date,
-            resolved_outcome=resolved_outcome,
         )
 
     @staticmethod
@@ -1049,220 +947,75 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
-    def activate_market(db: psycopg.Connection, market_id: int) -> Market:
-        """
-        Activate a market, transitioning it from DRAFT to ACTIVE.
-
-        Args:
-            db: Database connection
-            market_id: Market ID to activate
-
-        Returns:
-            Updated Market object
-
-        Raises:
-            ValueError: If market not found or not in DRAFT state
-        """
-        from agentpit.db.table_read import TableRead
-
-        # Get current market
-        market = TableRead.read_market(db, market_id)
-        if not market:
-            raise ValueError(f"Market {market_id} not found")
-
-        # Check state
-        if market.market_state != MarketState.DRAFT:
-            raise ValueError(
-                f"Market {market_id} is not in DRAFT state (current: {market.market_state.value})"
-            )
-
-        # Update state
-        db.execute(
-            "UPDATE markets SET MARKET_STATE = %s WHERE MARKET_ID = %s",
-            (MarketState.ACTIVE.value, market_id),
-        )
-
-        # Return updated market
-        market.market_state = MarketState.ACTIVE
-        return market
-
-    @staticmethod
-    def close_market(db: psycopg.Connection, market_id: int) -> Market:
-        """
-        Close a market, transitioning it from ACTIVE to CLOSED.
-
-        Args:
-            db: Database connection
-            market_id: Market ID to close
-
-        Returns:
-            Updated Market object
-
-        Raises:
-            ValueError: If market not found or not in ACTIVE state
-        """
-        from agentpit.db.table_read import TableRead
-
-        # Get current market
-        market = TableRead.read_market(db, market_id)
-        if not market:
-            raise ValueError(f"Market {market_id} not found")
-
-        # Check state
-        if market.market_state != MarketState.ACTIVE:
-            raise ValueError(
-                f"Market {market_id} is not in ACTIVE state (current: {market.market_state.value})"
-            )
-
-        # Update state to CLOSED
-        db.execute(
-            "UPDATE markets SET MARKET_STATE = %s WHERE MARKET_ID = %s",
-            (MarketState.CLOSED.value, market_id),
-        )
-
-        # Return updated market
-        market.market_state = MarketState.CLOSED
-        return market
-
-    @staticmethod
     def mark_fully_redeemed(db: psycopg.Connection, market_id: int) -> None:
-        """Flag a resolved market as having no remaining redeemable holders."""
         db.execute(
             "UPDATE markets SET FULLY_REDEEMED = TRUE WHERE MARKET_ID = %s",
             (market_id,),
         )
 
     @staticmethod
-    def resolve_market(
-        db: psycopg.Connection, market_id: int, winning_outcome_index: int
-    ) -> Market:
-        """
-        Resolve a market by specifying the winning outcome.
-
-        Args:
-            db: Database connection
-            market_id: Market ID to resolve
-            winning_outcome_index: Index of the winning outcome (0-based)
-
-        Returns:
-            Updated Market object
-
-        Raises:
-            ValueError: If market not found, already resolved, or invalid outcome index
-        """
-        from agentpit.db.table_read import TableRead
-
-        # Get current market
-        market = TableRead.read_market(db, market_id)
-        if not market:
-            raise ValueError(f"Market {market_id} not found")
-
-        # Check if already resolved
-        if market.market_state == MarketState.RESOLVED:
-            raise ValueError(f"Market {market_id} is already resolved")
-
-        # Validate outcome index
-        if winning_outcome_index < 0 or winning_outcome_index >= len(
-            market.erc1155_tokens
-        ):
-            raise ValueError(
-                f"Invalid winning_outcome_index {winning_outcome_index}. "
-                f"Market has {len(market.erc1155_tokens)} outcomes (indices 0-{len(market.erc1155_tokens)-1})"
-            )
-
-        # Update state and outcome
-        row = db.execute(
-            "UPDATE markets SET MARKET_STATE = %s, RESOLVED_OUTCOME = %s, "
-            "RESOLVED_AT = EXTRACT(EPOCH FROM now())::BIGINT WHERE MARKET_ID = %s "
-            "RETURNING RESOLVED_AT",
-            (MarketState.RESOLVED.value, winning_outcome_index, market_id),
-        ).fetchone()
-
-        # Return updated market
-        market.market_state = MarketState.RESOLVED
-        market.resolved_outcome = winning_outcome_index
-        market.resolved_at = row["RESOLVED_AT"]
-        return market
-
-    @staticmethod
-    def cancel_market(db: psycopg.Connection, market_id: int) -> tuple[Market, int]:
-        """Cancel a market.
-
-        Refund logic is intentionally not implemented here: with on-chain CTF
-        positions, users recover their collateral via the standard merge /
-        redeem path on the CTF contract directly, not via the backend.
-        """
-        from agentpit.db.table_read import TableRead
-
-        market = TableRead.read_market(db, market_id)
-        if not market:
-            raise ValueError(f"Market {market_id} not found")
-
-        if market.market_state == MarketState.RESOLVED:
-            raise ValueError(f"Cannot cancel market {market_id}: already resolved")
-        if market.market_state == MarketState.CANCELLED:
-            raise ValueError(f"Market {market_id} is already cancelled")
-
-        db.execute(
-            "UPDATE markets SET MARKET_STATE = %s WHERE MARKET_ID = %s",
-            (MarketState.CANCELLED.value, market_id),
+    def set_market_state(
+        db: psycopg.Connection,
+        market_id: int,
+        expected: MarketState,
+        new: MarketState,
+        payouts: Payouts | None,
+    ) -> bool:
+        return (
+            db.execute(
+                "UPDATE markets SET MARKET_STATE = %s, PAYOUTS = %s, RESOLVED_AT = "
+                "CASE WHEN %s THEN EXTRACT(EPOCH FROM now())::BIGINT END "
+                "WHERE MARKET_ID = %s AND MARKET_STATE = %s",
+                (
+                    new.value,
+                    None if payouts is None else list(payouts),
+                    new == MarketState.RESOLVED,
+                    market_id,
+                    expected.value,
+                ),
+            ).rowcount
+            == 1
         )
 
-        market.market_state = MarketState.CANCELLED
-        return market, 0
+    @staticmethod
+    def cancel_all_market_orders(db: psycopg.Connection, market_id: int) -> int:
+        return db.execute(
+            "UPDATE orders SET STATUS = 'cancelled' WHERE TOKEN_ID IN ("
+            "SELECT t->>0 FROM markets, jsonb_array_elements(ERC1155_TOKENS::jsonb) t "
+            f"WHERE MARKET_ID = %s) AND {TableRead.LIVE_ORDER}",
+            (market_id, int(_time.time())),
+        ).rowcount
 
     @staticmethod
-    def update_market_state_to_resolved_if_needed(
-        db: psycopg.Connection, condition_id: ConditionId, winning_outcome_index: int
-    ) -> Market:
-        """
-        Idempotently resolves a market. If already resolved or cancelled, does nothing.
-
-        Args:
-            db: Database connection
-            condition_id: Condition ID of the market to resolve
-            winning_outcome_index: Index of the winning outcome
-
-        Returns:
-            Updated Market object
-        """
-        from agentpit.db.table_read import TableRead
-
-        # Get current market
-        market = TableRead.read_market_by_condition_id(db, condition_id)
-        if not market:
-            raise ValueError(f"Market with condition_id {condition_id} not found")
-
-        if (
-            market.market_state == MarketState.RESOLVED
-            or market.market_state == MarketState.CANCELLED
-        ):
-            return market
-
-        # Validate outcome index
-        if winning_outcome_index < 0 or winning_outcome_index >= len(
-            market.erc1155_tokens
-        ):
-            raise ValueError(
-                f"Invalid winning_outcome_index {winning_outcome_index}. "
-                f"Market has {len(market.erc1155_tokens)} outcomes"
+    def update_carried(
+        db: psycopg.Connection,
+        markets: "list[tuple[int, MarketFields]]",
+        events: "list[tuple[int, EventFields]]",
+    ) -> None:
+        with db.cursor() as cur:
+            cur.executemany(
+                "UPDATE markets SET SLUG = %(slug)s, QUESTION = %(question)s, "
+                "DESCRIPTION = %(description)s, END_DATE = %(end_date)s, "
+                "ICON_URL = %(icon_url)s, OUTCOME_LABEL = %(outcome_label)s, "
+                "PRICE_CHANGE_24H = %(price_change_24h)s WHERE MARKET_ID = %(id)s",
+                [fields._asdict() | {"id": market_id} for market_id, fields in markets],
             )
-
-        row = db.execute(
-            "UPDATE markets SET MARKET_STATE = %s, RESOLVED_OUTCOME = %s, "
-            "RESOLVED_AT = EXTRACT(EPOCH FROM now())::BIGINT WHERE CONDITION_ID = %s "
-            "RETURNING RESOLVED_AT",
-            (
-                MarketState.RESOLVED.value,
-                winning_outcome_index,
-                market.condition_id.value,
-            ),
-        ).fetchone()
-
-        market.market_state = MarketState.RESOLVED
-        market.resolved_outcome = winning_outcome_index
-        market.resolved_at = row["RESOLVED_AT"]
-        return market
+            columns = (
+                "(SLUG, TITLE, ICON_URL, START_DATE, END_DATE, VOLUME_24HR, VOLUME, "
+                "LIQUIDITY, COMPETITIVE, START_TIME, GAME_ID, SERIES_SLUG, CATEGORY)"
+            )
+            values = (
+                "(CASE WHEN EXISTS (SELECT 1 FROM events WHERE SLUG = %(slug)s "
+                "AND EVENT_ID <> %(id)s) THEN SLUG ELSE %(slug)s END, %(title)s, "
+                "%(icon_url)s, %(start_date)s, %(end_date)s, %(volume_24hr)s, "
+                "%(volume)s, %(liquidity)s, %(competitive)s, %(start_time)s, "
+                "%(game_id)s, %(series_slug)s, %(category)s)"
+            )
+            cur.executemany(
+                f"UPDATE events SET {columns} = {values} WHERE EVENT_ID = %(id)s "
+                f"AND {columns} IS DISTINCT FROM {values}",
+                [fields._asdict() | {"id": event_id} for event_id, fields in events],
+            )
 
     @staticmethod
     def expire_due_orders(db: psycopg.Connection, now: int) -> int:
@@ -1270,8 +1023,7 @@ class TableWrite:
 
         Hygiene, not correctness: `TableRead.LIVE_ORDER` already excludes
         every row this touches, so running late or not at all trades nothing.
-        What it buys is that dead rows leave the live set for good and become
-        reachable by `purge_cancelled_orders`.
+        What it buys is that dead rows leave the live set for good.
 
         No new status, because Polymarket has none — their order statuses are
         live, matched, delayed and unmatched, and expiry is a property rather
@@ -1294,37 +1046,11 @@ class TableWrite:
         return cur.rowcount
 
     @staticmethod
-    def purge_cancelled_orders(db: psycopg.Connection, before_ts: int) -> int:
-        """Delete cancelled orders created before `before_ts`. Cancelled orders
-        are resting quotes replaced before matching, so nothing references them;
-        this caps table growth from fast re-quoting. Returns rows removed.
-
-        Idempotency claims pointing at a purged order go with it — a claim
-        whose order row is gone would break every replay of that
-        client_order_id until the (much longer) key retention expires it."""
-        db.execute(
-            "DELETE FROM idempotency_keys WHERE ORDER_ID IN "
-            "(SELECT ORDER_ID FROM orders "
-            " WHERE STATUS = 'cancelled' AND CREATED_AT < %s)",
-            (before_ts,),
-        )
-        cur = db.execute(
-            "DELETE FROM orders WHERE STATUS = 'cancelled' AND CREATED_AT < %s",
-            (before_ts,),
-        )
-        return cur.rowcount
-
-    @staticmethod
-    def delete_idempotency_key(
-        db: psycopg.Connection, *, api_key: str, client_order_id: str
-    ) -> None:
-        """Drop a single (api_key, client_order_id) claim — used to heal a
-        stale claim whose order row no longer exists."""
-        db.execute(
-            "DELETE FROM idempotency_keys "
-            "WHERE API_KEY = %s AND CLIENT_ORDER_ID = %s",
-            (api_key, client_order_id),
-        )
+    def delete_house_orders(db: psycopg.Connection, api_key: str) -> int:
+        return db.execute(
+            "DELETE FROM orders WHERE API_KEY = %s AND STATUS <> 'matched'",
+            (api_key,),
+        ).rowcount
 
     @staticmethod
     def claim_idempotency_key(
@@ -1353,3 +1079,35 @@ class TableWrite:
             (before_ts,),
         )
         return cur.rowcount
+
+    @staticmethod
+    def purge_mirrored_trades(
+        db: psycopg.Connection, before_ts: int, *, limit: int
+    ) -> int:
+        cur = db.execute(
+            "DELETE FROM trades WHERE TRADE_ID = ANY(ARRAY("
+            "SELECT TRADE_ID FROM trades "
+            "WHERE STATUS = 'MIRRORED' AND MATCH_TIME < %s LIMIT %s))",
+            (before_ts, limit),
+        )
+        return cur.rowcount
+
+    @staticmethod
+    def settle_trades(
+        db: psycopg.Connection,
+        trade_ids: list[str],
+        status: Literal["PENDING", "CONFIRMED", "FAILED"],
+        tx_hash: str | None,
+    ) -> None:
+        db.execute(
+            "UPDATE trades SET STATUS = %s, TRANSACTION_HASH = %s "
+            "WHERE TRADE_ID = ANY(%s)",
+            (status, tx_hash, trade_ids),
+        )
+        if status == "FAILED":
+            db.execute(
+                "UPDATE orders SET STATUS = 'cancelled' WHERE ORDER_ID IN "
+                "(SELECT TAKER_ORDER_ID FROM trades WHERE TRADE_ID = ANY(%s)) "
+                f"AND {TableRead.LIVE_ORDER}",
+                (trade_ids, int(_time.time())),
+            )

@@ -244,7 +244,8 @@ class AuthService:
 
         A repair drips collateral, so it runs only where the chain is meant to
         be thrown away: `simulated_chain` on and a disposable chain id. (The
-        house account is kept above a gas floor by the mirror's top-up loop.)
+        house account does not use this path: it sends no transaction after
+        provisioning.)
 
         A second lock sits beside the first: an account that exported its
         private key while export still existed never gets this repair, because

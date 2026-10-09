@@ -47,7 +47,7 @@ const leaguePath = (game: Game) => {
 };
 const groups =
   !q && item.includes("/")
-    ? [...Map.groupBy(games, (game) => shortDay(new Date((game.startTime ?? game.endDate ?? 0) * 1000)))].map(([day, list]) => ({ day, list, head: list[0], note: 0 }))
+    ? [...Map.groupBy(games, (game) => shortDay(new Date((game.startTime ?? game.endDate ?? 0) * 1000), game.tz))].map(([day, list]) => ({ day, list, head: list[0], note: 0 }))
     : [...Map.groupBy(games, (game) => game.league)]
         .toSorted(([, a], [, b]) => Number(withAgents(b) > 0) - Number(withAgents(a) > 0) || b.length - a.length)
         .map(([league, list]) => ({ day: null, list, head: list[0], note: !q && (item === "upcoming" || scope) ? (sports.noBook[league] ?? 0) : 0 }));

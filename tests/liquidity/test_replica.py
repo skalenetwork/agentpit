@@ -1,4 +1,5 @@
-from agentpit.liquidity.replica import MICRO, TICK, BookReplica, to_micro
+from agentpit.datastructures.match import Take
+from agentpit.liquidity.replica import MICRO, BookReplica, BookSnapshot, to_micro
 
 
 def _book_msg(asset="A", bids=None, asks=None):
@@ -83,10 +84,10 @@ def test_price_change_before_seed_ignored():
         {"asset_id": "A", "side": "BUY", "price": "0.40", "size": "3"})
 
 
-def test_tick_size_change_resets_epoch_until_fresh_snapshot():
+def test_mark_stale_drops_the_book_until_a_fresh_snapshot():
     r = BookReplica("A")
     r.apply_book(_book_msg(bids=[("0.40", "10")], asks=[("0.60", "5")]))
-    r.mark_stale()                                        # tick_size_change / watchdog
+    r.mark_stale()
     assert r.snapshot() is None
     assert not r.apply_price_change_entry(                # deltas dropped while stale
         {"asset_id": "A", "side": "BUY", "price": "0.40", "size": "3"})
@@ -124,12 +125,107 @@ def test_apply_book_with_infinity_level_does_not_corrupt_other_side():
     assert snap.bids == ((450_000, 7_000_000),)  # and no exception escaped
 
 
-def test_sizes_snapped_down_to_milli_share_grid():
+def _seeded(bids=(("0.40", "10"), ("0.39", "20")), asks=(("0.60", "5"), ("0.61", "7"))):
     r = BookReplica("A")
-    r.apply_book(_book_msg(bids=[("0.40", "10.1234567"), ("0.30", "0.0009")],
-                           asks=[("0.60", "5")]))
-    snap = r.snapshot()
-    assert snap.bids == ((400_000, 10_123_000),)   # snapped down; dust level dropped
-    assert r.apply_price_change_entry(
-        {"asset_id": "A", "side": "SELL", "price": "0.61", "size": "2.0006"})
-    assert dict(r.snapshot().asks)[610_000] == 2_000_000
+    r.apply_book(_book_msg(bids=bids, asks=asks))
+    return r
+
+
+def _walk(r, agent, side, yes, limit, size):
+    return r.take(agent, (side == "BUY") == yes, limit if yes else MICRO - limit, size)
+
+
+def test_take_walks_the_four_mappings_up_to_the_limit():
+    r = _seeded()
+    assert _walk(r, "a", "BUY", True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 5_000_000, 5_000_000),
+    )
+    assert _walk(r, "a", "SELL", True, 390_000, 15_000_000) == (
+        Take(False, 400_000, 10_000_000, 10_000_000),
+        Take(False, 390_000, 20_000_000, 5_000_000),
+    )
+    assert _walk(r, "a", "BUY", False, 600_000, 3_000_000) == (
+        Take(False, 400_000, 10_000_000, 3_000_000),
+    )
+    assert _walk(r, "a", "SELL", False, 390_000, 20_000_000) == (
+        Take(True, 600_000, 5_000_000, 5_000_000),
+        Take(True, 610_000, 7_000_000, 7_000_000),
+    )
+    assert _walk(r, "a", "BUY", True, 590_000, 1_000_000) == ()
+
+
+def test_take_is_empty_on_an_unseeded_or_crossed_book():
+    assert BookReplica("A").take("a", True, 990_000, 1_000_000) == ()
+    assert (
+        _seeded(bids=(("0.60", "1"),), asks=(("0.55", "1"),)).take(
+            "a", True, 990_000, 1
+        )
+        == ()
+    )
+
+
+def test_use_up_is_per_agent_and_lasts_until_the_size_changes():
+    r = _seeded()
+    r.use("a", r.take("a", True, 600_000, 3_000_000))
+    assert r.take("a", True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 5_000_000, 2_000_000),
+    )
+    assert r.take("b", True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 5_000_000, 5_000_000),
+    )
+    r.apply_book(_book_msg(bids=[("0.40", "10")], asks=[("0.60", "5"), ("0.61", "7")]))
+    assert r.take("a", True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 5_000_000, 2_000_000),
+    )
+    r.apply_price_change_entry(
+        {"asset_id": "A", "side": "SELL", "price": "0.60", "size": "6"}
+    )
+    assert r.take("a", True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 6_000_000, 6_000_000),
+    )
+
+
+def test_a_yes_buyer_and_a_no_seller_share_the_ask_level():
+    r = _seeded()
+    r.use("a", _walk(r, "a", "BUY", True, 600_000, 4_000_000))
+    assert _walk(r, "a", "SELL", False, 400_000, 9_000_000) == (
+        Take(True, 600_000, 5_000_000, 1_000_000),
+    )
+
+
+def test_split_orders_take_at_most_the_level():
+    r = _seeded()
+    filled = 0
+    for _ in range(10):
+        takes = r.take("a", True, 600_000, 1_000_000)
+        r.use("a", takes)
+        filled += sum(t.size for t in takes)
+    assert filled == 5_000_000
+
+
+def test_use_prunes_levels_that_are_gone_or_resized():
+    r = _seeded()
+    r.use("a", r.take("a", True, 610_000, 12_000_000))
+    r.use("b", r.take("b", False, 400_000, 1_000_000))
+    r.apply_price_change_entry(
+        {"asset_id": "A", "side": "SELL", "price": "0.60", "size": "0"}
+    )
+    r.apply_price_change_entry(
+        {"asset_id": "A", "side": "BUY", "price": "0.40", "size": "11"}
+    )
+    r.use("b", r.take("b", True, 610_000, 1_000_000))
+    assert set(r.used) == {("a", True, 610_000), ("b", True, 610_000)}
+
+
+def test_flipped_is_the_no_book():
+    snap = BookSnapshot(
+        "A", bids=((400_000, 1), (390_000, 2)), asks=((600_000, 3), (610_000, 4))
+    )
+    assert snap.flipped() == BookSnapshot(
+        "A", bids=((400_000, 3), (390_000, 4)), asks=((600_000, 1), (610_000, 2))
+    )
+
+
+def test_sizes_are_kept_as_sent():
+    r = _seeded(bids=(("0.40", "10.1234567"),), asks=())
+    assert r.snapshot().bids == ((400_000, 10_123_457),)

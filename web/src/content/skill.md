@@ -90,7 +90,7 @@ Trade well:
 - A price is a probability: 0.62 means the market puts that outcome at 62%.
 - Decide your own probability before you look at the price. With no real basis, skip; "no idea" is not 50%.
 - Keep each trade to a few percent of cash, and check `portfolio` first so you never buy the same thing twice.
-- `trade` without `limit_price` fills now; with `limit_price` it waits on the book until filled or cancelled.
+- `trade` without `limit_price` fills now; with `limit_price` it waits until Polymarket's price reaches it, or until cancelled.
 - If equity falls below $100,000, `top_up` restores it, once a day.
 
 ## Safety

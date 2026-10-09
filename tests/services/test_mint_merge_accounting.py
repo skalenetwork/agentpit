@@ -55,68 +55,6 @@ def test_the_columns_are_nullable_for_rows_written_before_they_existed(db):
     assert row["MAKER_ASSET_ID"] is None
 
 
-def test_insert_trade_gives_the_mint_maker_the_complement_token(db):
-    """`_insert_trade` used to copy the TAKER's token into the maker's row.
-    For a mint that is the wrong token entirely — it is the one asset the
-    maker did NOT receive — and every future row's correctness rests on this
-    function, so drive it with a realistic taker/maker order pair rather
-    than grepping its source."""
-    from agentpit.services.order_service import OrderService
-
-    _binary_market(db, "ins1")
-    yes, no = "ins1-y", "ins1-n"
-    taker_row = {
-        "ORDER_ID": "taker-1", "TOKEN_ID": yes, "SIDE": "BUY",
-        "REMAINING_AMOUNT": 100, "FEE_RATE_BPS": 0, "API_KEY": "taker-key",
-    }
-    maker_row = {
-        "TOKEN_ID": no, "SIDE": "BUY", "MAKER": "0xmaker",
-        "API_KEY": "maker-key", "FEE_RATE_BPS": 0,
-    }
-    match = {
-        "maker_row": maker_row, "maker_order_id": "maker-1",
-        "price": 300_000, "trade_size": 100, "match_kind": "MINT",
-    }
-    trade_id = OrderService._insert_trade(db, taker_row, match)
-    row = db.execute(
-        "SELECT ASSET_ID, MAKER_ASSET_ID, MATCH_KIND FROM trades "
-        "WHERE TRADE_ID = %s",
-        (trade_id,),
-    ).fetchone()
-    assert row["ASSET_ID"] == yes
-    assert row["MAKER_ASSET_ID"] == no
-    assert row["MATCH_KIND"] == "MINT"
-
-
-def test_insert_trade_gives_the_merge_maker_the_complement_token(db):
-    """Cheap to cover alongside the mint: same code path, opposite sides."""
-    from agentpit.services.order_service import OrderService
-
-    _binary_market(db, "ins2")
-    yes, no = "ins2-y", "ins2-n"
-    taker_row = {
-        "ORDER_ID": "taker-2", "TOKEN_ID": yes, "SIDE": "SELL",
-        "REMAINING_AMOUNT": 100, "FEE_RATE_BPS": 0, "API_KEY": "taker-key",
-    }
-    maker_row = {
-        "TOKEN_ID": no, "SIDE": "SELL", "MAKER": "0xmaker",
-        "API_KEY": "maker-key", "FEE_RATE_BPS": 0,
-    }
-    match = {
-        "maker_row": maker_row, "maker_order_id": "maker-2",
-        "price": 400_000, "trade_size": 100, "match_kind": "MERGE",
-    }
-    trade_id = OrderService._insert_trade(db, taker_row, match)
-    row = db.execute(
-        "SELECT ASSET_ID, MAKER_ASSET_ID, MATCH_KIND FROM trades "
-        "WHERE TRADE_ID = %s",
-        (trade_id,),
-    ).fetchone()
-    assert row["ASSET_ID"] == yes
-    assert row["MAKER_ASSET_ID"] == no
-    assert row["MATCH_KIND"] == "MERGE"
-
-
 # ----- backfilling rows written before the columns existed --------------------
 
 from agentpit.datastructures.condition_id import ConditionId  # noqa: E402

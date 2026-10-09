@@ -2,8 +2,8 @@
 
 This sweep carries no correctness: the read predicate already excludes every
 row it touches. Its whole job is that the table does not fill with orders
-that will never trade again, and that `purge_cancelled_orders` can reach
-them. So it may run late, run rarely, or fail — none of that trades anything.
+that will never trade again. So it may run late, run rarely, or fail; none
+of that trades anything.
 """
 import time
 

@@ -1,4 +1,6 @@
-"""Adapters for faking on-chain market preparation in sync tests."""
+"""Gamma rows and fakes of on-chain market preparation for sync tests."""
+
+import secrets
 
 from hexbytes import HexBytes
 
@@ -6,21 +8,27 @@ from agentpit.onchain.ctf_ids import condition_id
 from tests.fake_skaled import FakeFn
 
 
-def as_batch(single):
-    """Turn a fake `prepare_market_on_chain(admin, question, labels)` into a
-    fake `prepare_markets_on_chain(admin, items)`: one result per item, an
-    exception in place of a market that raised."""
-
-    def batch(admin, items):
-        out = []
-        for question, labels in items:
-            try:
-                out.append(single(admin, question, labels))
-            except Exception as exc:  # noqa: BLE001 - mirrors the real batch
-                out.append(exc)
-        return out
-
-    return batch
+def gamma_row(**over) -> dict:
+    tag = secrets.token_hex(4)
+    row = {
+        "id": str(int(tag, 16)),
+        "conditionId": "0x" + secrets.token_hex(32),
+        "question": f"Will it happen {tag}?",
+        "description": "Rules.",
+        "slug": f"will-it-happen-{tag}",
+        "startDate": "2026-01-01T00:00:00Z",
+        "endDate": "2099-01-01T00:00:00Z",
+        "outcomes": '["Yes", "No"]',
+        "clobTokenIds": f'["{int(secrets.token_hex(8), 16)}", "{int(secrets.token_hex(8), 16)}"]',
+        "version": "v1",
+        "closed": False,
+        "acceptingOrders": True,
+        "volume24hr": 50_000,
+        "tags": [],
+        "events": [{"id": f"ev-{tag}", "slug": f"event-{tag}", "title": f"Event {tag}"}],
+    }
+    row.update(over)
+    return row
 
 
 class _MarketCall:
@@ -56,18 +64,31 @@ class SkaledAdmin:
     def register_token_call(self, token_a, token_b, condition_id_):
         return _MarketCall(b"R" + bytes(condition_id_)), 220_000
 
+    def report_payouts_call(self, question_id, payouts):
+        return (
+            _MarketCall(b"Q" + condition_id(self.oracle_address, question_id, 2)),
+            165_000,
+        )
+
     def submit_many(self, calls):
         return self.sender.submit_many(calls)
 
     def wait_all(self, pendings, *, timeout):
         return self.sender.wait_all(pendings, timeout=timeout)
 
-    def read_market_states(self, markets):
-        ran = {
+    def _ran(self) -> set[bytes]:
+        return {
             bytes(HexBytes(a["tx"]["data"]))
             for a in self.chain.accepted
             if a["hash"] in self.chain.mined
         }
+
+    def payout_denominators(self, condition_ids):
+        ran = self._ran()
+        return [int(b"Q" + bytes(cid) in ran) for cid in condition_ids]
+
+    def read_market_states(self, markets):
+        ran = self._ran()
         out = []
         for cid, tokens in markets:
             registered = b"R" + bytes(cid) in ran

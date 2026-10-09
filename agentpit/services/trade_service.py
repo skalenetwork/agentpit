@@ -14,8 +14,6 @@ from agentpit.polymarket.resolve import resolve_by_token_id
 
 
 def _status(internal: str) -> str:
-    # agentpit has PENDING (settled ok) and FAILED; map to Polymarket's
-    # unprefixed forms. Non-failed fills are MATCHED.
     return "FAILED" if internal == "FAILED" else "MATCHED"
 
 

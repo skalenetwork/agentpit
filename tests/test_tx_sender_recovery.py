@@ -32,6 +32,7 @@ from agentpit.onchain.tx_sender import (
     AdminTxSender,
     PendingTx,
     TxDropped,
+    TxUnknown,
 )
 from agentpit.onchain.web3_client import build_http_provider
 from tests.fake_skaled import (
@@ -434,9 +435,9 @@ def test_resend_answered_with_a_refusal_is_unknowable_not_resigned():
     chain.send_errors.extend(
         [first, FakeRpcError("insufficient funds for gas * price + value")]
     )
-    with pytest.raises(requests.ConnectionError) as info:
+    with pytest.raises(TxUnknown) as info:
         sender.submit(_Fn(), gas=100_000)
-    assert info.value is first
+    assert info.value.__cause__ is first
     assert chain.accepted == []  # nothing was signed again
     assert sender.submit(_Fn(), gas=100_000).nonce == 1  # nonce 0 counted as used
 
@@ -463,9 +464,9 @@ def test_both_sends_unanswered_raise_the_first_error_and_count_the_nonce():
     sender, _, _ = _sender(chain)
     first = requests.ConnectionError("first")
     chain.send_errors.extend([first, requests.ConnectionError("second")])
-    with pytest.raises(requests.ConnectionError) as info:
+    with pytest.raises(TxUnknown) as info:
         sender.submit(_Fn(), gas=100_000)
-    assert info.value is first
+    assert info.value.__cause__ is first
     assert sender.submit(_Fn(), gas=100_000).nonce == 1
 
 
@@ -505,9 +506,9 @@ def test_one_copy_possibly_delivered_still_counts_the_nonce(make_first, make_sec
     sender, _, _ = _sender(chain)
     first = make_first()
     chain.send_errors.extend([first, make_second()])
-    with pytest.raises(requests.ConnectionError) as info:
+    with pytest.raises(TxUnknown) as info:
         sender.submit(_Fn(), gas=100_000)
-    assert info.value is first
+    assert info.value.__cause__ is first
     assert sender.submit(_Fn(), gas=100_000).nonce == 1  # nonce 0 counted as used
 
 
@@ -574,8 +575,9 @@ def test_nonce_used_without_our_receipt_after_a_lost_answer_is_unknowable():
         return real(raw)
 
     chain.send_raw = send_raw
-    with pytest.raises(requests.ConnectionError, match="reset by peer"):
+    with pytest.raises(TxUnknown) as info:
         sender.submit(_Fn(), gas=100_000)
+    assert "reset by peer" in str(info.value.__cause__)
     assert len(calls) == 2 and calls[0] == calls[1]  # the resend, nothing else
     assert chain.accepted == []
     follow = sender.submit(_Fn(), gas=100_000)
@@ -605,8 +607,9 @@ def test_fee_refusal_on_the_resend_does_not_move_the_action():
 
     chain.send_raw = send_raw
     chain.fee = (200_000, 0)
-    with pytest.raises(requests.ConnectionError, match="reset by peer"):
+    with pytest.raises(TxUnknown) as info:
         sender.submit(_Fn(), gas=100_000)
+    assert "reset by peer" in str(info.value.__cause__)
     assert len(calls) == 2 and calls[0] == calls[1]
     assert len(chain.accepted) == 1  # the node holds the first copy only
     follow = sender.submit(_Fn(), gas=100_000)
@@ -673,8 +676,9 @@ def test_stale_nonce_read_that_mtm_off_cannot_explain_is_unknowable(
     sent = _answer_lost_after_mining(chain)  # our nonce-1 copy mines
     chain.stale_reads.append(stale)
     chain.lag_reads = _OWN_RECEIPT_LOOKUPS
-    with pytest.raises(requests.ConnectionError, match="reset by peer"):
+    with pytest.raises(TxUnknown) as info:
         sender.submit(_Fn(), gas=100_000)
+    assert "reset by peer" in str(info.value.__cause__)
     assert len(sent) == 2 and sent[0] == sent[1]  # the resend, nothing else
     assert [a["nonce"] for a in chain.accepted] == [0, 1]
     assert sender.max_in_flight == 8
@@ -701,9 +705,9 @@ def test_nonce_taken_after_waiting_on_our_lower_nonces_is_unknowable():
             ),
         ]
     )
-    with pytest.raises(requests.ConnectionError) as info:
+    with pytest.raises(TxUnknown) as info:
         sender.submit(_Fn(), gas=100_000)
-    assert info.value is lost
+    assert info.value.__cause__ is lost
     assert [a["nonce"] for a in chain.accepted] == [0]  # never signed on nonce 2
     assert sender.max_in_flight == 8
     assert sender.submit(_Fn(), gas=100_000).nonce == 2  # nonce 1 counted as used
@@ -723,8 +727,9 @@ def test_receipt_lookup_failing_after_a_nonce_refusal_counts_the_nonce():
         return real_receipts(hashes)
 
     chain.receipts = receipts
-    with pytest.raises(requests.ConnectionError, match="reset by peer"):
+    with pytest.raises(TxUnknown) as info:
         sender.submit(_Fn(), gas=100_000)
+    assert "reset by peer" in str(info.value.__cause__)
     assert len(chain.accepted) == 1
     assert sender.submit(_Fn(), gas=100_000).nonce == 1  # nonce 0 counted as used
 
@@ -739,7 +744,7 @@ def test_unanswerable_send_is_counted_and_its_gap_is_filled():
             requests.ConnectionError("reset by peer"),
         ]
     )
-    with pytest.raises(requests.ConnectionError):
+    with pytest.raises(TxUnknown):
         sender.submit(_Fn(), gas=100_000)
     later = sender.submit(_Fn(), gas=100_000)
     assert later.nonce == 1  # nonce 0 was counted as used
@@ -764,7 +769,7 @@ def test_a_run_of_lost_nonces_is_filled_in_one_pass():
                 requests.ConnectionError("reset by peer"),
             ]
         )
-        with pytest.raises(requests.ConnectionError):
+        with pytest.raises(TxUnknown):
             sender.submit(_Fn(), gas=100_000)
     singles = []
     real = chain.send_raw
@@ -823,7 +828,7 @@ def _lose_answers(sender, chain, count: int) -> None:
         chain.send_errors.extend(
             [requests.ConnectionError("reset"), requests.ConnectionError("again")]
         )
-        with pytest.raises(requests.ConnectionError):
+        with pytest.raises(TxUnknown):
             sender.submit(_Fn(), gas=100_000)
 
 

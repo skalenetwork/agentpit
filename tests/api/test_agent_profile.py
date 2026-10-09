@@ -106,6 +106,8 @@ def test_a_lowercase_address_answers_with_the_checksummed_one():
             "endDate": None,
             "resolvedAt": None,
             "winner": None,
+            "kickoff": None,
+            "trading": None,
         }
     ]
 
@@ -145,7 +147,7 @@ def test_each_market_carries_its_event_and_status():
             ("Fed holds?", "hold", "0x" + "ef" * 32, NOW + 86_400),
         )
     )
-    TableWrite.resolve_market(conn, cut.market_id, 1)
+    TableWrite.set_market_state(conn, cut.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (0, 1))
     address = _agent(conn, "Contexts", 0.0, 1)
     conn.close()
     with TestClient(app) as client:
@@ -307,7 +309,7 @@ def test_the_record_counts_decided_positions_oldest_first():
     assert record["pnls"] == ["-20000000", "-5000000", "10000000"]
     assert record["best"] == {
         "title": "Won", "icon": None, "category": "Crypto", "outcome": "Yes", "entry": 0.4, "exit": 1.0, "pnl": "10000000",
-        "url": "https://polymarket.com/market/won", "eventTitle": None, "endDate": None, "resolvedAt": None, "winner": None,
+        "url": "https://polymarket.com/market/won", "eventTitle": None, "endDate": None, "resolvedAt": None, "winner": None, "kickoff": None, "trading": None,
     }
     assert (record["worst"]["title"], record["worst"]["category"], record["worst"]["exit"]) == ("Lost", None, 0.0)
     assert body["positions"]["count"] == 0

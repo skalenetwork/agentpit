@@ -45,6 +45,10 @@ def list_markets(
     dependencies=[Depends(require_admin_token)],
 )
 def create_market(payload: CreateMarketRequest, service: MarketServiceDep) -> Market:
+    if payload.condition_id is not None:
+        raise HTTPException(
+            status_code=400, detail="condition_id is derived on chain from question_id; omit it"
+        )
     return service.create_market(payload)
 
 

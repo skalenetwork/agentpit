@@ -91,6 +91,20 @@ def test_receipts_debit_the_cached_balance():
         sender.submit(FakeFn())
 
 
+def test_a_receipt_is_debited_once_whether_or_not_anyone_waits():
+    chain = FakeSkaled()
+    sender, account, _ = make_sender(chain, stop_gas=100)
+    chain.balances[account.address] = 10**18
+    sender.refresh_gas_balance()
+    pending = sender.submit(FakeFn())
+    chain.mine()
+    sender.poll()
+    debited = 10**18 - 60_000 * PRICE
+    assert sender._admin_balance == debited
+    sender.wait(pending, timeout=5)
+    assert sender._admin_balance == debited
+
+
 # Every claim/split/merge top-up is a native transfer, so most of what the admin
 # spends is the value it sends, not the gas of sending it.
 @pytest.mark.parametrize(

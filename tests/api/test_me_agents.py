@@ -215,6 +215,8 @@ def test_an_owner_reads_the_open_orders_of_only_their_own_agents(sign_in):
             "endDate": NOW + 86_400,
             "resolvedAt": None,
             "winner": None,
+            "kickoff": None,
+            "trading": None,
         }
     ]
     assert foreign.status_code == 404

@@ -29,6 +29,7 @@ from web3.types import TxReceipt
 from agentpit.config import Settings
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
+from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     DomainError,
@@ -46,7 +47,7 @@ from agentpit.onchain.chain_rpc import (
     classify_send_error,
     is_balance_low,
 )
-from agentpit.onchain.tx_sender import TRANSFER_GAS, TxDropped
+from agentpit.onchain.tx_sender import TRANSFER_GAS, TxDropped, TxUnknown
 from agentpit.onchain.user_wallet import GAS_BUFFER_PCT
 
 log = logging.getLogger(__name__)
@@ -187,7 +188,8 @@ class UserGasSponsor:
         # which thread holds it, but a lock nobody holds is a sure bug.
         if not _lock_for(user.eth_address).locked():
             raise RuntimeError("UserGasSponsor.send must run inside locked(user)")
-        if kind != "onboarding" and not self._settings.sponsor_user_gas:
+        unsponsored = kind != "onboarding" and not self._settings.sponsor_user_gas
+        if unsponsored or self._exported(user):
             receipts = self._send_unsponsored(user, calls, on_signed, before_send)
         else:
             receipts = self._send_sponsored(
@@ -206,6 +208,13 @@ class UserGasSponsor:
                     f"the {kind} transaction reverted on chain"
                 )
         return receipts
+
+    def _exported(self, user: User) -> bool:
+        """Whether the user's key left before export was removed: that key can
+        spend a top-up before our transaction does, so such a wallet pays its
+        own gas, as with the kill switch off."""
+        with self._db.read() as conn:
+            return TableRead.get_key_export_state(conn, user.user_id)[0] is not None
 
     # --- the two paths ---------------------------------------------------
 
@@ -368,7 +377,7 @@ class UserGasSponsor:
     def _top_up(self, user: User, shortfall: int, paid: _Paid) -> None:
         """Send `shortfall` and wait for it to mine. A paused breaker refuses it
         (`AdminGasPausedError`, 503), so only a wallet that needs a top-up
-        meets the breaker; `TimeExhausted` and `TxDropped` become
+        meets the breaker; `TimeExhausted`, `TxUnknown` and `TxDropped` become
         `GasTopUpTimeoutError` (503).
 
         `paid.unseen` stays set when no answer came back (a timeout, a
@@ -382,7 +391,7 @@ class UserGasSponsor:
                 shortfall,
                 timeout=self._settings.tx_confirmations_timeout_s,
             )
-        except TimeExhausted as exc:
+        except (TimeExhausted, TxUnknown) as exc:
             raise GasTopUpTimeoutError() from exc
         except TxDropped as exc:
             # Its nonce went to a gap filler: it never ran and never will.
@@ -454,8 +463,7 @@ class UserGasSponsor:
         *,
         unseen: bool,
     ) -> None:
-        """Book what the admin paid on `day`, under the rules of
-        `OrderService._book_sponsored_gas`: `gas` (mined top-ups plus every
+        """Book what the admin paid on `day`: `gas` (mined top-ups plus every
         receipt's gasUsed, reverts included) less the reservation, so a
         split/merge is refunded what it did not use. When something may have
         mined `unseen` nothing is refunded; only an overrun is added. The house

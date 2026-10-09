@@ -1,6 +1,7 @@
 """High-level on-chain operations executed with the admin/operator key."""
 
 from collections.abc import Callable
+from typing import cast
 
 from eth_account.signers.local import LocalAccount
 from eth_typing import HexStr
@@ -10,6 +11,7 @@ from web3.exceptions import TransactionNotFound
 from web3.logs import DISCARD
 from web3.types import TxReceipt
 
+from agentpit.datastructures.market import Payouts
 from agentpit.onchain.chain_rpc import current_fee_params
 from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.tx_sender import PendingTx
@@ -38,6 +40,7 @@ _ZERO_BYTES32 = b"\x00" * 32
 # mined yet. Over-provisioning costs nothing: the unused gas is refunded.
 PREPARE_CONDITION_GAS = 120_000
 REGISTER_TOKEN_GAS = 220_000
+REPORT_PAYOUTS_GAS = 165_000
 
 # Three eth_calls per market in one JSON-RPC batch: 40 markets = 120 requests,
 # under SKALE's cap of 128.
@@ -74,8 +77,8 @@ class OnchainAdmin:
         """Send `value_wei` native coin to `user_address` and wait for it.
 
         `timeout` bounds the whole call, the wait for a free admin slot
-        included: a top-up runs under the user's lock (and in auto-redeem
-        `_redeem_lock`), which must not wait out the sender's own 120 s. A full
+        included: a top-up runs under the user's lock, which must not wait out
+        the sender's own 120 s. A full
         pipeline raises `TimeExhausted` after about `timeout`, with nothing
         broadcast.
         """
@@ -233,16 +236,22 @@ class OnchainAdmin:
         )
         return fn, REGISTER_TOKEN_GAS
 
+    def report_payouts_call(
+        self, question_id: bytes, payouts: Payouts
+    ) -> tuple[ContractFunction, int]:
+        fn = self._contracts.ctf.functions.reportPayouts(question_id, list(payouts))
+        return fn, REPORT_PAYOUTS_GAS
+
     def submit_many(
         self, calls: list[tuple[ContractFunction, int]]
     ) -> list[PendingTx | Exception]:
         """Broadcast every call in JSON-RPC batches without waiting; one
         result per call, in order (`AdminTxSender.submit_many`).
 
-        Essential: its only callers are the catalogue/pin sync and operator
-        market creation (`prepare_markets_on_chain`), which keep running while
-        the gas breaker is paused -- a market that cannot be prepared is one
-        nobody can trade.
+        Essential: its callers are market creation (`prepare_markets_on_chain`)
+        and the oracle's payouts (`pay_out`), which keep running while the gas
+        breaker is paused -- a market that cannot be prepared is one nobody can
+        trade, and one never paid out holds its winners' money.
         """
         return self._client.admin_sender.submit_many(calls, essential=True)
 
@@ -272,6 +281,16 @@ class OnchainAdmin:
                 out.append((int(slots), int(comp_a[0]), int(comp_b[0])))
         return out
 
+    def payout_denominators(self, condition_ids: list[bytes]) -> list[int]:
+        out: list[int] = []
+        ctf = self._contracts.ctf.functions
+        for start in range(0, len(condition_ids), 3 * _STATE_BATCH):
+            with self._client.web3.batch_requests() as batch:
+                for condition_id in condition_ids[start : start + 3 * _STATE_BATCH]:
+                    batch.add(ctf.payoutDenominator(condition_id))
+                out.extend(cast(list[int], batch.execute()))
+        return out
+
     def prepare_condition(
         self,
         oracle: str,
@@ -293,18 +312,6 @@ class OnchainAdmin:
         )
         return send_admin_tx(self._client, fn, timeout=timeout, essential=True)
 
-    def report_payouts(
-        self, question_id: bytes, payouts: list[int], *, timeout: int = 30
-    ) -> TxReceipt:
-        """Admin (= local oracle) reports the resolved payout vector.
-
-        For binary YES/NO markets `payouts` is `[1, 0]` if YES won, `[0, 1]`
-        if NO won. The CTF rejects re-reporting (custom error) — callers
-        wanting idempotency should pre-check `payoutDenominator` or catch.
-        """
-        fn = self._contracts.ctf.functions.reportPayouts(question_id, payouts)
-        return send_admin_tx(self._client, fn, timeout=timeout, essential=True)
-
     def user_split_position(
         self,
         user_account: LocalAccount,
@@ -315,10 +322,8 @@ class OnchainAdmin:
     ) -> TxReceipt:
         """Self-funded splitPosition: lock `amount` apUSD, get equal YES+NO tokens.
 
-        House accounts only in production (the mirror reconciler's inventory
-        splits): the house pays its own gas from the balance its floor/target
-        loop keeps funded. A user's split goes through `UserGasSponsor` with
-        `split_call`. Tests use it on accounts they fund themselves.
+        Tests only, on accounts they fund themselves. A user's split goes
+        through `UserGasSponsor` with `split_call`.
         """
         fn = self.split_call(condition_id, [1, 2], amount)
         return send_user_tx(self._client, user_account, fn, timeout=timeout)

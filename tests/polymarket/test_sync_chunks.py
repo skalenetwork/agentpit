@@ -1,37 +1,29 @@
-"""The sync prepares new markets on chain in chunks, after classifying every
-candidate. One market's chain failure fails only that market; a whole chunk
-failing ends the chain work for the rest of the pass."""
+"""The chain task prepares new markets on chain in chunks, after dropping the
+ones already carried. One market's chain failure fails only that market; a
+whole chunk failing ends the chain work for the rest of the pass."""
 
 import logging
 import secrets
 from types import SimpleNamespace
 
+import pytest
 import requests
 
-import agentpit.polymarket.polymarket_sync as sync
+import agentpit.services.market_service as service
 from agentpit.datastructures.condition_id import ConditionId
+from agentpit.db.table_read import TableRead
 from agentpit.domain.exceptions import MarketStateError
-from tests.chain_fakes import SkaledAdmin
+from agentpit.polymarket.polymarket_sync import UpstreamMarket, parse
+from agentpit.services.market_service import PreparedMarkets, create_markets
+from tests.chain_fakes import SkaledAdmin, gamma_row
 from tests.db_helpers import fresh_test_db
 from tests.fake_skaled import FakeSkaled, make_sender
 
 
-def _pm(question: str) -> dict:
-    return {
-        "id": int(secrets.token_hex(4), 16),
-        "conditionId": "0x" + secrets.token_hex(32),
-        "question": question,
-        "description": "d",
-        "slug": f"chunks-{secrets.token_hex(4)}",
-        "startDate": "2020-01-01T00:00:00Z",
-        "endDate": "2030-01-02T00:00:00Z",
-        "active": True,
-        "closed": False,
-        "tokens": [
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "Yes"},
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "No"},
-        ],
-    }
+def _pm(question: str) -> UpstreamMarket:
+    m = parse(gamma_row(question=question))
+    assert isinstance(m, UpstreamMarket)
+    return m
 
 
 def _ids(labels):
@@ -39,28 +31,39 @@ def _ids(labels):
     return cid, [(str(int(secrets.token_hex(8), 16)), label) for label in labels]
 
 
-def test_new_markets_are_prepared_in_chunks_and_known_ones_are_not(monkeypatch):
+def _warnings(caplog) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == service.log.name and r.levelno == logging.WARNING
+    ]
+
+
+def test_new_markets_are_prepared_in_chunks_and_carried_ones_are_not(monkeypatch):
     db = fresh_test_db()
-    calls: list[list[str]] = []
+    calls: list[list[bytes]] = []
 
     def fake_batch(admin, items):
         calls.append([q for q, _ in items])
-        return [_ids(labels) for _, labels in items]
+        return PreparedMarkets([_ids(labels) for _, labels in items])
 
-    monkeypatch.setattr(sync, "prepare_markets_on_chain", fake_batch)
+    monkeypatch.setattr(service, "prepare_markets_on_chain", fake_batch)
     admin = SimpleNamespace(sync_chunk_size=2)
     known = _pm(f"Known {secrets.token_hex(4)}?")
-    with db.write() as conn:
-        assert len(sync.create_polymarket_markets_if_needed(conn, [known], admin)) == 1
+    assert len(create_markets(db, admin, [known])) == 1
     calls.clear()
 
     fresh = [_pm(f"Chunk {i} {secrets.token_hex(4)}?") for i in range(5)]
-    with db.write() as conn:
-        created = sync.create_polymarket_markets_if_needed(conn, [known, *fresh], admin)
+    created = create_markets(db, admin, [known, *fresh])
 
     assert [len(c) for c in calls] == [2, 2, 1]
-    assert known["question"] not in [q for c in calls for q in c]
-    assert [m.question for m in created] == [pm["question"] for pm in fresh]
+    assert bytes.fromhex(known.condition[2:]) not in [q for c in calls for q in c]
+    assert [m.question for m in created] == [m.question for m in fresh]
+    assert created[0].question_id == fresh[0].condition
+    assert created[0].polymarket_condition_id == fresh[0].condition
+    assert (created[0].polymarket_yes_token_id, created[0].polymarket_no_token_id) == (
+        fresh[0].tokens
+    )
 
 
 def test_one_market_failing_on_chain_does_not_stop_the_rest(monkeypatch):
@@ -69,63 +72,82 @@ def test_one_market_failing_on_chain_does_not_stop_the_rest(monkeypatch):
     good = [_pm(f"Good {i} {secrets.token_hex(4)}?") for i in range(3)]
 
     def fake_batch(admin, items):
-        return [
-            RuntimeError("prepareCondition timed out") if q == bad["question"] else _ids(labels)
-            for q, labels in items
-        ]
-
-    monkeypatch.setattr(sync, "prepare_markets_on_chain", fake_batch)
-    with db.write() as conn:
-        created = sync.create_polymarket_markets_if_needed(
-            conn, [good[0], bad, good[1], good[2]], SimpleNamespace(sync_chunk_size=8)
+        return PreparedMarkets(
+            [
+                (
+                    RuntimeError("prepareCondition timed out")
+                    if q == bytes.fromhex(bad.condition[2:])
+                    else _ids(labels)
+                )
+                for q, labels in items
+            ]
         )
-    assert [m.question for m in created] == [pm["question"] for pm in good]
+
+    monkeypatch.setattr(service, "prepare_markets_on_chain", fake_batch)
+    created = create_markets(
+        db, SimpleNamespace(sync_chunk_size=8), [good[0], bad, good[1], good[2]]
+    )
+    assert [m.question for m in created] == [m.question for m in good]
 
 
-def _sync_lines(caplog) -> tuple[list[str], str]:
-    """(warning lines, the closing "Synced ..." line) of the sync logger."""
-    records = [r for r in caplog.records if r.name == sync.logger.name]
-    warnings = [r.getMessage() for r in records if r.levelno == logging.WARNING]
-    (summary,) = [r.getMessage() for r in records if "Synced" in r.getMessage()]
-    return warnings, summary
+def test_one_insert_failing_does_not_stop_the_rest(monkeypatch):
+    db = fresh_test_db()
+    taken = _ids(["Yes", "No"])
+    first, clash, last = (_pm(f"Insert {i} {secrets.token_hex(4)}?") for i in range(3))
+
+    def fake_batch(admin, items):
+        return PreparedMarkets(
+            [
+                (
+                    taken
+                    if q
+                    in (
+                        bytes.fromhex(first.condition[2:]),
+                        bytes.fromhex(clash.condition[2:]),
+                    )
+                    else _ids(labels)
+                )
+                for q, labels in items
+            ]
+        )
+
+    monkeypatch.setattr(service, "prepare_markets_on_chain", fake_batch)
+    created = create_markets(
+        db, SimpleNamespace(sync_chunk_size=8), [first, clash, last]
+    )
+    assert [m.question for m in created] == [first.question, last.question]
+    with db.read() as conn:
+        assert TableRead.carried_condition_ids(
+            conn, [first.condition, clash.condition, last.condition]
+        ) == {first.condition, last.condition}
 
 
-def test_a_chunk_that_raises_stops_chain_work_for_the_rest_of_the_pass(
-    monkeypatch, caplog
-):
+def test_a_chunk_that_raises_ends_the_pass(monkeypatch):
     """A whole chunk failing means the node is out of reach: sending the next
-    chunks would only pile up unknowable nonces. One warning line, every
-    market counted failed, the next pass retries."""
-    caplog.set_level(logging.INFO)
+    chunks would only pile up unknowable nonces. The next pass retries."""
     db = fresh_test_db()
     markets = [_pm(f"Raise {i} {secrets.token_hex(4)}?") for i in range(5)]
     calls = {"n": 0}
 
     def fake_batch(admin, items):
         calls["n"] += 1
-        if calls["n"] == 1:
-            raise ConnectionError("RPC down")
-        return [_ids(labels) for _, labels in items]
+        raise ConnectionError("RPC down")
 
-    monkeypatch.setattr(sync, "prepare_markets_on_chain", fake_batch)
-    with db.write() as conn:
-        created = sync.create_polymarket_markets_if_needed(
-            conn, markets, SimpleNamespace(sync_chunk_size=2)
+    monkeypatch.setattr(service, "prepare_markets_on_chain", fake_batch)
+    with pytest.raises(ConnectionError):
+        create_markets(db, SimpleNamespace(sync_chunk_size=2), markets)
+    assert calls["n"] == 1
+    with db.read() as conn:
+        assert (
+            TableRead.carried_condition_ids(conn, [m.condition for m in markets])
+            == set()
         )
-    assert created == []
-    assert calls["n"] == 1  # the later chunks never reached the chain
-    warnings, summary = _sync_lines(caplog)
-    assert len(warnings) == 1
-    assert "RPC down" in warnings[0] and "5" in warnings[0]
-    assert summary.endswith("(5 failed)")
 
 
 def test_a_chunk_whose_sends_met_an_outage_stops_chain_work(monkeypatch, caplog):
     """The chunk came back, but its sends found the node out of reach (or no
     admin slot free): the next chunks would only add unknowable nonces. What
     the chunk did prepare is inserted; the rest of the pass is one line."""
-    from agentpit.services.market_service import PreparedMarkets
-
     caplog.set_level(logging.INFO)
     db = fresh_test_db()
     markets = [_pm(f"Outage {i} {secrets.token_hex(4)}?") for i in range(5)]
@@ -138,17 +160,12 @@ def test_a_chunk_whose_sends_met_an_outage_stops_chain_work(monkeypatch, caplog)
         out.stop = down
         return out
 
-    monkeypatch.setattr(sync, "prepare_markets_on_chain", fake_batch)
-    with db.write() as conn:
-        created = sync.create_polymarket_markets_if_needed(
-            conn, markets, SimpleNamespace(sync_chunk_size=2)
-        )
-    assert [m.question for m in created] == [markets[0]["question"]]
-    assert calls["n"] == 1  # the later chunks never reached the chain
-    warnings, summary = _sync_lines(caplog)
-    assert len(warnings) == 1
-    assert "node out of reach" in warnings[0] and "4 new markets" in warnings[0]
-    assert summary.endswith("(4 failed)")
+    monkeypatch.setattr(service, "prepare_markets_on_chain", fake_batch)
+    created = create_markets(db, SimpleNamespace(sync_chunk_size=2), markets)
+    assert [m.question for m in created] == [markets[0].question]
+    assert calls["n"] == 1
+    (warning,) = _warnings(caplog)
+    assert "node out of reach" in warning and "4 new markets" in warning
 
 
 def test_an_outage_ends_the_chain_work_of_the_pass_on_a_fake_skaled(caplog):
@@ -163,40 +180,10 @@ def test_an_outage_ends_the_chain_work_of_the_pass_on_a_fake_skaled(caplog):
         [requests.ConnectionError("reset by peer"), requests.ConnectionError("again")]
     )
     markets = [_pm(f"Down {i} {secrets.token_hex(4)}?") for i in range(5)]
-    with db.write() as conn:
-        created = sync.create_polymarket_markets_if_needed(conn, markets, admin)
-    assert created == []
-    assert len(chain.batches) == 2  # the first chunk's batch and its resend
-    warnings, summary = _sync_lines(caplog)
-    assert len(warnings) == 1
-    assert "reset by peer" in warnings[0] and "5 new markets" in warnings[0]
-    assert summary.endswith("(5 failed)")
-
-
-def test_the_same_market_twice_in_one_pass_is_created_once(monkeypatch, caplog):
-    """Gamma's pagination over a live volume sort can return a market twice.
-    The second copy is not a new market."""
-    caplog.set_level(logging.INFO)
-    db = fresh_test_db()
-    calls: list[list[str]] = []
-    ids: dict[str, tuple] = {}
-
-    def fake_batch(admin, items):
-        calls.append([q for q, _ in items])
-        return [ids.setdefault(q, _ids(labels)) for q, labels in items]
-
-    monkeypatch.setattr(sync, "prepare_markets_on_chain", fake_batch)
-    pm = _pm(f"Twice {secrets.token_hex(4)}?")
-    other = _pm(f"Once {secrets.token_hex(4)}?")
-    with db.write() as conn:
-        created = sync.create_polymarket_markets_if_needed(
-            conn, [pm, other, dict(pm)], SimpleNamespace(sync_chunk_size=8)
-        )
-    assert [m.question for m in created] == [pm["question"], other["question"]]
-    assert calls == [[pm["question"], other["question"]]]
-    warnings, summary = _sync_lines(caplog)
-    assert warnings == []
-    assert summary.endswith("(0 failed)")
+    assert create_markets(db, admin, markets) == []
+    assert len(chain.batches) == 2
+    (warning,) = _warnings(caplog)
+    assert "reset by peer" in warning and "5 new markets" in warning
 
 
 def test_a_market_state_error_names_its_reason_in_the_skip_line(monkeypatch, caplog):
@@ -206,15 +193,10 @@ def test_a_market_state_error_names_its_reason_in_the_skip_line(monkeypatch, cap
     reason = "market not prepared on chain: outcome slots=0"
 
     monkeypatch.setattr(
-        sync,
+        service,
         "prepare_markets_on_chain",
-        lambda admin, items: [MarketStateError(reason) for _ in items],
+        lambda admin, items: PreparedMarkets([MarketStateError(reason) for _ in items]),
     )
-    with db.write() as conn:
-        sync.create_polymarket_markets_if_needed(
-            conn, [bad], SimpleNamespace(sync_chunk_size=8)
-        )
-    warnings, _ = _sync_lines(caplog)
-    assert len(warnings) == 1
-    assert "MarketStateError" in warnings[0] and reason in warnings[0]
-    assert "\n" not in warnings[0]
+    create_markets(db, SimpleNamespace(sync_chunk_size=8), [bad])
+    (warning,) = _warnings(caplog)
+    assert "MarketStateError" in warning and reason in warning

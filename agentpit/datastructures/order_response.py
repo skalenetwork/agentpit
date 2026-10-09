@@ -5,7 +5,7 @@ class OrderResponse(BaseModel):
     """Polymarket CLOB `postOrder` response shape (§8.1).
 
     `status` is the documented HTTP enum (lowercase): `live | matched |
-    delayed`. agentpit emits only `live` and `matched`. A settlement
+    delayed`. agentpit emits `live`, `matched` and `cancelled`. A settlement
     failure is reported as `success=False` + `errorMsg` (not a status).
     """
 

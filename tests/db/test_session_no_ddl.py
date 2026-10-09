@@ -50,7 +50,6 @@ def test_the_silent_session_can_still_read_and_write():
 
 
 def test_the_default_still_migrates():
-    """The API depends on construction being what applies the schema."""
     with patch("agentpit.db.session.TableCreate.create_all_tables") as ddl:
         db = DbSession(TEST_DSN, min_size=0, max_idle=5.0)
         try:

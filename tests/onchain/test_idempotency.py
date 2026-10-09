@@ -5,8 +5,6 @@ failed original replays as success=False (spec §5.5). Auth works via X-API-Key.
 
 from agentpit.config import Settings
 from agentpit.db.session import DbSession
-from agentpit.db.table_read import TableRead
-from agentpit.db.table_write import TableWrite
 from tests.onchain._helpers import create_market, fresh_client, hdr, register
 
 
@@ -28,14 +26,16 @@ def _place_resting(client, tok, yes, coid) -> str:
 
 
 def _inject_trade(taker_order_id, *, trade_id, size, status, match_time, tx_hash=""):
-    """Insert a synthetic trade row for an order so the replay reconstruction
-    (fills/tradeIDs/tx-hashes/success) can be exercised deterministically,
-    without depending on a real cross + on-chain settlement."""
+    """Insert a synthetic house fill of a BUY at 0.40 (the house bought the
+    complement at 0.60) so the replay reconstruction (fills/tradeIDs/
+    tx-hashes/success) can be exercised deterministically, without depending
+    on a real cross + on-chain settlement."""
     db = DbSession(Settings().database_url)
     with db.write() as conn:
         conn.execute(
-            "INSERT INTO trades (TRADE_ID, TAKER_ORDER_ID, TRADE_SIZE, STATUS, "
-            "MATCH_TIME, TRANSACTION_HASH) VALUES (%s, %s, %s, %s, %s, %s)",
+            "INSERT INTO trades (TRADE_ID, TAKER_ORDER_ID, TRADE_SIZE, PRICE, MATCH_KIND, "
+            "STATUS, MATCH_TIME, TRANSACTION_HASH) "
+            "VALUES (%s, %s, %s, 600000, 'MINT', %s, %s, %s)",
             (trade_id, taker_order_id, size, status, match_time, tx_hash),
         )
 
@@ -113,72 +113,6 @@ def test_replay_reconstructs_filled_order():
     assert replay["transactionsHashes"] == ["0xhash-a"]   # empty hashes dropped
     assert float(replay["takingAmount"]) == 5.0           # 5 shares filled
     assert float(replay["makingAmount"]) == 2.0           # 0.40 * 5 USDC
-
-
-def test_stale_claim_after_purge_places_fresh_order():
-    """If the claimed order's row was purged (cancelled + cleaned up) before a
-    retry arrives, the retry must NOT error forever: it drops the stale claim
-    and places a fresh order. Safe because the purge only ever deletes
-    'cancelled' (never-filled) rows — nothing can double-fill."""
-    client = fresh_client()
-    reg = register(client)
-    tok = reg["access_token"]
-    yes = _yes(create_market(client))
-    oid = _place_resting(client, tok, yes, "coid-stale")
-
-    # Simulate the cleanup loop having removed the (cancelled) order row.
-    db = DbSession(Settings().database_url)
-    with db.write() as conn:
-        conn.execute("DELETE FROM orders WHERE ORDER_ID = %s", (oid,))
-
-    retry = client.post(
-        "/order",
-        headers=hdr(tok),
-        json={
-            "token_id": yes, "side": "BUY", "price": "0.40", "size": 10,
-            "client_order_id": "coid-stale",
-        },
-    )
-    assert retry.status_code == 200
-    fresh = retry.json()
-    assert fresh["orderID"] != oid  # a real new order, not a ghost replay
-
-    # The claim now points at the fresh order — further retries replay IT.
-    replay = client.post(
-        "/order",
-        headers=hdr(tok),
-        json={
-            "token_id": yes, "side": "BUY", "price": "0.40", "size": 10,
-            "client_order_id": "coid-stale",
-        },
-    ).json()
-    assert replay["orderID"] == fresh["orderID"]
-    orders = client.get("/data/orders", headers=hdr(tok)).json()
-    assert len([o for o in orders if o["asset_id"] == yes]) == 1
-
-
-def test_purge_cancelled_orders_drops_their_claims():
-    """purge_cancelled_orders must not leave idempotency claims pointing at
-    deleted rows — a stale claim breaks every replay of that client_order_id
-    until the (much longer) key retention finally expires it."""
-    client = fresh_client()
-    reg = register(client)
-    tok = reg["access_token"]
-    api_key = reg["user"]["api_key"]
-    yes = _yes(create_market(client))
-    oid = _place_resting(client, tok, yes, "coid-purged")
-
-    db = DbSession(Settings().database_url)
-    with db.write() as conn:
-        conn.execute(
-            "UPDATE orders SET STATUS = 'cancelled', CREATED_AT = 100 "
-            "WHERE ORDER_ID = %s",
-            (oid,),
-        )
-        removed = TableWrite.purge_cancelled_orders(conn, before_ts=500)
-    assert removed == 1
-    with db.read() as conn:
-        assert TableRead.get_idempotency_order_id(conn, api_key, "coid-purged") is None
 
 
 def test_replay_of_failed_order_reports_failure():

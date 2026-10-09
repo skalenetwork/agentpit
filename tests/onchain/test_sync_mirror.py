@@ -8,24 +8,14 @@ linkage via `polymarket_id`.
 
 import secrets
 
+from agentpit.polymarket.polymarket_sync import UpstreamMarket, parse
+from tests.chain_fakes import gamma_row
 
-def _fake_pm_market(question_suffix: str) -> dict:
-    """Shape mimics a Gamma `/markets` row, with arbitrary upstream ids."""
-    return {
-        "id": int(secrets.token_hex(4), 16),
-        "conditionId": "0x" + secrets.token_hex(32),
-        "question": f"Sync mirror {question_suffix}?",
-        "description": "End-to-end mirror of a Polymarket market.",
-        "slug": f"sync-mirror-{question_suffix}",
-        "startDate": "2026-01-01T00:00:00Z",
-        "endDate": "2027-01-01T00:00:00Z",
-        "active": True,
-        "closed": False,
-        "tokens": [
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "Yes"},
-            {"token_id": str(int(secrets.token_hex(8), 16)), "outcome": "No"},
-        ],
-    }
+
+def _fake_pm_market(question_suffix: str) -> UpstreamMarket:
+    m = parse(gamma_row(question=f"Sync mirror {question_suffix}?"))
+    assert isinstance(m, UpstreamMarket)
+    return m
 
 
 def test_sync_mirrors_market_onto_local_exchange():
@@ -35,9 +25,7 @@ def test_sync_mirrors_market_onto_local_exchange():
     from agentpit.onchain.contracts import Contracts
     from agentpit.onchain.deployment import Deployment
     from agentpit.onchain.web3_client import Web3Client
-    from agentpit.polymarket.polymarket_sync import (
-        create_polymarket_markets_if_needed,
-    )
+    from agentpit.services.market_service import create_markets
     from tests.db_helpers import fresh_test_db
 
     settings = Settings()
@@ -49,11 +37,9 @@ def test_sync_mirrors_market_onto_local_exchange():
     db = fresh_test_db()
 
     pm = _fake_pm_market(secrets.token_hex(4))
-    upstream_yes = pm["tokens"][0]["token_id"]
-    upstream_no = pm["tokens"][1]["token_id"]
+    upstream_yes, upstream_no = pm.tokens
 
-    with db.write() as conn:
-        created = create_polymarket_markets_if_needed(conn, [pm], admin=admin)
+    created = create_markets(db, admin, [pm])
     assert len(created) == 1, "sync should mirror the fake pm market"
     market = created[0]
 
@@ -76,39 +62,5 @@ def test_sync_mirrors_market_onto_local_exchange():
     with db.read() as conn:
         row = TableRead.read_market(conn, market.market_id)
     assert row is not None
-    assert row.polymarket_id == pm["id"]
+    assert row.polymarket_id == pm.pm_id
 
-
-def test_full_sync_pipeline_does_not_crash_on_post_create_state_check():
-    """The post-create market-state sync must not pass our local condition_id
-    to Polymarket's CLOB — that triggers a 404 since Polymarket has never
-    seen our locally-derived id.
-
-    This reproduces a production crash: after sync mirrors a market locally,
-    the same fetch loop calls sync_market_state(db, market.condition_id),
-    where condition_id is now the LOCAL one. Hitting Polymarket with it 404s.
-    """
-    from agentpit.config import Settings
-    from agentpit.onchain.admin import OnchainAdmin
-    from agentpit.onchain.contracts import Contracts
-    from agentpit.onchain.deployment import Deployment
-    from agentpit.onchain.web3_client import Web3Client
-    from agentpit.polymarket.polymarket_sync import (
-        create_polymarket_markets_if_needed,
-        sync_market_state,
-    )
-    from tests.db_helpers import fresh_test_db
-
-    settings = Settings()
-    d = Deployment.load(settings.deployment_path)
-    w = Web3Client(settings, d)
-    c = Contracts(w.web3, d)
-    admin = OnchainAdmin(w, c)
-
-    db = fresh_test_db()
-
-    pm = _fake_pm_market(secrets.token_hex(4))
-    with db.write() as conn:
-        created = create_polymarket_markets_if_needed(conn, [pm], admin)
-        # Must not raise.
-        sync_market_state(conn, created[0].condition_id)

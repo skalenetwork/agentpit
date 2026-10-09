@@ -28,18 +28,19 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.liquidity.house_accounts import HouseAccountProvisioner
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.user_wallet import send_user_tx
 from agentpit.onchain.web3_client import Web3Client
-from agentpit.polymarket.polymarket_sync import (
-    create_polymarket_markets_if_needed,
-    mirror_polymarket_resolutions,
-)
+from agentpit.polymarket.polymarket_sync import UpstreamMarket, parse
 from agentpit.services.auth_service import AuthService
 from agentpit.services.gas_sponsor import UserGasSponsor
+from agentpit.services.market_service import create_markets, pay_out
+from agentpit.services.order_service import OrderService
 from agentpit.services.position_service import PositionService
+from tests.chain_fakes import gamma_row
 from tests.db_helpers import fresh_test_db
 
 # AGENTPIT_ADMIN_TOKEN is read at app startup by Settings; tests rely on
@@ -136,6 +137,22 @@ def create_market(client: TestClient, question: str | None = None, *, state: str
     ).json()
 
 
+def house(client: TestClient) -> User:
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    return HouseAccountProvisioner(
+        overrides[get_db_session](),
+        overrides[get_onchain_admin](),
+        overrides[get_settings](),
+    ).ensure_provisioned()
+
+
+def order_service(client: TestClient) -> OrderService:
+    overrides = client.app.dependency_overrides  # type: ignore[attr-defined]
+    return OrderService(
+        overrides[get_db_session](), overrides[get_onchain_admin](), overrides[get_settings]()
+    )
+
+
 def position_service(
     db: DbSession, admin: OnchainAdmin, settings: Settings | None = None
 ) -> PositionService:
@@ -151,12 +168,6 @@ def drain_native_balance(admin: OnchainAdmin, address: str) -> None:
     admin._client.web3.provider.make_request(  # noqa: SLF001
         "anvil_setBalance", [Web3.to_checksum_address(address), "0x0"]
     )
-
-
-# Gas a house account gets in the on-chain tests instead of the default 5 native: conftest
-# truncates `users` before every test, so they provision a dozen accounts per run, all
-# paid by the persistent anvil's admin.
-HOUSE_TEST_GAS_FLOOR_WEI = 5 * 10**16
 
 
 # --- scenarios on the local chain; `admin` and `db` are fixtures for the tests that import them ---
@@ -188,34 +199,16 @@ def app_world(settings: Settings | None = None):
     return client, overrides[get_onchain_admin](), overrides[get_db_session]()
 
 
-def synced_market(db: DbSession, admin: OnchainAdmin) -> tuple[Market, dict]:
-    """An ACTIVE binary market on the local CTF, plus the upstream document it
-    was synced from (what `resolve_yes` later mirrors)."""
-    suffix = secrets.token_hex(4)
-    pm = {
-        "id": secrets.randbits(32),
-        "conditionId": "0x" + secrets.token_hex(32),
-        "question": f"Sponsored claim {suffix}?",
-        "description": "d",
-        "slug": f"sponsored-claim-{suffix}",
-        "startDate": "2020-01-01T00:00:00Z",
-        "endDate": "2020-01-02T00:00:00Z",
-        "active": True,
-        "closed": False,
-        "tokens": [{"token_id": str(secrets.randbits(64)), "outcome": o} for o in ("Yes", "No")],
-    }
-    with db.write() as conn:
-        return create_polymarket_markets_if_needed(conn, [pm], admin)[0], pm
+def synced_market(db: DbSession, admin: OnchainAdmin) -> Market:
+    """An ACTIVE binary market on the local CTF, created as the sync creates one."""
+    upstream = parse(gamma_row(question=f"Sponsored claim {secrets.token_hex(4)}?"))
+    assert isinstance(upstream, UpstreamMarket)
+    return create_markets(db, admin, [upstream])[0]
 
 
-def resolve_yes(db: DbSession, admin: OnchainAdmin, *pms: dict) -> None:
-    """Mirror an upstream YES win for each of `pms`: `reportPayouts` on chain, then RESOLVED."""
-    upstream = {}
-    for pm in pms:
-        tokens = [dict(t, winner=(i == 0)) for i, t in enumerate(pm["tokens"])]
-        upstream[pm["conditionId"]] = dict(pm, closed=True, tokens=tokens)
-    with db.write() as conn:
-        mirror_polymarket_resolutions(conn, admin, fetcher=upstream.get, now=9_999_999_999)
+def resolve_yes(db: DbSession, admin: OnchainAdmin, *markets: Market) -> None:
+    """A YES win for each of `markets`: `reportPayouts` on chain, then RESOLVED."""
+    pay_out(db, admin, {m.market_id: (1, 0) for m in markets})
 
 
 def new_account(db: DbSession, *, auto_redeem: bool | None = None) -> User:
@@ -251,10 +244,10 @@ def split(db: DbSession, admin: OnchainAdmin, user: User, market: Market, amount
 def dry_winner(db: DbSession, admin: OnchainAdmin, amount=100_000_000) -> tuple[Market, User]:
     """`(market, user)`: `user` split `amount` on a market whose YES side has
     won since, and holds no native coin -- the claim that needs a top-up."""
-    market, pm = synced_market(db, admin)
+    market = synced_market(db, admin)
     user = onboarded_account(db, admin)
     split(db, admin, user, market, amount)
-    resolve_yes(db, admin, pm)
+    resolve_yes(db, admin, market)
     drain_native_balance(admin, user.eth_address)
     return market, user
 

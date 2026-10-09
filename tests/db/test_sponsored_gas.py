@@ -23,12 +23,3 @@ def test_reservation_is_refused_once_the_budget_is_used():
     assert TableRead.sponsored_gas_used(conn, "k", 200) == 1_200
     assert TableWrite.reserve_sponsored_gas(conn, "k", 201, 600, 1_000)      # a new day starts at 0
     conn.close()
-
-
-def test_non_bot_api_keys_drops_the_house_and_unknown_keys():
-    conn = fresh_test_conn()
-    _u, _a, human = TableWrite.create_user(conn, email="h@example.com", password_hash=None, handle=None)
-    _u2, _a2, house = TableWrite.create_user(conn, email="house@example.com", password_hash=None, handle=None)
-    TableWrite.mark_user_as_bot(conn, house)
-    assert TableRead.non_bot_api_keys(conn, [human, house, "nope"]) == {human}
-    conn.close()

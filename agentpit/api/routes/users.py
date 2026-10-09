@@ -27,6 +27,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.liquidity import feed
 from agentpit.domain.exceptions import HandleAlreadyExistsError, UserNotFoundError
 
 router = APIRouter(tags=["users"])
@@ -124,7 +125,7 @@ def list_my_agent_orders(
     ids = list({o.market for o in open_orders})
     with db.read() as conn:
         markets = {m.condition_id.value: m for m in TableRead.list_markets_filtered(conn, condition_ids=ids, limit=len(ids))}
-        contexts = TableRead.market_contexts(conn, ids)
+        contexts = TableRead.market_contexts(conn, ids, feed.sided())
     return [
         TitledOpenOrder(**o.model_dump(), **contexts[o.market].model_dump(), title=markets[o.market].question, url=markets[o.market].url)
         for o in open_orders

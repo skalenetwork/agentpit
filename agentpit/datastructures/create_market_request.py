@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+import secrets
 import time
 
 from agentpit.common import check_state
@@ -22,6 +23,9 @@ class CreateMarketRequest(BaseModel):
     polymarket_yes_token_id: str | None = None
     polymarket_no_token_id: str | None = None
     condition_id: ConditionId | None = None
+    question_id: str = Field(
+        default_factory=lambda: "0x" + secrets.token_hex(32), pattern=r"^0x[0-9a-f]{64}$"
+    )
     state: MarketState = MarketState.DRAFT
     event_id: int | None = None
     outcome_label: str | None = None

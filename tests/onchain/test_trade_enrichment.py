@@ -2,21 +2,10 @@
 populated, MAKER_ORDERS carries USER_ID owner + maker_address."""
 
 import json
-import secrets
 import uuid
 
-from fastapi.testclient import TestClient
-
-from agentpit.api.app import create_app
-from agentpit.config import Settings
-from agentpit.db.session import DbSession
-from agentpit.db.table_read import TableRead
-from agentpit.onchain.admin import OnchainAdmin
-from agentpit.onchain.contracts import Contracts
-from agentpit.onchain.deployment import Deployment
-from agentpit.onchain.web3_client import Web3Client
-
-from tests.onchain._helpers import ADMIN_HDR, fund_direct_sends, hdr, register
+from tests.db_helpers import fresh_test_db
+from tests.onchain._helpers import create_market, fresh_client, hdr, house, register
 
 
 def _hdr(t):
@@ -30,37 +19,35 @@ def _email():
     return f"e2e-{uuid.uuid4().hex[:8]}@example.com"
 
 
-def test_trade_row_is_owner_attributed():
-    app = create_app()
-    client = TestClient(app)
-    ra = register(client, _email())
-    b_email = _email()
-    rb = register(client, b_email)
-    ta, tb = ra["access_token"], rb["access_token"]
-    a_uid = ra["user"]["user_id"]
+def test_trade_row_is_owner_attributed(house_book):
+    client = fresh_client()
+    ta = register(client, _email())["access_token"]
+    the_house = house(client)
 
-    market = client.post("/markets", json={
-        "question": f"Enrich {secrets.token_hex(4)}?", "description": "x",
-        "outcome_labels": ["YES", "NO"], "state": "ACTIVE"}, headers=ADMIN_HDR).json()
+    market = create_market(client)
     yes = market["erc1155_tokens"][0][0]
     cond = market["condition_id"]["value"]
+    house_book(yes, bids=(("0.6", "100"),), user=the_house)
 
-    settings = Settings()
-    d = Deployment.load(settings.deployment_path)
-    w = Web3Client(settings, d)
-    c = Contracts(w.web3, d)
-    admin = OnchainAdmin(w, c)
-    db = DbSession(settings.database_url)
-    with db.read() as conn:
-        user_b = TableRead.get_user_by_email(conn, b_email)
-    fund_direct_sends(client, user_b.eth_address)
-    admin.user_split_position(user_b.eth_key, bytes.fromhex(cond[2:]), 200_000_000)
+    # A sells YES @0.6 (taker) into the house's bid (maker) → settled fill.
+    client.post(
+        f"/markets/{market['market_id']}/split_position",
+        headers=_hdr(ta),
+        json={"amount": 100_000_000},
+    )
+    client.post(
+        "/order",
+        headers=_hdr(ta),
+        json={
+            "token_id": yes,
+            "side": "SELL",
+            "price": "0.6",
+            "size": 100,
+            "order_type": "FAK",
+        },
+    )
 
-    # A rests a BUY YES @0.6 (maker); B SELLs YES @0.6 (taker) → settled match.
-    client.post("/order", headers=_hdr(ta), json={"token_id": yes, "side": "BUY", "price": "0.6", "size": 100})
-    client.post("/order", headers=_hdr(tb), json={"token_id": yes, "side": "SELL", "price": "0.6", "size": 100})
-
-    with db.read() as conn:
+    with fresh_test_db().read() as conn:
         row = conn.execute(
             "SELECT * FROM trades WHERE ASSET_ID = %s ORDER BY MATCH_TIME DESC LIMIT 1",
             (yes,),
@@ -68,8 +55,8 @@ def test_trade_row_is_owner_attributed():
     assert row["MARKET"] == cond                  # condition_id, not token_id
     assert row["ASSET_ID"] == yes
     makers = json.loads(row["MAKER_ORDERS"])
-    assert makers[0]["owner"] == a_uid            # USER_ID, not eth/api_key
-    assert makers[0]["maker_address"].startswith("0x")
+    assert makers[0]["owner"] == the_house.user_id  # USER_ID, not eth/api_key
+    assert makers[0]["maker_address"] == the_house.eth_address
     assert makers[0]["asset_id"] == yes
-    assert row["TAKER_API_KEY"] and row["MAKER_API_KEY"]
+    assert row["TAKER_API_KEY"] and row["MAKER_API_KEY"] == the_house.api_key
     assert row["TAKER_API_KEY"] != row["MAKER_API_KEY"]
