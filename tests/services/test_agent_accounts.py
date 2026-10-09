@@ -130,55 +130,25 @@ def test_an_api_agent_that_cannot_be_funded_is_not_left_behind():
         assert TableRead.agents_owned_by(conn, OWNER) == []
 
 
-def test_an_api_agent_refused_by_the_breaker_is_not_left_behind():
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(AdminGasPausedError(), id="breaker-refused"),
+        pytest.param(InsufficientGasError("the wallet could not pay for its onboarding"), id="wallet-could-not-pay"),
+        pytest.param(GasTopUpTimeoutError(), id="top-up-timed-out"),
+        # The fee rose twice while its approvals were being sent: a 503 "try
+        # again", like a top-up that timed out, so the half-made agent goes too.
+        pytest.param(GasPriceMovedError(), id="gas-price-moved"),
+    ],
+)
+def test_an_api_agent_refused_by_the_chain_is_not_left_behind(error):
     db = fresh_test_db()
 
-    def paused(_user_id: str, _acct: LocalAccount) -> User:
-        raise AdminGasPausedError()
+    def refuse(_user_id: str, _acct: LocalAccount) -> User:
+        raise error
 
-    with pytest.raises(AdminGasPausedError):
-        AgentAccounts(db, paused).create_api_agent(OWNER)
-
-    with db.read() as conn:
-        assert TableRead.agents_owned_by(conn, OWNER) == []
-
-
-def test_an_api_agent_whose_wallet_could_not_pay_is_not_left_behind():
-    db = fresh_test_db()
-
-    def dry(_user_id: str, _acct: LocalAccount) -> User:
-        raise InsufficientGasError("the wallet could not pay for its onboarding")
-
-    with pytest.raises(InsufficientGasError):
-        AgentAccounts(db, dry).create_api_agent(OWNER)
-
-    with db.read() as conn:
-        assert TableRead.agents_owned_by(conn, OWNER) == []
-
-
-def test_an_api_agent_whose_top_up_timed_out_is_not_left_behind():
-    db = fresh_test_db()
-
-    def busy(_user_id: str, _acct: LocalAccount) -> User:
-        raise GasTopUpTimeoutError()
-
-    with pytest.raises(GasTopUpTimeoutError):
-        AgentAccounts(db, busy).create_api_agent(OWNER)
-
-    with db.read() as conn:
-        assert TableRead.agents_owned_by(conn, OWNER) == []
-
-
-def test_an_api_agent_whose_gas_price_moved_is_not_left_behind():
-    """The fee rose twice while its approvals were being sent: a 503 "try
-    again", like a top-up that timed out, so the half-made agent goes too."""
-    db = fresh_test_db()
-
-    def moved(_user_id: str, _acct: LocalAccount) -> User:
-        raise GasPriceMovedError()
-
-    with pytest.raises(GasPriceMovedError):
-        AgentAccounts(db, moved).create_api_agent(OWNER)
+    with pytest.raises(type(error)):
+        AgentAccounts(db, refuse).create_api_agent(OWNER)
 
     with db.read() as conn:
         assert TableRead.agents_owned_by(conn, OWNER) == []
