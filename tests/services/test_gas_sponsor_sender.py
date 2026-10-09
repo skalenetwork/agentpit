@@ -5,9 +5,8 @@
 sender's in-flight slots, stall healing or receipt polling. `_Admin` is an
 `OnchainAdmin` whose `fund_gas` is the real one, with just enough of the rest to
 run the sponsor; the sender's sleeps are the fake chain's virtual clock, so 30 s
-cost milliseconds. Numbers: the fake node's price is 200,000 wei, an estimate is
-100,000 gas (a limit of 120,000, a need of 24,000,000,000 wei), a mined user call
-uses 80,000 gas.
+cost milliseconds. Numbers: price 200,000 wei, an estimate of 100,000 gas (a
+limit of 120,000), 80,000 gas used per mined user call.
 """
 
 from collections import defaultdict
@@ -72,9 +71,7 @@ class _Admin(OnchainAdmin):
     def native_balance(self, address: str) -> int:
         return sum(self.topped_up(address, mined=True)) - self.spent[address.lower()]
 
-    def send_as_user(
-        self, user_account, fn, *, gas, max_fee, timeout=30, on_signed=None
-    ):
+    def send_as_user(self, user_account, fn, *, gas, max_fee, **_):
         address = user_account.address
         if self.native_balance(address) < gas * max_fee:
             raise _refused(SKALED_BALANCE_LOW)
@@ -83,11 +80,9 @@ class _Admin(OnchainAdmin):
         return AttributeDict({"status": 1, "gasUsed": GAS_USED})
 
 
-def _setup(*, mine_on_sleep: bool, **sender_kw):
+def _setup(**sender_kw):
     chain = FakeSkaled()
-    sender, _account, clock = make_sender(
-        chain, mine_on_sleep=mine_on_sleep, max_in_flight=4, **sender_kw
-    )
+    sender, _, clock = make_sender(chain, max_in_flight=4, **sender_kw)
     return chain, sender, clock, _Admin(chain, sender)
 
 
@@ -120,10 +115,9 @@ def test_the_sponsor_passes_its_timeout_as_the_slot_timeout():
     # `OnchainAdmin.fund_gas` is the one place that sets the bound.
     sender = create_autospec(AdminTxSender, instance=True)
     admin = OnchainAdmin(SimpleNamespace(admin_sender=sender), None)  # type: ignore[arg-type]
-    admin.fund_gas("0x" + "11" * 20, 5, timeout=7)
-    sender.send_value.assert_called_once_with(
-        "0x" + "11" * 20, 5, timeout=7, slot_timeout=7
-    )
+    address = "0x" + "11" * 20
+    admin.fund_gas(address, 5, timeout=7)
+    sender.send_value.assert_called_once_with(address, 5, timeout=7, slot_timeout=7)
 
 
 @pytest.mark.parametrize("kind", ["claim", "split"])
@@ -131,7 +125,7 @@ def test_a_top_up_the_node_lost_is_a_retryable_503_and_the_next_send_funds_once(
     # The node said OK to the top-up and never queued it. The sender fills the
     # nonce with a gap filler and reports `TxDropped`; the sponsor answers "busy,
     # try again" (503) and, as nothing mined, hands a split's reservation back.
-    chain, _sender, _clock, admin = _setup(mine_on_sleep=True, stall_after=5)
+    chain, _, _, admin = _setup(stall_after=5)
     db = fresh_test_db()
     user = _user(db)
     chain.lose.add(0)  # the first transaction the admin sends
