@@ -5,6 +5,8 @@ Models the rules the sender depends on (skaled 5.2.0-beta.1):
   invisible to it.
 - With MTM on, any nonce >= committed is accepted and waits until the gap
   below it is filled; with MTM off only nonce == committed is accepted.
+- A transaction priced under the current price (`fee`) is refused, before
+  its nonce or the queue is looked at.
 - A taken nonce is refused (no replace-by-fee); a duplicate hash is refused.
 - `mine()` cuts one block holding every contiguous nonce per sender.
 - A JSON-RPC batch of `eth_sendRawTransaction` is imported one item after
@@ -53,6 +55,9 @@ class FakeSkaled:
         self.estimate_errors: list[Exception] = []
         self.pending_errors: list[Exception] = []  # raised by pending_hashes
         self.fee = (200_000, 0)
+        # Native balance per address; anything unset is rich enough not to matter.
+        self.balances: dict[str, int] = {}
+        self.balance_calls = 0
         self.fee_calls = 0
         self.estimate_calls = 0
         self.nonce_calls = 0
@@ -99,6 +104,10 @@ class FakeSkaled:
         tx_hash = keccak(raw)
         if nonce in self.refuse:
             raise self.refuse.pop(nonce)
+        # skaled checks the price first (verifyTransaction): under the current
+        # eth_gasPrice is refused even when the node holds these very bytes.
+        if tx["maxFeePerGas"] < self.fee[0]:
+            raise FakeRpcError("Transaction gas price lower than current eth_gasPrice.")
         # skaled verifies the nonce BEFORE it looks at its queue
         # (Client::importTransaction), so a mined transaction sent again
         # is "Invalid transaction nonce", not "already in the blockchain".
@@ -148,6 +157,11 @@ class FakeSkaled:
         with self._lock:
             return [self.mined.get(bytes(h)) for h in tx_hashes]
 
+    def balance(self, address: str) -> int:
+        with self._lock:
+            self.balance_calls += 1
+            return self.balances.get(address, 10**24)
+
     def estimate_gas(self, tx: dict) -> int:
         with self._lock:
             self.estimate_calls += 1
@@ -184,6 +198,10 @@ class FakeSkaled:
                             "blockNumber": self.block,
                             "nonce": item["nonce"],
                             "gas": item["tx"]["gas"],
+                            # The whole limit counts as used, at the max fee (skaled
+                            # bills the price in full): a send's cost is exact.
+                            "gasUsed": item["tx"]["gas"],
+                            "effectiveGasPrice": item["tx"]["maxFeePerGas"],
                         }
                     )
                     self.committed[item["sender"]] += 1

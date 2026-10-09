@@ -5,7 +5,7 @@ transactions in one block, provided the client hands them over without
 waiting for each receipt. The old `send_admin_tx` held one lock from the nonce
 read to the receipt, so the admin key landed exactly one transaction per block
 (~4.6 s each) and the market sync, user settlement (`matchOrders`), faucet and
-gas grants all queued behind one another.
+users' gas top-ups all queued behind one another.
 
 skaled behaviour this relies on (tag 5.2.0-beta.1, checked 2026-10-06):
 - `eth_getTransactionCount(addr, "pending")` is the COMMITTED nonce: queued
@@ -18,6 +18,10 @@ skaled behaviour this relies on (tag 5.2.0-beta.1, checked 2026-10-06):
   answers null (libweb3jsonrpc/Eth.cpp, ClientBase.cpp). The queue is visible
   in `eth_pendingTransactions`, but only its current part: a transaction
   parked behind a nonce gap is not listed (Client::pending).
+- The fee billed is `maxFeePerGas` in full, so every transaction is priced at
+  the current `eth_gasPrice` with no headroom (`current_fee_params`). The
+  price is checked before the nonce and the queue: a transaction under it is
+  refused, and a queued one is dropped once the price rises past it.
 
 Nonce, sign and broadcast happen under the send lock, normally one round trip;
 the retries of a refused send, the resend after a lost answer and healing a
@@ -43,6 +47,7 @@ from web3.contract.contract import ContractFunction
 from web3.exceptions import TimeExhausted
 from web3.types import TxReceipt
 
+from agentpit.domain.exceptions import AdminGasPausedError
 from agentpit.onchain.chain_rpc import (
     BatchUnanswered,
     ChainRpc,
@@ -56,7 +61,9 @@ log = logging.getLogger(__name__)
 # Transactions per broadcast batch. `submit_many` also keeps a batch within
 # `max_in_flight`, since every one of them takes a slot.
 _SEND_BATCH = 100
-_TRANSFER_GAS = 21_000
+# A plain native-token transfer. Public: `UserGasSponsor` books each gas
+# top-up it sends at this figure.
+TRANSFER_GAS = 21_000
 # How long an estimate that reverted waits for our in-flight txs to land.
 _DRAIN_TIMEOUT_S = 60.0
 # Receipts nobody collected (their waiter timed out) are forgotten after this.
@@ -105,6 +112,7 @@ class _Entry:
     __slots__ = (
         "pending",
         "sent_at",
+        "value",
         "receipt",
         "superseded_by",
         "dropped",
@@ -112,9 +120,12 @@ class _Entry:
         "suspect_since",
     )
 
-    def __init__(self, pending: PendingTx, sent_at: float):
+    def __init__(self, pending: PendingTx, sent_at: float, value: int = 0):
         self.pending = pending
         self.sent_at = sent_at
+        # The native value the transaction sends (a gas top-up is all value);
+        # the breaker's cached balance loses it along with the gas.
+        self.value = value
         self.receipt: TxReceipt | None = None
         self.superseded_by: bytes | None = None
         self.dropped = False
@@ -135,6 +146,10 @@ class AdminTxSender:
     `submit` now and `wait_all` later. The sync hands a whole chunk of
     markets to `submit_many`, one JSON-RPC batch, so it lands in one or two
     blocks after one round trip.
+
+    The admin key pays for users' fills and gas top-ups, so the sender also keeps a
+    breaker on its balance (`alarm_gas`, `stop_gas`): below `stop_gas` every
+    send but an `essential` one is refused before anything is broadcast.
     """
 
     def __init__(
@@ -150,6 +165,8 @@ class AdminTxSender:
         slot_timeout: float = 120.0,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        alarm_gas: int = 0,
+        stop_gas: int = 0,
     ):
         if max_in_flight < 1:
             raise ValueError("max_in_flight must be at least 1")
@@ -168,7 +185,9 @@ class AdminTxSender:
         # nonce + sign + broadcast. Re-entrant because healing a stalled nonce
         # sends from inside a poll that a sender may already be in.
         self._send_lock = threading.RLock()
-        self._state = threading.Lock()  # guards _entries
+        # Guards _entries. Lock order: _state, then _gas_lock; never take _state
+        # while holding _gas_lock.
+        self._state = threading.Lock()
         self._reap_lock = threading.Lock()  # one receipt poll at a time
         self._entries: dict[bytes, _Entry] = {}
         self._next_nonce: int | None = None
@@ -181,6 +200,13 @@ class AdminTxSender:
         # A restart or a second writer can leave this many of our nonces taken.
         self._max_skips = 2 * max_in_flight + 16
         self._last_stall_check = float("-inf")
+        # The breaker's floors, in gas valued at the current price (0 = off).
+        self._alarm_gas = alarm_gas
+        self._stop_gas = stop_gas
+        self._gas_lock = threading.Lock()  # guards _admin_balance
+        # Unknown until the first refresh, and unknown means allowed: a node we
+        # cannot read must not stop trading.
+        self._admin_balance: int | None = None
 
     @property
     def address(self) -> str:
@@ -190,10 +216,67 @@ class AdminTxSender:
     def max_in_flight(self) -> int:
         return self._max_in_flight
 
+    # --- admin-gas breaker ------------------------------------------
+
+    def refresh_gas_balance(self) -> int:
+        """Read the admin balance from the node and make it the breaker's figure."""
+        balance = self._rpc.balance(self.address)
+        with self._gas_lock:
+            self._admin_balance = balance
+        return balance
+
+    def gas_state(self) -> str:
+        """'unknown' before the first refresh; then 'paused' below `stop_gas`
+        worth of gas at the current price, 'low' below `alarm_gas`, else 'ok'."""
+        with self._gas_lock:
+            balance = self._admin_balance
+        if balance is None:
+            return "unknown"
+        price = self._fee_params()[0]
+        if self._stop_gas and balance < self._stop_gas * price:
+            return "paused"
+        if self._alarm_gas and balance < self._alarm_gas * price:
+            return "low"
+        return "ok"
+
+    def check_sponsored(self) -> None:
+        """Raise `AdminGasPausedError` while sponsored sends are refused."""
+        if self._stop_gas and self.gas_state() == "paused":
+            raise AdminGasPausedError()
+
+    def _gate(self, essential: bool) -> None:
+        # Sponsored by default, so a new admin-paid feature is covered without
+        # anyone remembering to opt it in. Only the oracle, the catalogue sync
+        # and the settlement of an already-admitted placement pass essential=True.
+        if not essential:
+            self.check_sponsored()
+
+    def _debit(self, receipt, value: int = 0) -> None:
+        """Take a mined send's cost off the cached balance, so a burst between
+        two refreshes still trips the breaker: its gas, plus the `value` it
+        sent unless it reverted (a gas top-up is all value). Fillers and
+        receipts nobody waits for are not debited; the next refresh corrects
+        for them."""
+        used = receipt.get("gasUsed")
+        price = receipt.get("effectiveGasPrice")
+        if used is None or price is None:
+            return
+        cost = int(used) * int(price)
+        if receipt.get("status") == 1:
+            cost += value
+        with self._gas_lock:
+            if self._admin_balance is not None:
+                self._admin_balance -= cost
+
     # --- sending ----------------------------------------------------
 
     def submit(
-        self, fn: ContractFunction, *, gas: int | None = None, gas_buffer_pct: int = 20
+        self,
+        fn: ContractFunction,
+        *,
+        gas: int | None = None,
+        gas_buffer_pct: int = 20,
+        essential: bool = False,
     ) -> PendingTx:
         """Broadcast `fn(...)` and return without waiting for it to mine.
 
@@ -201,15 +284,31 @@ class AdminTxSender:
         `gas_buffer_pct` is used. An estimate runs on committed state, so a
         transaction that depends on one of ours still in flight should pass
         a static limit.
+
+        Every public send takes `essential`: only an essential one goes out
+        while the admin-gas breaker is paused (`AdminGasPausedError` otherwise).
         """
+        self._gate(essential)
         return self._submit(self._call_base(fn), gas, gas_buffer_pct)
 
-    def submit_value(self, to: str, value_wei: int) -> PendingTx:
-        """Broadcast a plain native-token transfer."""
-        return self._submit(_value_base(to, value_wei), _TRANSFER_GAS, 0)
+    def submit_value(
+        self,
+        to: str,
+        value_wei: int,
+        *,
+        essential: bool = False,
+        slot_timeout: float | None = None,
+    ) -> PendingTx:
+        """Broadcast a plain native-token transfer. `slot_timeout` replaces the
+        sender's own wait for a free slot (send lock included) for this send:
+        a caller holding a lock meanwhile passes a shorter one."""
+        self._gate(essential)
+        return self._submit(
+            _value_base(to, value_wei), TRANSFER_GAS, 0, slot_timeout=slot_timeout
+        )
 
     def submit_many(
-        self, calls: list[tuple[ContractFunction, int]]
+        self, calls: list[tuple[ContractFunction, int]], *, essential: bool = False
     ) -> list[PendingTx | Exception]:
         """Broadcast many `(fn, static gas limit)` calls in JSON-RPC batches on
         consecutive nonces and return without waiting for any to mine.
@@ -219,7 +318,11 @@ class AdminTxSender:
         signed in one go. A call the node refuses is sent again on a later
         nonce, so callers must not rely on the calls running in the order
         given. `_BatchSend` says how each broadcast is settled.
+
+        A paused breaker refuses the whole call (`AdminGasPausedError`), not
+        item by item.
         """
+        self._gate(essential)
         items: list[tuple[dict, int] | Exception] = []
         for fn, gas in calls:
             try:
@@ -233,13 +336,14 @@ class AdminTxSender:
         return self._submit_many(items)
 
     def submit_values(
-        self, transfers: list[tuple[str, int]]
+        self, transfers: list[tuple[str, int]], *, essential: bool = False
     ) -> list[PendingTx | Exception]:
         """`submit_many` for plain native-token transfers `(to, value_wei)`."""
+        self._gate(essential)
         items: list[tuple[dict, int] | Exception] = []
         for to, value_wei in transfers:
             try:
-                items.append((_value_base(to, value_wei), _TRANSFER_GAS))
+                items.append((_value_base(to, value_wei), TRANSFER_GAS))
             except Exception as exc:
                 items.append(exc)
         return self._submit_many(items)
@@ -269,29 +373,58 @@ class AdminTxSender:
         timeout: float,
         gas: int | None = None,
         gas_buffer_pct: int = 20,
+        essential: bool = False,
     ) -> TxReceipt:
         """`submit` then `wait`: the receipt whatever its status."""
         return self.wait(
-            self.submit(fn, gas=gas, gas_buffer_pct=gas_buffer_pct), timeout=timeout
+            self.submit(
+                fn, gas=gas, gas_buffer_pct=gas_buffer_pct, essential=essential
+            ),
+            timeout=timeout,
         )
 
-    def send_value(self, to: str, value_wei: int, *, timeout: float) -> TxReceipt:
-        return self.wait(self.submit_value(to, value_wei), timeout=timeout)
+    def send_value(
+        self,
+        to: str,
+        value_wei: int,
+        *,
+        timeout: float,
+        essential: bool = False,
+        slot_timeout: float | None = None,
+    ) -> TxReceipt:
+        """`submit_value` then `wait`: the receipt whatever its status. With a
+        `slot_timeout`, the slot wait is capped at it and counts against
+        `timeout`, which then bounds the whole call."""
+        started = self._clock()
+        pending = self.submit_value(
+            to, value_wei, essential=essential, slot_timeout=slot_timeout
+        )
+        if slot_timeout is not None:
+            timeout = max(0.0, timeout - (self._clock() - started))
+        return self.wait(pending, timeout=timeout)
 
-    def _submit(self, base: dict, gas: int | None, gas_buffer_pct: int) -> PendingTx:
+    def _submit(
+        self,
+        base: dict,
+        gas: int | None,
+        gas_buffer_pct: int,
+        *,
+        slot_timeout: float | None = None,
+    ) -> PendingTx:
         if gas is None:
             gas = self._estimate(base) * (100 + gas_buffer_pct) // 100
+        limit = self._slot_timeout if slot_timeout is None else slot_timeout
         # One deadline for the whole wait, set before queueing on the send
         # lock: submitters queued behind each other share it instead of each
         # starting its own once it finally holds the lock.
-        deadline = self._clock() + self._slot_timeout
+        deadline = self._clock() + limit
         if not self._send_lock.acquire(timeout=max(0.0, deadline - self._clock())):
             raise TimeExhausted(
-                f"no free admin transaction slot after {self._slot_timeout:g}s "
+                f"no free admin transaction slot after {limit:g}s "
                 "(queued behind other submitters)"
             )
         try:
-            self._wait_for_slot(deadline)
+            self._wait_for_slot(deadline, limit=limit)
             return self._sign_and_send(base, gas)
         finally:
             self._send_lock.release()
@@ -386,6 +519,7 @@ class AdminTxSender:
         even connect (`failed_before_connecting`), the node never saw one, so
         the send was refused and its nonce stays free.
         """
+        value = int(base.get("value") or 0)  # kept on the entry for the breaker
         skips = 0
         resynced = fee_refreshed = False
         # Set by an unanswered send: (raw, tx_hash, nonce, that send's error).
@@ -416,13 +550,13 @@ class AdminTxSender:
             except Exception as exc:
                 error = exc
             else:
-                return self._accept(tx_hash, nonce)
+                return self._accept(tx_hash, nonce, value)
             kind = classify_send_error(error)
             if pinned is not None:
                 # The answer to a resend of pinned bytes.
                 never_connected = never_connected and failed_before_connecting(error)
                 if kind is SendError.DUPLICATE:
-                    return self._accept(tx_hash, nonce)
+                    return self._accept(tx_hash, nonce, value)
                 if (
                     kind is SendError.NONCE_TAKEN
                     and not waited
@@ -446,7 +580,7 @@ class AdminTxSender:
                     # already MINED is answered like this. Look for our receipt.
                     mined, committed = self._own_receipt(tx_hash)
                     if mined:
-                        return self._accept(tx_hash, nonce)
+                        return self._accept(tx_hash, nonce, value)
                     with self._state:
                         below = {
                             h
@@ -485,7 +619,7 @@ class AdminTxSender:
                 # nonce as used and keep watching the FIRST hash (stall
                 # healing marks it dropped if it never mines), and raise
                 # TxUnknown from the first error.
-                raise TxUnknown(self._accept(tx_hash, nonce)) from pinned[3]
+                raise TxUnknown(self._accept(tx_hash, nonce, value)) from pinned[3]
             if kind is SendError.TRANSPORT:
                 # No answer. A queued transaction is invisible to a lookup by
                 # hash, so send the identical bytes once more: same hash, same
@@ -494,7 +628,7 @@ class AdminTxSender:
                 never_connected = failed_before_connecting(error)
                 continue
             if kind is SendError.DUPLICATE:
-                return self._accept(tx_hash, nonce)
+                return self._accept(tx_hash, nonce, value)
             if kind is SendError.NONCE_TAKEN and skips < self._max_skips:
                 # A restart or a second writer left a transaction on this
                 # nonce. Ours was refused, so the next nonce is free to try.
@@ -586,10 +720,10 @@ class AdminTxSender:
             }
         )
 
-    def _accept(self, tx_hash: bytes, nonce: int) -> PendingTx:
+    def _accept(self, tx_hash: bytes, nonce: int, value: int = 0) -> PendingTx:
         pending = PendingTx(tx_hash=tx_hash, nonce=nonce)
         with self._state:
-            self._entries[tx_hash] = _Entry(pending, self._clock())
+            self._entries[tx_hash] = _Entry(pending, self._clock(), value)
         # Never back: a batch may settle an early nonce after later ones (a
         # receipt lookup comes last), and every nonce up to the highest one
         # accepted is used. The single path moves the counter back on its
@@ -600,20 +734,32 @@ class AdminTxSender:
 
     def _fee_params(self) -> tuple[int, int]:
         now = self._clock()
-        if self._fees is None or now - self._fees[2] > self._fee_ttl:
+        # One read of the cache: `gas_state` calls this without the send lock,
+        # and a send under it may clear `_fees` at any point.
+        fees = self._fees
+        if fees is None or now - fees[2] > self._fee_ttl:
             max_fee, priority = self._rpc.fee_params()
-            self._fees = (max_fee, priority, now)
-        return self._fees[0], self._fees[1]
+            fees = self._fees = (max_fee, priority, now)
+        return fees[0], fees[1]
 
-    def _wait_for_slot(self, deadline: float | None = None, need: int = 1) -> None:
-        """Poll until `need` slots are free (a batch takes one per item)."""
+    def _wait_for_slot(
+        self,
+        deadline: float | None = None,
+        need: int = 1,
+        *,
+        limit: float | None = None,
+    ) -> None:
+        """Poll until `need` slots are free (a batch takes one per item).
+        `limit` is the bound `deadline` was set from, for the error message."""
+        if limit is None:
+            limit = self._slot_timeout
         if deadline is None:
-            deadline = self._clock() + self._slot_timeout
+            deadline = self._clock() + limit
         while self._in_flight_count() + need > self._max_in_flight:
             if self._clock() >= deadline:
                 raise TimeExhausted(
                     f"no {need} free admin transaction slot(s) after "
-                    f"{self._slot_timeout:g}s ({self._max_in_flight} in flight)"
+                    f"{limit:g}s ({self._max_in_flight} in flight)"
                 )
             self.poll()
             self._sleep(self._poll_interval)
@@ -670,6 +816,8 @@ class AdminTxSender:
                         )
                     elif entry.receipt is not None:
                         results[tx_hash] = entry.receipt
+                        # _state, then _gas_lock
+                        self._debit(entry.receipt, entry.value)
                         del self._entries[tx_hash]
                     elif entry.dropped:
                         results[tx_hash] = TxDropped(
@@ -818,7 +966,7 @@ class AdminTxSender:
         why: str = "stalled (the node lost the transaction)",
         level: int = logging.ERROR,
     ) -> PendingTx | None:
-        signed = self._sign(_filler_base(self.address), nonce, _TRANSFER_GAS)
+        signed = self._sign(_filler_base(self.address), nonce, TRANSFER_GAS)
         try:
             self._rpc.send_raw(bytes(signed.raw_transaction))
         except Exception as exc:
@@ -842,7 +990,7 @@ class AdminTxSender:
             return [self._send_filler(nonces[0])]
         fees = self._fee_params()
         base = _filler_base(self.address)
-        signed = [self._sign(base, n, _TRANSFER_GAS, fees) for n in nonces]
+        signed = [self._sign(base, n, TRANSFER_GAS, fees) for n in nonces]
         try:
             answers = self._rpc.send_raw_batch(
                 [bytes(s.raw_transaction) for s in signed]
@@ -1031,6 +1179,10 @@ class _BatchSend:
             if s._next_nonce is None:
                 s._next_nonce = s._rpc.nonce(s.address, "pending")
             self._first = s._next_nonce
+            # Read afresh: with no headroom over the price, a cached one the
+            # node has since raised gets every item refused, and each then
+            # goes out again on its own. One read per batch.
+            s._fees = None
             self._fees = s._fee_params()
             signed = [
                 s._sign(base, self._first + i, gas, self._fees)
@@ -1071,15 +1223,21 @@ class _BatchSend:
         self._settle_refused(refused, answers)
         return self._results, self._stop  # type: ignore[return-value]
 
+    def _value(self, i: int) -> int:
+        """The native value item `i` sends."""
+        return int(self._items[i][0].get("value") or 0)
+
     def _take(self, i: int) -> None:
         self._counted[i] = True
-        self._results[i] = self._s._accept(self._hashes[i], self._first + i)
+        self._results[i] = self._s._accept(
+            self._hashes[i], self._first + i, self._value(i)
+        )
 
     def _unknowable(self, i: int, first_error: Exception) -> None:
         # Count the nonce and track the hash: it mines, or the stall healer
         # fills its nonce and reports it dropped.
         self._counted[i] = True
-        self._s._accept(self._hashes[i], self._first + i)
+        self._s._accept(self._hashes[i], self._first + i, self._value(i))
         self._results[i] = first_error
         self._stop = self._stop or first_error
 
@@ -1215,8 +1373,12 @@ class _BatchSend:
         # Re-signed at the batch's own fees, an item on its batch nonce is the
         # batch's very bytes (signatures are deterministic): were the batch
         # taken after all, the node answers "already known" rather than
-        # meeting a second copy of the action on a later nonce. A fee refusal
-        # clears the pin (`_sign_and_send`).
+        # meeting a second copy of the action on a later nonce. That holds
+        # only while the price has not risen past the batch's: its fee is the
+        # price read for it, with no headroom, and the node checks the price
+        # before its queue. A fee refusal clears the pin (`_sign_and_send`)
+        # and leaves this rule's trust alone; the window is the one round
+        # trip since the batch read its price.
         s._pinned_fees = self._fees
         refused_too: Exception | None = None
         try:

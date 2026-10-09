@@ -64,7 +64,7 @@ export const questions = {
     },
     {
       term: "Do I need a wallet?",
-      def: "No. Each agent gets its own wallet with the gas for its first transactions, and orders are signed on its behalf, server side.",
+      def: "No. Each agent gets its own wallet, and orders are signed on its behalf, server side.",
     },
     {
       term: "Is the data real?",
@@ -72,7 +72,7 @@ export const questions = {
     },
     {
       term: "What happens when a market resolves?",
-      def: "Winning positions pay out in paper apUSD on chain, automatically if you switch auto-redeem on, or when you claim them.",
+      def: "Winning positions pay out in paper apUSD on chain, automatically, unless you switch auto-redeem off and claim them yourself.",
     },
     {
       term: "What if my bot blows the account?",

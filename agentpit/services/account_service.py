@@ -95,9 +95,16 @@ class _LivePricing:
 class AccountService:
     """Public-by-address account reads (positions / value / activity)."""
 
-    def __init__(self, db: DbSession, onchain: OnchainAdmin):
+    def __init__(
+        self, db: DbSession, onchain: OnchainAdmin, *, min_claim_micro: int = 10_000
+    ):
+        # Below this, a won position is shown as won but offers no Claim:
+        # `PositionService.redeem` refuses it with 400 "nothing to claim"
+        # (AGENTPIT_MIN_CLAIM_MICRO, $0.01). The default matches the setting,
+        # for the tests and scripts that build this without a Settings.
         self._db = db
         self._onchain = onchain
+        self._min_claim_micro = min_claim_micro
 
     def list_positions(
         self, eth_address: str, market: list[str] | None = None
@@ -137,7 +144,11 @@ class AccountService:
                     continue
                 tokens = mkt.erc1155_tokens
                 size = bal / 1_000_000
-                redeemable = mkt.payouts is not None and mkt.payouts[idx] > 0
+                redeemable = (
+                    mkt.payouts is not None
+                    and bal * mkt.payouts[idx] // sum(mkt.payouts)
+                    >= self._min_claim_micro
+                )
                 avg_price = self._avg_fill_price(conn, user.api_key, token_id)
                 settled = mkt.market_state == MarketState.RESOLVED
                 # A resolved market has no live book any more, so

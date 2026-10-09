@@ -10,7 +10,12 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import HandleAlreadyExistsError, OnboardingError, UserNotFoundError
+from agentpit.domain.exceptions import (
+    SPONSORED_GAS_REFUSALS,
+    HandleAlreadyExistsError,
+    OnboardingError,
+    UserNotFoundError,
+)
 from agentpit.domain.handles import pick_handle
 from agentpit.domain.runner import is_clawbits
 
@@ -44,7 +49,7 @@ class AgentAccounts:
             raise UserNotFoundError()
         try:
             return self.ready(created)
-        except OnboardingError:
+        except (OnboardingError, *SPONSORED_GAS_REFUSALS):
             with self._db.write() as conn:
                 TableWrite.delete_agent(conn, user_id, int(time.time()))
             raise
@@ -107,5 +112,4 @@ class AgentAccounts:
             agent_host=host,
             agent_client=client,
         )
-        TableWrite.set_auto_redeem(conn, user_id, True)
         return user_id

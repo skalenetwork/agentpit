@@ -197,23 +197,18 @@ class Settings(BaseSettings):
     )
     operator_private_key: str | None = Field(default=None, validation_alias="PK")
     rpc_url_override: str | None = Field(default=None, validation_alias="RPC_URL")
-    # Gas for the three transactions a new account must send before it can
-    # trade: approve(exchange), approve(ctf), setApprovalForAll(exchange).
-    # Measured at 138,946 gas across all 16 accounts on the production chain.
-    # At SKALE Base's 47.6 gwei that is 0.0066 native; this is 3x that, which
-    # also covers a few later claims at 91,743 gas each. The previous default
-    # was 10**18 — 21,000,000 gas, 150x the need — which cost $0.25 a signup
-    # on a chain where the native coin is bought with USDC.
-    signup_gas_grant_wei: int = Field(
-        default=2 * 10**16, validation_alias="AGENTPIT_SIGNUP_GAS_GRANT_WEI"
-    )
+    # Users get no gas at signup (AGENTPIT_SIGNUP_GAS_GRANT_WEI is gone; an old
+    # .env that sets it still loads): every transaction a user signs is topped
+    # up to exactly its own need (`UserGasSponsor`). The house is funded with
+    # exactly its approvals' gas.
+    #
     # True while the chain can be wiped out from under the database (a local
-    # anvil): a zero native balance then means "the chain forgot this account"
-    # and re-running onboarding is the repair. On a durable chain a zero balance
-    # means the opposite -- the account simply spent its gas -- and re-granting
-    # would turn login into a treasury faucet, repeatable by anyone willing to
-    # empty their own wallet. Set false before pointing at a real chain: the
-    # signup grant then becomes once per account rather than once per drain.
+    # anvil). There, an onboarded account the chain forgot (its nonce is 0;
+    # exact top-ups leave every wallet near zero, so a balance says nothing)
+    # is repaired by running onboarding again. On a durable chain the repair
+    # could only onboard an account twice, faucet drip included. Set false
+    # before pointing at a real chain; the chain id is checked as well
+    # (`is_disposable_chain`).
     simulated_chain: bool = Field(
         default=True, validation_alias="AGENTPIT_SIMULATED_CHAIN"
     )
@@ -229,6 +224,80 @@ class Settings(BaseSettings):
     # to 64 transactions in one batch.
     admin_tx_max_in_flight: int = Field(
         default=128, ge=1, le=256, validation_alias="AGENTPIT_ADMIN_TX_MAX_IN_FLIGHT"
+    )
+
+    # --- Admin-gas guards (owner decisions 2026-10-08) ----------------------
+    # The admin wallet pays for every fill (matchOrders) and, through exact
+    # top-ups, for the gas of every transaction a user signs (onboarding,
+    # split, merge, claim). Anything a user can trigger for free is a way to
+    # spend it.
+    # Smallest order a non-house account may place: its collateral leg
+    # (price x size) in micro-apUSD. 0 disables.
+    min_order_notional_micro: int = Field(
+        default=1_000_000, ge=0, validation_alias="AGENTPIT_MIN_ORDER_NOTIONAL_MICRO"
+    )
+    # Live GTC/GTD orders one non-house account may have resting at once.
+    max_live_orders_per_account: int = Field(
+        default=200, ge=1, validation_alias="AGENTPIT_MAX_LIVE_ORDERS_PER_ACCOUNT"
+    )
+    # Gas one non-house account may make the admin spend per UTC day. Fills
+    # (250k each, placements and sweeper fills alike) and sponsored split/merge
+    # top-ups are refused past it. Claims and onboarding are never refused,
+    # but their gas is booked to the same daily row. ~80 fills. 0 disables.
+    daily_sponsored_gas_per_account: int = Field(
+        default=20_000_000, ge=0, validation_alias="AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT"
+    )
+    # Admin-wallet floors, in GAS valued at the current eth_gasPrice, so the same
+    # numbers mean 20 / 5 CREDIT on mainnet (47.6 gwei) and do not trip on the
+    # testnet, where gas is ~476,000x cheaper. Below the alarm the balance loop
+    # logs ERROR; below the stop every sponsored admin send is refused and the
+    # sweeper leaves resting orders resting (only the oracle, the catalogue
+    # sync and the settlement of a fill already admitted still go out). 0
+    # disables either.
+    admin_gas_alarm_gas: int = Field(
+        default=420_000_000, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_ALARM_GAS"
+    )
+    admin_gas_stop_gas: int = Field(
+        default=105_000_000, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_STOP_GAS"
+    )
+    # How often the balance loop re-reads the admin balance. 0 disables the
+    # loop, and with it the breaker: nothing else ever reads the balance, it
+    # stays unknown, and unknown is allowed -- so a stop level above can never
+    # trip. Startup logs a WARNING for that combination.
+    admin_gas_check_interval_seconds: float = Field(
+        default=60.0, ge=0, validation_alias="AGENTPIT_ADMIN_GAS_CHECK_INTERVAL_SECONDS"
+    )
+
+    # --- User gas sponsorship (owner decisions 2026-10-08) -------------------
+    # Every transaction a user's key signs is preceded by an admin top-up of
+    # exactly what it needs: its estimate plus 20%, at the current
+    # eth_gasPrice, less what the wallet holds (UserGasSponsor).
+    # Kill switch for the claim/split/merge top-ups. Off, those transactions go
+    # out unfunded and a dry wallet gets 402. Onboarding is sponsored either
+    # way: without it no account or agent could ever be created.
+    sponsor_user_gas: bool = Field(
+        default=True, validation_alias="AGENTPIT_SPONSOR_USER_GAS"
+    )
+    # Ceiling on one top-up, in GAS valued at the current price (like the
+    # admin floors above). The largest real need is onboarding's three
+    # approvals, ~167k with the buffer; a top-up above this is a wrong
+    # estimate, raised as a bug rather than paid. At least 1: 0 would refuse
+    # every top-up, so every signup would fail.
+    max_topup_gas: int = Field(
+        default=1_000_000, ge=1, validation_alias="AGENTPIT_MAX_TOPUP_GAS"
+    )
+    # Smallest claim payout worth a sponsored redeemPositions, in micro-apUSD
+    # ($0.01). redeemPositions succeeds with zero holdings, so without a floor
+    # every losing or dust position would be a free way to spend admin gas.
+    # At least 1, so a position worth nothing never passes the gates.
+    min_claim_micro: int = Field(
+        default=10_000, ge=1, validation_alias="AGENTPIT_MIN_CLAIM_MICRO"
+    )
+    # Sponsored claims one auto-redeem pass sends before it stops; the rest
+    # wait for the next pass. The pass is serial at ~2 blocks per holder, so
+    # with auto-redeem on for everyone an uncapped pass would run for minutes.
+    auto_redeem_max_per_pass: int = Field(
+        default=20, ge=1, validation_alias="AGENTPIT_AUTO_REDEEM_MAX_PER_PASS"
     )
 
     # Admin

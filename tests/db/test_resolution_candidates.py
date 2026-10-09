@@ -29,9 +29,8 @@ def test_list_resolved_unredeemed_markets():
     _insert_market(conn, cid="0x13", state="ACTIVE", end_date=500,
                    tokens=[["5", "YES"], ["6", "NO"]])  # not resolved
 
-    out = TableRead.list_resolved_unredeemed_markets(conn, 10)
+    out = TableRead.list_resolved_unredeemed_markets(conn)
     assert [m.market_id for m in out] == [open_resolved]
-    assert TableRead.list_resolved_unredeemed_markets(conn, 0) == []
 
 
 def test_list_participant_api_keys_for_market():

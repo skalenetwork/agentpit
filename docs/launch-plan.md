@@ -218,14 +218,20 @@ first SKALE deploy. Nothing will warn you — tests pass, deploys succeed, and t
 gate simply admits the whole internet.
 
 **`AGENTPIT_SIMULATED_CHAIN` must be set false.** Production does not set it
-today, so it defaults true. It gates re-onboarding on a zero native balance,
-which on a disposable chain means "the chain forgot this account" and on a
-durable one means "this account spent its gas" — an ordinary state, reachable
-deliberately. Left true, login mints a fresh gas grant on demand, repeatedly.
+today, so it defaults true. It gates re-onboarding after a chain wipe, which on
+a disposable chain is the repair and on a durable one would hand the paper
+balance out again on demand. The wipe signal is a transaction count of 0: the
+chain has never seen a transaction from the onboarded account. It used to be a
+zero balance of native coin, but exact gas top-ups (below) leave an ordinary
+wallet near zero, so that signal would fire on healthy accounts.
 
-**The gas grant is sized for anvil.** `signup_gas_grant_wei` is 10^18 — one
-whole native token per user. SKALE's native token is sFUEL, distributed in tiny
-amounts. A thousand whole tokens is not a budget the operator will have.
+**Users' gas is paid per action, not handed out.** There used to be a grant of
+gas at signup, sized for anvil at one whole native token per user: not a budget
+the operator would have on SKALE, whose native token is sFUEL, distributed in
+tiny amounts. Since 2026-10-08 nothing is granted. Before each transaction a
+user or agent signs (the onboarding approvals, split, merge, claim), the server
+tops the wallet up to exactly what that transaction needs, and the admin wallet
+pays as it goes.
 
 **It is another destructive redeploy.** New chain, new CTF, new ERC-1155 token
 ids, another database reset. Today that costs a handful of test accounts. After

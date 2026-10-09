@@ -58,7 +58,7 @@ class Web3Client:
 
     Every admin-key transaction goes through `admin_sender`, which counts the
     nonce locally and keeps many transactions in flight, so concurrent admin
-    sends (sync, settlement, faucet, gas grants) share blocks. One instance
+    sends (sync, settlement, faucet, gas top-ups) share blocks. One instance
     per process: two senders for one key would race on the nonce.
     """
 
@@ -90,6 +90,8 @@ class Web3Client:
             self.admin,
             deployment.chain_id,
             max_in_flight=settings.admin_tx_max_in_flight,
+            alarm_gas=settings.admin_gas_alarm_gas,
+            stop_gas=settings.admin_gas_stop_gas,
         )
 
     def verify_chain(self) -> None:

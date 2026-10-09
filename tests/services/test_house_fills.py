@@ -6,6 +6,7 @@ from typing import Literal
 
 import pytest
 
+from agentpit.config import Settings
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market import Market
@@ -15,7 +16,11 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import OrderNotFilledError
+from agentpit.domain.exceptions import (
+    AdminGasPausedError,
+    GasBudgetExceededError,
+    OrderNotFilledError,
+)
 from agentpit.liquidity import feed
 from agentpit.liquidity.replica import BookReplica, Used
 from agentpit.onchain.deployment import Deployment
@@ -26,7 +31,7 @@ from tests.fake_skaled import FakeFn, FakeSkaled, make_sender
 _ADDR = "0x00000000000000000000000000000000000000a1"
 
 
-def _service(db: DbSession) -> OrderService:
+def _service(db: DbSession, **settings) -> OrderService:
     sender, _, _ = make_sender(FakeSkaled())
     deployment = Deployment(
         chain_id=1,
@@ -49,8 +54,9 @@ def _service(db: DbSession) -> OrderService:
         ),
         usd_balance=lambda _address: 10**15,
         ctf_balance=lambda _address, _token: 10**15,
+        check_sponsored=lambda: None,
     )
-    return OrderService(db, onchain)  # type: ignore[arg-type]
+    return OrderService(db, onchain, Settings(**settings))  # type: ignore[arg-type]
 
 
 def _world(db: DbSession) -> tuple[Market, User]:
@@ -263,3 +269,92 @@ def test_a_market_that_left_active_never_fills(house_book):
     svc.sweep()
 
     assert (_row(db, order.orderID), book.used) == (("live", 4_000_000), {})
+
+
+def _paused() -> None:
+    raise AdminGasPausedError()
+
+
+def _counts(db: DbSession) -> tuple[int, int]:
+    with db.read() as conn:
+        row = conn.execute(
+            "SELECT (SELECT COUNT(*) FROM orders) o, (SELECT COUNT(*) FROM trades) t"
+        ).fetchone()
+    return row["o"], row["t"]
+
+
+def _gas_today(db: DbSession, agent: User) -> int:
+    with db.read() as conn:
+        return TableRead.sponsored_gas_used(conn, agent.api_key, int(time.time()) // 86_400)
+
+
+def _spend_today(db: DbSession, agent: User, gas: int) -> None:
+    with db.write() as conn:
+        TableWrite.add_sponsored_gas(conn, agent.api_key, int(time.time()) // 86_400, gas)
+
+
+def test_a_paused_breaker_makes_the_sweeper_skip_and_resting_orders_rest(house_book):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    book = house_book("101", asks=(("0.6", "5"),))
+    svc = _service(db)
+    order = _place(svc, agent, "101", "BUY", "0.55", "4", kind="GTC")
+    _ask(book, "0.55", "5")
+    svc._onchain.check_sponsored = _paused
+
+    svc.sweep()
+
+    assert (_row(db, order.orderID), _counts(db), book.used) == (
+        ("live", 4_000_000),
+        (1, 0),
+        {},
+    )
+
+
+def test_every_fill_charges_the_agents_day_a_flat_250k_gas(house_book):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    book = house_book("101", asks=(("0.6", "5"),))
+    svc = _service(db)
+    _place(svc, agent, "101", "BUY", "0.6", "2")
+    _place(svc, agent, "101", "BUY", "0.55", "2", kind="GTC")
+    _ask(book, "0.55", "5")
+
+    svc.sweep()
+
+    assert _gas_today(db, agent) == 2 * 250_000
+
+
+def test_a_placement_fill_over_the_daily_budget_rolls_the_whole_placement_back(house_book):
+    """The pre-check passed (a race with another placement), so the fill's own
+    reservation refuses it: no order row, no trade, nothing used up."""
+    db = fresh_test_db()
+    _, agent = _world(db)
+    book = house_book("101", asks=(("0.6", "20"),))
+    svc = _service(db, AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT=1_000_000)
+    svc._check_gas_budget = lambda _user: None
+    _spend_today(db, agent, 1_000_000)
+
+    with pytest.raises(GasBudgetExceededError) as info:
+        _place(svc, agent, "101", "BUY", "0.6", "10")
+
+    assert 0 < info.value.retry_after <= 86_400
+    assert (_counts(db), book.used, _gas_today(db, agent)) == ((0, 0), {}, 1_000_000)
+
+
+def test_a_sweeper_fill_over_the_daily_budget_is_skipped_and_the_order_rests(house_book):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    book = house_book("101", asks=(("0.6", "5"),))
+    svc = _service(db, AGENTPIT_DAILY_SPONSORED_GAS_PER_ACCOUNT=1_000_000)
+    order = _place(svc, agent, "101", "BUY", "0.55", "4", kind="GTC")
+    _spend_today(db, agent, 1_000_000)
+    _ask(book, "0.55", "5")
+
+    svc.sweep()
+
+    assert (_row(db, order.orderID), _counts(db), book.used) == (
+        ("live", 4_000_000),
+        (1, 0),
+        {},
+    )

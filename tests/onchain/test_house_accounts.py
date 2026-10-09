@@ -5,6 +5,7 @@ from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.web3_client import Web3Client
 from tests.db_helpers import fresh_test_db
+from tests.onchain._helpers import assert_approvals_set
 
 
 def _provisioner():
@@ -26,6 +27,7 @@ def test_provision_creates_and_funds():
     # accident, so the one test proving house funding would prove nothing.
     assert admin.usd_balance(u.eth_address) >= prov._settings.house_mint_raw
     assert admin.native_balance(u.eth_address) > 0
+    assert_approvals_set(admin, u.eth_address)
 
 
 def test_provision_is_idempotent():

@@ -50,7 +50,7 @@ This table is the fastest way to understand where to contribute. The roadmap ite
 | On-chain CTF resolution reads | ✅ Built | `agentpit/polymarket/conditional_token_framework.py` |
 | REST endpoints for order submission (`POST /orders`, `DELETE /orders/{id}`, `GET /markets/{id}/orderbook`) | ✅ Built | `agentpit/api/routes/orders.py` |
 | GTD / FOK / FAK order-type semantics | ✅ Built | `agentpit/services/order_service.py` |
-| Market state guard on `split_position` / `merge_positions` | ❌ MVP | `missing_features_for_mvp.md` §2 |
+| Market state guard: `split_position` only on `ACTIVE` markets (`merge_positions` runs in any state on purpose) | ✅ Built | `agentpit/services/position_service.py` |
 | Polymarket sync REST trigger (`/sync`) | ❌ MVP | `missing_features_for_mvp.md` §3 |
 | Trade fills in transaction history | ❌ MVP | `missing_features_for_mvp.md` §4 |
 | Human trading web UI (React) | ❌ MVP | `missing_features_for_mvp.md` §5 |
@@ -253,11 +253,7 @@ Schema is in `agentpit/db/table_create.py`. `TableCreate.create_all_tables(db)` 
 
 These are known and documented — don't be surprised when you find them:
 
-| Bug | File | Description |
-|-----|------|-------------|
-| No state guard on split/merge | `services/position_service.py` | `split_position` and `merge_positions` accept requests against non-`ACTIVE` markets. Fix: `check_state(market.market_state == MarketState.ACTIVE)`. |
-
-It is captured in `missing_features_for_mvp.md` and is a good first fix.
+None are tracked here right now. The old split/merge state gap is closed and deliberately asymmetric: `split_position` runs only on `ACTIVE` markets (`400` `split only runs on ACTIVE markets`), while `merge_positions` runs in any state. Merge is the only API way back from a YES+NO pair on a `CANCELLED` market, so guarding it on `ACTIVE` would strand collateral; its sponsored gas counts against the same daily per-account budget as split's. Don't "fix" it.
 
 ---
 

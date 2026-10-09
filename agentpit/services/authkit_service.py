@@ -140,11 +140,12 @@ class AuthKitService:
             #
             # `repair=False` for a related reason and a practical one. A
             # refresh runs about every 300 seconds with nobody watching, and
-            # both branches of `_repair` are chain work: onboarding funds gas,
-            # drips collateral and sends three approvals, and `_reonboard`
-            # reads a balance off the chain first. Every request the page has
-            # in flight is queued behind the shared refresh while that runs,
-            # and an onboarding that failed once will most likely fail again.
+            # both branches of `_repair` are chain work: onboarding drips
+            # collateral, tops the wallet up and sends three approvals, and
+            # `_reonboard` reads the wallet's nonce off the chain first. Every
+            # request the page has in flight is queued behind the shared
+            # refresh while that runs, and an onboarding that failed once will
+            # most likely fail again.
             # The repair is not lost -- the next sign_in performs it, with a
             # person at the screen who is already paying that second.
             user=self._resolve_account(session, create=False, repair=False),
@@ -219,9 +220,9 @@ class AuthKitService:
         # `existing` was read before the stamp, so reflect it locally rather
         # than re-reading the row. Only the identity changed: the password is
         # deliberately left in place (see `TableWrite.link_workos_identity`),
-        # and `has_password` must keep saying so. Key export no longer consults
-        # this flag -- every account re-authenticates with a mailed code -- but
-        # it still describes the row, and the row still holds a hash that
+        # and `has_password` must keep saying so. Nothing about the wallet key
+        # consults this flag -- keys cannot be exported at all -- but it still
+        # describes the row, and the row still holds a hash that
         # `change_password` reads and that `/login` would accept again the
         # moment the cutover commit is reverted. A false here would be the
         # response denying a credential the row is still carrying.

@@ -356,3 +356,9 @@ def test_leaderboard_carries_the_agent_app():
     assert [(s.rank, s.rank_change, s.agent, s.app, s.return_pct, s.pnl_usd, s.url) for s in board.agents] == [
         (1, None, "claude_bot", "Claude", 10, 10_000, f"https://agentpit.dev/agents/{acct.address}")
     ]
+
+
+def test_the_desk_reads_positions_with_the_configured_claim_minimum():
+    """The agent tools must show the same Claim state as the web profile."""
+    desk = _desk(Settings(min_claim_micro=123_456))
+    assert desk._accounts._min_claim_micro == 123_456  # noqa: SLF001

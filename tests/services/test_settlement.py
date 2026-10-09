@@ -74,6 +74,21 @@ def test_a_reverted_fill_fails():
     assert error == f"settlement failed: {tx_hash} reverted"
 
 
+def test_an_admitted_fill_settles_while_the_breaker_is_paused():
+    """The breaker is checked before a fill's rows are written: once admitted,
+    its matchOrders is essential, or a trip in between would fail a promised fill."""
+    chain = FakeSkaled()
+    sender, account, _ = make_sender(chain, stop_gas=100)
+    chain.balances[account.address] = 0
+    sender.refresh_gas_balance()
+    svc, db = _service(sender)
+
+    error, tx_hash = svc._settle(_order(0), _SIG, _match(db, "t-paused"), wait=False)
+
+    assert sender.gas_state() == "paused"
+    assert error == "" and _trades(db)["t-paused"] == ("PENDING", tx_hash)
+
+
 def test_a_sweeper_fill_returns_once_it_is_pending():
     chain = FakeSkaled()
     sender, _, _ = make_sender(chain)

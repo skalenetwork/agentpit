@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from collections.abc import Iterable
 from datetime import date
@@ -87,6 +88,18 @@ class Carried(NamedTuple):
     event_id: int | None
     pm_event_id: str | None
     event: EventFields | None
+
+
+class PendingUserTx(BaseModel):
+    """A `pending_user_txs` row: a signed user transaction whose outcome is not
+    known yet, and the `transactions` row it becomes once it mines."""
+
+    tx_hash: str
+    api_key: str
+    transaction_type: str
+    market_id: int | None
+    details: dict
+    created_at: int
 
 
 def _excluded_lower(excluded: "Iterable[str] | None") -> "list[str]":
@@ -513,7 +526,14 @@ class TableRead:
     def get_key_export_state(
         db: psycopg.Connection, user_id: str
     ) -> "tuple[int | None, int | None]":
-        """`(exported_at, last_attempt_at)` for one user, epoch seconds."""
+        """`(exported_at, last_attempt_at)` for one user, epoch seconds.
+
+        Nothing writes either column any more: wallets are custodial and the
+        export routes are gone. A non-null `exported_at` marks an account whose
+        key left before that, and is still out there -- `_maybe_reonboard`
+        stops re-funding those, and anything we pay gas for on a user's behalf
+        has to treat them the same way.
+        """
         row = db.execute(
             "SELECT KEY_EXPORTED_AT, KEY_EXPORT_ATTEMPT_AT FROM users "
             "WHERE USER_ID = %s",
@@ -1578,16 +1598,13 @@ class TableRead:
         return {r["TOKEN_ID"]: int(r["PRICE"]) for r in rows}
 
     @staticmethod
-    def list_resolved_unredeemed_markets(
-        db: psycopg.Connection, limit: int
-    ) -> "list[Market]":
+    def list_resolved_unredeemed_markets(db: psycopg.Connection) -> "list[Market]":
         """Auto-redeem candidates: RESOLVED and not yet fully redeemed."""
         rows = db.execute(
             f"SELECT {_MARKET_COLS} FROM markets "
             "WHERE MARKET_STATE = 'RESOLVED' "
             "AND COALESCE(FULLY_REDEEMED, FALSE) = FALSE "
-            "ORDER BY MARKET_ID DESC LIMIT %s",
-            (limit,),
+            "ORDER BY MARKET_ID DESC"
         ).fetchall()
         return [_row_to_market(row) for row in rows]
 
@@ -1622,6 +1639,86 @@ class TableRead:
             if r["API_KEY"]:
                 keys.add(r["API_KEY"])
         return keys
+
+    @staticmethod
+    def count_live_orders(db: psycopg.Connection, api_key: str) -> int:
+        """How many orders this account has resting, on any market: the cheap
+        count (0.04 ms on the dev DB), an upper bound of
+        `count_live_orders_on_active_markets`."""
+        row = db.execute(
+            f"SELECT COUNT(*) AS N FROM orders WHERE API_KEY = %s AND {TableRead.LIVE_ORDER}",
+            (api_key, int(time.time())),
+        ).fetchone()
+        return int(row["N"])
+
+    @staticmethod
+    def count_live_orders_on_active_markets(db: psycopg.Connection, api_key: str) -> int:
+        """How many orders this account has resting on a market that can trade.
+
+        Only ACTIVE markets count. Closing, resolving or cancelling a market
+        leaves its resting orders behind and takers are refused there, so such
+        an order can never fill and is not growing a book anyone reads; if it
+        counted, it would hold one of the account's slots forever.
+
+        The token set is built once from the ACTIVE markets (ERC1155_TOKENS is
+        a JSON array of [token_id, label] pairs) and hashed against the
+        account's few rows, rather than scanned per order. Even so it expands
+        every ACTIVE market: 17-36 ms on the dev DB (4,685 of them), so call
+        it only when `count_live_orders` has already reached the cap.
+        """
+        row = db.execute(
+            "SELECT COUNT(*) AS N FROM orders WHERE API_KEY = %s "
+            "AND TOKEN_ID IN (SELECT t.pair->>0 FROM markets m, "
+            "jsonb_array_elements(m.ERC1155_TOKENS::jsonb) AS t(pair) "
+            "WHERE m.MARKET_STATE = 'ACTIVE') "
+            f"AND {TableRead.LIVE_ORDER}",
+            (api_key, int(time.time())),
+        ).fetchone()
+        return int(row["N"])
+
+    @staticmethod
+    def sponsored_gas_used(db: psycopg.Connection, api_key: str, day: int) -> int:
+        """Gas the admin has paid for this account on `day` (unix seconds //
+        86_400): its fills, plus the top-ups and transactions `UserGasSponsor`
+        sent for it; 0 when it has none."""
+        row = db.execute(
+            "SELECT GAS_USED FROM sponsored_gas WHERE API_KEY = %s AND DAY = %s",
+            (api_key, day),
+        ).fetchone()
+        return int(row["GAS_USED"]) if row else 0
+
+    @staticmethod
+    def list_pending_user_txs(db: psycopg.Connection) -> list[PendingUserTx]:
+        """Every pending user transaction, oldest first. The table holds only
+        transactions nobody has heard back about, so it stays tiny."""
+        rows = db.execute(
+            "SELECT TX_HASH, API_KEY, TRANSACTION_TYPE, MARKET_ID, DETAILS, CREATED_AT "
+            "FROM pending_user_txs ORDER BY CREATED_AT, TX_HASH"
+        ).fetchall()
+        return [
+            PendingUserTx(
+                tx_hash=r["TX_HASH"],
+                api_key=r["API_KEY"],
+                transaction_type=r["TRANSACTION_TYPE"],
+                market_id=r["MARKET_ID"],
+                details=json.loads(r["DETAILS"]) if r["DETAILS"] else {},
+                created_at=r["CREATED_AT"],
+            )
+            for r in rows
+        ]
+
+    @staticmethod
+    def has_pending_user_tx(
+        db: psycopg.Connection, api_key: str, market_id: int, *, since: int
+    ) -> bool:
+        """Does this account have a transaction on this market, created at or
+        after `since`, whose outcome is still unknown?"""
+        row = db.execute(
+            "SELECT 1 FROM pending_user_txs "
+            "WHERE API_KEY = %s AND MARKET_ID = %s AND CREATED_AT >= %s LIMIT 1",
+            (api_key, market_id, since),
+        ).fetchone()
+        return row is not None
 
     @staticmethod
     def list_trades_for_api_key(

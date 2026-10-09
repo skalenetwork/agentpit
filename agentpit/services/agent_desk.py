@@ -111,8 +111,8 @@ class AgentDesk:
         self._db = db
         self._onchain = onchain
         self._settings = settings
-        self._accounts = AccountService(db, onchain)
-        self._orders = OrderService(db, onchain)
+        self._accounts = AccountService(db, onchain, min_claim_micro=settings.min_claim_micro)
+        self._orders = OrderService(db, onchain, settings)
         self._balance = BalanceService(db, onchain, settings, self._accounts)
         self._board = LeaderboardService(db, onchain, self._accounts, settings)
 

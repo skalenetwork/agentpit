@@ -2,7 +2,7 @@
 
 **Date:** April 28, 2026
 
-Five features stand between the current codebase and a shippable MVP. All five are required. None are optional.
+Five features stand between the current codebase and a shippable MVP. All five are required. None are optional. (§2 is already done, see below.)
 
 ---
 
@@ -24,7 +24,7 @@ The core order endpoints exist today against `OrderService` (`POST /orders`, `DE
 
 ## 2. Market State Guard on `split_position` / `merge_positions`
 
-The spec restricts both operations to `ACTIVE` markets. The current implementation silently accepts requests against `DRAFT`, `CLOSED`, `RESOLVED`, and `CANCELLED` markets — minting and burning tokens in invalid states. Fix: add a `check_state(market_state == ACTIVE)` guard in both handlers in `agentpit_server.py`.
+**Done, with one deliberate asymmetry.** `split_position` runs only on `ACTIVE` markets: in any other state it is a `400` `split only runs on ACTIVE markets` (after resolution a split would mint a pair whose winner is redeemable, a free way to manufacture claims). `merge_positions` runs in any state on purpose: it is the only API way back from a YES+NO pair on a `CANCELLED` market, so requiring `ACTIVE` there would strand collateral. Its gas is sponsored like split's and counts against the same daily per-account budget. The guard is `PositionService._require_active_market` (`agentpit/services/position_service.py`).
 
 ---
 
@@ -118,7 +118,7 @@ Dependency order — backend first, UI last:
           │
           │  required by ⑤
           ▼
-  ② Market state guard on split/merge  (Backend — independent)
+  ② Market state guard on split/merge  (Backend — done)
 
   ③ Polymarket sync REST trigger        (Backend — independent)
 

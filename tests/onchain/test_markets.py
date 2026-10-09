@@ -11,7 +11,7 @@ from tests.onchain._helpers import create_market, fresh_client, unique_question
 def test_create_and_get_market_round_trip():
     client = fresh_client()
     q = unique_question()
-    created = create_market(client, q, active=False)
+    created = create_market(client, q, state="DRAFT")
     assert created["market_state"] == "DRAFT"
     assert created["question"] == q
     assert created["condition_id"]["value"].startswith("0x")

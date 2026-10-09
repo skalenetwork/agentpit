@@ -56,7 +56,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.contracts import Contracts
-from agentpit.onchain.deployment import Deployment
+from agentpit.onchain.deployment import ANVIL_CHAIN_ID, Deployment, is_disposable_chain
 from agentpit.onchain.web3_client import Web3Client
 from agentpit.liquidity import feed
 from agentpit.liquidity.house_accounts import HouseAccountProvisioner
@@ -93,6 +93,55 @@ def _configure_root_logging() -> None:
     )
     root.handlers.clear()
     root.addHandler(handler)
+
+
+async def _admin_gas_loop(admin: OnchainAdmin, settings: Settings) -> None:
+    """Re-read the admin wallet for the gas breaker, and shout while it is low.
+
+    The breaker (AdminTxSender) refuses sponsored sends below the stop
+    level; this loop is what keeps its figure fresh and what a person
+    reading the logs sees. There is no alerting beyond the logs.
+    """
+    while True:
+        try:
+            balance, state = await asyncio.to_thread(admin.refresh_admin_gas)
+            if state in ("low", "paused"):
+                log.error(
+                    "ADMIN GAS %s: the admin wallet holds %.6f native (alarm %d gas, stop %d gas); %s",
+                    state.upper(), balance / 1e18,
+                    settings.admin_gas_alarm_gas, settings.admin_gas_stop_gas,
+                    "sponsored sends are REFUSED" if state == "paused" else "refill it soon",
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("admin gas check failed")
+        await asyncio.sleep(settings.admin_gas_check_interval_seconds)
+
+
+def _start_admin_gas_loop(
+    admin: OnchainAdmin, settings: Settings
+) -> asyncio.Task | None:
+    """Start `_admin_gas_loop`, or say loudly that it is off.
+
+    An interval of 0 disables the loop, and the loop is the only thing that
+    ever reads the admin balance: without it the balance stays unknown, and
+    unknown means allowed, so a configured stop level would never fire. That is
+    a breaker silently off, which is worse than one the operator chose to turn
+    off, so it is a WARNING.
+    """
+    if settings.admin_gas_check_interval_seconds > 0:
+        return asyncio.create_task(_admin_gas_loop(admin, settings))
+    if settings.admin_gas_stop_gas > 0:
+        log.warning(
+            "Admin gas loop is OFF (AGENTPIT_ADMIN_GAS_CHECK_INTERVAL_SECONDS=0) but "
+            "the stop level is %d gas: the admin balance is never read, so the "
+            "breaker can never trip and sponsored sends are NEVER refused. Set the "
+            "interval above 0, or AGENTPIT_ADMIN_GAS_STOP_GAS=0 to turn the breaker "
+            "off on purpose.",
+            settings.admin_gas_stop_gas,
+        )
+    return None
 
 
 def _carried(db: DbSession) -> set[str]:
@@ -177,6 +226,17 @@ async def _leaderboard_loop(service: LeaderboardService, interval_seconds: int) 
         await asyncio.sleep(_LEADERBOARD_TICK_SECONDS)
 
 
+def _warn_if_simulated_on_durable_chain(settings: Settings, chain_id: int) -> None:
+    """AGENTPIT_SIMULATED_CHAIN=true outside anvil is ignored (see
+    `is_disposable_chain`), but it is still a wrong config worth a loud line."""
+    if settings.simulated_chain and not is_disposable_chain(chain_id):
+        log.error(
+            "AGENTPIT_SIMULATED_CHAIN=true is IGNORED on chain %d: re-running "
+            "onboarding on login is only for a disposable anvil (%d). Set it to false.",
+            chain_id, ANVIL_CHAIN_ID,
+        )
+
+
 def _build_onchain_admin(settings: Settings) -> OnchainAdmin:
     if not settings.deployment_path.exists():
         raise RuntimeError(
@@ -186,6 +246,7 @@ def _build_onchain_admin(settings: Settings) -> OnchainAdmin:
     deployment = Deployment.load(settings.deployment_path)
     client = Web3Client(settings, deployment)
     client.verify_chain()
+    _warn_if_simulated_on_durable_chain(settings, deployment.chain_id)
     contracts = Contracts(client.web3, deployment)
     log.info(
         "on-chain stack ready: usd=%s faucet=%s exchange=%s",
@@ -269,9 +330,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # deploy/docker-compose.prod.yml.
         log.error(
             "WorkOS is not configured (WORKOS_API_KEY / WORKOS_CLIENT_ID): "
-            "NOBODY CAN SIGN IN -- /auth/code and /auth/session 503, AuthKit "
-            "sessions are rejected, and private-key export is disabled. "
-            "X-API-Key traffic is unaffected."
+            "NOBODY CAN SIGN IN -- /auth/code and /auth/session 503 and AuthKit "
+            "sessions are rejected. X-API-Key traffic is unaffected."
         )
 
     mcp_endpoint: McpEndpoint | None = None
@@ -321,7 +381,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.sync_enabled:
             policy = CoveragePolicy.from_settings(settings)
             log.info("Polymarket sync enabled: %s", policy)
-            chain = ChainTask(db_session, onchain_admin)
+            chain = ChainTask(db_session, onchain_admin, settings)
             sync_tasks = [
                 asyncio.create_task(
                     supervise(
@@ -343,7 +403,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             leaderboard_service = LeaderboardService(
                 db_session,
                 onchain_admin,
-                AccountService(db_session, onchain_admin),
+                AccountService(
+                    db_session, onchain_admin, min_claim_micro=settings.min_claim_micro
+                ),
                 settings,
             )
             leaderboard_task = asyncio.create_task(
@@ -372,7 +434,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if dropped:
                 log.info("Deleted %d unmatched house order rows", dropped)
             mirror_engine = MirrorEngine(
-                db_session, settings, OrderService(db_session, onchain_admin)
+                db_session, settings, OrderService(db_session, onchain_admin, settings)
             )
             feed.HOUSE = feed.House(house, mirror_engine.state)
             # Supervised, not fire-and-forget: on 2026-09-02 the bare feed
@@ -403,6 +465,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         live_task = asyncio.create_task(supervise("live", live.run))
 
+        # Started after house provisioning on purpose: provisioning is a run of
+        # sponsored sends, and a first refresh that finds the admin low must
+        # not be what makes startup refuse them.
+        admin_gas_task = _start_admin_gas_loop(onchain_admin, settings)
+
         try:
             async with mcp_endpoint.running() if mcp_endpoint else nullcontext():
                 yield
@@ -411,6 +478,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 leaderboard_task,
                 order_cleanup_task,
                 live_task,
+                admin_gas_task,
                 *sync_tasks,
                 *mirror_tasks,
             ):

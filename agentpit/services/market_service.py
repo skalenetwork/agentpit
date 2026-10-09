@@ -9,6 +9,7 @@ import httpx
 from web3.contract.contract import ContractFunction
 from web3.exceptions import TimeExhausted
 
+from agentpit.config import Settings
 from agentpit.datastructures.cancel_market_response import CancelMarketResponse
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
@@ -37,16 +38,26 @@ from agentpit.db.table_write import TableWrite
 from agentpit.common import check_state
 from agentpit.liquidity import feed
 from agentpit.domain.exceptions import (
+    SPONSORED_GAS_REFUSALS,
     InvalidPaginationError,
     MarketNotFoundError,
     MarketStateError,
+    NothingToClaimError,
+    TransactionInProgressError,
+    TransactionPendingError,
+    TransactionRevertedError,
 )
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.ctf_ids import binary_market_ids
 from agentpit.onchain.tx_sender import PendingTx, TxDropped, stops_sending
 from agentpit.services.event_service import EventService
 from agentpit.services.leaderboard_service import touch_holders
-from agentpit.services.position_service import PositionService
+from agentpit.services.gas_sponsor import UserGasSponsor
+from agentpit.services.pending_user_txs import (
+    in_flight_since,
+    reconcile_pending_user_txs,
+)
+from agentpit.services.position_service import PositionService, claimable_payout
 
 log = logging.getLogger(__name__)
 
@@ -452,15 +463,16 @@ def prepare_market_on_chain(
 
 
 _CHAIN_SECONDS = 5.0
-_REDEEM_BUDGET = 10
+_REDEEM_SECONDS = 20.0
 _RESOLVING_SECONDS = 900
 _CREATE_CHUNKS = 4
 
 
 class ChainTask:
-    def __init__(self, db: DbSession, admin: OnchainAdmin):
+    def __init__(self, db: DbSession, admin: OnchainAdmin, settings: Settings):
         self._db = db
         self._admin = admin
+        self._settings = settings
         self._lock = threading.Lock()
         self._admitted: dict[str, UpstreamMarket] = {}
         self._resolved: dict[int, Payouts] = {}
@@ -486,11 +498,11 @@ class ChainTask:
         while True:
             try:
                 await asyncio.to_thread(
-                    redeem_resolved_markets, self._db, self._admin, _REDEEM_BUDGET
+                    redeem_resolved_markets, self._db, self._admin, self._settings
                 )
             except Exception:
                 log.exception("Redeem pass failed")
-            await asyncio.sleep(_CHAIN_SECONDS)
+            await asyncio.sleep(_REDEEM_SECONDS)
 
     def run_once(self, data: httpx.Client) -> None:
         with self._lock:
@@ -617,41 +629,120 @@ def pay_out(db: DbSession, admin: OnchainAdmin, resolved: dict[int, Payouts]) ->
                 )
 
 
-def redeem_resolved_markets(db: DbSession, admin: OnchainAdmin, limit: int) -> int:
-    positions = PositionService(db, admin)
-    redeemed = 0
+_REVERT_BACKOFF_SECONDS = 3600
+_REFUSED_BACKOFF_SECONDS = 900
+_claim_backoff_until: dict[tuple[str, int], float] = {}
+
+
+def redeem_resolved_markets(
+    db: DbSession, admin: OnchainAdmin, settings: Settings
+) -> int:
+    sponsor = UserGasSponsor(db, admin, settings)
+    positions = PositionService(db, admin, sponsor)
+    now = time.monotonic()
+    for expired in [k for k, until in _claim_backoff_until.items() if until <= now]:
+        del _claim_backoff_until[expired]
+    try:
+        reconcile_pending_user_txs(db, admin)
+    except Exception:
+        log.exception("Pending user transactions could not be settled")
+    redeemed = attempts = 0
     with db.read() as conn:
-        markets = TableRead.list_resolved_unredeemed_markets(conn, limit)
+        markets = TableRead.list_resolved_unredeemed_markets(conn)
+        cutoff = in_flight_since(int(time.time()))
+        in_flight = {
+            (row.api_key, row.market_id)
+            for row in TableRead.list_pending_user_txs(conn)
+            if row.created_at >= cutoff
+        }
     for market in markets:
         tokens = [token for token, _ in market.erc1155_tokens]
-        with db.read() as conn:
-            users = [
-                TableRead.get_user_by_api_key(conn, api_key)
-                for api_key in TableRead.list_participant_api_keys_for_market(
+        try:
+            with db.read() as conn:
+                api_keys = TableRead.list_participant_api_keys_for_market(
                     conn, market.market_id, tokens
                 )
-            ]
-        failed = False
-        for user in users:
-            if (
-                user is None
-                or not user.auto_redeem
-                or not any(
-                    admin.ctf_balances(user.eth_address, [int(t) for t in tokens])
+            api_keys |= {k for k, m in in_flight if m == market.market_id}
+            vector = (
+                admin.payout_vector(
+                    bytes.fromhex(market.condition_id.value[2:]), len(tokens)
                 )
-            ):
+                if api_keys
+                else None
+            )
+        except Exception:
+            log.exception("Redeem read of market %s failed", market.market_id)
+            continue
+        if vector is None:
+            with db.write() as conn:
+                TableWrite.mark_fully_redeemed(conn, market.market_id)
+            continue
+        den, nums = vector
+        if den == 0:
+            continue
+        still_owed = False
+        for api_key in sorted(api_keys):
+            with db.read() as conn:
+                user = TableRead.get_user_by_api_key(conn, api_key)
+            if user is None or user.is_bot:
+                continue
+            if (api_key, market.market_id) in in_flight:
+                still_owed = True
                 continue
             try:
-                positions.redeem(user, market.market_id)
-                redeemed += 1
+                balances = admin.ctf_balances(user.eth_address, [int(t) for t in tokens])
             except Exception:
-                failed = True
                 log.exception(
-                    "auto-redeem failed for %s on market %s",
+                    "Balances of %s on market %s failed", user.eth_address, market.market_id
+                )
+                still_owed = True
+                break
+            if not claimable_payout(balances, den, nums, sponsor.min_claim_micro):
+                continue
+            key = (user.user_id, market.market_id)
+            if not user.auto_redeem or _claim_backoff_until.get(key, 0.0) > now:
+                still_owed = True
+                continue
+            if attempts >= settings.auto_redeem_max_per_pass:
+                log.info("Redeem cap of %d reached at market %s", attempts, market.market_id)
+                return redeemed
+            attempts += 1
+            try:
+                positions.redeem(user, market.market_id, payout_vector=vector)
+                redeemed += 1
+                continue
+            except NothingToClaimError:
+                continue
+            except TransactionInProgressError:
+                attempts -= 1
+            except TransactionPendingError as exc:
+                log.warning(
+                    "Claim for %s on market %s is pending: %s",
                     user.eth_address,
                     market.market_id,
+                    exc,
                 )
-        if not failed:
+            except (*SPONSORED_GAS_REFUSALS, TransactionRevertedError) as exc:
+                seconds = (
+                    _REVERT_BACKOFF_SECONDS
+                    if isinstance(exc, TransactionRevertedError)
+                    else _REFUSED_BACKOFF_SECONDS
+                )
+                _claim_backoff_until[key] = time.monotonic() + seconds
+                log.warning(
+                    "Claim for %s on market %s failed (%s); retried in %d s",
+                    user.eth_address,
+                    market.market_id,
+                    exc,
+                    seconds,
+                )
+            except Exception:
+                _claim_backoff_until[key] = time.monotonic() + _REFUSED_BACKOFF_SECONDS
+                log.exception(
+                    "Claim for %s on market %s failed", user.eth_address, market.market_id
+                )
+            still_owed = True
+        if not still_owed:
             with db.write() as conn:
                 TableWrite.mark_fully_redeemed(conn, market.market_id)
     return redeemed

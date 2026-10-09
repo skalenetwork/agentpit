@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 import agentpit.api.app as app_mod
 import agentpit.services.market_service as service
+from agentpit.config import Settings
 from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
 from agentpit.db.table_read import TableRead
@@ -56,7 +57,7 @@ def test_run_once_takes_the_latest_work_once(monkeypatch):
         service, "pay_out", lambda db, admin, resolved: seen.append(dict(resolved))
     )
     monkeypatch.setattr(service, "resolutions", lambda http, conditions: {})
-    chain = ChainTask(fresh_test_db(), SimpleNamespace(sync_chunk_size=8))  # type: ignore[arg-type]
+    chain = ChainTask(fresh_test_db(), SimpleNamespace(sync_chunk_size=8), Settings())  # type: ignore[arg-type]
     a, b = _upstream(), _upstream()
     chain.admit([a, b])
     chain.admit([a])
@@ -81,7 +82,7 @@ def test_a_pass_creates_at_most_four_chunks_and_keeps_the_rest_queued(monkeypatc
     db = fresh_test_db()
     _, admin = _admin()
     (known,) = create_markets(db, admin, [_upstream()])
-    chain = ChainTask(db, SimpleNamespace(sync_chunk_size=2))  # type: ignore[arg-type]
+    chain = ChainTask(db, SimpleNamespace(sync_chunk_size=2), Settings())  # type: ignore[arg-type]
     backlog = [_upstream() for _ in range(10)]
     carried = _upstream(conditionId=known.polymarket_condition_id)
     chain.admit([carried, *backlog])
@@ -124,7 +125,9 @@ def test_an_ended_market_resolves_from_the_data_api_in_the_chain_pass():
             },
         )
 
-    ChainTask(db, admin).run_once(httpx.Client(transport=httpx.MockTransport(handler)))
+    ChainTask(db, admin, Settings()).run_once(
+        httpx.Client(transport=httpx.MockTransport(handler))
+    )
 
     assert asked == [[ended.polymarket_condition_id]]
     row = _row(db, ended.market_id)
@@ -143,8 +146,8 @@ async def test_redeem_runs_on_its_own_loop(monkeypatch):
 
     monkeypatch.setattr(service.asyncio, "sleep", stop)
     with pytest.raises(asyncio.CancelledError):
-        await ChainTask("db", "admin").run_redeem()  # type: ignore[arg-type]
-    assert seen == [("db", "admin", 10)]
+        await ChainTask("db", "admin", "settings").run_redeem()  # type: ignore[arg-type]
+    assert seen == [("db", "admin", "settings")]
 
 
 def test_created_markets_carry_the_upstream_identity_and_event():

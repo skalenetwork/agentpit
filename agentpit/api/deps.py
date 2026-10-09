@@ -17,6 +17,7 @@ from agentpit.services.auth_service import AuthService
 from agentpit.services.authkit_service import AuthKitService
 from agentpit.services.balance_service import BalanceService
 from agentpit.services.event_service import EventService
+from agentpit.services.gas_sponsor import UserGasSponsor
 from agentpit.services.leaderboard_service import LeaderboardService
 from agentpit.services.market_service import MarketService
 from agentpit.services.order_service import OrderService
@@ -102,8 +103,10 @@ def get_usdc_service(db: SessionDep, onchain: OnchainAdminDep) -> UsdcService:
     return UsdcService(db, onchain)
 
 
-def get_position_service(db: SessionDep, onchain: OnchainAdminDep) -> PositionService:
-    return PositionService(db, onchain)
+def get_position_service(
+    db: SessionDep, onchain: OnchainAdminDep, settings: SettingsDep
+) -> PositionService:
+    return PositionService(db, onchain, UserGasSponsor(db, onchain, settings))
 
 
 def get_personality_service(db: SessionDep) -> PersonalityService:
@@ -120,21 +123,24 @@ def get_auth_service(
     onchain: OnchainAdminDep,
     settings: SettingsDep,
     google: GoogleVerifierDep,
-    workos: WorkOsClientDep,
 ) -> AuthService:
-    return AuthService(db, coder, onchain, settings, google, workos)
+    return AuthService(db, coder, onchain, settings, google)
 
 
-def get_order_service(db: SessionDep, onchain: OnchainAdminDep) -> OrderService:
-    return OrderService(db, onchain)
+def get_order_service(
+    db: SessionDep, onchain: OnchainAdminDep, settings: SettingsDep
+) -> OrderService:
+    return OrderService(db, onchain, settings)
 
 
 def get_trade_service(db: SessionDep) -> TradeService:
     return TradeService(db)
 
 
-def get_account_service(db: SessionDep, onchain: OnchainAdminDep) -> AccountService:
-    return AccountService(db, onchain)
+def get_account_service(
+    db: SessionDep, onchain: OnchainAdminDep, settings: SettingsDep
+) -> AccountService:
+    return AccountService(db, onchain, min_claim_micro=settings.min_claim_micro)
 
 
 AccountServiceDep = Annotated[AccountService, Depends(get_account_service)]

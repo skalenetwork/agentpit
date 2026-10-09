@@ -5,7 +5,13 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import OnboardingError
+from agentpit.domain.exceptions import (
+    AdminGasPausedError,
+    GasPriceMovedError,
+    GasTopUpTimeoutError,
+    InsufficientGasError,
+    OnboardingError,
+)
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -119,6 +125,28 @@ def test_an_api_agent_that_cannot_be_funded_is_not_left_behind():
 
     with pytest.raises(OnboardingError):
         AgentAccounts(db, fail).create_api_agent(OWNER)
+
+    with db.read() as conn:
+        assert TableRead.agents_owned_by(conn, OWNER) == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(AdminGasPausedError(), id="breaker-refused"),
+        pytest.param(InsufficientGasError("the wallet could not pay for its onboarding"), id="wallet-could-not-pay"),
+        pytest.param(GasTopUpTimeoutError(), id="top-up-timed-out"),
+        pytest.param(GasPriceMovedError(), id="gas-price-moved"),  # the fee rose twice: a 503 like a timeout
+    ],
+)
+def test_an_api_agent_refused_by_the_chain_is_not_left_behind(error):
+    db = fresh_test_db()
+
+    def refuse(_user_id: str, _acct: LocalAccount) -> User:
+        raise error
+
+    with pytest.raises(type(error)):
+        AgentAccounts(db, refuse).create_api_agent(OWNER)
 
     with db.read() as conn:
         assert TableRead.agents_owned_by(conn, OWNER) == []

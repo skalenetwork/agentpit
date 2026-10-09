@@ -8,7 +8,7 @@ import pytest
 from eth_account import Account
 from web3.exceptions import TimeExhausted
 
-from agentpit.onchain.tx_sender import AdminTxSender, PendingTx
+from agentpit.onchain.tx_sender import TRANSFER_GAS, AdminTxSender, PendingTx
 from tests.fake_skaled import (
     CHAIN_ID,
     FakeClock,
@@ -128,7 +128,9 @@ def test_value_transfer_uses_21000_gas_and_no_estimate():
     receipt = sender.send_value(to, 123, timeout=10)
     assert receipt["status"] == 1
     tx = chain.accepted[-1]["tx"]
-    assert tx["gas"] == 21_000 and tx["value"] == 123
+    # Public: `UserGasSponsor` books each top-up it sends at this figure.
+    assert TRANSFER_GAS == 21_000
+    assert tx["gas"] == TRANSFER_GAS and tx["value"] == 123
     assert chain.estimate_calls == 0
 
 
@@ -209,6 +211,81 @@ def test_queued_submitters_share_one_slot_deadline():
     assert all(isinstance(exc, TimeExhausted) for exc in outcomes)
     assert elapsed < 1.2  # one shared 0.5 s deadline, not 3 x 0.5 s in a row
     assert len(chain.accepted) == 1  # no refused submitter consumed a nonce
+
+
+# --- a value send with its own, shorter wait for a slot ---------------------
+# A top-up runs under the user's lock: `fund_gas` bounds it by the sponsor's timeout.
+
+
+def _full_pipeline(**kw):
+    """A sender whose two slots are taken by transfers that never mine."""
+    chain = FakeSkaled()
+    sender, _, clock = _sender(chain, max_in_flight=2, mine_on_sleep=False, **kw)
+    to = Account.create().address
+    sender.submit_value(to, 1)
+    sender.submit_value(to, 1)
+    return chain, sender, clock, to
+
+
+@pytest.mark.parametrize(
+    ("slot_timeout", "kw", "waited"),
+    [
+        pytest.param(120, {"slot_timeout": 5}, 5, id="its-own-cap"),
+        pytest.param(7, {}, 7, id="the-senders-own"),
+    ],
+)
+def test_a_value_send_waits_for_a_slot_as_long_as_its_slot_timeout(
+    slot_timeout, kw, waited
+):
+    chain, sender, clock, to = _full_pipeline(slot_timeout=slot_timeout)
+    started = clock()
+    with pytest.raises(TimeExhausted, match=f"after {waited}s"):
+        sender.submit_value(to, 1, **kw)
+    assert waited <= clock() - started < waited + 1  # not the sender's 120 s
+    assert len(chain.accepted) == 2  # the refused submit took no nonce
+
+
+def test_send_value_stops_waiting_for_a_slot_at_its_slot_timeout():
+    chain, sender, clock, to = _full_pipeline(slot_timeout=120)
+    started = clock()
+    with pytest.raises(TimeExhausted, match="free admin transaction slot"):
+        sender.send_value(to, 1, timeout=30, slot_timeout=30)
+    assert clock() - started < 31  # not 120 s of slot wait and then 30 s more
+    assert len(chain.accepted) == 2
+
+
+def test_the_slot_wait_counts_against_a_value_sends_timeout():
+    # A slot that frees after 20 s leaves 10 s of the 30 for the receipt, and
+    # nothing mines after that, so the call gives up at 30 s, not at 50.
+    chain = FakeSkaled()
+    sender, _, clock = _sender(
+        chain, mine_on_sleep=False, max_in_flight=1, slot_timeout=120
+    )
+    started, advance, mined = clock(), clock.advance, []
+
+    def advance_and_mine_once(seconds):
+        advance(seconds)
+        if not mined and clock() - started >= 20:
+            mined.append(chain.mine())  # the first transfer lands, once
+
+    clock.advance = advance_and_mine_once
+    to = Account.create().address
+    sender.submit_value(to, 1)  # takes the one slot
+
+    with pytest.raises(TimeExhausted, match="not in the chain"):
+        sender.send_value(to, 2, timeout=30, slot_timeout=30)
+
+    assert 29 <= clock() - started <= 31
+    assert len(chain.accepted) == 2  # the slot freed, so the transfer did go out
+
+
+def test_a_value_send_with_a_slot_timeout_still_returns_its_receipt():
+    chain = FakeSkaled()
+    sender, _, _ = _sender(chain)
+    to = Account.create().address
+    receipt = sender.send_value(to, 123, timeout=10, slot_timeout=10)
+    assert receipt["status"] == 1
+    assert chain.accepted[-1]["tx"]["value"] == 123
 
 
 def test_pending_tx_is_hashable_value():

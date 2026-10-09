@@ -93,16 +93,48 @@ class TableWrite:
         )
 
     @staticmethod
+    def claim_onboarding(
+        db: psycopg.Connection, user_id: str, now: int, stale_before: int
+    ) -> bool:
+        """Claim the right to onboard this row, atomically.
+
+        The predicate and the stamp are one statement -- the idiom of
+        `claim_topup` -- so two parallel first sign-ins cannot both find the
+        row unclaimed and both drip collateral and top the wallet up. A claim older
+        than `stale_before` belongs to a process that died mid-onboarding and
+        may be taken over. False when the row is onboarded, claimed, or gone.
+        """
+        cur = db.execute(
+            "UPDATE users SET ONBOARDING_STARTED_AT = %s "
+            "WHERE USER_ID = %s AND ONBOARDED_AT IS NULL "
+            "AND (ONBOARDING_STARTED_AT IS NULL OR ONBOARDING_STARTED_AT < %s)",
+            (now, user_id, stale_before),
+        )
+        return cur.rowcount > 0
+
+    @staticmethod
+    def release_onboarding_claim(db: psycopg.Connection, user_id: str) -> None:
+        """Drop a claim after a failed onboarding so an honest retry need not wait."""
+        db.execute(
+            "UPDATE users SET ONBOARDING_STARTED_AT = NULL WHERE USER_ID = %s",
+            (user_id,),
+        )
+
+    @staticmethod
     def clear_user_onboarded(db: psycopg.Connection, user_id: str) -> bool:
         """Test-only: put a row back into the never-onboarded state.
 
         The condition it recreates is real -- `_create_account` commits the row
         before onboarding it, so a chain outage leaves exactly this -- but
         nothing in the product ever writes it, and the repair paths that read
-        `ONBOARDED_AT` cannot be tested without a way to produce it.
+        `ONBOARDED_AT` cannot be tested without a way to produce it. The claim
+        goes too: a row left holding one would refuse the very onboarding the
+        test is trying to provoke.
         """
         cur = db.execute(
-            "UPDATE users SET ONBOARDED_AT = NULL WHERE USER_ID = %s", (user_id,)
+            "UPDATE users SET ONBOARDED_AT = NULL, ONBOARDING_STARTED_AT = NULL "
+            "WHERE USER_ID = %s",
+            (user_id,),
         )
         return cur.rowcount > 0
 
@@ -144,8 +176,8 @@ class TableWrite:
     ) -> bool:
         """Spend one hit against a fixed window. False when the window is full.
 
-        The same idiom as `mark_key_export_attempt` below and for the same
-        reason: the predicate and the increment are ONE statement, so two
+        The same idiom as `claim_topup` and for the same reason: the
+        predicate and the increment are ONE statement, so two
         concurrent callers cannot both read the same stale count, both find it
         under the limit, and both proceed. Postgres serialises them on the row
         lock; the loser re-evaluates its `WHERE` against the count the winner
@@ -185,41 +217,38 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
-    def mark_key_export_attempt(
-        db: psycopg.Connection, user_id: str, at: int, not_before: int
-    ) -> bool:
-        """Claim the export-attempt cooldown, atomically.
+    def add_sponsored_gas(
+        db: psycopg.Connection, api_key: str, day: int, gas: int
+    ) -> None:
+        """Add `gas` to the account's total for `day` (unix seconds // 86_400).
 
-        The predicate and the stamp are one statement -- the same idiom as
-        `claim_topup` -- so two concurrent callers cannot both read the same
-        stale `KEY_EXPORT_ATTEMPT_AT` and both pass the check before either
-        writes. Under READ COMMITTED, a second UPDATE that targets a row
-        another open transaction is about to write blocks on that row's
-        lock; once the first commits, the second re-evaluates its WHERE
-        clause against the value that commit just wrote, not the value it
-        started with. So the loser sees the winner's fresh stamp and its own
-        predicate fails, returning `rowcount == 0` here -- the cooldown is
-        active precisely because someone just claimed it, not because of a
-        stale read.
-
-        Returns False when the cooldown is still active.
+        An upsert that adds in SQL rather than read-modify-write, so two
+        placements settling at once cannot overwrite each other's gas.
         """
-        cur = db.execute(
-            "UPDATE users SET KEY_EXPORT_ATTEMPT_AT = %s "
-            "WHERE USER_ID = %s "
-            "AND (KEY_EXPORT_ATTEMPT_AT IS NULL OR KEY_EXPORT_ATTEMPT_AT <= %s)",
-            (at, user_id, not_before),
+        db.execute(
+            "INSERT INTO sponsored_gas (API_KEY, DAY, GAS_USED) VALUES (%s, %s, %s) "
+            "ON CONFLICT (API_KEY, DAY) DO UPDATE SET "
+            "GAS_USED = sponsored_gas.GAS_USED + EXCLUDED.GAS_USED",
+            (api_key, day, gas),
         )
-        return cur.rowcount > 0
 
     @staticmethod
-    def mark_key_exported(db: psycopg.Connection, user_id: str, at: int) -> bool:
-        """First export only — a later one must not move the stamp, or the
-        re-grant lock would appear to lapse."""
+    def reserve_sponsored_gas(
+        db: psycopg.Connection, api_key: str, day: int, gas: int, budget: int
+    ) -> bool:
+        """Add `gas` to the account's day unless the day is already at `budget`.
+
+        The predicate and the increment are one statement (the idiom of
+        `claim_auth_code_attempt`), so concurrent placements from one account
+        serialise on the row lock and each sees the reservations before it:
+        however many run at once, the day overshoots by at most one
+        placement's reservation. False when refused."""
         cur = db.execute(
-            "UPDATE users SET KEY_EXPORTED_AT = %s "
-            "WHERE USER_ID = %s AND KEY_EXPORTED_AT IS NULL",
-            (at, user_id),
+            "INSERT INTO sponsored_gas (API_KEY, DAY, GAS_USED) VALUES (%s, %s, %s) "
+            "ON CONFLICT (API_KEY, DAY) DO UPDATE SET "
+            "GAS_USED = sponsored_gas.GAS_USED + EXCLUDED.GAS_USED "
+            "WHERE sponsored_gas.GAS_USED < %s",
+            (api_key, day, gas, budget),
         )
         return cur.rowcount > 0
 
@@ -272,9 +301,8 @@ class TableWrite:
         The argument for clearing is good and will be acted on: registration
         takes any address on trust, so a password sitting on a row is no
         evidence that whoever set it owns the address, while a mailed code is.
-        Key export is no longer what stands in the way -- `export_private_key`
-        stopped reading PASSWORD_HASH and now re-authenticates every account
-        the same way, with a mailed code pinned to WORKOS_USER_ID.
+        Key export is not what stands in the way -- wallet keys cannot be
+        exported at all any more, so nothing about the key reads PASSWORD_HASH.
 
         The rollback is. `/login` answers 410 since the cutover, but the
         service behind it was left untouched for exactly this reason:
@@ -862,6 +890,61 @@ class TableWrite:
             """,
             (api_key, transaction_type, market_id, details_json),
         )
+
+    @staticmethod
+    def insert_pending_user_tx(
+        db: psycopg.Connection,
+        tx_hash: str,
+        api_key: str,
+        transaction_type: str,
+        market_id: int | None,
+        details: dict | None,
+        *,
+        created_at: int,
+    ) -> None:
+        """Record a signed user transaction before it is broadcast: the
+        `transactions` row it will become, keyed by its hash. See
+        `TableCreate.create_pending_user_txs_table`."""
+        db.execute(
+            "INSERT INTO pending_user_txs "
+            "(TX_HASH, API_KEY, TRANSACTION_TYPE, MARKET_ID, DETAILS, CREATED_AT) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (
+                tx_hash,
+                api_key,
+                transaction_type,
+                market_id,
+                json.dumps(details) if details else None,
+                created_at,
+            ),
+        )
+
+    @staticmethod
+    def delete_pending_user_tx(db: psycopg.Connection, tx_hash: str) -> bool:
+        """Forget a pending transaction that will never mine (refused, or long
+        lost) or mined and reverted. False when there was no such row."""
+        cur = db.execute("DELETE FROM pending_user_txs WHERE TX_HASH = %s", (tx_hash,))
+        return cur.rowcount > 0
+
+    @staticmethod
+    def confirm_pending_user_tx(
+        db: psycopg.Connection, tx_hash: str, details: dict | None
+    ) -> bool:
+        """The pending transaction mined: delete its row and write the
+        `transactions` row it stood for, with `details` (a claim's now carry
+        its amount). One statement, so the request that sent it and the
+        reconciler can both try, and exactly one writes the row: the second
+        finds the pending row gone, writes nothing, and gets False."""
+        cur = db.execute(
+            "WITH settled AS ("
+            "  DELETE FROM pending_user_txs WHERE TX_HASH = %s"
+            "  RETURNING API_KEY, TRANSACTION_TYPE, MARKET_ID"
+            ") "
+            "INSERT INTO transactions (API_KEY, TRANSACTION_TYPE, MARKET_ID, DETAILS) "
+            "SELECT API_KEY, TRANSACTION_TYPE, MARKET_ID, %s FROM settled",
+            (tx_hash, json.dumps(details) if details else None),
+        )
+        return cur.rowcount > 0
 
     @staticmethod
     def mark_fully_redeemed(db: psycopg.Connection, market_id: int) -> None:

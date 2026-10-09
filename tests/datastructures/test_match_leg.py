@@ -65,7 +65,9 @@ def test_a_null_match_kind_takes_the_normal_path():
 
 
 def test_a_self_matched_row_yields_both_legs():
-    """The matcher has no same-account guard; both legs are real."""
+    """The row is inserted directly: the matcher now skips same-family makers,
+    but self-trades from before that guard are still in history. Both legs are
+    real."""
     row = _row(TAKER_API_KEY="same", MAKER_API_KEY="same", MAKER_ASSET_ID="yes")
     legs = legs_for_user(row, "same")
     assert sorted(l.side for l in legs) == ["BUY", "SELL"]

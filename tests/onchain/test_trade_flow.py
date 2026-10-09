@@ -14,10 +14,12 @@ from agentpit.db.table_read import TableRead
 from tests.onchain._helpers import (
     create_market,
     fresh_client,
+    fund_direct_sends,
     hdr,
     house,
     order_service,
     register,
+    send_as,
 )
 
 
@@ -203,6 +205,7 @@ def test_an_underfunded_resting_buy_fails_and_its_remainder_is_cancelled(house_b
     assert placed["status"] == "live", placed
     with db.read() as conn:
         key = TableRead.get_user_by_api_key(conn, agent["api_key"]).eth_key
+    fund_direct_sends(client, agent["user"]["eth_address"])
     cash = admin.usd_balance(agent["user"]["eth_address"])
     admin.user_split_position(
         key, bytes.fromhex(market["condition_id"]["value"][2:]), cash - 10_000_000
@@ -214,3 +217,39 @@ def test_an_underfunded_resting_buy_fails_and_its_remainder_is_cancelled(house_b
 
     assert _settled(svc, db, placed["orderID"]) == ["FAILED"]
     assert _order_row(db, placed["orderID"]) == ("cancelled", 60_000_000)
+
+
+def test_a_reverted_fill_fails_the_order(house_book, monkeypatch):
+    """A matchOrders mined with status 0 moved nothing, so the placement fails:
+    its trade is FAILED and the answer is not a success. The agent revokes the
+    exchange's apUSD allowance first, and the admin send skips the gas estimate
+    (a static limit), so the revert lands in a mined receipt instead of failing
+    at estimation, as when the chain changes between estimate and inclusion."""
+    client = fresh_client()
+    agent = register(client)
+    address = agent["user"]["eth_address"]
+    admin = client.app.dependency_overrides[get_onchain_admin]()
+    db = client.app.dependency_overrides[get_db_session]()
+    market = create_market(client)
+    yes = market["erc1155_tokens"][0][0]
+    house_book(yes, asks=(("0.6", "100"),), user=house(client))
+    with db.read() as conn:
+        user = TableRead.get_user_by_api_key(conn, agent["api_key"])
+    usd = admin._contracts.usd  # noqa: SLF001
+    send_as(admin, user, usd.functions.approve(admin._contracts.exchange.address, 0))  # noqa: SLF001
+    sender = admin._client.admin_sender  # noqa: SLF001
+    submit = sender.submit
+    monkeypatch.setattr(sender, "submit", lambda fn, **kw: submit(fn, gas=2_000_000, **kw))
+    usd0 = admin.usd_balance(address)
+
+    r = client.post(
+        "/order",
+        headers=hdr(agent["api_key"]),
+        json={"token_id": yes, "side": "BUY", "price": "0.6", "size": 100, "order_type": "FAK"},
+    ).json()
+
+    assert r["success"] is False and "reverted" in r["errorMsg"], r
+    assert r["transactionsHashes"] == []
+    assert _settled(order_service(client), db, r["orderID"]) == ["FAILED"]
+    assert admin.usd_balance(address) == usd0
+    assert admin.ctf_balance(address, int(yes)) == 0

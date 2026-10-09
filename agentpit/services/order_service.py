@@ -12,6 +12,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from eth_utils.crypto import keccak
 from web3 import Web3
 
+from agentpit.config import Settings
 from agentpit.datastructures.cancel_orders_response import CancelOrdersResponse
 from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookSummary
 from agentpit.common import check_state
@@ -28,7 +29,9 @@ from agentpit.liquidity import feed
 from agentpit.liquidity.feed import MarketRef
 from agentpit.liquidity.replica import BookReplica
 from agentpit.domain.exceptions import (
+    AdminGasPausedError,
     BusinessRuleError,
+    GasBudgetExceededError,
     InsufficientBalanceError,
     MarketNotFoundError,
     MarketStateError,
@@ -72,6 +75,13 @@ _EXCHANGE_ONE = 10**18
 # orders expiring sooner are rejected."
 _EXPIRY_MIN_LEAD_SECONDS = 180
 
+_SECONDS_PER_DAY = 86_400  # the sponsored-gas budget resets at 00:00 UTC
+
+# Gas charged per fill to the agent's daily budget, in the fill's own
+# transaction. Above every measured one-maker matchOrders: NORMAL 168k,
+# MINT 235k.
+_SPONSORED_GAS_PER_FILL = 250_000
+
 
 def _exchange_price(maker_amount: int, taker_amount: int, side: str) -> int:
     """CalculatorHelper._calculatePrice — floored, scaled by 1e18."""
@@ -100,9 +110,12 @@ class OrderService:
     (admin key) settles each fill with one `matchOrders` on the CTFExchange.
     """
 
-    def __init__(self, db: DbSession, onchain: OnchainAdmin):
+    def __init__(
+        self, db: DbSession, onchain: OnchainAdmin, settings: Settings | None = None
+    ):
         self._db = db
         self._onchain = onchain
+        self._settings = settings if settings is not None else Settings()
 
     # --- public API -----------------------------------------------------
 
@@ -125,6 +138,12 @@ class OrderService:
         maker_amount, taker_amount = self._amounts_from_price_size(
             payload.side, payload.price, size_micro
         )
+        if not user.is_bot:
+            self._check_order_limits(user, payload, maker_amount, taker_amount)
+            self._check_gas_budget(user)
+        # Before any order row is written: a pause found inside settlement would
+        # leave FAILED trades and a 200 `success=False`.
+        self._onchain.check_sponsored()
 
         # Pre-flight balance check — reject obvious losers before signing.
         self._check_balance(user.eth_address, payload.side, maker_amount, token_id_int)
@@ -187,6 +206,8 @@ class OrderService:
                             "no orders found to match with FAK order. FAK orders are partially "
                             "filled or killed if no match is found."
                         )
+                    if match is not None:
+                        self._reserve_sponsored_gas(conn, user)
                 if match is not None and quote is not None:
                     quote[2].use(user.api_key, match.takes)
         except psycopg.errors.UniqueViolation:
@@ -236,6 +257,10 @@ class OrderService:
     def sweep(self) -> None:
         if feed.HOUSE is None:
             return
+        try:
+            self._onchain.check_sponsored()
+        except AdminGasPausedError:
+            return
         with self._db.read() as conn:
             rows = conn.execute(
                 "SELECT ORDER_ID, API_KEY, TOKEN_ID, SIDE, PRICE, REMAINING_AMOUNT "
@@ -272,11 +297,16 @@ class OrderService:
                             continue
                         agent_order, agent_signature = self._order_from_json(fresh)
                         match = self._take(conn, fresh, agent_order, quote)
-                    if match is None:
-                        continue
+                        if match is None:
+                            continue
+                        agent = TableRead.get_user_by_api_key(conn, fresh["API_KEY"])
+                        assert agent is not None
+                        self._reserve_sponsored_gas(conn, agent)
                     rep.use(fresh["API_KEY"], match.takes)
                 self._settle(agent_order, agent_signature, match, wait=False)
                 touch(fresh["MAKER"])
+            except GasBudgetExceededError:
+                continue
             except Exception:
                 log.exception("sweep fill for order %s failed", row["ORDER_ID"])
 
@@ -626,6 +656,69 @@ class OrderService:
             return collateral_int, int(size)
         return int(size), collateral_int
 
+    def _check_order_limits(
+        self, user: User, payload: PlaceOrderRequest, maker_amount: int, taker_amount: int
+    ) -> None:
+        """Size and count limits for non-bot accounts.
+
+        Every fill is a matchOrders the admin pays for, so a dust order or a
+        wall of resting dust is a way to spend our gas for nothing.
+        """
+        floor = self._settings.min_order_notional_micro
+        # The collateral leg: what a BUY pays, what a SELL receives.
+        notional = maker_amount if payload.side == "BUY" else taker_amount
+        if floor and notional < floor:
+            raise BusinessRuleError(
+                f"order is too small: the minimum is ${floor / 1_000_000:g} (price × size)"
+            )
+        # FOK/FAK never rest, so they cannot grow the book.
+        if payload.order_type in ("GTC", "GTD"):
+            cap = self._settings.max_live_orders_per_account
+            with self._db.read() as conn:
+                live = TableRead.count_live_orders(conn, user.api_key)
+                # The plain count only ever over-counts (it includes orders on
+                # markets that no longer trade), so under the cap it decides.
+                # The ACTIVE-market count costs 17-36 ms against 0.04 ms for
+                # this one (dev DB, 4,685 ACTIVE markets): only run it when
+                # the plain count would refuse.
+                if live >= cap:
+                    live = TableRead.count_live_orders_on_active_markets(conn, user.api_key)
+            if live >= cap:
+                raise BusinessRuleError(
+                    f"too many open orders: {live} are live and the limit is {cap} — cancel some first"
+                )
+
+    def _check_gas_budget(self, user: User) -> None:
+        """Refuse a non-bot account that already used its daily share of fills.
+
+        The cheap pre-check, before anything is signed or written. It is not
+        the binding one: concurrent placements can all pass it before any of
+        them is counted, so `_reserve_sponsored_gas` re-checks atomically
+        inside the fill's transaction."""
+        budget = self._settings.daily_sponsored_gas_per_account
+        if not budget:
+            return
+        now = int(time.time())
+        with self._db.read() as conn:
+            used = TableRead.sponsored_gas_used(conn, user.api_key, now // _SECONDS_PER_DAY)
+        if used >= budget:
+            raise GasBudgetExceededError(retry_after=_SECONDS_PER_DAY - now % _SECONDS_PER_DAY)
+
+    def _reserve_sponsored_gas(self, conn, user: User) -> None:
+        """Charge one fill to a non-bot agent's day, inside the fill's
+        transaction, so a refusal (`GasBudgetExceededError`) rolls the fill
+        back. Placements and sweeper fills alike: the agent is the taker of
+        every matchOrders the admin pays for. Never trued up to the receipt,
+        so it over-counts, the safe direction."""
+        budget = self._settings.daily_sponsored_gas_per_account
+        if user.is_bot or not budget:
+            return
+        now = int(time.time())
+        if not TableWrite.reserve_sponsored_gas(
+            conn, user.api_key, now // _SECONDS_PER_DAY, _SPONSORED_GAS_PER_FILL, budget
+        ):
+            raise GasBudgetExceededError(retry_after=_SECONDS_PER_DAY - now % _SECONDS_PER_DAY)
+
     def _check_balance(
         self, eth_address: str, side: str, maker_amount: int, token_id_int: int
     ) -> None:
@@ -940,7 +1033,7 @@ class OrderService:
                 [match.house_amount],
             )
             try:
-                tx = sender.submit(call)
+                tx = sender.submit(call, essential=True)
             except TxUnknown as unknown:
                 tx = unknown.pending
             tx_hash = "0x" + tx.tx_hash.hex()

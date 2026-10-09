@@ -115,11 +115,12 @@ def test_an_order_is_refused_when_its_market_closed_before_the_match_commit():
     market_id = _market(db, "late")
     transition(db, market_id, MarketState.ACTIVE, MarketState.CLOSED)
     account = Account.create()
-    user = SimpleNamespace(api_key="k", eth_address=account.address, eth_key=account)
+    user = SimpleNamespace(api_key="k", eth_address=account.address, eth_key=account, is_bot=False)
     deployment = SimpleNamespace(chain_id=31337, exchange="0x" + "11" * 20)
     onchain = SimpleNamespace(
         _client=SimpleNamespace(deployment=deployment),
         usd_balance=lambda _address: 10**12,
+        check_sponsored=lambda: None,
     )
     service = OrderService(db, onchain)  # type: ignore[arg-type]
     order = PlaceOrderRequest(
