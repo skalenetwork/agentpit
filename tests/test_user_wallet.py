@@ -27,13 +27,8 @@ def test_a_receipt_poll_that_cannot_connect_does_not_read_as_never_sent():
     eth.get_transaction_count.return_value = 0
     eth.send_raw_transaction.return_value = b"\x01" * 32
     eth.wait_for_transaction_receipt.side_effect = poll_error
-    call = Mock()
-    call.build_transaction.side_effect = lambda fields: {
-        **fields,
-        "to": "0x" + "11" * 20,
-        "data": "0x",
-        "value": 0,
-    }
+    call, to = Mock(), "0x" + "11" * 20
+    call.build_transaction.side_effect = lambda f: {**f, "to": to, "data": "0x", "value": 0}
     client = SimpleNamespace(
         web3=SimpleNamespace(eth=eth), deployment=SimpleNamespace(chain_id=31337)
     )
