@@ -191,7 +191,9 @@ class ReceiptUnreachable(ConnectionError):
     broadcast that never reached the node (`failed_before_connecting`): the
     transaction may well mine. A builtin `ConnectionError`, so
     `classify_send_error` calls it TRANSPORT. The poll's error is its
-    `__cause__`."""
+    `__cause__`. Keep it off `requests.ConnectionError`: for those,
+    `failed_before_connecting` follows `__cause__`, and the pending row of a
+    transaction that can still mine would be dropped."""
 
 
 class BatchRefused(Exception):
