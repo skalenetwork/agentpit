@@ -180,8 +180,9 @@ class UserGasSponsor:
         `on_signed(i, tx_hash)` is called each time call `i` is signed, before
         its transaction is broadcast, so the caller can record a transaction
         that may mine even if this never returns. A call is signed again only
-        after the node refused it at import (the one resize-and-retry), so a
-        second hash for the same `i` means the first can never mine.
+        after the node refused it at import (its one resize-and-retry: each
+        call has its own), so a second hash for the same `i` means the first
+        can never mine.
         """
         # A cheap guard against a caller that forgot the lock. It cannot tell
         # which thread holds it, but a lock nobody holds is a sure bug.
@@ -224,7 +225,7 @@ class UserGasSponsor:
             if shortfall:
                 self._top_up(user, shortfall)
                 topups += 1
-            retried = False
+            retried = False  # whether call i has had its one resize-and-retry
             i = 0
             while i < len(calls):
                 try:
@@ -261,6 +262,10 @@ class UserGasSponsor:
                         topups += 1
                     continue
                 i += 1
+                # Each call gets its own retry: the fee can rise again between
+                # onboarding's approvals, and a shared one would abort the
+                # batch with the first approvals already mined.
+                retried = False
         except TxDropped as exc:
             # The top-up's nonce went to a gap filler or another writer's
             # transaction: it never ran and never will, so this is no timeout

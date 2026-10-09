@@ -365,6 +365,37 @@ def test_a_second_fee_refusal_propagates_as_it_is():
     assert len(chain.sends) == 2
 
 
+def test_each_call_gets_its_own_resize_and_retry():
+    """Onboarding's three approvals while the fee climbs: approval 2 is
+    refused at 1,000 and goes out at 1,500, approval 3 is refused at 1,500 and
+    goes out at 2,000. Each call has its own one retry; with one retry for the
+    whole batch the second refusal aborted onboarding after two approvals had
+    mined."""
+    db = fresh_test_db()
+    user = _user(db)
+    calls = [_Call("a"), _Call("b"), _Call("c")]
+    chain = _Chain(
+        prices=(1_000, 1_500, 2_000),
+        balances=(0, 240_000_000, 120_000_000),
+        refusals=[None, _refused(SKALED_FEE_LOW), None, _refused(SKALED_FEE_LOW)],
+    )
+    receipts = _send(db, chain, user, calls, "onboarding")
+    assert [r["status"] for r in receipts] == [1, 1, 1]
+    assert chain.sends == [
+        ("a", 120_000, 1_000),
+        ("b", 120_000, 1_000),
+        ("b", 120_000, 1_500),
+        ("c", 120_000, 1_500),
+        ("c", 120_000, 2_000),
+    ]
+    assert chain.funded == [
+        360_000_000,
+        2 * 120_000 * 1_500 - 240_000_000,
+        120_000 * 2_000 - 120_000_000,
+    ]
+    assert _used(db, user) == 3 * TRANSFER_GAS + 3 * 80_000
+
+
 def test_any_other_refusal_propagates_without_a_retry():
     db = fresh_test_db()
     user = _user(db)
