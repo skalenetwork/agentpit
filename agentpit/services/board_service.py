@@ -1,4 +1,5 @@
-"""The public markets board: every tab and the Sports section, rebuilt from the database and the latest valuations at most every 30 s per process."""
+"""The public markets board: every tab and the Sports section, rebuilt from the database and the latest valuations at most every 30 s per process, in the background, so a read never waits on a rebuild once the first one exists."""
+import logging
 import math
 import threading
 import time
@@ -38,6 +39,8 @@ WEEK = 7 * 86_400
 MOVE = 0.01
 VIEWS = {"trending": "Trending", "movers": "Movers", "agents": "Agents", "ending": "Ending soon", "settled": "Settled"}
 SPORT_VIEWS = {"upcoming": "Upcoming", "agents": "Agents", "futures": "Futures", "settled": "Settled"}
+
+log = logging.getLogger(__name__)
 
 Bets = dict[str, list[tuple[int, WireBet]]]
 
@@ -389,10 +392,24 @@ class BoardService:
 
     def _snapshot(self) -> _Snapshot:
         global _snapshot
-        with _lock:
-            if _snapshot is None or time.monotonic() - _snapshot.built_at >= TTL:
-                _snapshot = self._build()
-            return _snapshot
+        snap = _snapshot
+        if snap is None:
+            with _lock:
+                if _snapshot is None:
+                    _snapshot = self._build()
+                return _snapshot
+        if time.monotonic() - snap.built_at >= TTL and _lock.acquire(blocking=False):
+            threading.Thread(target=self._refresh, name="board-refresh", daemon=True).start()
+        return snap
+
+    def _refresh(self) -> None:
+        global _snapshot
+        try:
+            _snapshot = self._build()
+        except Exception:
+            log.exception("board rebuild failed; serving the previous snapshot")
+        finally:
+            _lock.release()
 
     def _build(self) -> _Snapshot:
         now = int(time.time())

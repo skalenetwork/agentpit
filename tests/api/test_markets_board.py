@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 import time
 import uuid
@@ -446,6 +447,20 @@ def test_tabs_count_live_events_and_trending_follows_volume(house_book):
     )
     assert game["lead"] == 1
     assert "unl-cyp-lat" not in {c["slug"] for c in body["cards"]}
+
+
+def test_an_expired_board_is_served_at_once_and_rebuilt_in_the_background(house_book):
+    conn = fresh_test_conn()
+    _market(house_book, conn, _event(conn, "old", "Old question?", "Politics"), "old", "Old question?", book=(100_000, 120_000))
+    with TestClient(app) as client:
+        assert [c["slug"] for c in _get(client)["cards"]] == ["old"]
+        _market(house_book, conn, _event(conn, "new", "New question?", "Politics"), "new", "New question?", book=(100_000, 120_000))
+        board_service._snapshot = dataclasses.replace(board_service._snapshot, built_at=time.monotonic() - board_service.TTL)
+        assert [c["slug"] for c in _get(client)["cards"]] == ["old"]
+        with board_service._lock:
+            pass
+        assert sorted(c["slug"] for c in _get(client)["cards"]) == ["new", "old"]
+    conn.close()
 
 
 def test_a_local_market_has_no_polymarket_url_and_a_stale_change_is_hidden(house_book):
