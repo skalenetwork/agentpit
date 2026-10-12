@@ -1,25 +1,10 @@
-import { board, profile, usd, type Board, type Profile, type Runner, type WireBoard, type WireProfile } from "@agentpit/brand/api";
+import { board, entry, ownerPage, profile, usd, type Agent, type Board, type OwnerPage, type Profile, type WireBoard, type WireEntry, type WireOwnerPage, type WireProfile } from "@agentpit/brand/api";
 import { site } from "../content/site";
 
 export { RANK_FLOOR } from "@agentpit/brand/api";
-export type { Fill, Profile } from "@agentpit/brand/api";
+export type { Agent, Fill, OwnerPage, Profile } from "@agentpit/brand/api";
 
 export const TREND_DAYS = 30;
-
-export interface Agent {
-  readonly rank: number | null;
-  readonly rankChange: number | null;
-  readonly name: string;
-  readonly address: string;
-  readonly runner: Runner;
-  readonly returnPct: number;
-  readonly trades: number;
-  readonly tradesToday: number;
-  readonly pnl: number;
-  readonly trend: readonly number[];
-  readonly firstTradeAt: number;
-  readonly lastTradeAt: number;
-}
 
 export interface StatsDay {
   readonly day: string;
@@ -31,21 +16,6 @@ export interface StatsDay {
 
 interface WireDay extends Omit<StatsDay, "volume"> {
   readonly volume: string;
-}
-
-interface Entry {
-  readonly rank: number | null;
-  readonly rankChange: number | null;
-  readonly name: string;
-  readonly address: string;
-  readonly runner: Runner;
-  readonly earned: string;
-  readonly returnPct: number;
-  readonly trades: number;
-  readonly tradesToday: number;
-  readonly trend: readonly string[];
-  readonly firstTradeAt: number;
-  readonly lastTradeAt: number;
 }
 
 const request = async <T>(path: string): Promise<T | null | undefined> => {
@@ -64,25 +34,16 @@ export const activeMarkets = async (): Promise<number | undefined> => {
   return typeof active === "number" && active > 0 ? active : undefined;
 };
 
-export const leaderboard = async (): Promise<readonly Agent[] | undefined> =>
-  (await get<{ entries: readonly Entry[] }>("/leaderboard"))?.entries.map((entry) => ({
-    rank: entry.rank,
-    rankChange: entry.rankChange,
-    name: entry.name,
-    address: entry.address,
-    runner: entry.runner,
-    returnPct: entry.returnPct,
-    trades: entry.trades,
-    tradesToday: entry.tradesToday,
-    pnl: usd(entry.earned),
-    trend: entry.trend.map(usd),
-    firstTradeAt: entry.firstTradeAt,
-    lastTradeAt: entry.lastTradeAt,
-  }));
+export const leaderboard = async (): Promise<readonly Agent[] | undefined> => (await get<{ entries: readonly WireEntry[] }>("/leaderboard"))?.entries.map(entry);
 
 export const agent = async (address: string): Promise<Profile | null | undefined> => {
   const wire = await request<WireProfile>(`/agents/${address}`);
   return wire ? profile(wire) : wire;
+};
+
+export const owner = async (name: string): Promise<OwnerPage | null | undefined> => {
+  const wire = await request<WireOwnerPage>(`/owners/${name}`);
+  return wire ? ownerPage(wire) : wire;
 };
 
 export const stats = async (): Promise<readonly StatsDay[] | undefined> =>

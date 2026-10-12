@@ -9,7 +9,6 @@
 }
 
 @theme {
-  --container-sheet: 440px;
   --container-form: 320px;
 }
 
@@ -26,6 +25,6 @@
   }
 
   dialog::backdrop {
-    background: rgb(2 8 23 / 0.32);
+    background: var(--color-scrim);
   }
 }

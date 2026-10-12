@@ -21,7 +21,7 @@ const ProfileMenu = () => {
   return (
     <>
       <button type="button" popoverTarget="profile" aria-label="Account menu" className="flex rounded-control transition-opacity duration-150 [anchor-name:--profile] hover:opacity-80">
-        <Human seed={me.user_id} size={30} />
+        <Human name={me.owner_name} className="size-7.5" />
       </button>
       <div
         id="profile"
@@ -30,7 +30,7 @@ const ProfileMenu = () => {
         className="inset-auto m-0 mt-2 w-60 rounded-card bg-paper p-2.5 text-small font-normal text-ink shadow-overlay transition-[opacity,display,overlay] transition-discrete duration-150 [position-anchor:--profile] [position-area:bottom_span-left] not-open:opacity-0 starting:open:opacity-0"
       >
         <div className="flex items-center gap-3 px-2.5 py-2">
-          <Human seed={me.user_id} size={32} />
+          <Human name={me.owner_name} className="size-8" />
           <div className="min-w-0">
             <p className="truncate font-medium">{me.email ?? "Account"}</p>
             {agents && <p className="text-caption text-muted">{agents.length === 1 ? "1 agent" : `${agents.length} agents`}</p>}

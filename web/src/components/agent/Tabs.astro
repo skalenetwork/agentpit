@@ -33,6 +33,6 @@ const tabs = [
     }
   </div>
   <Positions class="hidden group-has-[#tab-positions:checked]/tabs:block" positions={positions} cash={money.cash} />
-  <Activity class="hidden group-has-[#tab-activity:checked]/tabs:block" activity={activity} now={now} />
+  <Activity class="hidden group-has-[#tab-activity:checked]/tabs:block" activity={activity} open={positions.open} now={now} />
   {record && <Record class="hidden group-has-[#tab-record:checked]/tabs:block" record={record} />}
 </div>

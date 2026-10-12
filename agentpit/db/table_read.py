@@ -30,6 +30,12 @@ class TradedAccount(BaseModel):
     handle: str | None
     app: str | None
     host: str | None
+    owner: str | None
+
+
+class Owner(BaseModel):
+    name: str
+    shown: bool
 
 
 class TradeTally(BaseModel):
@@ -507,6 +513,29 @@ class TableRead:
         return row is not None
 
     @staticmethod
+    def get_owner(db: psycopg.Connection, workos_id: str) -> Owner | None:
+        row = db.execute("SELECT NAME, SHOWN FROM owners WHERE WORKOS_ID = %s", (workos_id,)).fetchone()
+        return Owner.model_validate(row) if row else None
+
+    @staticmethod
+    def owner_name_taken(db: psycopg.Connection, name: str, workos_id: str) -> bool:
+        row = db.execute(
+            "SELECT 1 FROM owners WHERE LOWER(NAME) = LOWER(%s) AND WORKOS_ID <> %s "
+            "UNION ALL SELECT 1 FROM users WHERE LOWER(HANDLE) = LOWER(%s)",
+            (name, workos_id, name),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def unnamed_owners(db: psycopg.Connection) -> list[str]:
+        rows = db.execute(
+            "SELECT OWNER_WORKOS_ID AS ID FROM users WHERE OWNER_WORKOS_ID IS NOT NULL "
+            "UNION SELECT WORKOS_USER_ID FROM users WHERE WORKOS_USER_ID IS NOT NULL "
+            "EXCEPT SELECT WORKOS_ID FROM owners"
+        ).fetchall()
+        return [r["ID"] for r in rows]
+
+    @staticmethod
     def get_user_by_eth_address(db: psycopg.Connection, eth_address: str) -> "User | None":
         row = db.execute(
             f"SELECT {TableRead._USER_COLS} FROM users WHERE ETH_ADDRESS = %s LIMIT 1",
@@ -601,8 +630,9 @@ class TableRead:
     #: trades at all -- so each probe reads all 523,000 rows, thirty times per
     #: request. See the test for the full measurement.
     TRADED_ACCOUNTS_SQL = """
-            SELECT u.USER_ID, u.ETH_ADDRESS, u.HANDLE, u.AGENT_APP AS APP, u.AGENT_HOST AS HOST
+            SELECT u.USER_ID, u.ETH_ADDRESS, u.HANDLE, u.AGENT_APP AS APP, u.AGENT_HOST AS HOST, o.NAME AS OWNER
             FROM users u
+            LEFT JOIN owners o ON o.WORKOS_ID = u.OWNER_WORKOS_ID AND o.SHOWN
             WHERE u.IS_BOT = 0
               AND u.DELETED_AT IS NULL
               AND (

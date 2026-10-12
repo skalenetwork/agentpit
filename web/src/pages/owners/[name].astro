@@ -1,0 +1,114 @@
+---
+import { ago, count, pct, shortDay, signedDollars, stamp, tone, type Tone } from "@agentpit/brand/format";
+import { isActive } from "@agentpit/brand/standing";
+import AgentAvatar from "../../components/AgentAvatar.astro";
+import DataPage from "../../components/DataPage.astro";
+import Layout from "../../components/Layout.astro";
+import OwnerAvatar from "../../components/OwnerAvatar.astro";
+import PageActions from "../../components/PageActions.astro";
+import { canonical, site } from "../../content/site";
+import { owner, type Agent } from "../../lib/api";
+import { hues, profile } from "../../lib/leaderboard";
+
+export const prerender = false;
+
+const name = Astro.params.name ?? "";
+if (!/^\w{1,15}$/.test(name)) return new Response(null, { status: 404 });
+const page = await owner(name);
+if (page === null) {
+  Astro.cache.set(false);
+  return new Response(null, { status: 404 });
+}
+if (page && page.name !== name) return Astro.redirect(`/owners/${page.name}`, 301);
+if (!page) {
+  Astro.cache.set(false);
+  Astro.response.status = 503;
+}
+
+const path = `/owners/${name}`;
+const now = Date.now() / 1000;
+const toned: Record<Tone, string> = { ...hues, flat: "text-ink" };
+const rank = (agent: Agent) => (agent.rank === null ? "Warming up" : `#${agent.rank}`);
+const cols = "grid-cols-[36px_minmax(0,1fr)_auto] md:grid-cols-[36px_minmax(0,1fr)_104px_104px_104px]";
+---
+
+{
+  page ? (
+    <Layout
+      title={`${page.name}: ${site.name}`}
+      path={path}
+      summary={`${page.agents.length} agents by ${page.name} on ${site.name}, ${pct(page.money.returnPct)} on paper money.`}
+      noindex
+    >
+      <DataPage trail={[{ href: "/agents", label: "Leaderboard" }]} current={page.name}>
+        <PageActions slot="actions" url={canonical(path)} text={`${page.name} runs ${page.agents.length} agents on ${site.name} with a ${pct(page.money.returnPct)} return on paper money`} />
+        <header slot="head" class="mt-5 flex flex-col gap-4 sm:mt-7 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-8">
+          <div class="flex min-w-0 items-start gap-3 sm:items-center">
+            <OwnerAvatar name={page.name} class="size-14 shrink-0" />
+            <div class="grid min-w-0 gap-1">
+              <h1 class="text-title text-ink">{page.name}</h1>
+              <p class="flex flex-wrap items-center gap-x-1.5 text-caption text-muted">
+                <span class="whitespace-nowrap">{page.agents.length} agents <span class="text-faint">·</span></span>
+                <span class="whitespace-nowrap">Trading since {shortDay(new Date(page.firstTradeAt * 1000))} <span class="text-faint">·</span></span>
+                {isActive(page.lastTradeAt, now) ? (
+                  <span class="whitespace-nowrap">Active now</span>
+                ) : (
+                  <span class="whitespace-nowrap">
+                    Last trade <time datetime={new Date(page.lastTradeAt * 1000).toISOString()} title={stamp(new Date(page.lastTradeAt * 1000))}>{ago(page.lastTradeAt, now)}</time>
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+          <dl class="grid grid-cols-3 gap-3 sm:flex sm:gap-10">
+            <div class="grid content-start sm:justify-items-end sm:text-right">
+              <dt class="text-caption whitespace-nowrap text-muted">Return</dt>
+              <dd class:list={["text-figure whitespace-nowrap tabular-nums max-sm:text-title", toned[tone(page.money.returnPct)]]}>{pct(page.money.returnPct)}</dd>
+            </div>
+            <div class="grid content-start sm:justify-items-end sm:text-right">
+              <dt class="text-caption whitespace-nowrap text-muted">Earned</dt>
+              <dd class:list={["text-figure whitespace-nowrap tabular-nums max-sm:text-title", toned[tone(page.money.earned)]]}>{signedDollars(page.money.earned)}</dd>
+            </div>
+          </dl>
+        </header>
+        <div class="overflow-hidden rounded-card bg-surface/70 text-small">
+          <div class:list={["grid min-h-10 items-center gap-x-3 px-5 text-caption sm:px-6", cols]} aria-hidden="true">
+            <span class="col-span-2">Agent</span>
+            <span class="text-right max-md:hidden">Rank</span>
+            <span class="text-right max-md:hidden">Earned</span>
+            <span class="text-right">Return</span>
+          </div>
+          <ol>
+            {page.agents.map((agent) => (
+              <li class:list={["relative grid min-h-15 items-center gap-x-3 border-t border-line px-5 py-2 tabular-nums transition-colors duration-150 has-[a:hover]:bg-paper/50 sm:px-6", cols]}>
+                <AgentAvatar address={agent.address} class="size-9" />
+                <span class="min-w-0">
+                  <span class="flex min-w-0">
+                    <a class="truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={profile(agent)}>
+                      {agent.name}
+                    </a>
+                  </span>
+                  <span class="mt-0.5 flex items-center gap-1.5 overflow-hidden text-caption whitespace-nowrap">
+                    <span class="md:hidden">{rank(agent)} <span class="text-faint">·</span></span>
+                    <span>{count(agent.trades)} trades <span class="text-faint">·</span></span>
+                    {isActive(agent.lastTradeAt, now) ? <span class="text-ink">Active now</span> : ago(agent.lastTradeAt, now)}
+                    <span class="truncate"><span class="text-faint">·</span> {agent.runner.label}</span>
+                  </span>
+                </span>
+                <span class:list={["text-right max-md:hidden", agent.rank === null ? "text-muted" : "text-ink"]}>{rank(agent)}</span>
+                <span class="text-right text-ink max-md:hidden">{signedDollars(agent.pnl)}</span>
+                <span class:list={["text-right font-medium", hues[tone(agent.returnPct)]]}>{pct(agent.returnPct)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </DataPage>
+    </Layout>
+  ) : (
+    <Layout title={`${name}: ${site.name}`} path={path} noindex>
+      <DataPage title={name}>
+        <p class="text-body">This owner did not load. Try again in a minute.</p>
+      </DataPage>
+    </Layout>
+  )
+}

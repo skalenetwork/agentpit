@@ -22,7 +22,7 @@ from agentpit.datastructures.agent_summary import AgentSummary, NewAgent, OwnedA
 from agentpit.datastructures.auth_response import UserPublic
 from agentpit.datastructures.change_password_request import ChangePasswordRequest
 from agentpit.datastructures.open_order import TitledOpenOrder
-from agentpit.datastructures.update_handle_request import UpdateHandleRequest
+from agentpit.datastructures.update_handle_request import Handle, UpdateHandleRequest
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
@@ -35,6 +35,16 @@ router = APIRouter(tags=["users"])
 
 class AutoRedeemRequest(BaseModel):
     enabled: bool
+
+
+class OwnerRequest(BaseModel):
+    name: Handle | None = None
+    shown: bool | None = None
+
+
+class MeWire(UserPublic):
+    owner_name: str | None
+    show_owner: bool
 
 
 class TopUpStatusWire(BaseModel):
@@ -51,9 +61,15 @@ class CreditsWire(BaseModel):
     credits_wei: str
 
 
-@router.get("/me", response_model=UserPublic)
-def get_me(user: CurrentUserDep) -> UserPublic:
-    return UserPublic.model_validate(user.model_dump())
+def _me(user: User, db: DbSession) -> MeWire:
+    with db.read() as conn:
+        owner = TableRead.get_owner(conn, user.workos_user_id) if user.workos_user_id else None
+    return MeWire(**user.model_dump(), owner_name=owner.name if owner else None, show_owner=owner is None or owner.shown)
+
+
+@router.get("/me", response_model=MeWire)
+def get_me(user: CurrentUserDep, db: SessionDep) -> MeWire:
+    return _me(user, db)
 
 
 @router.get("/me/agents", response_model=list[OwnedAgent])
@@ -189,6 +205,18 @@ def update_me_auto_redeem(
         TableWrite.set_auto_redeem(conn, user.user_id, payload.enabled)
         refreshed = TableRead.get_user_by_userid(conn, user.user_id)
     return UserPublic.model_validate((refreshed or user).model_dump())
+
+
+@router.patch("/me/owner", response_model=MeWire)
+def update_me_owner(payload: OwnerRequest, owner: OwnerDep, user: CurrentUserDep, db: SessionDep) -> MeWire:
+    try:
+        with db.write() as conn:
+            if payload.name is not None and TableRead.owner_name_taken(conn, payload.name, owner):
+                raise HandleAlreadyExistsError(payload.name)
+            TableWrite.update_owner(conn, owner, payload.name, payload.shown)
+    except psycopg.errors.UniqueViolation as exc:
+        raise HandleAlreadyExistsError(str(payload.name)) from exc
+    return _me(user, db)
 
 
 @router.get("/me/top-up", response_model=TopUpStatusWire)

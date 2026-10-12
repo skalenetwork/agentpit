@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cents, compactDollars, etDay, pct, rankMove, shortAddress, shortDay, tone, until, utcTime, zoneTime } from "./format";
+import { cents, clock, compactDollars, etDay, exactDollars, pct, rankMove, shortAddress, shortDay, stamp, tone, until, utcTime, zoneTime } from "./format";
 
 test("cents keep one decimal under 10¢ only", () => {
   expect([0, 0.015, 0.044, 0.0999, 0.1, 0.2092, 1].map(cents)).toEqual(["0¢", "1.5¢", "4.4¢", "10¢", "10¢", "21¢", "100¢"]);
@@ -9,6 +9,13 @@ test("days and times read in UTC", () => {
   const at = new Date(Date.UTC(2026, 8, 24, 23, 8, 59));
   expect(shortDay(at)).toBe("Sep 24");
   expect(utcTime(at)).toBe("23:08 UTC");
+});
+
+test("a row reads its UTC clock and its title the full stamp, a burst the span", () => {
+  const at = new Date(Date.UTC(2026, 9, 11, 16, 47, 23));
+  expect([clock(at), clock(at, true), stamp(at)]).toEqual(["16:47", "16:47:23", "Oct 11, 2026, 16:47:23 UTC"]);
+  expect(stamp(at, new Date(Date.UTC(2026, 9, 11, 16, 48, 2)))).toBe("Oct 11, 2026, 16:47:23 to 16:48:02 UTC");
+  expect(stamp(new Date(Date.UTC(2026, 9, 11, 23, 59, 58)), new Date(Date.UTC(2026, 9, 12, 0, 0, 3)))).toBe("Oct 11, 2026, 23:59:58 to Oct 12, 2026, 00:00:03 UTC");
 });
 
 test("a kickoff reads in its league's time zone", () => {
@@ -27,6 +34,10 @@ test("tone rounds to the cent before it picks a side", () => {
 
 test("a return reads with two decimals, an explicit sign and a true minus", () => {
   expect([12.5, -1.234, 0, -0.001].map(pct)).toEqual(["+12.50%", "−1.23%", "0.00%", "0.00%"]);
+});
+
+test("exact dollars keep the cents", () => {
+  expect([49.95, 0.5, 1234.567].map(exactDollars)).toEqual(["$49.95", "$0.50", "$1,234.57"]);
 });
 
 test("compact dollars keep one decimal and a true minus", () => {

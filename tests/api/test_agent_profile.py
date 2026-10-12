@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.position_wire import PositionWire
+from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.services.leaderboard_service import Holdings, _holdings
 from tests.db_helpers import fresh_test_conn
@@ -55,10 +57,14 @@ def _market(conn, polymarket_id: int | None = None) -> None:
     )
 
 
-def _agent(conn, handle: str, return_pct: float, trades: int, *, invested: int = 0, unrealized: int = 0) -> str:
+def _agent(
+    conn, handle: str, return_pct: float, trades: int, *, invested: int = 0, unrealized: int = 0, owner: str | None = None
+) -> str:
     """A snapshotted agent with `trades` fills of 4 Yes at 25¢, the newest at `NOW - 60`,
     whose holdings the pass has already kept."""
-    user_id, acct, key = TableWrite.create_user(conn, email=f"{handle}@example.com", password_hash="x", handle=handle)
+    user_id, acct, key = TableWrite.create_user(
+        conn, email=f"{handle}@example.com", password_hash="x", handle=handle, owner_workos_id=owner
+    )
     for k in range(trades):
         conn.execute(
             "INSERT INTO trades (TRADE_ID, MARKET, ASSET_ID, SIDE, PRICE, TRADE_SIZE, MATCH_KIND, STATUS, "
@@ -102,6 +108,7 @@ def test_a_lowercase_address_answers_with_the_checksummed_one():
             "icon": None,
             "category": "Crypto",
             "url": None,
+            "tx": None,
             "eventTitle": None,
             "endDate": None,
             "resolvedAt": None,
@@ -110,6 +117,48 @@ def test_a_lowercase_address_answers_with_the_checksummed_one():
             "trading": None,
         }
     ]
+
+
+def test_a_fill_carries_its_settlement_hash_or_null():
+    conn = fresh_test_conn()
+    _market(conn)
+    address = _agent(conn, "Hashed", 0.0, 2)
+    tx = "0x" + "32" * 32
+    conn.execute("UPDATE trades SET TRANSACTION_HASH = CASE WHEN MATCH_TIME = %s THEN %s ELSE '' END", (NOW - 60, tx))
+    conn.close()
+    with TestClient(app) as client:
+        activity = _profile(client, address)["activity"]
+    assert [f["tx"] for f in activity] == [tx, None]
+
+
+def test_an_open_position_carries_its_shares():
+    conn = fresh_test_conn()
+    _market(conn)
+    address = _agent(conn, "Holder", 0.0, 1)
+    conn.close()
+    with TestClient(app) as client:
+        _holdings[address] = Holdings(
+            valued_at=NOW, cash_raw=0, positions=[PositionWire(conditionId=CRYPTO, size=333.0, currentValue=83.25)], closed=[]
+        )
+        assert [p["shares"] for p in _profile(client, address)["positions"]["open"]] == [333.0]
+
+
+def test_the_owner_name_shows_on_two_board_agents_never_on_one_and_never_when_hidden():
+    conn = fresh_test_conn()
+    _market(conn)
+    solo = _agent(conn, "Solo", 0.0, 1, owner="user_solo")
+    pair = [_agent(conn, name, 0.0, 1, owner="user_pair") for name in ("Left", "Right")]
+    keyed = _agent(conn, "Keyed", 0.0, 1)
+    with TestClient(app) as client:
+        bodies = [client.get(f"/agents/{a}").text for a in (solo, *pair, keyed)]
+        TableWrite.update_owner(conn, "user_pair", None, False)
+        hidden = [_profile(client, a)["owner"] for a in pair]
+    owner = TableRead.get_owner(conn, "user_pair")
+    conn.close()
+    assert owner is not None
+    assert [json.loads(b)["owner"] for b in bodies] == [None, owner.name, owner.name, None]
+    assert not any("@" in b or "user_" in b for b in bodies)
+    assert hidden == [None, None]
 
 
 def test_a_polymarket_fill_links_to_its_market():

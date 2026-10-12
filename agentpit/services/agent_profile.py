@@ -51,6 +51,7 @@ class OpenPosition(MarketContext):
     icon: str | None
     category: str | None
     outcome: str
+    shares: float
     avgPrice: float
     curPrice: float
     value: str
@@ -114,11 +115,13 @@ class Fill(MarketContext):
     icon: str | None
     category: str | None
     url: str | None
+    tx: str | None
 
 
 class AgentProfile(BaseModel):
     name: str
     address: str
+    owner: str | None
     runner: Runner
     trades: int
     firstTradeAt: int
@@ -174,6 +177,7 @@ def build_profile(
             icon=p.icon or None,
             category=categories.get(p.conditionId),
             outcome=p.outcome,
+            shares=p.size,
             avgPrice=p.avgPrice,
             curPrice=p.curPrice,
             value=_money(p.currentValue),
@@ -245,6 +249,7 @@ def build_profile(
     return AgentProfile(
         name=row.name,
         address=row.address,
+        owner=row.owner if row.owner and sum(r.owner == row.owner for r in board) > 1 else None,
         runner=runner_for(row.app, row.host),
         trades=row.trades,
         firstTradeAt=row.first_trade_at,
@@ -302,6 +307,7 @@ def build_profile(
                 icon=f.icon or None,
                 category=categories.get(f.conditionId),
                 url=f.url,
+                tx=f.transactionHash or None,
             )
             for f in fills
             if f.type in ("TRADE", "SPLIT", "MERGE", "REDEEM")

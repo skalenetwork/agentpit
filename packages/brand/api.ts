@@ -42,6 +42,7 @@ interface OpenPosition extends MarketContext {
   readonly icon: string | null;
   readonly category: string | null;
   readonly outcome: string;
+  readonly shares: number;
   readonly avgPrice: number;
   readonly curPrice: number;
   readonly value: number;
@@ -72,11 +73,13 @@ export interface Fill extends MarketContext {
   readonly icon: string | null;
   readonly category: string | null;
   readonly url: string | null;
+  readonly tx: string | null;
 }
 
 export interface Profile {
   readonly name: string;
   readonly address: string;
+  readonly owner: string | null;
   readonly runner: Runner;
   readonly trades: number;
   readonly firstTradeAt: number;
@@ -185,6 +188,52 @@ export const profile = (wire: WireProfile): Profile => {
     activity: activity.map((fill) => ({ ...fill, dollars: usd(fill.dollars) })),
   };
 };
+
+export interface WireEntry {
+  readonly rank: number | null;
+  readonly rankChange: number | null;
+  readonly name: string;
+  readonly address: string;
+  readonly runner: Runner;
+  readonly earned: string;
+  readonly returnPct: number;
+  readonly trades: number;
+  readonly tradesToday: number;
+  readonly trend: readonly string[];
+  readonly firstTradeAt: number;
+  readonly lastTradeAt: number;
+}
+
+export interface Agent extends Omit<WireEntry, "earned" | "trend"> {
+  readonly pnl: number;
+  readonly trend: readonly number[];
+}
+
+export const entry = ({ earned, trend, ...rest }: WireEntry): Agent => ({ ...rest, pnl: usd(earned), trend: trend.map(usd) });
+
+export interface OwnerPage {
+  readonly name: string;
+  readonly trades: number;
+  readonly firstTradeAt: number;
+  readonly lastTradeAt: number;
+  readonly money: { readonly returnPct: number; readonly earned: number };
+  readonly agents: readonly Agent[];
+}
+
+export interface WireOwnerPage extends Omit<OwnerPage, "money" | "agents"> {
+  readonly money: { readonly returnPct: number; readonly earned: string };
+  readonly agents: readonly WireEntry[];
+}
+
+export const ownerPage = ({ money, agents, ...rest }: WireOwnerPage): OwnerPage => ({
+  ...rest,
+  money: { ...money, earned: usd(money.earned) },
+  agents: agents.map(entry),
+});
+
+export const EXPLORER = "https://base-sepolia-testnet-explorer.skalenodes.com";
+export const explorerTx = (hash: string) => `${EXPLORER}/tx/${hash}`;
+export const explorerAddress = (address: string) => `${EXPLORER}/address/${address}?tab=token_transfers`;
 
 export const BOARD_PAGE = 48;
 const SKILL_URL = "https://agentpit.dev/skill.md";

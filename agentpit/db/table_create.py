@@ -242,6 +242,19 @@ class TableCreate:
         )
 
     @staticmethod
+    def create_owners_table(conn: psycopg.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS owners (
+                WORKOS_ID TEXT PRIMARY KEY,
+                NAME      TEXT NOT NULL,
+                SHOWN     BOOLEAN NOT NULL DEFAULT TRUE
+            )
+            """
+        )
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_owners_name ON owners(LOWER(NAME))")
+
+    @staticmethod
     def create_markets_table(conn: psycopg.Connection) -> None:
         allowed_states = ", ".join(f"'{s.value}'" for s in MarketState)
         conn.execute(
@@ -623,6 +636,7 @@ class TableCreate:
         TableCreate.create_orders_table(conn)
         TableCreate.create_trades_table(conn)
         TableCreate.create_users_table(conn)
+        TableCreate.create_owners_table(conn)
         TableCreate.create_agents_table(conn)
         TableCreate.create_personalities_table(conn)
         TableCreate.create_events_table(conn)

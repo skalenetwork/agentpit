@@ -370,6 +370,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with db_session.write() as conn:
             TableCreate.create_all_tables(conn)
             TableCreate.migrate_markets(conn, onchain_admin.oracle_address)
+            for workos_id in TableRead.unnamed_owners(conn):
+                TableWrite.ensure_owner(conn, workos_id)
         try:
             wrapped = EventService(db_session).ensure_singleton_events_for_orphans()
             if wrapped:

@@ -33,6 +33,7 @@ export interface Order extends MarketContext {
   readonly url: string | null;
 }
 
+const ME = ["me"];
 const AGENTS = ["agents"];
 
 const agent = ({ handle, equity, earned, trend, ...rest }: WireAgent): Agent => ({
@@ -43,7 +44,15 @@ const agent = ({ handle, equity, earned, trend, ...rest }: WireAgent): Agent => 
   trend: trend.map(usd),
 });
 
-export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => request<Me>("/me"), staleTime: Number.POSITIVE_INFINITY, refetchInterval: false });
+export const useMe = () => useQuery({ queryKey: ME, queryFn: () => request<Me>("/me"), staleTime: Number.POSITIVE_INFINITY, refetchInterval: false });
+
+export const useOwner = () => {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (change: { readonly name?: string; readonly shown?: boolean }) => request<Me>("/me/owner", "PATCH", change),
+    onSuccess: (me) => client.setQueryData(ME, me),
+  });
+};
 
 export const useAgents = () => useQuery({ queryKey: AGENTS, queryFn: async () => (await request<readonly WireAgent[]>("/me/agents")).map(agent) });
 

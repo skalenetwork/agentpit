@@ -1,3 +1,5 @@
+import random
+import re
 import time
 import uuid
 
@@ -11,8 +13,9 @@ from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.domain.handles import generate_handle
 from agentpit.services.agent_accounts import AgentAccounts
-from agentpit.services.leaderboard_service import RANK_FLOOR
+from agentpit.services.leaderboard_service import RANK_FLOOR, Holdings, _holdings
 from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 G = 100_000_000_000
@@ -238,3 +241,85 @@ def test_a_deleted_agent_leaves_the_list_and_its_key_stops_working(sign_in):
     assert again.status_code == 404
     assert listed == []
     assert me.status_code == 401
+
+
+def test_me_names_the_owner_its_agents_show_and_the_switch_hides_it(sign_in):
+    accounts = _accounts()
+    with TestClient(app) as client:
+        headers, owner = _owner(client, sign_in, "owner@example.com")
+        agents = [accounts.agent_for(owner, runner, None, None) for runner in ("Claude", "Codex")]
+        conn = fresh_test_conn()
+        for agent in agents:
+            _traded(conn, agent, 1, 0)
+            _holdings[agent.eth_address] = Holdings(valued_at=NOW, cash_raw=0, positions=[], closed=[])
+        conn.close()
+
+        me = client.get("/me", headers=headers).json()
+        shown = [client.get(f"/agents/{a.eth_address}").json()["owner"] for a in agents]
+        off = client.patch("/me/owner", json={"shown": False}, headers=headers).json()
+        hidden = (client.get(f"/agents/{agents[0].eth_address}").json()["owner"], client.get(f"/owners/{me['owner_name']}").status_code)
+        renamed = client.patch("/me/owner", json={"name": " Night_Owl ", "shown": True}, headers=headers).json()
+        page = client.get("/owners/night_owl").json()["name"]
+        again = client.get(f"/agents/{agents[0].eth_address}").json()["owner"]
+
+    assert me["show_owner"] is True and re.fullmatch(r"[A-Za-z0-9_]{1,15}", me["owner_name"])
+    assert shown == [me["owner_name"]] * 2
+    assert (off["show_owner"], off["owner_name"]) == (False, me["owner_name"])
+    assert hidden == (None, 404)
+    assert (renamed["show_owner"], renamed["owner_name"], page, again) == (True, "Night_Owl", "Night_Owl", "Night_Owl")
+
+
+def test_an_owner_name_is_a_handle_free_among_owners_and_agents_in_any_case(sign_in):
+    accounts = _accounts()
+    with TestClient(app) as client:
+        headers, _ = _owner(client, sign_in, "owner@example.com")
+        agent = accounts.agent_for("user_someone_else", "Claude", None, None)
+        with fresh_test_db().read() as conn:
+            other = TableRead.get_owner(conn, "user_someone_else")
+        assert other is not None and agent.handle is not None
+        mine = client.get("/me", headers=headers).json()["owner_name"]
+        names = ["bad name", "x" * 16, "", agent.handle.upper(), other.name.lower(), mine.lower()]
+        responses = [client.patch("/me/owner", json={"name": n}, headers=headers) for n in names]
+
+    assert [r.status_code for r in responses] == [422, 422, 422, 409, 409, 200]
+    assert responses[4].json() == {"detail": f"Handle '{other.name.lower()}' is already in use"}
+    assert responses[5].json()["owner_name"] == mine.lower()
+
+
+def test_only_a_dashboard_session_changes_the_owner(sign_in):
+    with TestClient(app) as client:
+        _, owner = _owner(client, sign_in, "owner@example.com")
+        with fresh_test_db().read() as conn:
+            human = TableRead.get_user_by_workos_id(conn, owner)
+        assert human is not None
+
+        resp = client.patch("/me/owner", json={"shown": False}, headers={"X-API-Key": human.api_key})
+
+    assert resp.status_code == 403
+
+
+def test_startup_names_every_owner_and_person_once():
+    conn = fresh_test_conn()
+    for handle in ("BotOne", "BotTwo"):
+        TableWrite.create_user(conn, email=None, password_hash=None, handle=handle, owner_workos_id="user_agents")
+    person, _, _ = TableWrite.create_user(conn, email="person@example.com", password_hash=None, handle="Person")
+    TableWrite.set_workos_user_id(conn, person, "user_person")
+    with TestClient(app):
+        pass
+    names = {o.name.lower() for o in (TableRead.get_owner(conn, w) for w in ("user_agents", "user_person")) if o}
+    count = conn.execute("SELECT COUNT(*) AS N FROM owners").fetchone()
+    conn.close()
+    assert len(names) == 2 and not names & {"botone", "bottwo", "person"} and count == {"n": 2}
+
+
+def test_a_picked_owner_name_skips_owner_names_and_handles_in_any_case():
+    conn = fresh_test_conn()
+    random.seed(7)
+    first = generate_handle(random)
+    TableWrite.create_user(conn, email=None, password_hash=None, handle=first.lower())
+    for owner in ("user_a", "user_b"):
+        random.seed(7)
+        TableWrite.ensure_owner(conn, owner)
+    owners = [TableRead.get_owner(conn, w) for w in ("user_a", "user_b")]
+    conn.close()
+    assert len({first.lower(), *(o.name.lower() for o in owners if o)}) == 3

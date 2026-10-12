@@ -1,7 +1,7 @@
-import { bursts } from "@agentpit/brand/activity";
-import { type Fill, type MarketContext, marketCaption, type Profile } from "@agentpit/brand/api";
-import { closeLabel, earnedToday, recordBars } from "@agentpit/brand/chart";
-import { cents, count, dollars, pct, shortAddress, shortDay, signedDollars, tone, utcTime } from "@agentpit/brand/format";
+import { type Burst, bursts } from "@agentpit/brand/activity";
+import { explorerAddress, explorerTx, type Fill, type MarketContext, marketCaption, type Profile } from "@agentpit/brand/api";
+import { closeLabel, recordBars } from "@agentpit/brand/chart";
+import { cents, clock, count, dollars, exactDollars, pct, shortAddress, shortDay, signedDollars, stamp, tone, utcTime } from "@agentpit/brand/format";
 import polymarket from "@agentpit/brand/polymarket.svg";
 import { recordCalls } from "@agentpit/brand/standing";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
@@ -13,10 +13,9 @@ import { LastTrade, Sep, TONE } from "../labels";
 import { ApiError } from "../session";
 import { Crumbs } from "../shell";
 import { Thumb } from "../thumb";
-import { Button, Card, Copy, Fault, Input, Note, RankPill, Robot, Sheet, SOFT } from "../ui";
+import { Actions, Button, Card, Copy, Fault, Input, Note, RankPill, Robot, Sheet, SOFT } from "../ui";
 
 const SITE = "https://agentpit.dev/agents";
-const EXPLORER = "https://skale-base-explorer.skalenodes.com/address";
 const POSITIONS = 6;
 const BURSTS = 8;
 const DAY = 86_400;
@@ -25,6 +24,8 @@ const ICON = "max-sm:w-7.5 max-sm:px-0";
 const LEAD = "flex min-h-10 items-center text-caption text-muted";
 const POSITION_COLS = "md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px]";
 const BURST_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px]";
+const ACTIVITY_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_72px_104px]";
+const UNDERLINE = "underline decoration-faint underline-offset-[3px] transition-colors duration-150 hover:text-ink hover:decoration-current";
 
 const route = getRouteApi("/console/agents/$address");
 
@@ -42,9 +43,11 @@ interface RowProps {
   readonly cols: string;
   readonly what: ReactNode;
   readonly at: ReactNode;
+  readonly time?: ReactNode;
   readonly value?: ReactNode;
   readonly note?: ReactNode;
   readonly earned?: number;
+  readonly onOpen?: () => void;
 }
 
 const day = (at: number, now: number) => {
@@ -53,6 +56,10 @@ const day = (at: number, now: number) => {
 };
 
 const TINT: Readonly<Record<string, string>> = { Yes: "bg-yes/10 text-yes dark:bg-yes/16", No: "bg-no/10 text-no dark:bg-no/16" };
+
+const verb = (fill: Fill) => (fill.type === "TRADE" ? VERB[fill.side ?? "BUY"] : VERB[fill.type]);
+
+const when = (burst: Burst<Fill>) => stamp(new Date(Math.min(...burst.fills.map((fill) => fill.at)) * 1000), new Date(burst.at * 1000));
 
 const Outcome = ({ outcome }: { outcome: string }) => (
   <span className={`inline-flex h-6 shrink-0 items-center rounded-control px-2.5 text-label font-medium ${TINT[outcome] ?? "bg-paper text-ink"}`}>{outcome}</span>
@@ -72,9 +79,20 @@ const More = ({ onClick, children }: { onClick: () => void; children: ReactNode 
   </div>
 );
 
+const OnPolymarket = ({ className }: { className: string }) => (
+  <>
+    <span
+      aria-hidden="true"
+      className={`size-3 shrink-0 bg-muted transition-colors duration-150 group-hover/link:bg-ink ${className}`}
+      style={{ mask: `url("${polymarket}") center / contain no-repeat` }}
+    />
+    <span className="sr-only">, on Polymarket</span>
+  </>
+);
+
 const Caption = ({ parts }: { parts: readonly string[] }) =>
   parts.length > 0 && (
-    <span className="flex min-w-0 items-center gap-1.5 overflow-hidden text-caption whitespace-nowrap text-muted">
+    <span className="flex min-w-0 items-center gap-1.5 overflow-hidden text-caption font-normal whitespace-nowrap text-muted">
       {parts.map((part, i) => (
         <Fragment key={part}>
           {i > 0 && <Sep />}
@@ -84,20 +102,18 @@ const Caption = ({ parts }: { parts: readonly string[] }) =>
     </span>
   );
 
-const Row = ({ market, now, cols, what, at, value, note, earned }: RowProps) => (
-  <li className={`grid grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:items-center md:py-2 ${note ? "md:min-h-15" : "md:min-h-13"} ${cols}`}>
+const Row = ({ market, now, cols, what, at, time, value, note, earned, onOpen }: RowProps) => (
+  <li
+    className={`grid grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:items-center md:py-2 ${note ? "md:min-h-15" : "md:min-h-13"} ${cols} ${onOpen ? "relative -mx-5 px-5 transition-colors duration-150 hover:bg-paper/50 sm:-mx-6 sm:px-6" : ""}`}
+  >
+    {onOpen && <button type="button" onClick={onOpen} aria-label={`Receipt: ${market.title}`} className="absolute inset-0 -outline-offset-2" />}
     <Thumb src={market.icon} title={market.title} category={market.category} />
     <span className="min-w-0 md:contents">
       <span className="grid min-w-0">
         {market.url ? (
-          <a href={market.url} target="_blank" rel="noopener" className="group/link flex max-w-full min-w-0 items-end gap-1 justify-self-start font-medium">
+          <a href={market.url} target="_blank" rel="noopener" className="group/link relative z-1 flex max-w-full min-w-0 items-end gap-1 justify-self-start font-medium">
             <span className="min-w-0 underline-offset-2 group-hover/link:underline max-md:line-clamp-2 md:truncate">{market.title}</span>
-            <span
-              aria-hidden="true"
-              className="mb-1 size-3 shrink-0 bg-muted transition-colors duration-150 group-hover/link:bg-ink"
-              style={{ mask: `url("${polymarket}") center / contain no-repeat` }}
-            />
-            <span className="sr-only">, on Polymarket</span>
+            <OnPolymarket className="mb-1" />
           </a>
         ) : (
           <span className="line-clamp-2 font-medium md:line-clamp-1">{market.title}</span>
@@ -110,6 +126,7 @@ const Row = ({ market, now, cols, what, at, value, note, earned }: RowProps) => 
       </span>
     </span>
     <span className="grid justify-items-end gap-0.5 text-right md:contents">
+      {time !== undefined && <span className="whitespace-nowrap text-muted max-md:order-last max-md:text-caption md:text-right">{time}</span>}
       {value !== undefined && (
         <span className="grid justify-items-end">
           {value}
@@ -181,19 +198,14 @@ const Header = ({ agent, profile, now }: { agent: Agent; profile: Profile | unde
       <dl className="grid grid-cols-3 gap-3 sm:flex sm:shrink-0 sm:gap-10">
         {(
           [
-            ["Return", pct(profile.money.returnPct), TONE[tone(profile.money.returnPct)], 0],
-            ["Earned", signedDollars(profile.money.earned), TONE[tone(Math.round(profile.money.earned))], Math.round(earnedToday(profile.money.earned, profile.money.trend))],
-            ["Equity", dollars(profile.money.capital), "text-ink", 0],
+            ["Return", pct(profile.money.returnPct), TONE[tone(profile.money.returnPct)]],
+            ["Earned", signedDollars(profile.money.earned), TONE[tone(Math.round(profile.money.earned))]],
+            ["Equity", dollars(profile.money.capital), "text-ink"],
           ] as const
-        ).map(([term, value, color, today]) => (
+        ).map(([term, value, color]) => (
           <div key={term} className="grid min-w-0 content-start sm:justify-items-end sm:text-right">
             <dt className="text-caption text-muted">{term}</dt>
             <dd className={`truncate text-figure tabular-nums max-sm:text-title ${color}`}>{value}</dd>
-            {today !== 0 && (
-              <dd className="text-caption whitespace-nowrap text-muted tabular-nums">
-                <span className={TONE[tone(today)]}>{signedDollars(today)}</span> today
-              </dd>
-            )}
           </div>
         ))}
       </dl>
@@ -280,8 +292,109 @@ const PositionsPanel = ({ positions, cash, now }: { positions: Profile["position
   );
 };
 
-const ActivityPanel = ({ activity, now }: { activity: Profile["activity"]; now: number }) => {
+const Time = ({ burst }: { burst: Burst<Fill> }) => {
+  const date = new Date(burst.at * 1000);
+  const time = (
+    <time dateTime={date.toISOString()} title={when(burst)}>
+      {clock(date)}
+    </time>
+  );
+  return burst.tx ? (
+    <a href={explorerTx(burst.tx)} target="_blank" rel="noopener" aria-label="Settlement transaction, opens the explorer" className={`relative z-1 ${UNDERLINE}`}>
+      {time}
+    </a>
+  ) : (
+    time
+  );
+};
+
+const Fact = ({ term, children }: { term: string; children: ReactNode }) => (
+  <div className="flex min-h-10 items-center justify-between gap-4 border-t border-line py-2">
+    <dt className="shrink-0 text-muted">{term}</dt>
+    <dd className="min-w-0 text-right tabular-nums">{children}</dd>
+  </div>
+);
+
+const Receipt = ({ burst, open, now, onClose }: { burst: Burst<Fill>; open: Profile["positions"]["open"]; now: number; onClose: () => void }) => {
+  const { title, url, fills, tx } = burst;
+  const cut = title.lastIndexOf(" ") + 1;
+  const position = open.find((held) => held.title === title && held.outcome === burst.outcome);
+  return (
+    <Sheet
+      title={
+        <span className="flex items-start gap-3">
+          <Thumb src={burst.icon} title={title} category={burst.category} />
+          <span className="grid min-w-0 gap-0.5 text-pretty">
+            {url ? (
+              <a href={url} target="_blank" rel="noopener" className="group/link underline-offset-2 hover:underline">
+                {title.slice(0, cut)}
+                <span className="whitespace-nowrap">
+                  {title.slice(cut)}
+                  <OnPolymarket className="ml-1 inline-block" />
+                </span>
+              </a>
+            ) : (
+              title
+            )}
+            <Caption parts={marketCaption(burst, now)} />
+          </span>
+        </span>
+      }
+      onClose={onClose}
+    >
+      <p className="mt-4 flex min-h-6 items-center gap-1.5">
+        <span className="font-medium">{verb(burst)}</span>
+        {burst.outcome && <Outcome outcome={burst.outcome} />}
+        {fills.length > 1 && <span className="text-muted tabular-nums">×{fills.length}</span>}
+      </p>
+      <dl className="mt-3">
+        <Fact term={burst.type === "TRADE" ? "Filled at" : `${VERB[burst.type]} at`}>{when(burst)}</Fact>
+        <Fact term="Shares">{count(burst.shares)}</Fact>
+        {burst.type === "TRADE" && burst.shares > 0 && <Fact term="Average price">{cents(burst.dollars / burst.shares)}</Fact>}
+        <Fact term={burst.side === "SELL" || burst.type === "MERGE" || burst.type === "REDEEM" ? "Proceeds" : "Cost"}>{exactDollars(burst.dollars)}</Fact>
+      </dl>
+      {fills.length > 1 && (
+        <>
+          <h3 className={`mt-4 ${LEAD}`}>{fills.length} fills</h3>
+          <ul>
+            {fills.map((fill) => (
+              <li key={`${fill.at}${fill.shares}${fill.dollars}`} className="grid min-h-10 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 border-t border-line py-2 tabular-nums">
+                <time dateTime={new Date(fill.at * 1000).toISOString()} className="text-muted">
+                  {clock(new Date(fill.at * 1000), true)}
+                </time>
+                <span className="truncate text-muted">
+                  {count(fill.shares)} {burst.type === "TRADE" ? `at ${cents(fill.dollars / fill.shares)}` : "shares"}
+                </span>
+                <span className="text-right">{exactDollars(fill.dollars)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <dl className={fills.length > 1 ? "mt-4" : undefined}>
+        {position && (
+          <Fact term="Position now">
+            {count(position.shares)} <Sep /> <Move from={position.avgPrice} to={position.curPrice} /> <Sep />{" "}
+            <span className={`font-medium ${TONE[tone(Math.round(position.pnl))]}`}>{signedDollars(position.pnl)}</span>
+          </Fact>
+        )}
+        {tx && (
+          <Fact term="Settlement">
+            <a href={explorerTx(tx)} target="_blank" rel="noopener" className={`inline-flex items-center gap-1 whitespace-nowrap ${UNDERLINE}`}>
+              Transaction <span className="font-mono">{shortAddress(tx)}</span>
+              <ArrowUpRight size={14} strokeWidth={1.75} className="shrink-0 text-muted" />
+            </a>
+          </Fact>
+        )}
+      </dl>
+      {tx && <p className="mt-1 text-caption text-muted">The explorer names the house operator as sender, shows shares in raw units and does not name the market.</p>}
+    </Sheet>
+  );
+};
+
+const ActivityPanel = ({ activity, open, now }: { activity: Profile["activity"]; open: Profile["positions"]["open"]; now: number }) => {
   const [all, setAll] = useState(false);
+  const [receipt, setReceipt] = useState<Burst<Fill>>();
   const list = bursts(activity);
   const shown = all ? list : list.slice(0, BURSTS);
   return (
@@ -297,22 +410,26 @@ const ActivityPanel = ({ activity, now }: { activity: Profile["activity"]; now: 
                   key={`${burst.at}${burst.title}${burst.outcome}`}
                   market={burst}
                   now={now}
-                  cols={BURST_COLS}
+                  cols={ACTIVITY_COLS}
                   what={
                     <>
-                      <span className="text-ink">{burst.type === "TRADE" ? VERB[burst.side ?? "BUY"] : VERB[burst.type]}</span>
+                      <span className="text-ink">{verb(burst)}</span>
                       {burst.outcome && <Outcome outcome={burst.outcome} />}
-                      {burst.n > 1 && <span>×{burst.n}</span>}
+                      {burst.fills.length > 1 && <span>×{burst.fills.length}</span>}
                     </>
                   }
                   at={burst.type === "TRADE" && burst.shares > 0 && `at ${cents(burst.dollars / burst.shares)}`}
+                  time={<Time burst={burst} />}
                   value={dollars(burst.dollars)}
+                  onOpen={() => setReceipt(burst)}
                 />
               ))}
           </ul>
         </section>
       ))}
       {!all && list.length > BURSTS && <More onClick={() => setAll(true)}>Show {count(list.length - BURSTS)} more</More>}
+      {shown.some((burst) => burst.tx) && <p className="mt-4 text-caption text-muted">Times are UTC. Linked times open the settlement transaction on SKALE testnet, sent by the house operator.</p>}
+      {receipt && <Receipt burst={receipt} open={open} now={now} onClose={() => setReceipt(undefined)} />}
     </>
   );
 };
@@ -395,21 +512,12 @@ const Wallet = ({ address }: { address: string }) => (
       <span className="font-mono text-ink">{shortAddress(address)}</span>
       <Copy text={address} variant="ghost" size="icon" className="-ml-1" />
     </span>
-    <a href={`${EXPLORER}/${address}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 whitespace-nowrap transition-colors duration-150 hover:text-ink">
+    <a href={explorerAddress(address)} target="_blank" rel="noreferrer" className="flex items-center gap-1 whitespace-nowrap transition-colors duration-150 hover:text-ink">
       View on explorer
       <ArrowUpRight size={12} strokeWidth={1.75} />
     </a>
     <span className="sm:ml-auto">Paper apUSD on SKALE on Base</span>
   </footer>
-);
-
-const Actions = ({ onClose, children }: { onClose: () => void; children: ReactNode }) => (
-  <div className="mt-6 flex justify-end gap-2">
-    <Button variant="ghost" size="lg" onClick={onClose}>
-      Cancel
-    </Button>
-    {children}
-  </div>
 );
 
 const Rename = ({ agent, onClose }: { agent: Agent; onClose: () => void }) => {
@@ -502,7 +610,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
             <Tabs
               tabs={[
                 { label: "Positions", count: profile.positions.count, panel: <PositionsPanel positions={profile.positions} cash={profile.money.cash} now={now} /> },
-                { label: "Activity", panel: <ActivityPanel activity={profile.activity} now={now} /> },
+                { label: "Activity", panel: <ActivityPanel activity={profile.activity} open={profile.positions.open} now={now} /> },
                 ...(profile.record ? [{ label: "Record", count: profile.record.wins + profile.record.losses, panel: <RecordPanel record={profile.record} now={now} /> }] : []),
                 ...ordersTab,
               ]}

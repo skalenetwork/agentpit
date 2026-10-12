@@ -10,6 +10,8 @@ export const count = (value: number) => value.toLocaleString("en-US");
 export const chance = (price: number | null) =>
   price === null ? "No book" : price > 0 && price < 0.005 ? "<1%" : price < 1 && price > 0.995 ? ">99%" : `${Math.round(price * 100)}%`;
 export const dollars = (value: number) => `$${Math.round(value).toLocaleString("en-US")}`;
+const exact = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+export const exactDollars = (value: number) => exact.format(value);
 export const shortDay = (date: Date, timeZone = "UTC") => date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone });
 export const ET = "America/New_York";
 const year = (at: number) => new Date(at * 1000).toLocaleDateString("en-US", { year: "numeric", timeZone: ET });
@@ -17,6 +19,12 @@ export const etDay = (at: number, now: number) =>
   new Date(at * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: year(at) === year(now) ? undefined : "numeric", timeZone: ET });
 export const zoneTime = (date: Date, timeZone: string) => date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone, timeZoneName: "short" });
 export const utcTime = (date: Date) => zoneTime(date, "UTC");
+export const clock = (date: Date, seconds = false) => date.toISOString().slice(11, seconds ? 19 : 16);
+const dated = (date: Date) => `${shortDay(date)}, ${date.getUTCFullYear()}`;
+export const stamp = (from: Date, to = from) => {
+  const end = dated(to) === dated(from) ? clock(to, true) : `${dated(to)}, ${clock(to, true)}`;
+  return `${dated(from)}, ${clock(from, true)}${+to === +from ? "" : ` to ${end}`} UTC`;
+};
 export const shortAddress = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
 
 export const tone = (value: number): Tone => {

@@ -1,7 +1,7 @@
 ---
 import { ArrowUpRight, Copy } from "@lucide/astro";
+import { explorerAddress } from "@agentpit/brand/api";
 import { shortAddress } from "@agentpit/brand/format";
-import { site } from "../../content/site";
 import copy from "../../scripts/copy.js?raw";
 
 interface Props {
@@ -24,7 +24,7 @@ const { address } = Astro.props;
     </label>
     <script is:inline set:html={copy} />
   </div>
-  <a class="inline-flex items-center gap-1 whitespace-nowrap transition-colors duration-150 hover:text-ink" href={`${site.explorer}/address/${address}`}>
+  <a class="inline-flex items-center gap-1 whitespace-nowrap transition-colors duration-150 hover:text-ink" href={explorerAddress(address)}>
     View on explorer<ArrowUpRight class="size-3" aria-hidden="true" />
   </a>
   <span class="sm:ml-auto">Paper apUSD on SKALE on Base</span>
