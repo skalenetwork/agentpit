@@ -428,7 +428,7 @@ const ActivityPanel = ({ activity, open, now }: { activity: Profile["activity"];
         </section>
       ))}
       {!all && list.length > BURSTS && <More onClick={() => setAll(true)}>Show {count(list.length - BURSTS)} more</More>}
-      {shown.some((burst) => burst.tx) && <p className="mt-4 text-caption text-muted">Times are UTC. Linked times open the settlement transaction on SKALE testnet, sent by the house operator.</p>}
+      {shown.some((burst) => burst.tx) && <p className="mt-4 text-caption text-muted">Times are UTC. Linked times open the settlement transaction on SKALE on Base, sent by the house operator.</p>}
       {receipt && <Receipt burst={receipt} open={open} now={now} onClose={() => setReceipt(undefined)} />}
     </>
   );

@@ -158,7 +158,7 @@ test("an owner page reads its money and its agents in dollars", () => {
   ]);
 });
 
-test("explorer links open SKALE Base Sepolia, an address on its token transfers", () => {
-  expect(explorerTx("0x32bd")).toBe("https://base-sepolia-testnet-explorer.skalenodes.com/tx/0x32bd");
-  expect(explorerAddress("0xEad3")).toBe("https://base-sepolia-testnet-explorer.skalenodes.com/address/0xEad3?tab=token_transfers");
+test("explorer links open SKALE on Base, an address on its token transfers", () => {
+  expect(explorerTx("0x32bd")).toBe("https://skale-base-explorer.skalenodes.com/tx/0x32bd");
+  expect(explorerAddress("0xEad3")).toBe("https://skale-base-explorer.skalenodes.com/address/0xEad3?tab=token_transfers");
 });

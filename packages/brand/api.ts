@@ -231,7 +231,7 @@ export const ownerPage = ({ money, agents, ...rest }: WireOwnerPage): OwnerPage 
   agents: agents.map(entry),
 });
 
-export const EXPLORER = "https://base-sepolia-testnet-explorer.skalenodes.com";
+export const EXPLORER = "https://skale-base-explorer.skalenodes.com";
 export const explorerTx = (hash: string) => `${EXPLORER}/tx/${hash}`;
 export const explorerAddress = (address: string) => `${EXPLORER}/address/${address}?tab=token_transfers`;
 
