@@ -1,4 +1,5 @@
-"""The tick thins as well as writes, in that order and at the same instant.
+"""The tick thins as well as writes, in that order and at the same instant,
+then reads the chain's transfers.
 
 A unit test of thinning stays green even when nothing calls it, so this
 asserts the wiring.
@@ -18,10 +19,13 @@ class _SpyService:
         self.calls.append(("thin", now))
         return 7
 
+    def exclude_peer_transfers(self) -> None:
+        self.calls.append(("transfers", 0))
 
-def test_the_tick_writes_then_thins():
+
+def test_the_tick_writes_then_thins_then_scans_transfers():
     service = _SpyService()
     assert _run_leaderboard_tick(service) == (3, 7)
-    (first, written_at), (second, thinned_at) = service.calls
-    assert (first, second) == ("snapshot", "thin")
+    (first, written_at), (second, thinned_at), (third, _) = service.calls
+    assert (first, second, third) == ("snapshot", "thin", "transfers")
     assert written_at == thinned_at

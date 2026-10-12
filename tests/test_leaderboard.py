@@ -76,6 +76,28 @@ def test_maker_only_trade_still_counts_as_traded():
     conn.close()
 
 
+def test_a_wallet_that_moved_apusd_to_another_is_off_the_board():
+    """A gift ranks as earned, so both ends leave the board. The first block
+    flagged stays, and a later scan reports nobody new."""
+    conn = fresh_test_conn()
+    user_id, acct, key = TableWrite.create_user(
+        conn, email="gifted@example.com", password_hash="x", handle=None
+    )
+    conn.execute(
+        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) "
+        "VALUES (%s, %s, %s, %s)",
+        ("t6", key, 1_700_000_000, "PENDING"),
+    )
+    stranger = "0x" + "ab" * 20
+
+    assert TableWrite.flag_peer_transfers(conn, {acct.address.lower(): 7, stranger: 7}) == [acct.address]
+    assert TableWrite.flag_peer_transfers(conn, {acct.address.lower(): 9}) == []
+    assert user_id not in {r.user_id for r in TableRead.list_traded_accounts(conn)}
+    block = conn.execute("SELECT PEER_TRANSFER_BLOCK FROM users WHERE USER_ID = %s", (user_id,)).fetchone()
+    assert block["PEER_TRANSFER_BLOCK"] == 7
+    conn.close()
+
+
 def test_snapshots_round_trip():
     conn = fresh_test_conn()
     user_id, _acct, _key = TableWrite.create_user(
@@ -174,6 +196,42 @@ class _FakeAccounts:
 
 def _worth(value: float, cost: float = 0.0) -> list[PositionWire]:
     return [PositionWire(currentValue=value, initialValue=cost)]
+
+
+class _FakeTransfers:
+    """`peer_transfers` answering from a list, recording each `from_block`."""
+
+    def __init__(self, *answers: tuple[dict[str, int], int]):
+        self._answers = list(answers)
+        self.asked: list[int] = []
+
+    def peer_transfers(self, from_block: int) -> tuple[dict[str, int], int]:
+        self.asked.append(from_block)
+        return self._answers.pop(0)
+
+
+def test_the_transfer_scan_reads_on_from_where_it_stopped():
+    conn = fresh_test_conn()
+    user_id, acct, key = TableWrite.create_user(
+        conn, email="scanned@example.com", password_hash="x", handle=None
+    )
+    conn.execute(
+        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) "
+        "VALUES (%s, %s, %s, %s)",
+        ("t7", key, 1_700_000_000, "PENDING"),
+    )
+    conn.close()
+
+    db = fresh_test_db()
+    onchain = _FakeTransfers(({acct.address.lower(): 40}, 51), ({}, 60))
+    service = LeaderboardService(db, onchain, _FakeAccounts(), Settings())
+    service.exclude_peer_transfers()
+    service.exclude_peer_transfers()
+
+    assert onchain.asked == [0, 51]
+    with db.read() as check:
+        assert user_id not in {r.user_id for r in TableRead.list_traded_accounts(check)}
+    db.close()
 
 
 def test_valuing_an_account_keeps_what_it_holds_for_the_profile():

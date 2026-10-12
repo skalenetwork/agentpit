@@ -494,6 +494,22 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
+    def flag_peer_transfers(
+        db: psycopg.Connection, first_blocks: dict[str, int]
+    ) -> list[str]:
+        """Record the first block in which each lowercase address moved apUSD
+        wallet to wallet, which keeps its account off the board. An address
+        already flagged keeps its block; returns the addresses flagged now."""
+        rows = db.execute(
+            "UPDATE users u SET PEER_TRANSFER_BLOCK = f.block "
+            "FROM unnest(%s::text[], %s::bigint[]) AS f(address, block) "
+            "WHERE LOWER(u.ETH_ADDRESS) = f.address AND u.PEER_TRANSFER_BLOCK IS NULL "
+            "RETURNING u.ETH_ADDRESS",
+            (list(first_blocks), list(first_blocks.values())),
+        ).fetchall()
+        return [r["ETH_ADDRESS"] for r in rows]
+
+    @staticmethod
     def create_personality(
         db: psycopg.Connection,
         personality_id: str,
