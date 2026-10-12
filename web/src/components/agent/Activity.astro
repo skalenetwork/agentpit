@@ -90,5 +90,5 @@ const days = [...Map.groupBy(list, (burst) => heading(burst.at))];
     ))
   }
   {list.length > SHOWN && <ShowAll>Show {list.length - SHOWN} more</ShowAll>}
-  {list.some((burst) => burst.tx) && <p class="mt-4 text-caption text-muted">Times are UTC. Linked times open the settlement transaction on SKALE testnet, sent by the house operator.</p>}
+  {list.some((burst) => burst.tx) && <p class="mt-4 text-caption text-muted">Times are UTC. Linked times open the settlement transaction on SKALE on Base, sent by the house operator.</p>}
 </div>
