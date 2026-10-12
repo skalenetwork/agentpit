@@ -10,7 +10,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.liquidity import feed
 from agentpit.domain.runner import Runner, runner_for
 from agentpit.services.agent_profile import ACTIVITY, AgentProfile, build_profile
-from agentpit.services.leaderboard_service import SORTS, rank_rows
+from agentpit.services.leaderboard_service import SORTS, LeaderboardRow, compute_return_pct, rank_rows
 
 router = APIRouter(tags=["leaderboard"])
 
@@ -37,10 +37,46 @@ class LeaderboardEntry(BaseModel):
     trendStart: date | None
     trend: list[str]
 
+    @classmethod
+    def of(cls, row: LeaderboardRow) -> "LeaderboardEntry":
+        return cls(
+            rank=row.place,
+            rankChange=row.place_change,
+            name=row.name,
+            address=row.address,
+            runner=runner_for(row.app, row.host),
+            capital=str(row.capital_raw),
+            earned=str(row.earned_raw),
+            invested=str(row.invested_raw),
+            unrealized=str(row.unrealized_raw),
+            realized=str(row.realized_raw),
+            returnPct=round(row.return_pct, 2),
+            trades=row.trades,
+            tradesToday=row.trades_today,
+            firstTradeAt=row.first_trade_at,
+            lastTradeAt=row.last_trade_at,
+            trendStart=row.trend_start,
+            trend=row.trend,
+        )
+
 
 class LeaderboardResponse(BaseModel):
     sort: str
     entries: "list[LeaderboardEntry]"
+
+
+class OwnerMoney(BaseModel):
+    returnPct: float
+    earned: str
+
+
+class OwnerPage(BaseModel):
+    name: str
+    trades: int
+    firstTradeAt: int
+    lastTradeAt: int
+    money: OwnerMoney
+    agents: list[LeaderboardEntry]
 
 
 class StatsDay(BaseModel):
@@ -70,28 +106,7 @@ def get_leaderboard(
     this payload under any sort.
     """
     key = sort if sort in SORTS else "return"
-    entries = [
-        LeaderboardEntry(
-            rank=row.place,
-            rankChange=row.place_change,
-            name=row.name,
-            address=row.address,
-            runner=runner_for(row.app, row.host),
-            capital=str(row.capital_raw),
-            earned=str(row.earned_raw),
-            invested=str(row.invested_raw),
-            unrealized=str(row.unrealized_raw),
-            realized=str(row.realized_raw),
-            returnPct=round(row.return_pct, 2),
-            trades=row.trades,
-            tradesToday=row.trades_today,
-            firstTradeAt=row.first_trade_at,
-            lastTradeAt=row.last_trade_at,
-            trendStart=row.trend_start,
-            trend=row.trend,
-        )
-        for row in rank_rows(service.build_board(), key)
-    ]
+    entries = [LeaderboardEntry.of(row) for row in rank_rows(service.build_board(), key)]
     return LeaderboardResponse(sort=key, entries=entries)
 
 
@@ -116,6 +131,24 @@ def get_agent(
         categories = TableRead.categories_by_condition_id(conn, ids)
         contexts = TableRead.market_contexts(conn, ids, feed.sided())
     return build_profile(row, board, held, fills, categories, contexts, int(time.time()))
+
+
+@router.get("/owners/{name}", response_model=OwnerPage)
+def get_owner_page(name: str, service: LeaderboardServiceDep) -> OwnerPage | Response:
+    rows = [r for r in rank_rows(service.build_board(), "return") if r.owner and r.owner.lower() == name.lower()]
+    if len(rows) < 2 or rows[0].owner is None:
+        return Response(status_code=404)
+    return OwnerPage(
+        name=rows[0].owner,
+        trades=sum(r.trades for r in rows),
+        firstTradeAt=min(r.first_trade_at for r in rows),
+        lastTradeAt=max(r.last_trade_at for r in rows),
+        money=OwnerMoney(
+            returnPct=round(compute_return_pct(sum(r.capital_raw for r in rows), sum(r.deposited_raw for r in rows)), 2),
+            earned=str(sum(r.earned_raw for r in rows)),
+        ),
+        agents=[LeaderboardEntry.of(r) for r in sorted(rows, key=lambda r: r.place is None)],
+    )
 
 
 @router.get("/stats", response_model=StatsResponse)

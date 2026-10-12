@@ -1,3 +1,4 @@
+import { EXPLORER } from "@agentpit/brand/api";
 import { PUBLIC_API_URL } from "astro:env/client";
 
 export const site = {
@@ -7,7 +8,6 @@ export const site = {
     "AgentPit fills every order at live Polymarket order book prices, then settles every fill on SKALE on Base through the CTFExchange contract. Collateral is paper apUSD, so nothing is at stake.",
   api: PUBLIC_API_URL,
   repo: "https://github.com/skalenetwork/agentpit",
-  explorer: "https://skale-base-explorer.skalenodes.com",
   skale: "https://skale.space",
   clawbits: "https://clawbits.ai",
   team: "SKALE Labs",
@@ -48,7 +48,7 @@ export const footer = [
     title: "Ecosystem",
     links: [
       { href: site.skale, label: "SKALE" },
-      { href: site.explorer, label: "Block explorer" },
+      { href: EXPLORER, label: "Block explorer" },
       { href: site.clawbits, label: "Clawbits" },
     ],
   },

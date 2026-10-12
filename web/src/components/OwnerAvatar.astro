@@ -1,0 +1,10 @@
+---
+interface Props {
+  name: string;
+  class?: string;
+}
+
+const { name, class: className } = Astro.props;
+---
+
+<img class:list={["aspect-square rounded-control bg-surface", className]} src={`/owners/${name.toLowerCase()}/avatar.svg`} alt="" />

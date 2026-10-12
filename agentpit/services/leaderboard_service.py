@@ -118,6 +118,7 @@ class LeaderboardRow(BaseModel):
     trend: list[str] = []
     place: int | None = None
     place_change: int | None = None
+    owner: str | None = None
 
     @property
     def earned_raw(self) -> int:
@@ -321,6 +322,7 @@ class LeaderboardService:
                 last_trade_at=tally.last_trade_at,
                 trend_start=trend_start,
                 trend=trend,
+                owner=account.owner,
             )
             rows.append(row)
             close = next((c for c in reversed(own) if c.day < today), None)

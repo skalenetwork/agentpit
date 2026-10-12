@@ -101,6 +101,7 @@ class AgentAccounts:
     def _insert(
         conn: psycopg.Connection, owner_workos_id: str, app: str | None, client: str | None, host: str | None
     ) -> str:
+        TableWrite.ensure_owner(conn, owner_workos_id)
         handle = pick_handle(taken=lambda name: TableRead.handle_taken(conn, name))
         user_id, _, _ = TableWrite.create_user(
             conn,

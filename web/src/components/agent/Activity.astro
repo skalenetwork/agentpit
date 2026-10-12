@@ -1,28 +1,40 @@
 ---
 import { bursts } from "@agentpit/brand/activity";
-import { cents, dollars, shortDay } from "@agentpit/brand/format";
-import type { Fill } from "../../lib/api";
+import { explorerTx } from "@agentpit/brand/api";
+import { cents, clock, dollars, shortDay, stamp } from "@agentpit/brand/format";
+import type { Fill, Profile } from "../../lib/api";
 import MarketLink from "../MarketLink.astro";
 import Glyph from "./Glyph.astro";
 import Outcome from "./Outcome.astro";
+import Receipt from "./Receipt.astro";
 import ShowAll from "./ShowAll.astro";
 
 interface Props {
   activity: readonly Fill[];
+  open: Profile["positions"]["open"];
   now: number;
   class: string;
 }
 
 const SHOWN = 8;
 const DAY = 86_400;
-const { activity, now, class: className } = Astro.props;
+const { activity, open, now, class: className } = Astro.props;
 const verbs = { BUY: "Bought", SELL: "Sold", SPLIT: "Split", MERGE: "Merged", REDEEM: "Redeemed" } as const;
 const today = Math.floor(now / DAY);
 const heading = (at: number) => {
   const back = today - Math.floor(at / DAY);
   return back === 0 ? "Today" : back === 1 ? "Yesterday" : shortDay(new Date(at * 1000));
 };
-const list = bursts(activity).map((burst, i) => ({ ...burst, i, verb: burst.type === "TRADE" ? verbs[burst.side ?? "BUY"] : verbs[burst.type] }));
+const list = bursts(activity).map((burst, i) => {
+  const date = new Date(burst.at * 1000);
+  return {
+    ...burst,
+    i,
+    date,
+    verb: burst.type === "TRADE" ? verbs[burst.side ?? "BUY"] : verbs[burst.type],
+    span: stamp(new Date(burst.fills[burst.fills.length - 1].at * 1000), date),
+  };
+});
 const days = [...Map.groupBy(list, (burst) => heading(burst.at))];
 ---
 
@@ -35,7 +47,7 @@ const days = [...Map.groupBy(list, (burst) => heading(burst.at))];
           {items.map((burst) => (
             <li
               class:list={[
-                "grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:min-h-13 md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px] md:items-center md:py-2",
+                "relative -mx-5 grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line px-5 py-2.5 tabular-nums transition-colors duration-150 hover:bg-paper/50 sm:-mx-6 sm:px-6 md:min-h-13 md:grid-cols-[30px_minmax(0,1fr)_160px_104px_72px_104px] md:items-center md:py-2",
                 burst.i < SHOWN ? "grid" : "hidden group-has-checked/more:grid",
               ]}
             >
@@ -46,12 +58,31 @@ const days = [...Map.groupBy(list, (burst) => heading(burst.at))];
                   <span class="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
                     <span class="text-ink">{burst.verb}</span>
                     {burst.outcome && <Outcome outcome={burst.outcome} />}
-                    {burst.n > 1 && <span>×{burst.n}</span>}
+                    {burst.fills.length > 1 && <span>×{burst.fills.length}</span>}
                   </span>
                   <span class="whitespace-nowrap max-md:empty:hidden md:text-right">{burst.type === "TRADE" && `at ${cents(burst.dollars / burst.shares)}`}</span>
                 </p>
               </div>
-              <span class="text-right text-ink">{dollars(burst.dollars)}</span>
+              <span class="grid justify-items-end text-right md:contents">
+                <span class="whitespace-nowrap text-muted max-md:order-last max-md:mt-0.5 max-md:text-caption md:text-right">
+                  {burst.tx ? (
+                    <a
+                      class="relative z-1 underline decoration-faint underline-offset-[3px] transition-colors duration-150 hover:text-ink hover:decoration-current"
+                      href={explorerTx(burst.tx)}
+                      target="_blank"
+                      rel="noopener"
+                      aria-label="Settlement transaction, opens the explorer"
+                    >
+                      <time datetime={burst.date.toISOString()} title={burst.span}>{clock(burst.date)}</time>
+                    </a>
+                  ) : (
+                    <time datetime={burst.date.toISOString()} title={burst.span}>{clock(burst.date)}</time>
+                  )}
+                </span>
+                <span class="text-ink">{dollars(burst.dollars)}</span>
+              </span>
+              <button type="button" popovertarget={`receipt-${burst.i}`} class="absolute inset-0 focus-visible:-outline-offset-2" aria-label={`Receipt: ${burst.title}`} />
+              <Receipt id={`receipt-${burst.i}`} burst={burst} verb={burst.verb} span={burst.span} open={open} now={now} />
             </li>
           ))}
         </ul>
@@ -59,4 +90,5 @@ const days = [...Map.groupBy(list, (burst) => heading(burst.at))];
     ))
   }
   {list.length > SHOWN && <ShowAll>Show {list.length - SHOWN} more</ShowAll>}
+  {list.some((burst) => burst.tx) && <p class="mt-4 text-caption text-muted">Times are UTC. Linked times open the settlement transaction on SKALE testnet, sent by the house operator.</p>}
 </div>

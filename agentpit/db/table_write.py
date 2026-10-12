@@ -15,6 +15,7 @@ from agentpit.datastructures.event import Event
 from agentpit.datastructures.market import Market, Payouts
 from agentpit.datastructures.market_state import MarketState
 from agentpit.db.table_read import EventFields, MarketFields, TableRead
+from agentpit.domain.handles import pick_handle
 
 
 class TableWrite:
@@ -165,6 +166,19 @@ class TableWrite:
             (enabled, user_id),
         )
         return cur.rowcount > 0
+
+    @staticmethod
+    def ensure_owner(db: psycopg.Connection, workos_id: str) -> None:
+        if TableRead.get_owner(db, workos_id) is None:
+            name = pick_handle(taken=lambda candidate: TableRead.owner_name_taken(db, candidate, workos_id))
+            db.execute("INSERT INTO owners (WORKOS_ID, NAME) VALUES (%s, %s) ON CONFLICT DO NOTHING", (workos_id, name))
+
+    @staticmethod
+    def update_owner(db: psycopg.Connection, workos_id: str, name: str | None, shown: bool | None) -> None:
+        db.execute(
+            "UPDATE owners SET NAME = COALESCE(%s, NAME), SHOWN = COALESCE(%s, SHOWN) WHERE WORKOS_ID = %s",
+            (name, shown, workos_id),
+        )
 
     @staticmethod
     def claim_auth_code_attempt(

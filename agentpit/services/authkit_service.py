@@ -156,6 +156,9 @@ class AuthKitService:
     def _resolve_account(
         self, session: WorkOsSession, *, create: bool, repair: bool
     ) -> User:
+        if create:
+            with self._db.write() as conn:
+                TableWrite.ensure_owner(conn, session.workos_user_id)
         with self._db.read() as conn:
             user = TableRead.get_user_by_workos_id(conn, session.workos_user_id)
         if user is not None:

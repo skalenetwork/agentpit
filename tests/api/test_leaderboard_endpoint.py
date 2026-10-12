@@ -125,8 +125,10 @@ X = 20_454 * DAY
 G = 100_000_000_000
 
 
-def _account(conn, handle: str) -> tuple[str, str]:
-    user_id, _acct, key = TableWrite.create_user(conn, email=f"{handle}@example.com", password_hash="x", handle=handle)
+def _account(conn, handle: str, owner: str | None = None) -> tuple[str, str]:
+    user_id, _acct, key = TableWrite.create_user(
+        conn, email=f"{handle}@example.com", password_hash="x", handle=handle, owner_workos_id=owner
+    )
     return user_id, key
 
 
@@ -277,3 +279,57 @@ def test_rank_has_the_floor_and_moves_against_yesterdays_close():
 def test_stats_on_an_empty_platform_is_an_empty_list():
     with TestClient(app) as client:
         assert client.get("/stats").json() == {"days": []}
+
+
+def _owners_board() -> None:
+    base = int(time.time()) // DAY * DAY
+    conn = fresh_test_conn()
+
+    def agent(handle: str, owner: str | None, trades: list[int], closes: dict[int, tuple[int, int]]) -> None:
+        user_id, key = _account(conn, handle, owner)
+        for k, at in enumerate(trades):
+            _trade(conn, f"{handle}-{k}", key, None, at)
+        for t, (capital, deposited) in closes.items():
+            TableWrite.insert_account_snapshot(conn, user_id, t, capital, deposited)
+
+    ten = [base - 2 * DAY + k for k in range(10)]
+    agent("alpha", "user_owner", ten, {base - DAY + 3600: (G + G // 20, G), base + 60: (G + G // 10, G)})
+    agent("rival", None, ten, {base + 60: (G + 7 * G // 100, G)})
+    agent("charlie", "user_owner", ten, {base + 60: (G + G // 20, G)})
+    agent("bravo", "user_owner", [base - 5 * DAY, base - 4 * DAY, base - 3 * DAY], {base + 60: (3 * G + 6 * G // 10, 3 * G)})
+    agent("solo", "user_solo", ten, {base + 60: (G, G)})
+    agent("hid1", "user_hidden", ten, {base + 60: (G, G)})
+    agent("hid2", "user_hidden", ten, {base + 60: (G, G)})
+    for owner, name, shown in (("user_owner", "MapleOps", True), ("user_solo", "SoloOps", True), ("user_hidden", "HiddenOps", False)):
+        TableWrite.ensure_owner(conn, owner)
+        TableWrite.update_owner(conn, owner, name, shown)
+    conn.close()
+
+
+def test_an_owner_page_answers_any_case_sums_its_agents_and_lists_ranked_before_warming():
+    _owners_board()
+    base = int(time.time()) // DAY * DAY
+    with TestClient(app) as client:
+        resp = client.get("/owners/mapleOPS")
+    assert resp.status_code == 200, resp.text
+    page = resp.json()
+    assert page["name"] == "MapleOps"
+    assert (page["trades"], page["firstTradeAt"], page["lastTradeAt"]) == (23, base - 5 * DAY, base - 2 * DAY + 9)
+    assert page["money"] == {"returnPct": 15.0, "earned": str(3 * G // 4)}
+    assert [(a["name"], a["rank"]) for a in page["agents"]] == [("alpha", 1), ("charlie", 3), ("bravo", None)]
+
+
+def test_an_owner_page_is_an_empty_404_unless_shown_with_two_board_agents():
+    _owners_board()
+    with TestClient(app) as client:
+        missing = [client.get(f"/owners/{name}") for name in ("Nobody", "SoloOps", "HiddenOps", "user_owner")]
+    assert [(r.status_code, r.content) for r in missing] == [(404, b"")] * 4
+
+
+def test_no_owner_identity_leaks_into_public_bodies():
+    _owners_board()
+    with TestClient(app) as client:
+        board, page = client.get("/leaderboard"), client.get("/owners/MapleOps")
+    assert all("owner" not in e for e in board.json()["entries"])
+    assert page.json()["name"] == "MapleOps"
+    assert not any("@" in b or "user_" in b for b in (board.text, page.text))

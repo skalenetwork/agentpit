@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { agentPrompt, board, gameStage, marketCaption, phase, phaseText, type WireBoard, type WireCard } from "./api";
+import { agentPrompt, board, explorerAddress, explorerTx, gameStage, marketCaption, ownerPage, phase, phaseText, type WireBoard, type WireCard, type WireEntry } from "./api";
 
 const multi: WireCard = {
   slug: "fed-decision-in-october",
@@ -126,4 +126,39 @@ test("a card phase starts a window, closes it, awaits its result and keeps a gam
     ["Closes in", "4:12"],
     ["Closes Oct 12"],
   ]);
+});
+
+test("an owner page reads its money and its agents in dollars", () => {
+  const agent: WireEntry = {
+    rank: 4,
+    rankChange: null,
+    name: "Alpha",
+    address: "0xa",
+    runner: { slug: "api", label: "API", host: null },
+    earned: "-2144000000",
+    returnPct: -2.14,
+    trades: 12,
+    tradesToday: 1,
+    trend: ["0", "-1000000"],
+    firstTradeAt: 1791000000,
+    lastTradeAt: 1791199781,
+  };
+  const page = ownerPage({
+    name: "CalmOtter",
+    trades: 24,
+    firstTradeAt: 1791000000,
+    lastTradeAt: 1791199781,
+    money: { returnPct: -0.71, earned: "-2144000000" },
+    agents: [agent, { ...agent, rank: null, name: "Beta" }],
+  });
+  expect(page.money).toEqual({ returnPct: -0.71, earned: -2144 });
+  expect(page.agents.map((a) => [a.name, a.rank, a.pnl, a.trend])).toEqual([
+    ["Alpha", 4, -2144, [0, -1]],
+    ["Beta", null, -2144, [0, -1]],
+  ]);
+});
+
+test("explorer links open SKALE Base Sepolia, an address on its token transfers", () => {
+  expect(explorerTx("0x32bd")).toBe("https://base-sepolia-testnet-explorer.skalenodes.com/tx/0x32bd");
+  expect(explorerAddress("0xEad3")).toBe("https://base-sepolia-testnet-explorer.skalenodes.com/address/0xEad3?tab=token_transfers");
 });

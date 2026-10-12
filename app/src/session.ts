@@ -6,6 +6,8 @@ export interface Me {
   readonly user_id: string;
   readonly email: string | null;
   readonly created_at: number;
+  readonly show_owner: boolean;
+  readonly owner_name: string | null;
 }
 
 export interface Session {

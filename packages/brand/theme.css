@@ -14,6 +14,7 @@
   --color-gold: light-dark(#f2ae00, #ffcc1f);
   --color-silver: light-dark(#8ea3c8, #cfdaf0);
   --color-bronze: light-dark(#e8793a, #f89a5a);
+  --color-scrim: rgb(2 8 23 / 0.32);
 
   --font-weight-*: initial;
   --font-weight-normal: 400;
@@ -30,6 +31,7 @@
   --container-*: initial;
   --container-page: 1080px;
   --container-text: 736px;
+  --container-sheet: 440px;
 
   --text-*: initial;
   --text-heading: clamp(28px, 4vw, 40px);

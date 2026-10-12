@@ -1,9 +1,7 @@
 import { rankMove } from "@agentpit/brand/format";
 import logoUrl from "@agentpit/brand/logo.svg";
 import { Check, Copy as CopyIcon, type LucideIcon, Trophy, X } from "lucide-react";
-import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useRef, useState } from "react";
-
-const Glyph = lazy(() => import("./glyph"));
+import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from "react";
 
 const VARIANT = {
   primary: "bg-ink text-paper hover:opacity-85",
@@ -93,11 +91,12 @@ export const Card = ({ title, icon: Icon, note, figure, unit, sub, children }: C
   </section>
 );
 
-export const Human = (props: { seed: string; size: number }) => (
-  <Suspense fallback={<span className="shrink-0 rounded-control bg-surface" style={{ width: props.size, height: props.size }} />}>
-    <Glyph {...props} />
-  </Suspense>
-);
+export const Human = ({ name, className }: { name: string | null; className: string }) =>
+  name ? (
+    <img src={`https://agentpit.dev/owners/${name.toLowerCase()}/avatar.svg`} alt="" className={`shrink-0 rounded-control bg-surface ${className}`} />
+  ) : (
+    <span className={`shrink-0 rounded-control bg-surface ${className}`} />
+  );
 
 export const Copy = ({ text, ...props }: ButtonProps & { text: string }) => {
   const [copied, setCopied] = useState(false);
@@ -121,7 +120,7 @@ export const Well = ({ text, mono = false }: { text: string; mono?: boolean }) =
   </div>
 );
 
-export const Sheet = ({ title, onClose, locked = false, children }: { title: string; onClose: () => void; locked?: boolean; children: ReactNode }) => {
+export const Sheet = ({ title, onClose, locked = false, children }: { title: ReactNode; onClose: () => void; locked?: boolean; children: ReactNode }) => {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     if (!ref.current?.open) ref.current?.showModal();
@@ -133,7 +132,7 @@ export const Sheet = ({ title, onClose, locked = false, children }: { title: str
       onClose={onClose}
       onCancel={(event) => locked && event.preventDefault()}
       closedby={locked ? "none" : "any"}
-      className="m-auto w-[calc(100%-32px)] max-w-sheet rounded-panel bg-paper p-6 shadow-overlay"
+      className="m-auto w-full max-w-sheet rounded-panel bg-paper p-6 shadow-overlay max-sm:mb-0 max-sm:max-w-none max-sm:rounded-b-none"
     >
       <div className="flex items-start justify-between gap-4">
         <h2 className="text-body font-medium">{title}</h2>
@@ -147,6 +146,15 @@ export const Sheet = ({ title, onClose, locked = false, children }: { title: str
     </dialog>
   );
 };
+
+export const Actions = ({ onClose, children }: { onClose: () => void; children: ReactNode }) => (
+  <div className="mt-6 flex justify-end gap-2">
+    <Button variant="ghost" size="lg" onClick={onClose}>
+      Cancel
+    </Button>
+    {children}
+  </div>
+);
 
 export const Fault = ({ children }: { children: ReactNode }) => <p className="mt-2 text-caption text-down">{children}</p>;
 

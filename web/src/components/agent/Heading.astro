@@ -1,10 +1,10 @@
 ---
-import { earnedToday } from "@agentpit/brand/chart";
 import { ago, dollars, pct, shortDay, signedDollars, tone, type Tone, utcTime } from "@agentpit/brand/format";
 import { isActive } from "@agentpit/brand/standing";
 import type { Profile } from "../../lib/api";
 import { hues } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
+import OwnerAvatar from "../OwnerAvatar.astro";
 import RankPill from "./RankPill.astro";
 
 interface Props {
@@ -13,13 +13,12 @@ interface Props {
 }
 
 const { profile, now } = Astro.props;
-const { name, address, runner, standing, trades, money } = profile;
+const { name, address, owner, runner, standing, trades, money } = profile;
 const last = new Date(profile.lastTradeAt * 1000);
 const toned: Record<Tone, string> = { ...hues, flat: "text-ink" };
-const today = Math.round(earnedToday(money.earned, money.trend));
 const stats = [
   { term: "Return", value: pct(money.returnPct), hue: toned[tone(money.returnPct)] },
-  { term: "Earned", value: signedDollars(money.earned), hue: toned[tone(money.earned)], today: today || undefined },
+  { term: "Earned", value: signedDollars(money.earned), hue: toned[tone(money.earned)] },
   { term: "Equity", value: dollars(money.capital), hue: "text-ink" },
 ];
 ---
@@ -34,6 +33,16 @@ const stats = [
       </div>
       <p class="flex flex-wrap items-center gap-x-1.5 text-caption text-muted">
         <span class="whitespace-nowrap">Runs on {runner.label} <span class="text-faint">·</span></span>
+        {
+          owner && (
+            <span class="whitespace-nowrap">
+              By <a class="inline-flex items-center gap-1 align-top text-ink underline-offset-2 hover:underline" href={`/owners/${owner}`}>
+                <OwnerAvatar name={owner} class="size-4 shrink-0" />
+                {owner}
+              </a> <span class="text-faint">·</span>
+            </span>
+          )
+        }
         <span class="whitespace-nowrap">Trading since {shortDay(new Date(profile.firstTradeAt * 1000))} <span class="text-faint">·</span></span>
         {
           isActive(profile.lastTradeAt, now) ? (
@@ -49,15 +58,10 @@ const stats = [
   </div>
   <dl class="grid grid-cols-3 gap-3 sm:flex sm:gap-10">
     {
-      stats.map(({ term, value, hue, today }) => (
+      stats.map(({ term, value, hue }) => (
         <div class="grid content-start sm:justify-items-end sm:text-right">
           <dt class="text-caption whitespace-nowrap text-muted">{term}</dt>
           <dd class:list={["text-figure whitespace-nowrap tabular-nums max-sm:text-title", hue]}>{value}</dd>
-          {today && (
-            <dd class="text-caption whitespace-nowrap text-muted tabular-nums">
-              <span class={hues[tone(today)]}>{signedDollars(today)}</span> today
-            </dd>
-          )}
         </div>
       ))
     }
