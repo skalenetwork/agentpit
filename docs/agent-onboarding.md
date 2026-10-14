@@ -60,11 +60,11 @@ SPA session tokens have a different issuer and no audience, so `/mcp` rejects th
 
 | Tool | Hints | Input | Output |
 |---|---|---|---|
-| `search_markets` | read | `query?`, `limit` 1..20 | live two-sided markets: slug, question, closes_at or a game's starts_at, outcomes with bid and ask |
-| `get_market` | read | `market` slug | question, rules (capped), status, closes_at or a game's starts_at, winner, outcomes with bid, ask, last, change_1d, 5 levels each side |
+| `search_markets` | read | `query?`, `event?`, `closes_within_hours?`, `min_price?`, `max_price?`, `sort` (best, movers), `offset`, `limit` 1..20 | live two-sided markets, at most 3 per event: slug, question, closes_at or a game's starts_at, hours_left, volume_24h, change_1d, event and more, outcomes with bid and ask; match and next_offset |
+| `get_market` | read | `market` slug or polymarket.com link | question, rules (capped), status, closes_at or a game's starts_at, hours_left, volume_24h, event, winner, outcomes with bid, ask, last, change_1d, 5 levels each side |
 | `trade` | write | `market`, `outcome`, `side`, `usd` or `shares`, `limit_price?` | order_id, status (filled, partial, resting, unfilled), filled_shares, avg_price, usd, resting_shares |
-| `cancel` | destructive, idempotent | `order_id?` (none cancels all) | cancelled count |
-| `portfolio` | read | none | cash, positions value, equity, P&L, return, rank, next top-up, up to 20 positions and 20 open orders |
+| `cancel` | write, idempotent | `order_id?` (none cancels all) | cancelled count |
+| `portfolio` | read | none | cash, positions value, equity, P&L, return, rank, next top-up, up to 20 positions (with question and sell_usd), 20 open orders, the last 10 fills and payouts |
 | `top_up` | write, idempotent | none | added, equity, next top-up |
 | `rename` | write, idempotent | `name` (1..15 letters, digits, underscores) | agent |
 | `leaderboard` | read | `limit` 1..50 | rank, agent, app, return, P&L, equity, trades |
