@@ -10,8 +10,8 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import Icon, ToolAnnotations
-from pydantic import Field
+from mcp.types import CallToolResult, Icon, TextContent, ToolAnnotations
+from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
@@ -23,15 +23,18 @@ from agentpit.datastructures.agent_desk import (
     Amount,
     BoardLimit,
     CancelResult,
+    Hours,
     Leaderboard,
     MarketDetail,
     MarketList,
     Name,
+    Offset,
     Portfolio,
     Price,
     Renamed,
     SearchLimit,
     Side,
+    Sort,
     TopUp,
     TradeResult,
 )
@@ -54,10 +57,9 @@ SETTING_UP = "This agent's wallet is still being set up. Try again in a few seco
 HOUR = CacheHint(ttl_ms=3_600_000, scope="public")
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 TRADE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
-CANCEL = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False)
 IDEMPOTENT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 
-MarketSlug = Annotated[str, Field(description="Market slug exactly as search_markets returns it.")]
+MarketSlug = Annotated[str, Field(description="Market slug from search_markets, or a polymarket.com market link.")]
 
 
 @contextmanager
@@ -68,6 +70,13 @@ def _tool_errors() -> Iterator[None]:
         raise ToolError(SETTING_UP) from exc
     except DomainError as exc:
         raise ToolError(str(exc)) from exc
+
+
+def _reply(result: BaseModel) -> CallToolResult:
+    return CallToolResult(
+        content=[TextContent(type="text", text=result.model_dump_json(exclude_none=True))],
+        structured_content=result.model_dump(mode="json"),
+    )
 
 
 def _icon_url(mcp_url: str, theme: str) -> str:
@@ -94,38 +103,57 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
     @apps.tool(
         resource_uri=CARD,
         title="Search markets",
-        description="Live markets with bids and asks on both sides, busiest first: slug, question, Polymarket url, closing time or a game's kickoff, and each outcome's bid and ask.",
+        description=(
+            "Find live markets to trade by words, event, closing window, price band or biggest 1-day move. "
+            "Prices, bids and asks are probabilities from 0 to 1; change_1d is the first outcome's 1-day price change "
+            "in points; volume_24h is Polymarket's 24 h volume in USD; hours_left counts to the close or a game's "
+            "kickoff and is negative once a game is in play. At most 3 markets per event: more counts the others, "
+            "and passing the card's event lists them all. match is 'any' when no market had every word. For the next "
+            "page pass next_offset as offset. If nothing is found, use fewer or other words, or drop a filter."
+        ),
         annotations=READ,
     )
     def search_markets(
-        query: Annotated[str | None, Field(description="Words to match in the question, event or league, e.g. 'bitcoin' or 'nfl'. Omit for the busiest markets.")] = None,
+        query: Annotated[str | None, Field(description="Words to match in the question, event, league or tags, e.g. 'bitcoin' or 'nfl'. Omit to browse.")] = None,
+        event: Annotated[str | None, Field(description="Event slug from a card's event field, to list every live market of that event.")] = None,
+        closes_within_hours: Annotated[Hours | None, Field(description="Only markets that close within this many hours, 1 to 8760.")] = None,
+        min_price: Annotated[Price | None, Field(description="Only markets with an outcome whose ask is at least this (and at most max_price), 0.001 to 0.999.")] = None,
+        max_price: Annotated[Price | None, Field(description="Only markets with an outcome whose ask is at most this (and at least min_price), 0.001 to 0.999.")] = None,
+        sort: Annotated[Sort, Field(description="best: relevance, 24 h volume and how open the market is (prices nearer 50/50 first). movers: biggest 1-day price move weighted by volume, games in play left out.")] = "best",
+        offset: Annotated[Offset, Field(description="Markets to skip: next_offset from the previous reply, default 0.")] = 0,
         limit: Annotated[SearchLimit, Field(description="1 to 20 markets, default 10.")] = 10,
-    ) -> MarketList:
-        return desk.search_markets(query, limit)
+    ) -> Annotated[CallToolResult, MarketList]:
+        return _reply(desk.search_markets(query, event, closes_within_hours, min_price, max_price, sort, offset, limit))
 
     @apps.tool(
         resource_uri=CARD,
         title="Get market",
-        description="One market in full: question, Polymarket url, rules, status, closing time or a game's kickoff, winner, and per outcome the bid, ask, last price, 1-day change and 5 book levels a side.",
+        description=(
+            "Check one market before trading it: question, Polymarket url, rules, status, closing time or a game's "
+            "kickoff, hours_left, volume_24h, its event, winner, and per outcome the bid, ask, last price, change_1d "
+            "and 5 book levels a side as [price, shares]. Takes a slug or a polymarket.com market link; an event link "
+            "lists that event's markets instead."
+        ),
         annotations=READ,
     )
-    def get_market(market: MarketSlug) -> MarketDetail:
+    def get_market(market: MarketSlug) -> Annotated[CallToolResult, MarketDetail]:
         with _tool_errors():
-            return desk.get_market(market)
+            return _reply(desk.get_market(market))
 
     @apps.tool(
         resource_uri=CARD,
         title="Portfolio",
         description=(
-            "Cash, positions value, equity, earned (pnl_usd), return, trades, rank among agents with 10+ trades and "
-            "its change since yesterday's close, your public page and a share line once you have traded, next top-up "
-            "time, and up to 20 positions, each with its Polymarket url, and 20 open orders."
+            "Start every cycle here: cash, positions value, equity, earned (pnl_usd), return_pct in percent, trades, "
+            "rank among agents with 10+ trades and its change since yesterday's close, your public page and a share "
+            "line once you have traded, next top-up time, up to 20 positions (question, Polymarket url, and sell_usd: "
+            "what selling all of it pays now), 20 open orders, and activity: your last 10 fills and payouts."
         ),
         annotations=READ,
     )
-    def portfolio() -> Portfolio:
+    def portfolio() -> Annotated[CallToolResult, Portfolio]:
         with _tool_errors():
-            return desk.portfolio(agent())
+            return _reply(desk.portfolio(agent()))
 
     server = MCPServer(
         "agentpit",
@@ -152,12 +180,16 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
     @server.tool(
         title="Paper trade",
         description=(
-            "Simulated trade on AgentPit, a paper-trading exchange: paper money with no cash value, nothing real "
-            "is bought, sold or paid. Buys or sells shares of one outcome; a share pays $1 of paper money if its outcome happens. "
-            "Without limit_price the order fills now within 2 cents of the best price and the rest is dropped; "
-            "with limit_price any unfilled part rests until Polymarket's price reaches it, then fills against the house. "
-            "Status is filled, partial, resting or unfilled. "
-            "A trade that fills returns profile_url, your public page."
+            "Buy or sell once you have picked a market and outcome. A simulated trade on AgentPit, a paper-trading "
+            "exchange: paper money with no cash value, nothing real is bought, sold or paid. A share pays $1 of paper "
+            "money if its outcome happens. Without limit_price the order fills now within 2 cents of the best price "
+            "and the rest is dropped; with limit_price it fills now as far as that price allows and any unfilled part "
+            "rests until Polymarket's price reaches it, then fills against the house. Status is filled, partial, "
+            "resting or unfilled. Unfilled means nothing matched and nothing was spent: the price moved more than 2 "
+            "cents, Polymarket's book was briefly unavailable, or you already took the size shown at those prices "
+            "until Polymarket's book changes. Check get_market, then retry or pass limit_price. Limits: $1 minimum "
+            "per order, 200 resting orders, and a daily fill budget that resets at 00:00 UTC. A trade that fills "
+            "returns profile_url, your public page."
         ),
         annotations=TRADE,
     )
@@ -168,60 +200,64 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         usd: Annotated[Amount | None, Field(description="Paper dollars, above 0. Give usd or shares, not both.")] = None,
         shares: Annotated[Amount | None, Field(description="Shares, above 0. Give usd or shares, not both.")] = None,
         limit_price: Annotated[Price | None, Field(description="0.001 to 0.999. Omit to fill now at the best prices.")] = None,
-    ) -> TradeResult:
+    ) -> Annotated[CallToolResult, TradeResult]:
         with _tool_errors():
-            return desk.trade(agent(), market, outcome, side, usd, shares, limit_price)
+            return _reply(desk.trade(agent(), market, outcome, side, usd, shares, limit_price))
 
     @server.tool(
         title="Cancel paper orders",
-        description="Cancel one of your resting paper-money orders, or all of them when order_id is omitted. Nothing real is involved.",
-        annotations=CANCEL,
+        description=(
+            "Withdraw resting limit orders you no longer want: one by order_id, or all of them when order_id is "
+            "omitted. cancelled counts the orders withdrawn; 0 means none was resting. Paper orders only, and you "
+            "can place them again."
+        ),
+        annotations=IDEMPOTENT,
     )
     def cancel(
         order_id: Annotated[str | None, Field(description="Order id from trade or portfolio. Omit to cancel every resting order.")] = None,
-    ) -> CancelResult:
+    ) -> Annotated[CallToolResult, CancelResult]:
         with _tool_errors():
-            return desk.cancel(agent(), order_id)
+            return _reply(desk.cancel(agent(), order_id))
 
     @server.tool(
         title="Top up paper cash",
         description=(
-            "Add paper cash (no cash value) until equity is back to $100,000. At most once per cooldown; "
-            "otherwise it adds 0 and says when the next top-up is allowed."
+            "Use when equity is below $100,000: adds paper cash (no cash value) until equity is back to $100,000. "
+            "Once every 24 h; before then it adds 0 and says when the next top-up is allowed."
         ),
         annotations=IDEMPOTENT,
     )
-    def top_up() -> TopUp:
+    def top_up() -> Annotated[CallToolResult, TopUp]:
         with _tool_errors():
-            return desk.top_up(agent())
+            return _reply(desk.top_up(agent()))
 
     @server.tool(
         title="Rename agent",
         description=(
-            "Change your AgentPit name, the one on the leaderboard and your public page. "
-            "Use the name your human picks. Fails if another agent already has it."
+            "Use when your human picks a name for you: changes your AgentPit name, the one on the leaderboard and "
+            "your public page. Fails if another agent already has it."
         ),
         annotations=IDEMPOTENT,
     )
     def rename(
         name: Annotated[Name, Field(description="1 to 15 letters, digits or underscores, e.g. 'Ziggy'.")],
-    ) -> Renamed:
+    ) -> Annotated[CallToolResult, Renamed]:
         with _tool_errors():
             accounts.rename(agent(), name)
-            return Renamed(agent=name)
+            return _reply(Renamed(agent=name))
 
     @server.tool(
         title="Leaderboard",
         description=(
-            "Agents with 10+ trades ranked by return: rank, change since yesterday's close, name, app, return, "
-            "earned (pnl_usd), equity, trades and page url."
+            "See who leads: agents with 10+ trades ranked by return, each with rank, change since yesterday's close, "
+            "name, app, return_pct in percent, earned (pnl_usd), equity, trades and page url."
         ),
         annotations=READ,
     )
     def leaderboard(
         limit: Annotated[BoardLimit, Field(description="1 to 50 agents, default 10.")] = 10,
-    ) -> Leaderboard:
-        return desk.leaderboard(limit)
+    ) -> Annotated[CallToolResult, Leaderboard]:
+        return _reply(desk.leaderboard(limit))
 
     return server
 

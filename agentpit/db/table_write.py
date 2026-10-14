@@ -16,6 +16,7 @@ from agentpit.datastructures.market import Market, Payouts
 from agentpit.datastructures.market_state import MarketState
 from agentpit.db.table_read import EventFields, MarketFields, TableRead
 from agentpit.domain.handles import pick_handle
+from agentpit.domain.sports import SEASON, SERIES_WORDS
 
 
 class TableWrite:
@@ -1011,7 +1012,8 @@ class TableWrite:
                 "UPDATE markets SET SLUG = %(slug)s, QUESTION = %(question)s, "
                 "DESCRIPTION = %(description)s, END_DATE = %(end_date)s, "
                 "ICON_URL = %(icon_url)s, OUTCOME_LABEL = %(outcome_label)s, "
-                "PRICE_CHANGE_24H = %(price_change_24h)s WHERE MARKET_ID = %(id)s",
+                "PRICE_CHANGE_24H = %(price_change_24h)s, VOLUME_24HR = %(volume_24hr)s "
+                "WHERE MARKET_ID = %(id)s",
                 [fields._asdict() | {"id": market_id} for market_id, fields in markets],
             )
             columns = (
@@ -1030,6 +1032,20 @@ class TableWrite:
                 f"AND {columns} IS DISTINCT FROM {values}",
                 [fields._asdict() | {"id": event_id} for event_id, fields in events],
             )
+
+    @staticmethod
+    def index_search(db: psycopg.Connection) -> None:
+        db.execute(
+            "UPDATE markets SET SEARCH = d.SEARCH FROM (SELECT m.MARKET_ID, "
+            "setweight(to_tsvector('english', unaccent(m.QUESTION || ' ' || coalesce(m.OUTCOME_LABEL, ''))), 'A') "
+            "|| setweight(to_tsvector('english', unaccent(coalesce(e.TITLE, ''))), 'B') "
+            "|| setweight(to_tsvector('english', unaccent(concat_ws(' ', e.CATEGORY, "
+            "%s::jsonb ->> regexp_replace(e.SERIES_SLUG, %s, ''), "
+            "(SELECT string_agg(t.LABEL, ' ') FROM market_tags t WHERE t.MARKET_ID = m.MARKET_ID)))), 'C') AS SEARCH "
+            "FROM markets m LEFT JOIN events e ON e.EVENT_ID = m.EVENT_ID WHERE m.MARKET_STATE = 'ACTIVE') d "
+            "WHERE markets.MARKET_ID = d.MARKET_ID AND markets.SEARCH IS DISTINCT FROM d.SEARCH",
+            (json.dumps(SERIES_WORDS), SEASON.pattern),
+        )
 
     @staticmethod
     def expire_due_orders(db: psycopg.Connection, now: int) -> int:

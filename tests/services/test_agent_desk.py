@@ -12,9 +12,9 @@ from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookSummary
 from agentpit.datastructures.user import User
-from agentpit.db.table_read import TableRead
+from agentpit.db.table_read import MarketFields, TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import InsufficientBalanceError
+from agentpit.domain.exceptions import InsufficientBalanceError, NotFoundError
 from agentpit.domain.text import clean
 from agentpit.liquidity.replica import BookReplica
 from agentpit.onchain.admin import OnchainAdmin
@@ -121,8 +121,11 @@ def _seed(
             ),
             is_polygon_market=False,
         )
+        fields = MarketFields(seed, question, "d", kickoff, None, None, None, volume)
+        TableWrite.update_carried(conn, [(market.market_id, fields)], [])
         if kickoff:
             TableWrite.replace_market_tags(conn, market_id=market.market_id, tags=[("games", "Games")])
+        TableWrite.index_search(conn)
     put(
         market.erc1155_tokens[0][0],
         bids=(("0.4", "1"),) if "BUY" in sides else (),
@@ -223,10 +226,142 @@ def test_a_game_gives_its_kickoff_and_is_found_by_its_league(house_book):
     assert desk.search_markets("nfl").markets == []
 
 
+NFL = (("nfl", "NFL"), ("super-bowl", "Super Bowl"))
+ELECTION = "presidential-election-winner-2028"
+
+
+def _carry(
+    put: Callable[..., BookReplica],
+    slug: str,
+    event: str,
+    question: str,
+    volume: float,
+    *,
+    title: str | None = None,
+    hours: int = 4_800,
+    change: float = 0,
+    game: bool = False,
+    series: str | None = None,
+    tags: tuple[tuple[str, str], ...] = (),
+    book: tuple[str, str] = ("0.4", "0.6"),
+) -> None:
+    now = int(time.time())
+    end = now + hours * 3600
+    with fresh_test_db().write() as conn:
+        group = TableWrite.upsert_event(conn, slug=event, title=title or question)
+        TableWrite.refresh_event(
+            conn,
+            event_id=group.event_id,
+            slug=event,
+            title=title or question,
+            icon_url=None,
+            end_date=None,
+            start_time=end if game else None,
+            game_id=None,
+            series_slug=series,
+        )
+        market = TableWrite.create_market(
+            conn,
+            CreateMarketRequest(
+                question=question,
+                description="d",
+                erc1155_tokens=[(f"{slug}-y", "Yes"), (f"{slug}-n", "No")],
+                slug=slug,
+                condition_id=ConditionId("0x" + secrets.token_hex(32)),
+                state=MarketState.ACTIVE,
+                event_id=group.event_id,
+                start_date=now - 30 * 86_400,
+                end_date=end,
+            ),
+            is_polygon_market=False,
+        )
+        fields = MarketFields(slug, question, "d", end, None, None, change, volume)
+        TableWrite.update_carried(conn, [(market.market_id, fields)], [])
+        TableWrite.replace_market_tags(conn, market_id=market.market_id, tags=[*tags, ("games", "Games")] if game else list(tags))
+    put(f"{slug}-y", bids=((book[0], "1"),), asks=((book[1], "1"),))
+
+
+def _catalog(put: Callable[..., BookReplica]) -> AgentDesk:
+    for slug, team, volume in (
+        ("chiefs", "Kansas City Chiefs", 60_000),
+        ("seahawks", "Seattle Seahawks", 40_000),
+        ("jets", "New York Jets", 1_000),
+        ("browns", "Cleveland Browns", 500),
+    ):
+        question = f"Will the {team} win the 2027 NFL league championship?"
+        _carry(put, slug, "nfl-champion", question, volume, title="NFL Champion 2027", tags=NFL)
+    for slug, name, volume, book in (
+        ("vance", "JD Vance", 50_000, ("0.21", "0.22")),
+        ("newsom", "Gavin Newsom", 500_000, ("0.15", "0.16")),
+        ("harris", "Kamala Harris", 300_000, ("0.06", "0.07")),
+        ("cotton", "Tom Cotton", 2_000_000, ("0.001", "0.002")),
+    ):
+        question = f"Will {name} win the 2028 US Presidential Election?"
+        _carry(put, slug, ELECTION, question, volume, title="Presidential Election Winner 2028", book=book)
+    _carry(put, "sea-den", "nfl-sea-den", "Seahawks vs. Broncos", 6_200_000, hours=72, game=True, series="nfl-2026", tags=NFL[:1])
+    _carry(put, "fed", "fed-october", "Will the Fed cut rates in October?", 300_000, hours=120, change=-0.12, book=("0.96", "0.97"))
+    _carry(put, "atletico", "atm-bet", "Atlético Madrid vs. Real Betis", 100_000, hours=-1, change=0.45, game=True)
+    _carry(put, "ammunition", "trump-ammunition", "Will Trump say Ammunition this week?", 50_000, hours=-48)
+    with fresh_test_db().write() as conn:
+        TableWrite.index_search(conn)
+    return _desk()
+
+
+@pytest.mark.parametrize(
+    ("ask", "listed", "match"),
+    [
+        ({}, ["sea-den", "atletico", "chiefs", "newsom", "seahawks", "vance", "harris", "fed", "jets"], None),
+        ({"query": "nfl"}, ["sea-den", "chiefs", "seahawks", "jets"], "all"),
+        ({"query": "nfl games this week"}, ["sea-den", "chiefs", "seahawks", "jets", "atletico"], "any"),
+        ({"query": "super bowl"}, ["chiefs", "seahawks", "jets"], "all"),
+        ({"query": "2028 presidential election"}, ["newsom", "vance", "harris"], "all"),
+        ({"event": ELECTION}, ["newsom", "vance", "harris", "cotton"], None),
+        ({"query": "Atletico Madrid"}, ["atletico"], "all"),
+        ({"query": "Trump"}, [], "all"),
+        ({"sort": "movers", "limit": 1}, ["fed"], None),
+        ({"closes_within_hours": 168, "min_price": 0.85}, ["fed"], None),
+        ({"max_price": 0.05}, ["fed", "cotton"], None),
+    ],
+    ids=["browse", "nfl", "nfl games this week", "super bowl", "2028", "event", "accents", "past end", "movers", "favorites", "yolo"],
+)
+def test_search_answers_the_dogfood_intents(house_book, ask, listed, match):
+    found = _catalog(house_book).search_markets(**ask)
+
+    assert ([m.market for m in found.markets], found.match) == (listed, match)
+
+
+def test_search_cards_carry_time_volume_move_and_event_and_page(house_book):
+    desk = _catalog(house_book)
+
+    first = desk.search_markets(limit=3)
+    last = desk.search_markets(offset=6, limit=3)
+    newsom, vance, _ = desk.search_markets("2028 presidential election").markets
+    in_play = desk.search_markets("atletico").markets[0]
+
+    game = first.markets[0]
+    assert (first.next_offset, last.next_offset, [m.market for m in last.markets]) == (3, None, ["harris", "fed", "jets"])
+    assert (game.hours_left, game.volume_24h, game.event, game.more, game.closes_at) == (72, 6_200_000, None, None, None)
+    assert (newsom.event, newsom.more, newsom.change_1d, vance.event, vance.more) == (ELECTION, 1, 0, ELECTION, None)
+    assert (in_play.hours_left, in_play.change_1d, in_play.starts_at is not None) == (-1, 0.45, True)
+
+
+def test_get_market_takes_links_and_answers_an_event_link_with_its_markets(house_book):
+    desk = _catalog(house_book)
+
+    fed = desk.get_market("https://polymarket.com/event/fed-october/fed?tid=1")
+    game = desk.get_market("sea-den")
+
+    assert (fed.market, fed.event, fed.volume_24h, fed.hours_left) == ("fed", "fed-october", 300_000, 120)
+    assert [o.change_1d for o in fed.outcomes] == [-0.12, 0.12]
+    assert (game.hours_left, game.closes_at, game.starts_at is not None) == (72, None, True)
+    with pytest.raises(NotFoundError, match=rf"markets: newsom, vance, harris, cotton\. search_markets\(event='{ELECTION}'\)"):
+        desk.get_market(f"https://polymarket.com/event/{ELECTION}")
+
+
 def test_trade_now_fills_at_polymarkets_levels_once_per_level(house_book):
     desk, agent, slug, book = _asks(house_book)
 
-    by_usd = desk.trade(agent, slug, "yes", "buy", usd=30)
+    by_usd = desk.trade(agent, f"https://polymarket.com/market/{slug}", "yes", "buy", usd=30)
     used_up = desk.trade(agent, slug, "Yes", "buy", shares=30)
     _drain(book, "0.4")
     by_shares = desk.trade(agent, slug, "Yes", "buy", shares=30)
@@ -306,7 +441,13 @@ def test_portfolio_matches_the_leaderboard(house_book):
     )
     assert warming.profile_url == page
     assert warming.share == f"{warming.agent} is warming up on AgentPit, 1 of {RANK_FLOOR} trades to rank: {dated}"
-    assert [(h.market, h.url, h.outcome, h.shares, h.avg_price) for h in warming.positions] == [(slug, None, "YES", 50, 0.4)]
+    question = desk.get_market(slug).question
+    assert [(h.market, h.question, h.url, h.outcome, h.shares, h.avg_price, h.sell_usd) for h in warming.positions] == [
+        (slug, question, None, "YES", 50, 0.4, 0)
+    ]
+    assert [(a.kind, a.market, a.outcome, a.shares, a.price, a.usd) for a in warming.activity] == [
+        ("buy", slug, "YES", 50, 0.4, 20)
+    ]
     assert [(o.market, o.side, o.price, o.shares) for o in warming.open_orders] == [(slug, "buy", 0.1, 10)]
     assert warming.next_top_up_at is None
     assert desk.leaderboard().agents == []
@@ -325,6 +466,45 @@ def test_portfolio_matches_the_leaderboard(house_book):
     assert mine.share == (
         f"{mine.agent} is #{mine.rank} of 1 on AgentPit with a {pct(standing.return_pct)} return on paper money: {dated}"
     )
+
+
+def test_activity_lists_fills_and_payouts_newest_first():
+    with fresh_test_db().write() as conn:
+        _, _, key = TableWrite.create_user(
+            conn, email=None, password_hash=None, handle="snow_bot", owner_workos_id="user_o", agent_app="Claude"
+        )
+        market = TableWrite.create_market(
+            conn,
+            CreateMarketRequest(
+                question="Will it snow?",
+                description="d",
+                erc1155_tokens=[("snow-y", "Yes"), ("snow-n", "No")],
+                slug="snow",
+                condition_id=ConditionId("0x" + "ab" * 32),
+                state=MarketState.ACTIVE,
+            ),
+            is_polygon_market=False,
+        )
+        for trade_id, at, kind, maker_asset, taker, maker, price, size in (
+            ("t1", 100, "NORMAL", None, key, "house", 400_000, 20_000_000),
+            ("t2", 200, "MINT", "snow-n", "house", key, 300_000, 10_000_000),
+        ):
+            conn.execute(
+                "INSERT INTO trades (TRADE_ID, MARKET, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, SIDE, PRICE, TRADE_SIZE, "
+                "MATCH_TIME, STATUS, TAKER_API_KEY, MAKER_API_KEY) "
+                "VALUES (%s, %s, 'snow-y', %s, %s, 'BUY', %s, %s, %s, 'CONFIRMED', %s, %s)",
+                (trade_id, market.condition_id.value, maker_asset, kind, price, size, at, taker, maker),
+            )
+        TableWrite.set_market_state(conn, market.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0))
+        TableWrite.log_transaction(conn, key, "REDEEM", market.market_id, {"collateral_amount": 30_000_000})
+
+    activity = _desk()._activity(key)
+
+    assert [(a.kind, a.market, a.outcome, a.shares, a.price, a.usd) for a in activity] == [
+        ("payout", "snow", "Yes", None, None, 30),
+        ("buy", "snow", "No", 10, 0.3, 3),
+        ("buy", "snow", "Yes", 20, 0.4, 8),
+    ]
 
 
 def test_top_up_during_cooldown_adds_nothing():

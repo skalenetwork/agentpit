@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import pytest
@@ -84,7 +85,7 @@ def test_modern_tools_list_carries_eight_annotated_tools():
         "idempotentHint": False,
         "openWorldHint": False,
     }
-    assert tools["cancel"]["annotations"]["destructiveHint"] is True
+    assert tools["cancel"]["annotations"]["destructiveHint"] is False
     assert (result["ttlMs"], result["cacheScope"]) == (3_600_000, "public")
 
 
@@ -106,7 +107,7 @@ def test_market_and_portfolio_tools_render_the_card():
     assert (read["ttlMs"], read["cacheScope"]) == (3_600_000, "public")
 
 
-def test_search_markets_replies_with_the_polymarket_url_the_card_opens(house_book):
+def test_search_markets_replies_with_the_polymarket_url_the_card_opens_and_compact_text(house_book):
     key = _agent().api_key
     with fresh_test_db().write() as conn:
         event = TableWrite.upsert_event(conn, slug="ev-rain", title="Will it rain?", category="Weather")
@@ -129,7 +130,9 @@ def test_search_markets_replies_with_the_polymarket_url_the_card_opens(house_boo
         found = _call(client, key, "tools/call", {"name": "search_markets", "arguments": {}}, "search_markets")
         read = _call(client, key, "resources/read", {"uri": CARD}, CARD)
     [card] = found["structuredContent"]["markets"]
-    assert (card["market"], card["url"]) == ("will-it-rain", "https://polymarket.com/market/will-it-rain")
+    text = found["content"][0]["text"]
+    assert (card["market"], card["url"], card["starts_at"]) == ("will-it-rain", "https://polymarket.com/market/will-it-rain", None)
+    assert "\n" not in text and "null" not in text and json.loads(text)["markets"][0]["url"] == card["url"]
     assert "openLink(url)" in read["contents"][0]["text"]
 
 

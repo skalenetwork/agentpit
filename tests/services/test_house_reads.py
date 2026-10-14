@@ -91,9 +91,9 @@ def test_search_limits_after_the_two_sided_filter(house_book):
         house_book(busy, bids=(("0.4", "1"),))
         house_book(quiet, bids=(("0.4", "1"),), asks=(("0.6", "1"),))
         found = TableRead.search_live_markets(
-            conn, query=None, limit=1, sided=feed.sided()
+            conn, query=None, event=None, closes_by=None, sort="best", offset=0, limit=1, mids=dict.fromkeys(feed.sided(), 0.5), now=0
         )
-    assert [m.slug for m in found] == ["quiet"]
+    assert [h.market.slug for h in found] == ["quiet"]
 
 
 def test_valuation_marks_at_the_mid_and_sells_into_the_bids(house_book):
