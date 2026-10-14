@@ -635,6 +635,7 @@ class TableRead:
             LEFT JOIN owners o ON o.WORKOS_ID = u.OWNER_WORKOS_ID AND o.SHOWN
             WHERE u.IS_BOT = 0
               AND u.DELETED_AT IS NULL
+              AND u.PEER_TRANSFER_BLOCK IS NULL
               AND (
                 EXISTS (
                     SELECT 1 FROM trades t
@@ -658,7 +659,9 @@ class TableRead:
         Having traded is the membership rule: it keeps every registered
         address off a public board by default, and an account that never
         traded has nothing to rank. The house is excluded because it is the
-        counterparty to nearly every trade rather than a competitor. A
+        counterparty to nearly every trade rather than a competitor, and so is
+        an account that moved apUSD wallet to wallet (`PEER_TRANSFER_BLOCK`),
+        because its capital is not its trading's doing. A
         `FAILED` trade doesn't count -- it never settled, matching every
         other trade reader in the codebase (account_service.py,
         order_service.py).

@@ -6,6 +6,7 @@ from typing import cast
 from eth_account.signers.local import LocalAccount
 from eth_typing import HexStr
 from web3 import Web3
+from web3.constants import ADDRESS_ZERO
 from web3.contract.contract import ContractFunction
 from web3.exceptions import TransactionNotFound
 from web3.logs import DISCARD
@@ -45,6 +46,11 @@ REPORT_PAYOUTS_GAS = 165_000
 # Three eth_calls per market in one JSON-RPC batch: 40 markets = 120 requests,
 # under SKALE's cap of 128.
 _STATE_BATCH = 40
+
+# SKALE answers eth_getLogs over at most 2,000 blocks; 100 such windows go in
+# one JSON-RPC batch.
+_LOG_WINDOW = 2_000
+_LOG_BATCH = 100
 
 
 class OnchainAdmin:
@@ -388,6 +394,42 @@ class OnchainAdmin:
 
     def native_balance(self, address: str) -> int:
         return self._client.web3.eth.get_balance(Web3.to_checksum_address(address))
+
+    def peer_transfers(self, from_block: int) -> tuple[dict[str, int], int]:
+        """Every wallet that sent or received apUSD from `from_block` on other
+        than by a mint or through the exchange or the CTF, lowercase, with the
+        first block it did; and the block to read from next."""
+        web3 = self._client.web3
+        usd = self._contracts.usd
+        system = {
+            ADDRESS_ZERO,
+            self._contracts.exchange.address.lower(),
+            self._contracts.ctf.address.lower(),
+        }
+        head = web3.eth.block_number
+        windows = range(from_block, head + 1, _LOG_WINDOW)
+        found: dict[str, int] = {}
+        for start in range(0, len(windows), _LOG_BATCH):
+            with web3.batch_requests() as batch:
+                for low in windows[start : start + _LOG_BATCH]:
+                    batch.add(
+                        web3.eth.get_logs(
+                            {
+                                "address": usd.address,
+                                "topics": [usd.events.Transfer.topic],
+                                "fromBlock": low,
+                                "toBlock": min(low + _LOG_WINDOW - 1, head),
+                            }
+                        )
+                    )
+                pages = batch.execute()
+            for log in (log for page in pages for log in page):
+                transfer = usd.events.Transfer().process_log(log)
+                ends = (transfer.args["from"].lower(), transfer.args["to"].lower())
+                if system.isdisjoint(ends):
+                    for wallet in ends:
+                        found.setdefault(wallet, transfer.blockNumber)
+        return found, head + 1
 
     def ctf_balance(self, address: str, token_id: int) -> int:
         return self._contracts.ctf.functions.balanceOf(

@@ -202,6 +202,7 @@ class TableCreate:
             ("AGENT_CLIENT", "TEXT"),
             ("DELETED_AT", "BIGINT"),
             ("ONBOARDING_STARTED_AT", "BIGINT"),
+            ("PEER_TRANSFER_BLOCK", "BIGINT"),
         ]
         for col, col_type in additions:
             conn.execute(

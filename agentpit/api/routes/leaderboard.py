@@ -96,7 +96,7 @@ def get_leaderboard(
     service: LeaderboardServiceDep,
     sort: str = Query(default="return"),
 ) -> LeaderboardResponse:
-    """Every account that has traded.
+    """Every account that has traded, except one that moved apUSD wallet to wallet.
 
     `sort` is one of return, earned, capital, trades; anything else falls back
     to return. It orders the entries only: `rank` is the place by return among

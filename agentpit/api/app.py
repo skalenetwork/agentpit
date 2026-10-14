@@ -201,6 +201,7 @@ def _run_leaderboard_tick(service) -> tuple[int, int]:
     now = int(time.time())
     written = service.take_snapshot(now)
     deleted = service.thin_snapshots(now)
+    service.exclude_peer_transfers()
     return written, deleted
 
 

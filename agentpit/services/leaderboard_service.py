@@ -212,6 +212,20 @@ class LeaderboardService:
         self._onchain = onchain
         self._accounts = accounts
         self._settings = settings
+        self._next_block = 0
+
+    def exclude_peer_transfers(self) -> None:
+        """Take both wallets of every apUSD transfer read since the last call
+        off the board, unless it was a mint or went through the exchange or
+        the CTF. Gifted capital ranks as earned otherwise. The first call reads
+        the chain from its first block."""
+        found, self._next_block = self._onchain.peer_transfers(self._next_block)
+        if not found:
+            return
+        with self._db.write() as conn:
+            flagged = TableWrite.flag_peer_transfers(conn, found)
+        if flagged:
+            log.warning("Off the board for moving apUSD wallet to wallet: %s", ", ".join(flagged))
 
     def value_account(self, address: str, now: int) -> Holdings:
         held = Holdings(
