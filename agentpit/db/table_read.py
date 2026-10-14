@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from web3 import Web3
 
 from agentpit.utils.parse import parse_32b_hex_private_key
+from agentpit.datastructures.agent_desk import Sort
 from agentpit.datastructures.board import WireTeam
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.event_sort import EventSort
@@ -19,7 +20,6 @@ from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_context import MarketContext
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.user import User
-from agentpit.domain.sports import SEASON, SERIES_WORDS
 from agentpit.liquidity.tape import MIRROR_API_KEY
 from ..datastructures.condition_id import ConditionId
 
@@ -67,6 +67,7 @@ class MarketFields(NamedTuple):
     icon_url: str | None
     outcome_label: str | None
     price_change_24h: float | None
+    volume_24hr: float | None
 
 
 class EventFields(NamedTuple):
@@ -94,6 +95,15 @@ class Carried(NamedTuple):
     event_id: int | None
     pm_event_id: str | None
     event: EventFields | None
+
+
+class Hit(NamedTuple):
+    market: Market
+    volume_24h: float | None
+    category: str | None
+    kickoff: int | None
+    event: str | None
+    more: int | None
 
 
 class PendingUserTx(BaseModel):
@@ -193,6 +203,12 @@ _MARKET_COLS = (
     "COALESCE(FULLY_REDEEMED, FALSE) as FULLY_REDEEMED, "
     "PRICE_CHANGE_24H, RESOLVED_AT"
 )
+
+_PER_EVENT = 3
+_GAME = "EXISTS (SELECT 1 FROM market_tags g WHERE g.MARKET_ID = m.MARKET_ID AND g.SLUG = 'games')"
+_QUERY = "websearch_to_tsquery('english', unaccent(%s))"
+_VOLUME = "power(1 + coalesce(m.VOLUME_24HR, 0), 0.25)"
+_NEAR = "sqrt(least(f.MID, 1 - f.MID))"
 
 
 def _row_to_market(row) -> Market:
@@ -857,6 +873,34 @@ class TableRead:
             (condition_id.value,),
         ).fetchone()
         return _row_to_market(row) if row else None
+
+    @staticmethod
+    def read_market_hit(db: psycopg.Connection, slug: str) -> "Hit | None":
+        row = db.execute(
+            f"SELECT {_MARKET_COLS}, VOLUME_24HR, e.* FROM markets m LEFT JOIN LATERAL ("
+            f"SELECT SLUG AS EVENT_SLUG, CATEGORY, CASE WHEN {_GAME} THEN START_TIME END AS KICKOFF "
+            "FROM events WHERE EVENT_ID = m.EVENT_ID) e ON TRUE WHERE m.SLUG = %s",
+            (slug,),
+        ).fetchone()
+        if row is None:
+            return None
+        return Hit(_row_to_market(row), row["VOLUME_24HR"], row["CATEGORY"], row["KICKOFF"], row["EVENT_SLUG"], None)
+
+    @staticmethod
+    def recent_activity(db: psycopg.Connection, api_key: str, limit: int) -> "list[tuple[dict, Market]]":
+        rows = db.execute(
+            f"SELECT a.*, {_MARKET_COLS} FROM ("
+            "SELECT MARKET AS CONDITION_ID, MATCH_TIME, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, SIDE, PRICE, "
+            "TRADE_SIZE, TAKER_API_KEY, MAKER_API_KEY, NULL::BIGINT AS PAID FROM trades "
+            "WHERE (TAKER_API_KEY = %(key)s OR MAKER_API_KEY = %(key)s) AND STATUS != 'FAILED' "
+            "UNION ALL SELECT m.CONDITION_ID, EXTRACT(EPOCH FROM x.TIMESTAMP)::BIGINT, "
+            "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, (x.DETAILS::jsonb ->> 'collateral_amount')::BIGINT "
+            "FROM transactions x JOIN markets m USING (MARKET_ID) "
+            "WHERE x.API_KEY = %(key)s AND x.TRANSACTION_TYPE = 'REDEEM' "
+            "ORDER BY MATCH_TIME DESC LIMIT %(limit)s) a JOIN markets USING (CONDITION_ID) ORDER BY MATCH_TIME DESC",
+            {"key": api_key, "limit": limit},
+        ).fetchall()
+        return [(r, _row_to_market(r)) for r in rows]
 
     @staticmethod
     def list_all_markets(db: psycopg.Connection) -> "list[Market]":
@@ -1529,7 +1573,7 @@ class TableRead:
         rows = db.execute(
             "SELECT m.MARKET_ID, m.POLYMARKET_CONDITION_ID, m.MARKET_STATE, "
             "m.SLUG, m.QUESTION, m.DESCRIPTION, m.END_DATE, m.ICON_URL, m.OUTCOME_LABEL, "
-            "m.PRICE_CHANGE_24H, m.EVENT_ID, e.POLYMARKET_EVENT_ID, e.TITLE AS E_TITLE, "
+            "m.PRICE_CHANGE_24H, m.VOLUME_24HR, m.EVENT_ID, e.POLYMARKET_EVENT_ID, e.TITLE AS E_TITLE, "
             "e.ICON_URL AS E_ICON_URL, e.START_DATE AS E_START_DATE, e.END_DATE AS E_END_DATE, "
             "e.VOLUME_24HR AS E_VOLUME_24HR, e.VOLUME AS E_VOLUME, e.LIQUIDITY AS E_LIQUIDITY, "
             "e.COMPETITIVE AS E_COMPETITIVE, e.START_TIME AS E_START_TIME, e.SLUG AS E_SLUG, "
@@ -1577,38 +1621,71 @@ class TableRead:
         db: psycopg.Connection,
         *,
         query: str | None,
+        event: str | None,
+        closes_by: int | None,
+        sort: Sort,
+        offset: int,
         limit: int,
-        sided: list[str],
+        mids: dict[str, float],
+        now: int,
         excluded_categories: "Iterable[str] | None" = None,
         excluded_tags: "Iterable[str] | None" = None,
-    ) -> "list[Market]":
+    ) -> "list[Hit]":
+        score = f"{_VOLUME} * {_NEAR}"
+        score_params: list[object] = []
         clauses = [
-            "MARKET_STATE = 'ACTIVE'",
-            "ERC1155_TOKENS::jsonb->0->>0 = ANY(%s)",
+            "m.MARKET_STATE = 'ACTIVE'",
+            f"(m.END_DATE IS NULL OR m.END_DATE > %s OR {_GAME})",
         ]
-        params: list[object] = [sided]
+        params: list[object] = [list(mids), list(mids.values()), now]
         if query:
-            clauses.append(
-                "to_tsvector('english', concat_ws(' ', QUESTION, "
-                "(SELECT concat_ws(' ', e.TITLE, e.CATEGORY, e.SERIES_SLUG, "
-                "%s::jsonb ->> regexp_replace(e.SERIES_SLUG, %s, '')) "
-                "FROM events e WHERE e.EVENT_ID = markets.EVENT_ID))) "
-                "@@ websearch_to_tsquery('english', %s)"
-            )
-            params += [json.dumps(SERIES_WORDS), SEASON.pattern, query]
+            clauses.append(f"m.SEARCH @@ {_QUERY}")
+            params.append(query)
+            if sort == "best":
+                score = f"ts_rank('{{0.1, 0.35, 0.7, 1.0}}', m.SEARCH, {_QUERY}) * {score}"
+                score_params.append(query)
+        if sort == "movers":
+            score = f"abs(coalesce(m.PRICE_CHANGE_24H, 0)) * {_VOLUME}"
+            clauses.append(f"NOT ({_GAME} AND coalesce(e.START_TIME, m.END_DATE) <= %s)")
+            params.append(now)
+        if event:
+            clauses.append("e.SLUG = %s")
+            params.append(event)
+        if closes_by is not None:
+            clauses.append("m.END_DATE <= %s")
+            params.append(closes_by)
         excl_sql, excl_params = _market_excluded_clause(
-            _excluded_lower(excluded_categories), _excluded_lower(excluded_tags)
+            _excluded_lower(excluded_categories), _excluded_lower(excluded_tags), "m"
         )
         if excl_sql:
             clauses.append(excl_sql)
             params += excl_params
+        capped = not event
         rows = db.execute(
-            f"SELECT {_MARKET_COLS} FROM markets WHERE {' AND '.join(clauses)} "
-            "ORDER BY (SELECT e.VOLUME_24HR FROM events e WHERE e.EVENT_ID = markets.EVENT_ID) "
-            "DESC NULLS LAST, MARKET_ID DESC LIMIT %s",
-            (*params, limit),
+            "WITH hits AS (SELECT m.MARKET_ID, coalesce(m.EVENT_ID, -m.MARKET_ID) AS GRP, "
+            f"e.SLUG AS EVENT_SLUG, e.CATEGORY, e.START_TIME, {score} AS SCORE "
+            "FROM markets m JOIN unnest(%s::text[], %s::float8[]) AS f(TOKEN, MID) ON f.TOKEN = m.ERC1155_TOKENS::jsonb->0->>0 "
+            "LEFT JOIN events e ON e.EVENT_ID = m.EVENT_ID "
+            f"WHERE {' AND '.join(clauses)}), "
+            "ranked AS (SELECT *, row_number() OVER (PARTITION BY GRP ORDER BY SCORE DESC, MARKET_ID) AS N, "
+            "count(*) OVER (PARTITION BY GRP) AS MATCHES FROM hits) "
+            f"SELECT {_MARKET_COLS}, VOLUME_24HR, EVENT_SLUG, CATEGORY, N, MATCHES, "
+            f"CASE WHEN {_GAME} THEN START_TIME END AS KICKOFF "
+            "FROM ranked JOIN markets m USING (MARKET_ID) "
+            f"{'WHERE N <= %s ' if capped else ''}ORDER BY SCORE DESC, MARKET_ID LIMIT %s OFFSET %s",
+            (*score_params, *params, *([_PER_EVENT] if capped else []), limit, offset),
         ).fetchall()
-        return [_row_to_market(r) for r in rows]
+        return [
+            Hit(
+                market=_row_to_market(r),
+                volume_24h=r["VOLUME_24HR"],
+                category=r["CATEGORY"],
+                kickoff=r["KICKOFF"],
+                event=r["EVENT_SLUG"] if r["MATCHES"] > 1 else None,
+                more=r["MATCHES"] - _PER_EVENT if capped and r["N"] == 1 and r["MATCHES"] > _PER_EVENT else None,
+            )
+            for r in rows
+        ]
 
     @staticmethod
     def last_trade_prices_for_tokens(

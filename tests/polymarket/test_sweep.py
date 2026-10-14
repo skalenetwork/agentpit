@@ -132,8 +132,9 @@ def test_only_changed_rows_are_written_and_a_missing_field_keeps_what_is_stored(
     markets, events = _xmin(db, "markets"), _xmin(db, "events")
 
     upstream.rows[_cid("moved")] |= {
-        "question": "Moved again?",
+        "question": "Moved twice?",
         "image": None,
+        "volume24hr": 7.5,
         "events": [_event("ev-moved", volume24hr=99.0, image=None)],
     }
     sweep(db, upstream.client(), _never)
@@ -146,10 +147,14 @@ def test_only_changed_rows_are_written_and_a_missing_field_keeps_what_is_stored(
     moved_event = carried["moved"].event
     assert moved_event is not None
     assert (moved_event.volume_24hr, moved_event.icon_url) == (99.0, "https://img/ev-moved.png")
-    assert (carried["moved"].fields.question, carried["moved"].fields.icon_url) == (
-        "Moved again?",
+    assert (carried["moved"].fields.question, carried["moved"].fields.icon_url, carried["moved"].fields.volume_24hr) == (
+        "Moved twice?",
         "https://img/moved.png",
+        7.5,
     )
+    with db.read() as conn:
+        found = conn.execute("SELECT SLUG FROM markets WHERE SEARCH @@ to_tsquery('english', 'twice')").fetchall()
+    assert [r["SLUG"] for r in found] == ["moved"]
     assert carried["still"].fields.outcome_label == "Still"
 
 

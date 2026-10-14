@@ -775,6 +775,7 @@ def sweep(
             m.icon,
             m.label,
             m.price_change_24h,
+            m.volume_24hr,
         )
         fields = c.fields._replace(
             **{k: v for k, v in fresh._asdict().items() if v is not None}
@@ -828,13 +829,13 @@ def sweep(
         if m.payouts is not None:
             resolve(c.market_id, m.payouts)
             resolving += 1
-    if markets or tags or events:
-        with db.write() as conn:
-            TableWrite.update_carried(conn, markets, list(events.items()))
-            for market_id, market_tags in tags:
-                TableWrite.replace_market_tags(
-                    conn, market_id=market_id, tags=market_tags
-                )
+    with db.write() as conn:
+        TableWrite.update_carried(conn, markets, list(events.items()))
+        for market_id, market_tags in tags:
+            TableWrite.replace_market_tags(
+                conn, market_id=market_id, tags=market_tags
+            )
+        TableWrite.index_search(conn)
     log.info(
         "sweep: %d carried, %d missing upstream, %d markets, %d tag sets and %d events "
         "refreshed, %d closed, %d reopened, %d resolving",

@@ -1,17 +1,24 @@
+import re
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import partial
+from urllib.parse import urlsplit
 
 from agentpit.config import Settings
 from agentpit.datastructures.agent_desk import (
+    Activity,
     Amount,
     BoardLimit,
     CancelResult,
     Holding,
+    Hours,
     Leaderboard,
     MarketCard,
     MarketDetail,
     MarketList,
+    Match,
+    Offset,
     OutcomeBook,
     Portfolio,
     Price,
@@ -19,6 +26,7 @@ from agentpit.datastructures.agent_desk import (
     RestingOrder,
     SearchLimit,
     Side,
+    Sort,
     Standing,
     TopUp,
     TradeResult,
@@ -30,7 +38,7 @@ from agentpit.datastructures.orderbook_summary import OrderBookLevel
 from agentpit.datastructures.place_order_request import PlaceOrderRequest
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
-from agentpit.db.table_read import TableRead
+from agentpit.db.table_read import Hit, TableRead
 from agentpit.domain.exceptions import (
     BusinessRuleError,
     InsufficientBalanceError,
@@ -58,6 +66,7 @@ TICK = 1_000
 LOT = 10_000
 TOP = 20
 DEPTH = 5
+ACTIVITY = 10
 
 
 def shares_for_usd(levels: list[tuple[int, int]], usd: int, limit: int, buy: bool) -> tuple[int, int]:
@@ -97,6 +106,10 @@ def _when(ts: int | None) -> datetime | None:
     return datetime.fromtimestamp(ts, UTC) if ts else None
 
 
+def _hours_left(ts: int | None, now: int) -> float | None:
+    return None if ts is None else round((ts - now) / 3600, 1)
+
+
 def _quote(name: str, top: tuple[int | None, int | None]) -> Quote:
     bid, ask = top
     return Quote(name=name, bid=None if bid is None else _px(bid), ask=None if ask is None else _px(ask))
@@ -116,51 +129,80 @@ class AgentDesk:
         self._balance = BalanceService(db, onchain, settings, self._accounts)
         self._board = LeaderboardService(db, onchain, self._accounts, settings)
 
-    def search_markets(self, query: str | None = None, limit: SearchLimit = 10) -> MarketList:
+    def search_markets(
+        self,
+        query: str | None = None,
+        event: str | None = None,
+        closes_within_hours: Hours | None = None,
+        min_price: Price | None = None,
+        max_price: Price | None = None,
+        sort: Sort = "best",
+        offset: Offset = 0,
+        limit: SearchLimit = 10,
+    ) -> MarketList:
+        now = int(time.time())
+        lo, hi = round((min_price or 0) * MICRO), round((max_price or 1) * MICRO)
+        mids = {
+            token: (bid + ask) / 2 / MICRO
+            for token, (bid, ask) in feed.tops(feed.sided()).items()
+            if bid is not None and ask is not None and (lo <= ask <= hi or lo <= MICRO - bid <= hi)
+        }
+        search = partial(
+            TableRead.search_live_markets,
+            event=event,
+            closes_by=None if closes_within_hours is None else now + closes_within_hours * 3600,
+            sort=sort,
+            offset=offset,
+            limit=limit + 1,
+            mids=mids,
+            now=now,
+            excluded_categories=self._settings.excluded_categories,
+            excluded_tags=self._settings.excluded_tags,
+        )
+        words = re.findall(r"\w+", query or "")
+        match: Match | None = "all" if query else None
         with self._db.read() as conn:
-            found = TableRead.search_live_markets(
-                conn,
-                query=query,
-                limit=limit,
-                sided=feed.sided(),
-                excluded_categories=self._settings.excluded_categories,
-                excluded_tags=self._settings.excluded_tags,
-            )
-            tops = feed.tops([t for m in found for t, _ in m.erc1155_tokens])
-            categories = TableRead.categories_by_condition_id(conn, [m.condition_id.value for m in found])
-            kickoffs = TableRead.kickoffs_by_condition_id(conn, [m.condition_id.value for m in found])
+            hits = search(conn, query=query)
+            if not hits and len(words) > 1:
+                hits, match = search(conn, query=" or ".join(words)), "any"
+        shown = hits[:limit]
+        tops = feed.tops([t for h in shown for t, _ in h.market.erc1155_tokens])
         return MarketList(
             markets=[
                 MarketCard(
                     market=m.slug,
                     question=clean(m.question, 200),
                     url=m.url,
-                    category=categories.get(m.condition_id.value),
-                    starts_at=_when(kickoffs.get(m.condition_id.value)),
-                    closes_at=None if m.condition_id.value in kickoffs else _when(m.end_date),
+                    category=category,
+                    starts_at=_when(kickoff),
+                    closes_at=_when(m.end_date) if kickoff is None else None,
+                    hours_left=_hours_left(kickoff or m.end_date, now),
+                    volume_24h=None if volume is None else round(volume),
+                    change_1d=None if m.price_change_24h is None else round(m.price_change_24h, 3),
+                    event=group,
+                    more=more,
                     outcomes=[_quote(label, tops.get(token, (None, None))) for token, label in m.erc1155_tokens],
                 )
-                for m in found
-            ]
+                for m, volume, category, kickoff, group, more in shown
+            ],
+            match=match,
+            next_offset=offset + limit if len(hits) > limit else None,
         )
 
     def get_market(self, market: str) -> MarketDetail:
-        m = self._market(market)
-        with self._db.read() as conn:
-            category = TableRead.categories_by_condition_id(conn, [m.condition_id.value]).get(m.condition_id.value)
-            kickoff = TableRead.kickoffs_by_condition_id(conn, [m.condition_id.value]).get(m.condition_id.value)
+        m, volume, category, kickoff, event, _ = self._market(market)
+        change = m.price_change_24h
         outcomes: list[OutcomeBook] = []
-        for token, label in m.erc1155_tokens:
+        for i, (token, label) in enumerate(m.erc1155_tokens):
             book = self._orders.get_book(token)
             bids, asks = _levels(book.bids), _levels(book.asks)
-            history = self._orders.get_prices_history(token, interval="1d")["history"]
             outcomes.append(
                 OutcomeBook(
                     name=label,
                     bid=_px(bids[0][0]) if bids else None,
                     ask=_px(asks[0][0]) if asks else None,
                     last=None if book.last_trade_price == "0" else float(book.last_trade_price),
-                    change_1d=round(history[-1]["p"] - history[0]["p"], 3) if len(history) > 1 else None,
+                    change_1d=None if change is None else round(-change if i else change, 3) + 0.0,
                     bids=[(_px(p), _shares(s)) for p, s in bids[:DEPTH]],
                     asks=[(_px(p), _shares(s)) for p, s in asks[:DEPTH]],
                 )
@@ -174,6 +216,9 @@ class AgentDesk:
             status=m.market_state.value.lower(),
             starts_at=_when(kickoff),
             closes_at=None if kickoff else _when(m.end_date),
+            hours_left=_hours_left(kickoff or m.end_date, int(time.time())),
+            volume_24h=None if volume is None else round(volume),
+            event=event,
             winner=m.winner,
             outcomes=outcomes,
         )
@@ -188,9 +233,9 @@ class AgentDesk:
         shares: Amount | None = None,
         limit_price: Price | None = None,
     ) -> TradeResult:
-        m = self._market(market)
+        m = self._market(market).market
         if m.market_state != MarketState.ACTIVE:
-            raise MarketStateError(f"'{market}' is {m.market_state.value.lower()}, so it cannot be traded.")
+            raise MarketStateError(f"'{m.slug}' is {m.market_state.value.lower()}, so it cannot be traded.")
         token, label = self._outcome(m, outcome)
         buy = side == "buy"
         if limit_price is None:
@@ -198,7 +243,7 @@ class AgentDesk:
             levels = _levels(book.asks if buy else book.bids)
             if not levels:
                 raise BusinessRuleError(
-                    f"No live Polymarket {'asks' if buy else 'bids'} for '{label}' in '{market}' right now. "
+                    f"No live Polymarket {'asks' if buy else 'bids'} for '{label}' in '{m.slug}' right now. "
                     "Pass a limit_price to rest an order at your price."
                 )
             best = levels[0][0]
@@ -304,12 +349,14 @@ class AgentDesk:
             positions=[
                 Holding(
                     market=p.slug,
+                    question=clean(p.title, 200),
                     url=p.url,
                     outcome=p.outcome,
                     shares=round(p.size, 6),
                     avg_price=round(p.avgPrice, 3),
                     price=round(p.curPrice, 3),
                     value_usd=round(p.currentValue, 2),
+                    sell_usd=round(p.sellableValue, 2),
                     pnl_usd=round(p.cashPnl, 2),
                 )
                 for p in held[:TOP]
@@ -327,6 +374,7 @@ class AgentDesk:
                 for o in shown
             ],
             open_orders_total=len(orders),
+            activity=self._activity(user.api_key),
         )
 
     def top_up(self, user: User) -> TopUp:
@@ -359,12 +407,43 @@ class AgentDesk:
     def _page(self, address: str) -> str:
         return f"{self._settings.landing_url}/agents/{address}"
 
-    def _market(self, slug: str) -> Market:
+    def _market(self, market: str) -> Hit:
+        slug = urlsplit(market).path.rstrip("/").rsplit("/", 1)[-1]
         with self._db.read() as conn:
-            found = TableRead.list_markets_filtered(conn, slug=slug, limit=1)
-        if not found:
-            raise NotFoundError(f"No market '{slug}'. Use a market slug exactly as search_markets returns it.")
-        return found[0]
+            found = TableRead.read_market_hit(conn, slug)
+        if found:
+            return found
+        if slug and (listed := self.search_markets(event=slug, limit=TOP).markets):
+            raise NotFoundError(
+                f"'{slug}' is an event, not a market. Pass one of its markets: {', '.join(c.market for c in listed)}. "
+                f"search_markets(event='{slug}') lists them with prices."
+            )
+        raise NotFoundError(f"No market '{slug}'. Pass a market slug from search_markets or a polymarket.com market link.")
+
+    def _activity(self, api_key: str) -> list[Activity]:
+        with self._db.read() as conn:
+            rows = TableRead.recent_activity(conn, api_key, ACTIVITY)
+        entries: list[Activity] = []
+        for row, m in rows:
+            at = datetime.fromtimestamp(row["MATCH_TIME"], UTC)
+            if row["PAID"] is not None:
+                entries.append(
+                    Activity(at=at, kind="payout", market=m.slug, outcome=m.winner, shares=None, price=None, usd=_usd(row["PAID"]))
+                )
+            else:
+                entries += [
+                    Activity(
+                        at=at,
+                        kind="buy" if leg.side == "BUY" else "sell",
+                        market=m.slug,
+                        outcome=dict(m.erc1155_tokens)[leg.token_id],
+                        shares=_shares(leg.size_micro),
+                        price=_px(leg.price_micro),
+                        usd=_usd(leg.price_micro * leg.size_micro // MICRO),
+                    )
+                    for leg in legs_for_user(row, api_key)
+                ]
+        return entries[:ACTIVITY]
 
     @staticmethod
     def _outcome(market: Market, name: str) -> tuple[str, str]:

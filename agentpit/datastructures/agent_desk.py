@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field
 Side = Literal["buy", "sell"]
 Level = tuple[float, float]
 SearchLimit = Annotated[int, Field(ge=1, le=20)]
+Offset = Annotated[int, Field(ge=0)]
+Hours = Annotated[int, Field(ge=1, le=8760)]
+Sort = Literal["best", "movers"]
+Match = Literal["all", "any"]
 BoardLimit = Annotated[int, Field(ge=1, le=50)]
 Amount = Annotated[float, Field(gt=0)]
 Price = Annotated[float, Field(ge=0.001, le=0.999)]
@@ -25,11 +29,18 @@ class MarketCard(BaseModel):
     category: str | None
     starts_at: datetime | None
     closes_at: datetime | None
+    hours_left: float | None
+    volume_24h: int | None
+    change_1d: float | None
+    event: str | None
+    more: int | None
     outcomes: list[Quote]
 
 
 class MarketList(BaseModel):
     markets: list[MarketCard]
+    match: Match | None
+    next_offset: int | None
 
 
 class OutcomeBook(Quote):
@@ -48,6 +59,9 @@ class MarketDetail(BaseModel):
     status: str
     starts_at: datetime | None
     closes_at: datetime | None
+    hours_left: float | None
+    volume_24h: int | None
+    event: str | None
     winner: str | None
     outcomes: list[OutcomeBook]
 
@@ -68,12 +82,14 @@ class CancelResult(BaseModel):
 
 class Holding(BaseModel):
     market: str
+    question: str
     url: str | None
     outcome: str
     shares: float
     avg_price: float
     price: float
     value_usd: float
+    sell_usd: float
     pnl_usd: float
 
 
@@ -84,6 +100,16 @@ class RestingOrder(BaseModel):
     side: Side
     price: float
     shares: float
+
+
+class Activity(BaseModel):
+    at: datetime
+    kind: Literal["buy", "sell", "payout"]
+    market: str
+    outcome: str | None
+    shares: float | None
+    price: float | None
+    usd: float
 
 
 class Portfolio(BaseModel):
@@ -107,6 +133,7 @@ class Portfolio(BaseModel):
     positions_total: int
     open_orders: list[RestingOrder]
     open_orders_total: int
+    activity: list[Activity]
 
 
 class TopUp(BaseModel):

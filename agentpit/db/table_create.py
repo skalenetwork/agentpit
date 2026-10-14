@@ -312,6 +312,13 @@ class TableCreate:
         conn.execute("ALTER TABLE markets ADD COLUMN IF NOT EXISTS RESOLVED_AT BIGINT")
         conn.execute("ALTER TABLE markets ADD COLUMN IF NOT EXISTS QUESTION_ID TEXT")
         conn.execute("ALTER TABLE markets ADD COLUMN IF NOT EXISTS PAYOUTS INTEGER[]")
+        conn.execute("ALTER TABLE markets ADD COLUMN IF NOT EXISTS VOLUME_24HR DOUBLE PRECISION")
+        conn.execute("ALTER TABLE markets ADD COLUMN IF NOT EXISTS SEARCH TSVECTOR")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS unaccent")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_markets_search ON markets USING GIN (SEARCH) "
+            "WHERE MARKET_STATE = 'ACTIVE'"
+        )
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_markets_condition_id ON markets(CONDITION_ID)"
         )

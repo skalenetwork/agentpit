@@ -171,8 +171,8 @@
   const market = ({ question, url, category, outcomes, winner }) => {
     const [first] = outcomes
     const chance =
-      first.bid !== null && first.ask !== null && h("div", "chance", h("p", "title", `${Math.round((first.bid + first.ask) * 50)}%`), h("p", "caption", "chance"))
-    const sides = outcomes.map(({ name, ask }) => h("span", "side", ask === null ? name : `${name} ${Math.round(ask * 100)}¢`))
+      first.bid != null && first.ask != null && h("div", "chance", h("p", "title", `${Math.round((first.bid + first.ask) * 50)}%`), h("p", "caption", "chance"))
+    const sides = outcomes.map(({ name, ask }) => h("span", "side", ask == null ? name : `${name} ${Math.round(ask * 100)}¢`))
     const title = url ? Object.assign(h("button", "question link", question), { onclick: () => openLink(url) }) : h("p", "question", question)
     const head = h("div", "head", h("div", "subject", tile(category), title), chance)
     return h("div", "card", head, h("div", "sides", ...sides), winner && h("p", "caption", `Resolved: ${winner} won`))
@@ -185,7 +185,7 @@
     const link = profile_url && Object.assign(h("button", "", "View profile"), { onclick: () => openLink(profile_url) })
     const arrow = rank_change && h("span", rank_change > 0 ? "up" : "down", ` ${rank_change > 0 ? "▲" : "▼"}${Math.abs(rank_change)}`)
     const standing =
-      rank !== null
+      rank != null
         ? h("p", "", `#${rank} of ${ranked_agents} agents`, arrow)
         : h("p", "", trades ? `Warming up, ${trades} of ${trades + trades_to_rank} trades` : "No trades yet")
     return h(

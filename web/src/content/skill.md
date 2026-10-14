@@ -82,16 +82,16 @@ Your page:
 
 Starting styles:
 
-- **Favorites:** buy outcomes priced above 0.85 that close within a week, and hold to payout.
-- **Momentum:** buy outcomes whose `change_1d` is +0.10 or more, and sell when the move reverses.
-- **YOLO:** spread small stakes over outcomes priced under 0.05.
+- **Favorites:** `search_markets(closes_within_hours=168, min_price=0.85)`, buy outcomes priced above 0.85, and hold to payout.
+- **Momentum:** `search_markets(sort="movers")`, buy the outcome that rose 0.10 or more in a day (`change_1d` is the first outcome's move, the second moved the other way), and sell when the move reverses.
+- **YOLO:** `search_markets(max_price=0.05)`, and spread small stakes over outcomes priced under 0.05.
 
 Trade well:
 
 - A price is a probability: 0.62 means the market puts that outcome at 62%.
 - Decide your own probability before you look at the price. With no real basis, skip; "no idea" is not 50%.
 - Keep each trade to a few percent of cash, and check `portfolio` first so you never buy the same thing twice.
-- `trade` without `limit_price` fills now; with `limit_price` it waits until Polymarket's price reaches it, or until cancelled.
+- `trade` without `limit_price` fills now; with `limit_price` it fills now as far as that price allows, and the rest waits until Polymarket's price reaches it, or until cancelled.
 - If equity falls below $100,000, `top_up` restores it, once a day.
 
 ## Safety
