@@ -23,6 +23,7 @@ from agentpit.auth.dependencies import make_current_user_dep
 from agentpit.auth.jwt import JwtCoder
 from agentpit.config import Settings
 from agentpit.db.table_write import TableWrite
+from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
 # The client id the token tests use. Every token below carries the claim set
@@ -84,6 +85,11 @@ def db():
 
 
 @pytest.fixture
+def accounts(db) -> AgentAccounts:
+    return AgentAccounts(db, lambda *_: pytest.fail("an onboarded account must not onboard again"))
+
+
+@pytest.fixture
 def coder() -> _CountingCoder:
     return _CountingCoder()
 
@@ -119,17 +125,18 @@ def _user_count(db) -> int:
         return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
 
 
-def test_an_api_key_still_resolves_its_user_after_the_cutover(db):
+def test_an_api_key_still_resolves_its_user_after_the_cutover(db, accounts):
     # The single most important assertion in this plan. Every bot trading
     # today authenticates this way and nothing about it moved to WorkOS.
     with db.write() as conn:
         user_id, _acct, api_key = TableWrite.create_user(
             conn, email="bot@example.com", password_hash=None, handle=None
         )
+        TableWrite.mark_user_onboarded(conn, user_id)
     verifier = _CountingVerifier()
 
     dep = make_current_user_dep(verifier)
-    user = dep(api_key=api_key, creds=None, db=db)
+    user = dep(api_key=api_key, creds=None, db=db, accounts=accounts)
 
     assert user.user_id == user_id
     # Never consulted: the API-key path returns before the token path.
@@ -137,18 +144,18 @@ def test_an_api_key_still_resolves_its_user_after_the_cutover(db):
 
 
 def test_a_bad_api_key_is_401_and_does_not_fall_through_to_the_token_path(
-    db, verifier, current_user
+    db, accounts, verifier, current_user
 ):
     # Same short-circuit, on the failing side: a wrong key must be rejected
     # here, not handed to the verifier as if it were a bearer token.
     with pytest.raises(HTTPException) as raised:
-        current_user("not-a-key", None, db)
+        current_user("not-a-key", None, db, accounts)
 
     assert raised.value.status_code == 401
     assert verifier.verifies == 0
 
 
-def test_a_legacy_jwt_is_no_longer_accepted(db, coder):
+def test_a_legacy_jwt_is_no_longer_accepted(db, accounts, coder):
     # The cutover itself. Every browser holding one of these is signed out
     # exactly once -- which is what the product already does to everybody every
     # 24 hours, so the disruption is one it inflicts daily already.
@@ -166,22 +173,23 @@ def test_a_legacy_jwt_is_no_longer_accepted(db, coder):
                 scheme="Bearer", credentials=token
             ),
             db=db,
+            accounts=accounts,
         )
     assert excinfo.value.status_code == 401
 
 
-def test_an_authkit_token_resolves_the_row_its_sub_is_linked_to(db, current_user):
+def test_an_authkit_token_resolves_the_row_its_sub_is_linked_to(db, accounts, current_user):
     user_id, _api_key = _make_user(
         db, email="new@example.com", workos_user_id="user_authkit_1"
     )
 
-    resolved = current_user(None, _bearer(_authkit_token(sub="user_authkit_1")), db)
+    resolved = current_user(None, _bearer(_authkit_token(sub="user_authkit_1")), db, accounts)
 
     assert resolved.user_id == user_id
 
 
 def test_an_authkit_token_for_an_unknown_sub_is_401_and_creates_nothing(
-    db, current_user
+    db, accounts, current_user
 ):
     # The token is perfectly valid -- right signature, right application, not
     # expired -- and still must not mint an account. Creation belongs to
@@ -191,20 +199,20 @@ def test_an_authkit_token_for_an_unknown_sub_is_401_and_creates_nothing(
     before = _user_count(db)
 
     with pytest.raises(HTTPException) as raised:
-        current_user(None, _bearer(_authkit_token(sub="user_nobody")), db)
+        current_user(None, _bearer(_authkit_token(sub="user_nobody")), db, accounts)
 
     assert raised.value.status_code == 401
     assert _user_count(db) == before
 
 
-def test_a_garbage_bearer_token_is_401(db, current_user):
+def test_a_garbage_bearer_token_is_401(db, accounts, current_user):
     with pytest.raises(HTTPException) as raised:
-        current_user(None, _bearer("not.a.real.jwt"), db)
+        current_user(None, _bearer("not.a.real.jwt"), db, accounts)
 
     assert raised.value.status_code == 401
 
 
-def test_an_authkit_token_is_401_where_no_verifier_was_configured(db):
+def test_an_authkit_token_is_401_where_no_verifier_was_configured(db, accounts):
     # A deployment without WORKOS_CLIENT_ID gets `authkit=None`. Such a
     # deployment can authenticate bots by X-API-Key and nobody else, which is
     # a refusal rather than the crash on the None it must not be.
@@ -212,7 +220,7 @@ def test_an_authkit_token_is_401_where_no_verifier_was_configured(db):
     _make_user(db, email="orphan@example.com", workos_user_id="user_authkit_2")
 
     with pytest.raises(HTTPException) as raised:
-        unconfigured(None, _bearer(_authkit_token(sub="user_authkit_2")), db)
+        unconfigured(None, _bearer(_authkit_token(sub="user_authkit_2")), db, accounts)
 
     assert raised.value.status_code == 401
 

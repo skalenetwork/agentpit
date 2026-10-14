@@ -4,8 +4,10 @@ import time
 import uuid
 
 import pytest
+from eth_account.signers.local import LocalAccount
 from fastapi.testclient import TestClient
 
+from agentpit.api.deps import get_agent_accounts
 from agentpit.api.main import app
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
@@ -13,6 +15,7 @@ from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.domain.exceptions import AdminGasPausedError
 from agentpit.domain.handles import generate_handle
 from agentpit.services.agent_accounts import AgentAccounts
 from agentpit.services.leaderboard_service import RANK_FLOOR, Holdings, _holdings
@@ -24,7 +27,7 @@ CRYPTO = "0x" + "ab" * 32
 
 
 def _accounts() -> AgentAccounts:
-    return AgentAccounts(fresh_test_db(), lambda *_: pytest.fail("agent_for must not onboard"))
+    return AgentAccounts(fresh_test_db(), lambda *_: pytest.fail("must not onboard"))
 
 
 def _traded(conn, agent: User, trades: int, earned: int) -> None:
@@ -130,6 +133,34 @@ def test_a_new_api_agent_shows_its_key_once_and_trades_by_it(sign_in):
     summary = {k: v for k, v in agent.items() if k != "api_key"}
     assert [{k: a[k] for k in summary} for a in listed] == [summary]
     assert me.status_code == 200 and me.json()["handle"] == agent["handle"]
+
+
+def test_a_new_api_agent_gets_its_key_while_its_wallet_cannot_be_set_up(sign_in, monkeypatch):
+    def paused(_user_id: str, _acct: LocalAccount) -> User:
+        raise AdminGasPausedError()
+
+    accounts = AgentAccounts(fresh_test_db(), paused)
+    monkeypatch.setitem(app.dependency_overrides, get_agent_accounts, lambda: accounts)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        headers, owner = _owner(client, sign_in, "owner@example.com")
+
+        created = client.post("/me/agents", headers=headers)
+        keyed = client.get("/me", headers={"X-API-Key": created.json()["api_key"]})
+
+    assert created.status_code == 201
+    assert keyed.status_code == 503
+    with fresh_test_db().read() as conn:
+        assert [a.onboarded_at for a in TableRead.agents_owned_by(conn, owner)] == [None]
+
+
+def test_a_key_used_before_its_wallet_is_ready_sets_it_up_first():
+    agent = _accounts().create_api_agent("user_owner")
+
+    with TestClient(app) as client:
+        me = client.get("/me", headers={"X-API-Key": agent.api_key})
+
+    assert agent.onboarded_at is None
+    assert me.status_code == 200 and me.json()["onboarded_at"] is not None
 
 
 def test_the_settings_key_cannot_manage_agents(sign_in):

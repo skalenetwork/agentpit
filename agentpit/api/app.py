@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from agentpit.api.deps import (
+    get_agent_accounts,
     get_current_user,
     get_db_session,
     get_google_verifier,
@@ -334,15 +335,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "sessions are rejected. X-API-Key traffic is unaffected."
         )
 
+    accounts = AgentAccounts(
+        db_session, AuthService(db_session, coder, onchain_admin, settings)._onboard_new_account
+    )
     mcp_endpoint: McpEndpoint | None = None
     if workos_client is not None and settings.workos_authkit_domain.startswith("https://"):
         try:
             mcp_url = urlsplit(settings.mcp_url)
             if mcp_url.netloc and mcp_url.path.strip("/"):
-                accounts = AgentAccounts(
-                    db_session,
-                    AuthService(db_session, coder, onchain_admin, settings)._onboard_new_account,
-                )
                 verifier = AgentVerifier(
                     issuer=settings.workos_authkit_domain,
                     resource=settings.mcp_url,
@@ -506,6 +506,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.dependency_overrides[get_google_verifier] = lambda: google_verifier
     app.dependency_overrides[get_workos_client] = lambda: workos_client
     app.dependency_overrides[get_current_user] = current_user_fn
+    app.dependency_overrides[get_agent_accounts] = lambda: accounts
 
     app.add_middleware(
         CORSMiddleware,

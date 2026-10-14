@@ -12,6 +12,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.domain.exceptions import InvalidCredentialsError
+from agentpit.services.agent_accounts import AgentAccounts
 
 _bearer = HTTPBearer(auto_error=False)
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -62,19 +63,20 @@ def make_current_user_dep(authkit: AuthKitVerifier | None):
     could only reject everything. Such a deployment can still authenticate
     bots by `X-API-Key`, and nobody else.
     """
-    from agentpit.api.deps import get_db_session
+    from agentpit.api.deps import get_agent_accounts, get_db_session
 
     def current_user(
         api_key: Annotated[str | None, Depends(_api_key_header)],
         creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
         db: Annotated[DbSession, Depends(get_db_session)],
+        accounts: Annotated[AgentAccounts, Depends(get_agent_accounts)],
     ) -> User:
         if api_key:
             with db.read() as conn:
                 user = TableRead.get_user_by_api_key(conn, api_key)
             if user is None or user.deleted_at is not None:
                 raise _unauth("invalid api key")
-            return user
+            return accounts.ready(user)
 
         if creds is None or not creds.credentials:
             raise _unauth("missing credentials")

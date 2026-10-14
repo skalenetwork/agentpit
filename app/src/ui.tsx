@@ -1,5 +1,12 @@
+import { INK_RUNNERS, type RunnerSlug } from "@agentpit/brand/api";
 import { rankMove } from "@agentpit/brand/format";
 import logoUrl from "@agentpit/brand/logo.svg";
+import api from "@agentpit/brand/runners/api.svg";
+import claudeCode from "@agentpit/brand/runners/claude-code.svg";
+import codex from "@agentpit/brand/runners/codex.svg";
+import hermes from "@agentpit/brand/runners/hermes.svg";
+import meta from "@agentpit/brand/runners/meta.svg";
+import openclaw from "@agentpit/brand/runners/openclaw.svg";
 import { Check, Copy as CopyIcon, type LucideIcon, Trophy, X } from "lucide-react";
 import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from "react";
 
@@ -12,6 +19,7 @@ const VARIANT = {
   paper: "bg-paper text-ink hover:bg-line",
 };
 const SIZE = { sm: "h-7.5 px-3.5", md: "h-8.5 px-4", lg: "h-10 px-5", icon: "size-7.5" };
+const MARKS = { "claude-code": claudeCode, codex, openclaw, hermes, meta, api } satisfies Partial<Record<RunnerSlug, string>>;
 export const SOFT = "rounded-card bg-surface/70";
 export const MEDALS = ["bg-gold", "bg-silver", "bg-bronze"] as const;
 
@@ -30,13 +38,20 @@ export const Button = ({ variant = "secondary", size = "sm", className = "", ...
 export const Input = ({ className = "", ...props }: ComponentProps<"input">) => (
   <input
     {...props}
-    className={`h-10 w-full rounded-control border border-ink/15 bg-paper px-4 text-small text-ink placeholder:text-faint focus:border-signal focus:ring-2 focus:ring-signal/25 focus:outline-none ${className}`}
+    className={`h-10 w-full rounded-control border border-ink/15 bg-paper px-4 text-ink placeholder:text-faint focus:border-signal focus:ring-2 focus:ring-signal/25 focus:outline-none ${className}`}
   />
 );
 
 export const Logo = ({ height = 16 }: { height?: number }) => (
   <span role="img" aria-label="AgentPit" className="block bg-ink" style={{ height, width: (height * 857) / 156, mask: `url("${logoUrl}") center / contain no-repeat` }} />
 );
+
+export const RunnerMark = ({ slug, label }: { slug: keyof typeof MARKS; label: string }) =>
+  INK_RUNNERS.has(slug) ? (
+    <span role="img" aria-label={label} title={label} className="size-6 bg-ink" style={{ mask: `url("${MARKS[slug]}") center / contain no-repeat` }} />
+  ) : (
+    <img src={MARKS[slug]} alt={label} title={label} className="size-6" />
+  );
 
 export const Robot = ({ address, className }: { address: string; className: string }) => (
   <img src={`https://agentpit.dev/agents/${address.toLowerCase()}/avatar.svg`} alt="" className={`shrink-0 rounded-robot bg-surface ${className}`} />
@@ -98,7 +113,7 @@ export const Human = ({ name, className }: { name: string | null; className: str
     <span className={`shrink-0 rounded-control bg-surface ${className}`} />
   );
 
-export const Copy = ({ text, ...props }: ButtonProps & { text: string }) => {
+export const Copy = ({ text, onCopied, ...props }: ButtonProps & { text: string; onCopied?: () => void }) => {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -106,21 +121,29 @@ export const Copy = ({ text, ...props }: ButtonProps & { text: string }) => {
     return () => clearTimeout(timer);
   }, [copied]);
   return (
-    <Button {...props} onClick={() => navigator.clipboard.writeText(text).then(() => setCopied(true))}>
+    <Button
+      {...props}
+      onClick={() =>
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          onCopied?.();
+        })
+      }
+    >
       {copied ? <Check size={14} strokeWidth={1.75} /> : <CopyIcon size={14} strokeWidth={1.75} />}
       <span className={props.size === "icon" ? "sr-only" : undefined}>{copied ? "Copied" : "Copy"}</span>
     </Button>
   );
 };
 
-export const Well = ({ text, mono = false }: { text: string; mono?: boolean }) => (
-  <div className="inline-flex max-w-full items-center gap-3 rounded-well bg-surface p-1.5 pl-4 text-left">
-    <p className={`min-w-0 flex-1 ${mono ? "font-mono text-caption break-all" : "font-medium"}`}>{text}</p>
-    <Copy text={text} variant="primary" />
+export const Well = ({ text, mono = false, className, onCopied }: { text: string; mono?: boolean; className: string; onCopied?: () => void }) => (
+  <div className={`flex items-center gap-3 rounded-well p-1.5 pl-4 max-sm:flex-col max-sm:items-stretch max-sm:gap-2 max-sm:pt-3 max-sm:pl-1.5 ${className}`}>
+    <p className={`min-w-0 flex-1 select-all max-sm:px-2.5 ${mono ? "font-mono text-caption break-all" : "font-medium text-pretty"}`}>{text}</p>
+    <Copy text={text} variant="primary" onCopied={onCopied} />
   </div>
 );
 
-export const Sheet = ({ title, onClose, locked = false, children }: { title: ReactNode; onClose: () => void; locked?: boolean; children: ReactNode }) => {
+export const Sheet = ({ title, onClose, locked = false, children }: { title?: ReactNode; onClose: () => void; locked?: boolean; children: ReactNode }) => {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     if (!ref.current?.open) ref.current?.showModal();
@@ -134,14 +157,16 @@ export const Sheet = ({ title, onClose, locked = false, children }: { title: Rea
       closedby={locked ? "none" : "any"}
       className="m-auto w-full max-w-sheet rounded-panel bg-paper p-6 shadow-overlay max-sm:mb-0 max-sm:max-w-none max-sm:rounded-b-none"
     >
-      <div className="flex items-start justify-between gap-4">
-        <h2 className="text-body font-medium">{title}</h2>
-        {!locked && (
-          <Button variant="ghost" size="icon" aria-label="Close" onClick={onClose} className="-my-0.5 -mr-1.5">
-            <X size={14} strokeWidth={1.75} />
-          </Button>
-        )}
-      </div>
+      {(title || !locked) && (
+        <div className="flex items-start justify-between gap-4">
+          <h2 className="text-body font-medium">{title}</h2>
+          {!locked && (
+            <Button variant="ghost" size="icon" aria-label="Close" onClick={onClose} className="-my-0.5 -mr-1.5">
+              <X size={14} strokeWidth={1.75} />
+            </Button>
+          )}
+        </div>
+      )}
       {children}
     </dialog>
   );
