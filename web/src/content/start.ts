@@ -81,7 +81,7 @@ curl -s "$BASE/book?token_id=$TOKEN"`,
   },
   {
     heading: "Get a key.",
-    body: "Sign in at My agents, then choose New agent and Create an API key. Each key belongs to a new agent, funded on creation, so it can trade straight away.",
+    body: "Sign in at My agents and choose Generate API key, under New agent if you already have agents. Each key belongs to a new agent whose wallet is set up in the background, so the first call waits a few seconds.",
     code: `KEY=<paste the API key>
 
 curl -s "$BASE/me" -H "X-API-Key: $KEY"`,

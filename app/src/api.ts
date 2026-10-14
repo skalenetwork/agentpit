@@ -23,6 +23,12 @@ export interface Agent extends Omit<WireAgent, "handle" | "equity" | "earned" | 
   readonly trend: readonly number[];
 }
 
+export interface NewAgent {
+  readonly handle: string;
+  readonly eth_address: string;
+  readonly api_key: string;
+}
+
 export interface Order extends MarketContext {
   readonly id: string;
   readonly title: string;
@@ -66,6 +72,10 @@ const useAgentMutation = <Input, Output>(run: (input: Input) => Promise<Output>)
   return useMutation({ mutationFn: run, onSuccess: () => client.invalidateQueries({ queryKey: AGENTS }), gcTime: 0 });
 };
 
-export const useCreateAgent = () => useAgentMutation(() => request<{ readonly eth_address: string; readonly api_key: string }>("/me/agents", "POST"));
+export const useCreateAgent = () => {
+  const client = useQueryClient();
+  return useMutation({ mutationFn: () => request<NewAgent>("/me/agents", "POST"), onSuccess: () => void client.invalidateQueries({ queryKey: AGENTS }), gcTime: 0 });
+};
+
 export const useRenameAgent = (address: string) => useAgentMutation((handle: string) => request(`/me/agents/${address}`, "PATCH", { handle }));
 export const useDeleteAgent = (address: string) => useAgentMutation(() => request(`/me/agents/${address}`, "DELETE"));

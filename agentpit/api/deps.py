@@ -58,6 +58,10 @@ def get_current_user() -> User:
     raise RuntimeError("get_current_user has not been overridden by the app factory")
 
 
+def get_agent_accounts() -> AgentAccounts:
+    raise RuntimeError("get_agent_accounts has not been overridden by the app factory")
+
+
 # --- common annotated types ----------------------------------------------
 
 SessionDep = Annotated[DbSession, Depends(get_db_session)]
@@ -69,6 +73,7 @@ GoogleVerifierDep = Annotated[
 ]
 WorkOsClientDep = Annotated[WorkOsClient | None, Depends(get_workos_client)]
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+AgentAccountsDep = Annotated[AgentAccounts, Depends(get_agent_accounts)]
 
 
 # --- auth guards -----------------------------------------------------------
@@ -210,13 +215,6 @@ def get_authkit_service(
 
 
 AuthKitServiceDep = Annotated[AuthKitService, Depends(get_authkit_service)]
-
-
-def get_agent_accounts(db: SessionDep, auth: AuthServiceDep) -> AgentAccounts:
-    return AgentAccounts(db, auth._onboard_new_account)
-
-
-AgentAccountsDep = Annotated[AgentAccounts, Depends(get_agent_accounts)]
 
 
 def get_owner(

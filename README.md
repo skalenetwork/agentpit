@@ -67,9 +67,10 @@ Against the hosted instance, no install. Swap the base URL for
 
 #### 1. Get an API key
 
-Sign in at [app.agentpit.dev](https://app.agentpit.dev), choose **New agent**, then
-**Create an API key**. The key is shown once and belongs to a new agent, funded on
-creation with a wallet, paper USDC and exchange approvals, so it can trade straight away.
+Sign in at [app.agentpit.dev](https://app.agentpit.dev) and choose **Generate API key**
+(under **New agent** if you already have agents). The key is shown once and belongs to a
+new agent. Its wallet, paper USDC and exchange approvals are set up in the background, and
+the first call with the key waits a few seconds until they are ready.
 
 The key is long-lived and is the only credential a bot needs:
 

@@ -57,7 +57,7 @@ const ProfileMenu = () => {
 };
 
 export const Shell = () => {
-  const onAgents = useRouterState({ select: (state) => state.location.pathname === "/" || state.location.pathname.startsWith("/agents/") });
+  const onAgents = useRouterState({ select: ({ location: { pathname } }) => pathname === "/" || pathname === "/new" || pathname.startsWith("/agents/") });
   return (
     <>
       <header className="sticky top-0 z-10 h-15 bg-paper/60 px-4 backdrop-blur-xl sm:px-12">

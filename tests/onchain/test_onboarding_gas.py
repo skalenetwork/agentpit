@@ -6,9 +6,8 @@ more native than that top-up (on anvil nearly all of it: it bills the base fee).
 
 from unittest.mock import MagicMock
 
-from agentpit.api.deps import get_db_session, get_onchain_admin, get_settings
+from agentpit.api.deps import get_agent_accounts, get_db_session, get_onchain_admin, get_settings
 from agentpit.onchain.tx_sender import TRANSFER_GAS
-from agentpit.services.agent_accounts import AgentAccounts
 from tests.onchain import _helpers as h
 
 
@@ -54,10 +53,9 @@ def test_a_new_account_onboards_on_one_exact_top_up_and_no_grant(monkeypatch):
 def test_a_new_api_agent_onboards_the_same_way(monkeypatch):
     client = h.fresh_client()
     top_ups = _record_top_ups(monkeypatch, client)
-    db = client.app.dependency_overrides[get_db_session]()  # type: ignore[attr-defined]
+    accounts = client.app.dependency_overrides[get_agent_accounts]()  # type: ignore[attr-defined]
 
-    onboard = h._auth_service(client)._onboard_new_account
-    agent = AgentAccounts(db, onboard).create_api_agent("user_onboarding_gas")
+    agent = accounts.ready(accounts.create_api_agent("user_onboarding_gas"))
 
     assert agent.onboarded_at is not None
     _assert_one_exact_top_up(client, agent.eth_address, agent.api_key, top_ups)

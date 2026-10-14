@@ -2,7 +2,7 @@ import time
 
 import psycopg.errors
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, BackgroundTasks, Response
 from pydantic import BaseModel
 from web3 import Web3
 
@@ -112,8 +112,9 @@ def get_my_agents(
 
 
 @router.post("/me/agents", response_model=NewAgent, status_code=201)
-def create_my_agent(owner: OwnerDep, accounts: AgentAccountsDep) -> NewAgent:
+def create_my_agent(owner: OwnerDep, accounts: AgentAccountsDep, background: BackgroundTasks) -> NewAgent:
     agent = accounts.create_api_agent(owner)
+    background.add_task(accounts.ready, agent)
     return NewAgent(**AgentSummary.of(agent).model_dump(), api_key=agent.api_key)
 
 

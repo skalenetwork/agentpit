@@ -1,5 +1,4 @@
 import threading
-import time
 from collections.abc import Callable
 
 import psycopg
@@ -10,12 +9,7 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import (
-    SPONSORED_GAS_REFUSALS,
-    HandleAlreadyExistsError,
-    OnboardingError,
-    UserNotFoundError,
-)
+from agentpit.domain.exceptions import HandleAlreadyExistsError, UserNotFoundError
 from agentpit.domain.handles import pick_handle
 from agentpit.domain.runner import is_clawbits
 
@@ -26,7 +20,7 @@ class AgentAccounts:
     def __init__(self, db: DbSession, onboard: Onboard) -> None:
         self._db = db
         self._onboard = onboard
-        self._onboarding = threading.Lock()
+        self._onboarding: dict[str, threading.Lock] = {}
 
     def agent_for(self, owner_workos_id: str, app: str, client: str | None, host: str | None) -> User:
         with self._db.read() as conn:
@@ -47,12 +41,7 @@ class AgentAccounts:
             created = TableRead.get_user_by_userid(conn, user_id)
         if created is None:
             raise UserNotFoundError()
-        try:
-            return self.ready(created)
-        except (OnboardingError, *SPONSORED_GAS_REFUSALS):
-            with self._db.write() as conn:
-                TableWrite.delete_agent(conn, user_id, int(time.time()))
-            raise
+        return created
 
     def rename(self, agent: User, handle: str) -> User:
         try:
@@ -65,7 +54,7 @@ class AgentAccounts:
     def ready(self, user: User) -> User:
         if user.onboarded_at is not None:
             return user
-        with self._onboarding:
+        with self._onboarding.setdefault(user.user_id, threading.Lock()):
             with self._db.read() as conn:
                 fresh = TableRead.get_user_by_userid(conn, user.user_id)
             if fresh is None:

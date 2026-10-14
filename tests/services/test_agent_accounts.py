@@ -1,17 +1,9 @@
-import pytest
 from eth_account.signers.local import LocalAccount
 
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import (
-    AdminGasPausedError,
-    GasPriceMovedError,
-    GasTopUpTimeoutError,
-    InsufficientGasError,
-    OnboardingError,
-)
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -107,49 +99,14 @@ def test_a_deleted_agent_s_app_starts_a_fresh_agent():
     assert fresh.user_id != agent.user_id
 
 
-def test_an_api_agent_is_funded_at_once_and_has_no_app():
+def test_an_api_agent_starts_unfunded_and_has_no_app():
     accounts, onboard, _ = _accounts()
 
     agent = accounts.create_api_agent(OWNER)
 
-    assert agent.onboarded_at is not None
+    assert agent.onboarded_at is None
     assert agent.agent_app is None and agent.handle
-    assert onboard.calls == [agent.user_id]
-
-
-def test_an_api_agent_that_cannot_be_funded_is_not_left_behind():
-    db = fresh_test_db()
-
-    def fail(_user_id: str, _acct: LocalAccount) -> User:
-        raise OnboardingError("chain down")
-
-    with pytest.raises(OnboardingError):
-        AgentAccounts(db, fail).create_api_agent(OWNER)
-
-    with db.read() as conn:
-        assert TableRead.agents_owned_by(conn, OWNER) == []
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        pytest.param(AdminGasPausedError(), id="breaker-refused"),
-        pytest.param(InsufficientGasError("the wallet could not pay for its onboarding"), id="wallet-could-not-pay"),
-        pytest.param(GasTopUpTimeoutError(), id="top-up-timed-out"),
-        pytest.param(GasPriceMovedError(), id="gas-price-moved"),  # the fee rose twice: a 503 like a timeout
-    ],
-)
-def test_an_api_agent_refused_by_the_chain_is_not_left_behind(error):
-    db = fresh_test_db()
-
-    def refuse(_user_id: str, _acct: LocalAccount) -> User:
-        raise error
-
-    with pytest.raises(type(error)):
-        AgentAccounts(db, refuse).create_api_agent(OWNER)
-
-    with db.read() as conn:
-        assert TableRead.agents_owned_by(conn, OWNER) == []
+    assert onboard.calls == []
 
 
 def test_the_latest_sign_in_host_is_kept():

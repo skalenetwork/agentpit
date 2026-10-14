@@ -234,6 +234,8 @@ def onboarded_account(db: DbSession, admin: OnchainAdmin, *, auto_redeem=None) -
     sponsor = UserGasSponsor(db, admin, Settings())
     with sponsor.locked(user):
         sponsor.send(user, admin.approval_calls(), "onboarding")
+    with db.write() as conn:
+        TableWrite.mark_user_onboarded(conn, user.user_id)
     return user
 
 

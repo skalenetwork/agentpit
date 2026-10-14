@@ -4,6 +4,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { safeRedirect } from "./auth";
 import { Account } from "./pages/account";
+import { AddAgent } from "./pages/add";
 import { AgentPage } from "./pages/agent";
 import { Agents } from "./pages/agents";
 import { AuthCallback } from "./pages/auth-callback";
@@ -26,6 +27,7 @@ const console = createRoute({
 const routes = root.addChildren([
   console.addChildren([
     createRoute({ getParentRoute: () => console, path: "/", component: Agents }),
+    createRoute({ getParentRoute: () => console, path: "/new", component: AddAgent }),
     createRoute({ getParentRoute: () => console, path: "/agents/$address", component: AgentPage }),
     createRoute({ getParentRoute: () => console, path: "/account", component: Account }),
   ]),
