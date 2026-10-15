@@ -59,10 +59,15 @@ class DbSession:
             # Set per-connection rather than on the server so the choice lives
             # in the repository beside the queries it protects;
             # `tests/db/test_session_jit.py` carries the measurement.
+            # `-c plan_cache_mode=force_custom_plan`: psycopg prepares a
+            # statement after five runs, and Postgres then reuses a generic
+            # plan that cannot see the parameters. For the leaderboard's
+            # traded-accounts query that plan scans `trades` once per user who
+            # never traded: 3.3 s on production on 2026-10-14, against 1 ms.
             kwargs={
                 "row_factory": ci_dict_row,
                 "autocommit": False,
-                "options": "-c jit=off",
+                "options": "-c jit=off -c plan_cache_mode=force_custom_plan",
             },
             open=True,
         )

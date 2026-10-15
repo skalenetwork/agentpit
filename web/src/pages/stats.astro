@@ -9,7 +9,10 @@ import { shortDay, utcTime } from "@agentpit/brand/format";
 export const prerender = false;
 
 const [days, board] = await Promise.all([stats(), leaderboard()]);
-if (!days || !board) Astro.cache.set(false);
+if (!days || !board) {
+  Astro.cache.set(false);
+  Astro.response.status = 503;
+}
 const now = new Date();
 ---
 
