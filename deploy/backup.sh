@@ -7,7 +7,7 @@
 #   ./deploy/backup.sh            # writes /root/backups/<project>-<UTC stamp>/
 #
 # The compose project is the one docker-compose.prod.yml names
-# (agentpit-mainnet); AGENTPIT_PROJECT overrides it. .env and local.json always
+# (agentpit); AGENTPIT_PROJECT overrides it. .env and local.json always
 # come from this script's own clone, so back a project up from the clone that
 # runs it.
 set -euo pipefail
