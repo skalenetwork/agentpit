@@ -472,6 +472,16 @@ on Base mainnet through `RPC_URL`. See [deploy/](deploy/) —
 `docker-compose.prod.yml` carries the operational notes, and `env.prod.example`
 documents every secret.
 
+Update (the normal deploy):
+
+```bash
+cd /root/dev/agentpit && git pull --ff-only origin main
+docker compose -f deploy/docker-compose.prod.yml --env-file .env build api caddy
+docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --no-deps api caddy
+```
+
+Fresh box only:
+
 ```bash
 docker compose -f deploy/docker-compose.prod.yml --env-file .env build
 docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d postgres

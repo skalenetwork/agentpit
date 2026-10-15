@@ -13,6 +13,9 @@
 # rewrites deployments/local.json, orphaning every market and position the
 # database knows. An update is `build api caddy` then `up -d --no-deps api caddy`.
 #
+# Always pass `-f deploy/docker-compose.prod.yml`: a bare `docker compose` here
+# reads the repo-root dev file instead.
+#
 # Only caddy publishes ports (80, 443, 8000); postgres stays on the internal
 # network. The containers are agentpit-db, agentpit-api and agentpit-caddy.
 #
@@ -20,6 +23,11 @@
 # `agentpit_agentpit_pg`: that one holds the retired SKALE testnet database
 # (kept, unused). Drop the explicit name and compose mounts the testnet data
 # under the mainnet api; rename it and compose starts an empty Postgres.
+# Because the name is fixed, never run this file under another `-p` or from a
+# second clone: two Postgres containers on one data directory corrupt it.
+#
+# Never `down -v`: it deletes `agentpit_pg` and the certificates in
+# `agentpit_caddy_data`.
 name: agentpit
 
 # Log rotation is NOT optional. While the house re-quoted ~1000 books
