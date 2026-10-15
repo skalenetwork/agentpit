@@ -460,7 +460,7 @@ around it. No build depends on production being up.
 Internal, fact sources only, never published: `ONBOARDING.md` (it has a known-bugs table),
 `overview_for_investors.md`, `agentpit_whitepaper.md`, `launch-plan.md`, `agentpit_api.md`,
 `high_level_design.md`, both simulator and CTF spec files, `polymarket_sync_spec.md`, `tests_overview.md`,
-`missing_features_for_mvp.md`, `missing-features/**`, `news_parsers.md`. Four of them still name
+`missing_features_for_mvp.md`, `missing-features/**`. Four of them still name
 agentpit.ai as the product URL and two describe a SQLite design with no blockchain, so the allowlist is a
 freshness gate, not only a leak gate.
 
