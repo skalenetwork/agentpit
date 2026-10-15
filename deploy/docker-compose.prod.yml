@@ -1,21 +1,44 @@
 # Production stack — single instance, one shared server-side .env at the repo
-# root (compose --env-file AND deploy_exchange.sh read it).
+# root (compose --env-file AND deploy_exchange.sh read it). There is no chain
+# node in here: the api and chain-init both talk to the chain at RPC_URL, SKALE
+# on Base mainnet (1187947933) since 2026-10-12.
 #
 #   cd /root/dev/agentpit
+#   docker volume create agentpit_pg              # fresh box only, see `volumes:`
+#   docker volume create agentpit_caddy_data
+#   docker volume create agentpit_caddy_config
 #   docker compose -f deploy/docker-compose.prod.yml --env-file .env build
-#   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d postgres anvil
+#   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d postgres
 #   docker compose -f deploy/docker-compose.prod.yml --env-file .env run --rm chain-init
 #   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d api caddy
 #
-# Only caddy publishes ports (80 UI, 8000 API). postgres and anvil stay on the
-# internal network — anvil especially must NEVER be published (unlocked
-# accounts + operator key).
+# chain-init is for a fresh box ONLY: it deploys a new set of contracts and
+# rewrites deployments/local.json, orphaning every market and position the
+# database knows. An update is `build api caddy` then `up -d --no-deps api caddy`.
+#
+# Always pass `-f deploy/docker-compose.prod.yml`: a bare `docker compose` here
+# reads the repo-root dev file instead.
+#
+# Only caddy publishes ports (80, 443, 8000); postgres stays on the internal
+# network. The containers are agentpit-db, agentpit-api and agentpit-caddy.
+#
+# The database volume is named `agentpit_pg` outright, NOT the project default
+# `agentpit_agentpit_pg`: that one holds the retired SKALE testnet database
+# (kept, unused). Drop the explicit name and compose mounts the testnet data
+# under the mainnet api. Because the name is fixed, never run this file under
+# another `-p` or from a second clone: two Postgres containers on one data
+# directory corrupt it.
+#
+# All three volumes are external: compose never creates or deletes them. A
+# missing or misspelt volume is an error instead of a silently empty database
+# or a fresh certificate request, and `down -v` cannot delete the database or
+# the certificates.
 name: agentpit
 
-# Log rotation is NOT optional here: anvil logs every RPC call. While the house
-# re-quoted ~1000 books (~170 lines/s) the two json logs reached 32 GB and
-# 24 GB in 12 days and filled the disk to 97%, which would have taken Postgres
-# down with it. 50m x 3 per service.
+# Log rotation is NOT optional. While the house re-quoted ~1000 books
+# (~170 lines/s) two json logs reached 32 GB and 24 GB in 12 days and filled
+# the disk to 97%, which would have taken Postgres down with it. 50m x 3 per
+# service.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -25,6 +48,7 @@ x-logging: &default-logging
 services:
   postgres:
     image: postgres:16
+    container_name: agentpit-db
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -39,39 +63,11 @@ services:
       timeout: 3s
       retries: 20
 
-  anvil:
-    image: ghcr.io/foundry-rs/foundry:latest
-    restart: unless-stopped
-    logging: *default-logging
-    # The image runs as uid 1000 (foundry), but Docker creates the mountpoint
-    # for a named volume root-owned when the path doesn't exist in the image —
-    # so anvil could not write /state/anvil-state.json and its periodic dump
-    # failed SILENTLY. The chain looked healthy for 12 days and was wiped clean
-    # by the first container recreate. Run as root so the dump always lands.
-    user: root
-    entrypoint:
-      - anvil
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8545"
-      - --chain-id
-      - "31337"
-      - --state
-      - /state/anvil-state.json
-      - --state-interval
-      - "30"
-    volumes:
-      - agentpit_anvil:/state
-    healthcheck:
-      test: ["CMD", "cast", "chain-id", "--rpc-url", "http://127.0.0.1:8545"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
-
-  # One-shot: deploys CTF + AgentpitUSD + Faucet + CTFExchange to anvil and
-  # writes deployments/local.json into the bind-mounted repo. Run once per
-  # fresh chain (profile keeps it out of plain `up`).
+  # One-shot: deploys CTF + AgentpitUSD + Faucet + CTFExchange to the chain at
+  # RPC_URL and writes deployments/local.json into the bind-mounted repo. It
+  # reads PK, ADMIN and RPC_URL by sourcing the repo's .env itself, and PK pays
+  # the gas, so fund it first. Run once per fresh chain (profile keeps it out of
+  # plain `up`).
   chain-init:
     profiles: ["init"]
     build:
@@ -80,33 +76,32 @@ services:
     command: ["scripts/deploy_exchange.sh"]
     volumes:
       - ..:/repo
-    depends_on:
-      anvil:
-        condition: service_healthy
 
   api:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
+    container_name: agentpit-api
     restart: unless-stopped
     logging: *default-logging
     env_file:
       - ../.env
     environment:
       AGENTPIT_DATABASE_URL: postgresql://agentpit:${POSTGRES_PASSWORD}@postgres:5432/agentpit
-      # The local anvil is the DEFAULT, not the law. This line used to be a
-      # bare `http://anvil:8545`, and an `environment:` entry beats `env_file`,
-      # so a deployment that had moved to a real chain in .env silently kept
-      # talking to the sidecar. On the SKALE cutover that surfaced as
+      # Required, never defaulted. This line used to be a bare
+      # `http://anvil:8545`, and an `environment:` entry beats `env_file`, so a
+      # deployment that had moved to a real chain in .env silently kept talking
+      # to the old anvil sidecar. On the SKALE cutover that surfaced as
       # `Connected chain_id 31337 != deployment chain_id 324705682` -- caught
-      # only because `verify_chain()` refuses to start on a mismatch.
-      RPC_URL: ${RPC_URL:-http://anvil:8545}
+      # only because `verify_chain()` refuses to start on a mismatch. There is
+      # no sidecar left to default to, and guessing a chain is how that bug
+      # happened, so `:?` makes compose refuse every command while .env lacks
+      # the line.
+      RPC_URL: ${RPC_URL:?set in .env}
     volumes:
       - ../deployments:/app/deployments:ro
     depends_on:
       postgres:
-        condition: service_healthy
-      anvil:
         condition: service_healthy
 
   caddy:
@@ -116,10 +111,11 @@ services:
       args:
         # `:-`, never `:?`: compose interpolates the WHOLE file on EVERY
         # command, so a `${VAR:?}` here would make `docker compose restart
-        # anvil` fail on a missing UI variable. `Dockerfile.ui` refuses to
+        # postgres` fail on a missing UI variable. `Dockerfile.ui` refuses to
         # build without the API URL instead.
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
         VITE_WORKOS_CLIENT_ID: ${VITE_WORKOS_CLIENT_ID:-}
+    container_name: agentpit-caddy
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -142,6 +138,11 @@ services:
 
 volumes:
   agentpit_pg:
-  agentpit_anvil:
+    external: true
+    name: agentpit_pg  # see the header: never the testnet `agentpit_agentpit_pg`
   caddy_data:
+    external: true
+    name: agentpit_caddy_data
   caddy_config:
+    external: true
+    name: agentpit_caddy_config

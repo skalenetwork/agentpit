@@ -1,6 +1,13 @@
 # Optional Postgres for CI or machines using OrbStack/colima/podman.
 # Local dev on the maintainer's Mac uses native Homebrew Postgres instead
 # (see scripts/run_postgres.sh) — no Docker daemon required.
+#
+# Named so a bare `docker compose` never lands on production: the prod clone
+# lives in a directory called `agentpit`, and without a name this file would
+# take that project and mount its volumes, with Postgres published on 5432.
+# The port is bound to localhost for the same reason: run on a server, this
+# file must not put a Postgres with a known password on the internet.
+name: agentpit-dev
 services:
   postgres:
     image: postgres:16
@@ -9,7 +16,7 @@ services:
       POSTGRES_PASSWORD: agentpit
       POSTGRES_DB: agentpit
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - agentpit_pg:/var/lib/postgresql/data
     healthcheck:

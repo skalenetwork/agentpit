@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Deploy the full agentpit stack from scratch to the local clean node:
+# Deploy the full agentpit stack from scratch to the chain at RPC_URL:
 #   ConditionalTokens (CTF) + AgentpitUSD + Faucet + CTFExchange.
 # Usage: ./scripts/deploy_exchange.sh
 #
-# Requires the node from run_node.sh running on RPC_URL. Nothing is inherited
-# from Polygon — the CTF is deployed here from a committed artifact. Writes all
-# resulting addresses to agentpit/deployments/local.json for the Python side.
+# In development RPC_URL is the node from run_node.sh; in production it is
+# SKALE on Base, and this runs as deploy/'s chain-init service. Nothing is
+# inherited from Polygon — the CTF is deployed here from a committed artifact.
+# Writes all resulting addresses to agentpit/deployments/local.json for the
+# Python side.
 
 set -euo pipefail
 
@@ -112,11 +114,21 @@ if ! cast rpc anvil_setBalance "$DEPLOYER" 0x21E19E0C9BAB2400000 \
   echo "  funding:       external, $BAL wei already held"
 fi
 
-# SKALE prices gas at zero and implements no EIP-1559, so foundry's attempt to
-# build a type-2 transaction asks for eth_feeHistory and gets -32601. Legacy
-# pricing is what such a chain wants, and anvil accepts legacy transactions
-# too, so this is safe to pass everywhere rather than branching on the chain.
+# --legacy pays eth_gasPrice and nothing more. SKALE gas is not free: mainnet
+# charged about 47.6 gwei of CREDIT on 2026-10-14. skaled also bills a type-2
+# transaction its whole maxFeePerGas rather than base fee + tip, and foundry,
+# like web3, sets that to about twice the base fee, so a type-2 deploy would
+# pay double. (An older skaled answered eth_feeHistory with -32601, which is
+# what first brought this flag here.) anvil accepts legacy transactions too, so
+# this is safe to pass everywhere rather than branching on the chain.
 GAS_MODE="--legacy"
+# --slow sends each forge script transaction only once the previous one has a
+# receipt, instead of all of them back to back. The 2026-10-12 mainnet deploy
+# ran this way. Even then forge reported a transaction as discarded that had in
+# fact landed, so judge a deploy by the chain (`cast code <address>`), not by
+# forge's summary. On anvil every transaction mines at once, so it costs
+# nothing there.
+FORGE_SLOW="--slow"
 
 # --- 1. Deploy ConditionalTokens from its committed creation bytecode ---------
 CTF_ARTIFACT="$CTF_EXCHANGE_DIR/artifacts/ConditionalTokens.json"
@@ -149,6 +161,7 @@ OUTPUT="$(cd "$CTF_EXCHANGE_DIR" && forge script ExchangeDeployment \
     --private-key "$PK" \
     --rpc-url "$RPC_URL" \
     $GAS_MODE \
+    $FORGE_SLOW \
     --json \
     --broadcast \
     -s "deployAgentpitStack(address,address,address,address,uint256)" \
