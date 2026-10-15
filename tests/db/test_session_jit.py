@@ -42,6 +42,7 @@ def test_a_pooled_connection_has_jit_off():
     db = DbSession(Settings().database_url)
     with db.read() as conn:
         assert conn.execute("SHOW jit").fetchone()["jit"] == "off"
+        assert conn.execute("SHOW plan_cache_mode").fetchone()["plan_cache_mode"] == "force_custom_plan"
 
 
 def test_a_write_connection_has_it_too():
