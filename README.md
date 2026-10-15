@@ -480,9 +480,12 @@ docker compose -f deploy/docker-compose.prod.yml --env-file .env build api caddy
 docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --no-deps api caddy
 ```
 
-Fresh box only:
+Fresh box only (the volumes are external, so compose never creates them):
 
 ```bash
+docker volume create agentpit_pg
+docker volume create agentpit_caddy_data
+docker volume create agentpit_caddy_config
 docker compose -f deploy/docker-compose.prod.yml --env-file .env build
 docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d postgres
 docker compose -f deploy/docker-compose.prod.yml --env-file .env run --rm chain-init

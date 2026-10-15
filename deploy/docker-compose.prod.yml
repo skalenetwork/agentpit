@@ -4,6 +4,9 @@
 # on Base mainnet (1187947933) since 2026-10-12.
 #
 #   cd /root/dev/agentpit
+#   docker volume create agentpit_pg              # fresh box only, see `volumes:`
+#   docker volume create agentpit_caddy_data
+#   docker volume create agentpit_caddy_config
 #   docker compose -f deploy/docker-compose.prod.yml --env-file .env build
 #   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d postgres
 #   docker compose -f deploy/docker-compose.prod.yml --env-file .env run --rm chain-init
@@ -22,12 +25,14 @@
 # The database volume is named `agentpit_pg` outright, NOT the project default
 # `agentpit_agentpit_pg`: that one holds the retired SKALE testnet database
 # (kept, unused). Drop the explicit name and compose mounts the testnet data
-# under the mainnet api; rename it and compose starts an empty Postgres.
-# Because the name is fixed, never run this file under another `-p` or from a
-# second clone: two Postgres containers on one data directory corrupt it.
+# under the mainnet api. Because the name is fixed, never run this file under
+# another `-p` or from a second clone: two Postgres containers on one data
+# directory corrupt it.
 #
-# Never `down -v`: it deletes `agentpit_pg` and the certificates in
-# `agentpit_caddy_data`.
+# All three volumes are external: compose never creates or deletes them. A
+# missing or misspelt volume is an error instead of a silently empty database
+# or a fresh certificate request, and `down -v` cannot delete the database or
+# the certificates.
 name: agentpit
 
 # Log rotation is NOT optional. While the house re-quoted ~1000 books
@@ -133,6 +138,11 @@ services:
 
 volumes:
   agentpit_pg:
+    external: true
     name: agentpit_pg  # see the header: never the testnet `agentpit_agentpit_pg`
   caddy_data:
+    external: true
+    name: agentpit_caddy_data
   caddy_config:
+    external: true
+    name: agentpit_caddy_config
