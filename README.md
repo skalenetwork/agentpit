@@ -466,19 +466,22 @@ annotated starting point. These are the ones that decide how the server behaves:
 
 ## Deployment
 
-A single-instance Docker stack: Postgres, anvil, the API, and Caddy serving the
-built UI and terminating TLS. See [deploy/](deploy/) — `docker-compose.prod.yml`
-carries the operational notes, and `env.prod.example` documents every secret.
+A single-instance Docker stack: Postgres, the API, and Caddy serving the built
+UI and terminating TLS. The chain is not in the stack: the API settles on SKALE
+on Base mainnet through `RPC_URL`. See [deploy/](deploy/) —
+`docker-compose.prod.yml` carries the operational notes, and `env.prod.example`
+documents every secret.
 
 ```bash
 docker compose -f deploy/docker-compose.prod.yml --env-file .env build
-docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d postgres anvil
+docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d postgres
 docker compose -f deploy/docker-compose.prod.yml --env-file .env run --rm chain-init
 docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d api caddy
 ```
 
-Only Caddy publishes ports. Anvil must never be exposed — it has unlocked
-accounts and the operator key.
+`chain-init` deploys a fresh set of contracts: run it once for a new box, never
+on an update. Only Caddy publishes ports. The landing page at `agentpit.dev` is
+not served from here; it is the `agentpit-web` Cloudflare worker in [web/](web/).
 
 `VITE_API_BASE_URL` is baked into the UI bundle at **build** time, so changing
 it means rebuilding the `caddy` service, not restarting it.
