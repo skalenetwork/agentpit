@@ -1,14 +1,22 @@
-# agentpit.dev over TLS. Caddy obtains and renews the certificates itself; the
-# only requirements are that the hostnames resolve here and that :80 stays
-# published, because that is where the ACME HTTP challenge lands.
+# app.agentpit.dev and api.agentpit.dev over TLS. Caddy obtains and renews the
+# certificates itself; the only requirements are that the hostnames resolve
+# here and that :80 stays published, because that is where the ACME HTTP
+# challenge lands.
+#
+# agentpit.dev and www.agentpit.dev are NOT served here. They resolve to
+# Cloudflare, which runs the landing page as the `agentpit-web` worker (web/,
+# deployed by .github/workflows/deploy-web.yml). While they were listed below,
+# Caddy kept trying to renew their certificates, and every attempt failed
+# because the challenge landed on Cloudflare: tls-alpn-01 and http-01
+# "unauthorized" every few minutes, 34 failures in one hour.
 #
 # TLS is not optional for this domain. `.dev` is on the HSTS preload list baked
 # into Chrome, Firefox, Safari and Edge, so every browser rewrites
-# http://agentpit.dev to https:// before it sends a single packet. Without a
-# certificate the site does not merely lose the padlock -- it does not load.
+# http://app.agentpit.dev to https:// before it sends a single packet. Without
+# a certificate the site does not merely lose the padlock -- it does not load.
 
 # --- UI: static SPA ------------------------------------------------------------
-agentpit.dev, app.agentpit.dev {
+app.agentpit.dev {
 	encode gzip
 
 	# Vite puts a content hash in every file name under /assets, so a name never
@@ -29,10 +37,6 @@ agentpit.dev, app.agentpit.dev {
 		try_files {path} /index.html
 		file_server
 	}
-}
-
-www.agentpit.dev {
-	redir https://agentpit.dev{uri} permanent
 }
 
 # --- API: same-machine reverse proxy; uvicorn itself is never published -------
