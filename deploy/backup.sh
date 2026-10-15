@@ -14,16 +14,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-PROJECT="${AGENTPIT_PROJECT:-$(sed -n 's/^name: *//p' deploy/docker-compose.prod.yml)}"
+PROJECT="${AGENTPIT_PROJECT:-$(sed -n 's/^name:[[:space:]]*\([a-z0-9_-]*\).*/\1/p' deploy/docker-compose.prod.yml)}"
+[ -n "$PROJECT" ] || { echo "no project name in deploy/docker-compose.prod.yml" >&2; exit 1; }
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DEST="${BACKUP_DIR:-/root/backups}/$PROJECT-$STAMP"
 COMPOSE=(docker compose -p "$PROJECT" -f deploy/docker-compose.prod.yml --env-file .env)
 
-mkdir -p "$DEST"
+# Written under .partial and renamed last, so a failed run never leaves a
+# folder that looks like a finished backup.
+mkdir -p "$DEST.partial"
+trap 'rm -rf "$DEST.partial"' ERR
 
-"${COMPOSE[@]}" exec -T postgres pg_dump -U agentpit agentpit | gzip > "$DEST/agentpit.sql.gz"
+"${COMPOSE[@]}" exec -T postgres pg_dump -U agentpit agentpit | gzip > "$DEST.partial/agentpit.sql.gz"
+gzip -t "$DEST.partial/agentpit.sql.gz"
 
-cp deployments/local.json "$DEST/deployment.json"
+cp deployments/local.json "$DEST.partial/deployment.json"
 
+mv "$DEST.partial" "$DEST"
 echo "backup written: $DEST"
 ls -lh "$DEST"
