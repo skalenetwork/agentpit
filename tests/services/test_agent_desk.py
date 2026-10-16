@@ -226,6 +226,21 @@ def test_a_game_gives_its_kickoff_and_is_found_by_its_league(house_book):
     assert desk.search_markets("nfl").markets == []
 
 
+def test_search_uses_at_most_20_words_for_its_or_fallback(monkeypatch):
+    queries: list[str] = []
+
+    def spy(conn, *, query, **kwargs):
+        queries.append(query)
+        return []
+
+    monkeypatch.setattr(TableRead, "search_live_markets", spy)
+    words = [f"w{i}" for i in range(50)]
+
+    _desk().search_markets(query=" ".join(words))
+
+    assert queries == [" ".join(words), " or ".join(words[:20])]
+
+
 NFL = (("nfl", "NFL"), ("super-bowl", "Super Bowl"))
 ELECTION = "presidential-election-winner-2028"
 

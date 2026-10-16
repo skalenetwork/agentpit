@@ -67,6 +67,9 @@ LOT = 10_000
 TOP = 20
 DEPTH = 5
 ACTIVITY = 10
+# The OR fallback ranks every market against each word; a query that long is
+# not a search anyone types.
+_MAX_OR_WORDS = 20
 
 
 def shares_for_usd(levels: list[tuple[int, int]], usd: int, limit: int, buy: bool) -> tuple[int, int]:
@@ -159,7 +162,7 @@ class AgentDesk:
             excluded_categories=self._settings.excluded_categories,
             excluded_tags=self._settings.excluded_tags,
         )
-        words = re.findall(r"\w+", query or "")
+        words = re.findall(r"\w+", query or "")[:_MAX_OR_WORDS]
         match: Match | None = "all" if query else None
         with self._db.read() as conn:
             hits = search(conn, query=query)

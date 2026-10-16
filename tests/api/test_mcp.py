@@ -136,6 +136,17 @@ def test_search_markets_replies_with_the_polymarket_url_the_card_opens_and_compa
     assert "openLink(url)" in read["contents"][0]["text"]
 
 
+def test_search_markets_refuses_a_query_over_200_characters_and_still_serves_a_short_one():
+    key = _agent().api_key
+    with TestClient(app) as client:
+        long = _call(client, key, "tools/call", {"name": "search_markets", "arguments": {"query": "x" * 201}}, "search_markets")
+        edge = _call(client, key, "tools/call", {"name": "search_markets", "arguments": {"query": "x" * 200}}, "search_markets")
+        short = _call(client, key, "tools/call", {"name": "search_markets", "arguments": {"query": "bitcoin"}}, "search_markets")
+
+    assert long["isError"] is True
+    assert (edge["isError"], short["isError"]) == (False, False)
+
+
 def test_legacy_initialize_carries_the_instructions_and_served_icons():
     key = _agent().api_key
     body = {
