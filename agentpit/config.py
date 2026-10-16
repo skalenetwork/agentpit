@@ -24,6 +24,17 @@ class Settings(BaseSettings):
     pool_max_idle: float = Field(
         default=600.0, validation_alias="AGENTPIT_POOL_MAX_IDLE"
     )
+    # Per-connection limits for the API's pool, in milliseconds; 0 disables.
+    # A statement running longer is cancelled (the request gets a 503), and a
+    # transaction left idle longer is ended by the server.
+    db_statement_timeout_ms: int = Field(
+        default=30_000, ge=0, validation_alias="AGENTPIT_DB_STATEMENT_TIMEOUT_MS"
+    )
+    db_idle_in_transaction_timeout_ms: int = Field(
+        default=300_000,
+        ge=0,
+        validation_alias="AGENTPIT_DB_IDLE_IN_TRANSACTION_TIMEOUT_MS",
+    )
     sync_enabled: bool = Field(default=False, validation_alias="SYNC")
     sync_min_volume_24h: float = Field(
         default=1_000.0, validation_alias="AGENTPIT_SYNC_MIN_VOLUME_24H"

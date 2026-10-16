@@ -287,6 +287,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         min_size=settings.pool_min_size,
         max_idle=settings.pool_max_idle,
         create_tables=False,
+        statement_timeout_ms=settings.db_statement_timeout_ms,
+        idle_in_transaction_timeout_ms=settings.db_idle_in_transaction_timeout_ms,
     )
     coder = JwtCoder(settings)
     onchain_admin = _build_onchain_admin(settings)
@@ -369,6 +371,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.database_url, onchain_admin.oracle_address
         )
         with db_session.write() as conn:
+            # Schema changes may index or rewrite a large table; they get no
+            # statement timeout. SET LOCAL ends with this transaction.
+            conn.execute("SET LOCAL statement_timeout = 0")
             TableCreate.create_all_tables(conn)
             TableCreate.migrate_markets(conn, onchain_admin.oracle_address)
             for workos_id in TableRead.unnamed_owners(conn):
