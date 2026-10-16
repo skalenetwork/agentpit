@@ -103,3 +103,20 @@ def test_filter_by_slug(client_and_market):
     body = resp.json()
     assert len(body) == 1
     assert body[0]["slug"] == market.slug
+
+
+def test_id_filters_over_100_are_rejected(client_and_market):
+    client, _ = client_and_market
+    ids = ",".join(str(i) for i in range(101))
+    assert client.get(f"/markets?clob_token_ids={ids}").status_code == 422
+    assert client.get(f"/markets?condition_ids={ids}").status_code == 422
+
+
+def test_id_filter_at_cap_still_matches(client_and_market):
+    client, market = client_and_market
+    ids = ",".join(["111"] + [str(9000 + i) for i in range(99)])
+    resp = client.get(f"/markets?clob_token_ids={ids}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["id"] == str(market.market_id)
