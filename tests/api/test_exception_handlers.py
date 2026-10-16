@@ -138,5 +138,5 @@ def test_a_cancelled_query_is_a_logged_503(caplog):
     with caplog.at_level(logging.WARNING, logger="agentpit.api.exception_handlers"):
         r = TestClient(app).get("/slow")
     assert r.status_code == 503
-    assert r.json() == {"detail": "the database took too long to answer; try again"}
+    assert r.json() == {"detail": "the database took too long to answer"}
     assert any("GET /slow" in m for m in caplog.messages)

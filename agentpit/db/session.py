@@ -32,9 +32,10 @@ class DbSession:
         idle_in_transaction_timeout_ms: int | None = None,
     ):
         """`statement_timeout_ms` cancels any statement on a pooled connection
-        that runs longer than this many milliseconds; None means no limit.
-        `idle_in_transaction_timeout_ms` ends the session of a connection whose
-        transaction sits open and idle that long; None means no limit.
+        that runs longer than this many milliseconds; None leaves the server
+        or role default in place. `idle_in_transaction_timeout_ms` ends the
+        session of a connection whose transaction sits open and idle that
+        long; None leaves the server or role default in place.
 
         `create_tables=False` opens the pool without running the DDL.
 

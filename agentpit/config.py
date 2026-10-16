@@ -25,8 +25,9 @@ class Settings(BaseSettings):
         default=600.0, validation_alias="AGENTPIT_POOL_MAX_IDLE"
     )
     # Per-connection limits for the API's pool, in milliseconds; 0 disables.
-    # A statement running longer is cancelled (the request gets a 503), and a
-    # transaction left idle longer is ended by the server.
+    # A statement running longer is cancelled: a request answers 503, a
+    # background loop logs the error. A transaction left idle longer is ended
+    # by the server.
     db_statement_timeout_ms: int = Field(
         default=30_000, ge=0, validation_alias="AGENTPIT_DB_STATEMENT_TIMEOUT_MS"
     )

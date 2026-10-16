@@ -119,7 +119,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
         return JSONResponse(
             status_code=503,
-            content={"detail": "the database took too long to answer; try again"},
+            content={"detail": "the database took too long to answer"},
         )
 
     # Registered ahead of the generic BusinessRuleError handler below it, but
