@@ -41,6 +41,12 @@ app.agentpit.dev {
 
 # --- API: same-machine reverse proxy; uvicorn itself is never published -------
 api.agentpit.dev {
+	# Every body the API accepts is small JSON; the largest are the capped
+	# POST /books and DELETE /orders lists, far under this. Larger bodies get
+	# 413 here instead of being read and parsed by the API.
+	request_body {
+		max_size 1MB
+	}
 	encode zstd gzip {
 		match {
 			header Content-Type application/json*
