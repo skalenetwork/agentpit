@@ -43,7 +43,7 @@ app.agentpit.dev {
 api.agentpit.dev {
 	# Every body the API accepts is small JSON; the largest are the capped
 	# POST /books and DELETE /orders lists, far under this. Larger bodies get
-	# 413 here instead of being read and parsed by the API.
+	# 413 here instead of being parsed by the API.
 	request_body {
 		max_size 1MB
 	}
