@@ -23,3 +23,21 @@ def test_books_rejects_an_overlong_token_id():
     with TestClient(app) as client:
         r = client.post("/books", json=[{"token_id": "1" * 101}])
     assert r.status_code == 422
+
+
+def test_422_does_not_echo_the_request_input():
+    big = "x" * 50_000
+    with TestClient(app) as client:
+        r = client.post("/books", json=[{"token_id": [big]}])
+    assert r.status_code == 422
+    assert big not in r.text
+    detail = r.json()["detail"]
+    assert detail and all("input" not in e and "url" not in e for e in detail)
+    assert {"type", "loc", "msg"} <= set(detail[0])
+
+
+def test_422_lists_at_most_20_errors():
+    with TestClient(app) as client:
+        r = client.post("/books", json=[{} for _ in range(100)])
+    assert r.status_code == 422
+    assert len(r.json()["detail"]) == 20
