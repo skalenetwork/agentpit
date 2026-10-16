@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agentpit.api.exception_handlers import register_exception_handlers
+from agentpit.api.main import app
 from agentpit.domain import exceptions as errors
 from agentpit.domain.exceptions import BusinessRuleError, InsufficientGasError
 
@@ -140,3 +141,21 @@ def test_a_cancelled_query_is_a_logged_503(caplog):
     assert r.status_code == 503
     assert r.json() == {"detail": "the database took too long to answer"}
     assert any("GET /slow" in m for m in caplog.messages)
+
+
+def test_422_does_not_echo_the_request_input():
+    big = "x" * 50_000
+    with TestClient(app) as client:
+        r = client.post("/books", json=[{"token_id": [big]}])
+    assert r.status_code == 422
+    assert big not in r.text
+    detail = r.json()["detail"]
+    assert detail and all("input" not in e and "url" not in e for e in detail)
+    assert {"type", "loc", "msg"} <= set(detail[0])
+
+
+def test_422_lists_at_most_20_errors():
+    with TestClient(app) as client:
+        r = client.post("/books", json=[{} for _ in range(100)])
+    assert r.status_code == 422
+    assert len(r.json()["detail"]) == 20
