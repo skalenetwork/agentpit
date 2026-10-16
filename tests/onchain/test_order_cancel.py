@@ -93,6 +93,16 @@ def test_delete_orders_caps_the_id_list():
     assert len(r.json()["not_canceled"]) == 1000
 
 
+def test_delete_orders_caps_each_id_at_100_characters():
+    client = fresh_client()
+    tok = register(client)["access_token"]
+    r = client.request("DELETE", "/orders", headers=hdr(tok), json=["1" * 101])
+    assert r.status_code == 422
+    r = client.request("DELETE", "/orders", headers=hdr(tok), json=["1" * 100])
+    assert r.status_code == 200
+    assert "1" * 100 in r.json()["not_canceled"]
+
+
 def test_delete_orders_never_cancels_another_users_order():
     client = fresh_client()
     owner = register(client)["access_token"]
