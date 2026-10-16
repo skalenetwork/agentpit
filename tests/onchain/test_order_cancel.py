@@ -79,3 +79,29 @@ def test_delete_orders_bulk_and_dedup():
     assert body["canceled"] == [o1]
     assert o1 not in body["not_canceled"]
     assert "0xmissing" in body["not_canceled"]
+
+
+def test_delete_orders_caps_the_id_list():
+    client = fresh_client()
+    tok = register(client)["access_token"]
+    ids = [f"0x{i:064x}" for i in range(1001)]
+    r = client.request("DELETE", "/orders", headers=hdr(tok), json=ids)
+    assert r.status_code == 422
+    r = client.request("DELETE", "/orders", headers=hdr(tok), json=ids[:1000])
+    assert r.status_code == 200
+    assert r.json()["canceled"] == []
+    assert len(r.json()["not_canceled"]) == 1000
+
+
+def test_delete_orders_never_cancels_another_users_order():
+    client = fresh_client()
+    owner = register(client)["access_token"]
+    other = register(client)["access_token"]
+    market = create_market(client)
+    yes = _yes_token(market)
+    oid = _place(client, owner, token_id=yes, side="BUY", price="0.30", size=5)["orderID"]
+    r = client.request("DELETE", "/orders", headers=hdr(other), json=[oid])
+    assert r.json()["canceled"] == []
+    assert oid in r.json()["not_canceled"]
+    r = client.request("DELETE", "/orders", headers=hdr(owner), json=[oid])
+    assert r.json()["canceled"] == [oid]
