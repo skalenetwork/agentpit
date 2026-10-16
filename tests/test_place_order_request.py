@@ -65,3 +65,17 @@ def test_client_order_id_accepted():
         token_id="123", side="BUY", price="0.5", size=1, client_order_id="abc"
     )
     assert r.client_order_id == "abc"
+
+
+def _req_size(size: str) -> PlaceOrderRequest:
+    return PlaceOrderRequest(token_id="1", side="BUY", price="0.5", size=size)
+
+
+def test_size_at_cap_is_accepted():
+    assert _req_size("1000000000").size == 1_000_000_000
+
+
+@pytest.mark.parametrize("size", ["1000000001", "1E+999990", "1e30"])
+def test_size_above_cap_is_rejected(size):
+    with pytest.raises(ValidationError):
+        _req_size(size)
