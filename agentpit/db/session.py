@@ -28,8 +28,15 @@ class DbSession:
         max_size: int = 16,
         max_idle: float = 600.0,
         create_tables: bool = True,
+        statement_timeout_ms: int | None = None,
+        idle_in_transaction_timeout_ms: int | None = None,
     ):
-        """`create_tables=False` opens the pool without running the DDL.
+        """`statement_timeout_ms` cancels any statement on a pooled connection
+        that runs longer than this many milliseconds; None means no limit.
+        `idle_in_transaction_timeout_ms` ends the session of a connection whose
+        transaction sits open and idle that long; None means no limit.
+
+        `create_tables=False` opens the pool without running the DDL.
 
         The DDL is idempotent but not free: every `ALTER TABLE ... ADD COLUMN
         IF NOT EXISTS` takes an AccessExclusiveLock even when the column is
@@ -45,34 +52,48 @@ class DbSession:
         Scripts in `scripts/` connect to a database the API has already
         migrated, so they should pass False and touch nothing but their rows.
         """
+        # `-c jit=off`: Postgres decides whether to JIT-compile from the
+        # planner's ESTIMATED cost, and on this schema that estimate is
+        # inflated three orders of magnitude by the mirror tape's share of
+        # `trades` -- the same bad statistic documented on
+        # `TableRead.TRADED_ACCOUNTS_SQL`. Measured on production, the
+        # leaderboard's trade counts spent 220ms in LLVM to do 2ms of work.
+        # Set per-connection rather than on the server so the choice lives
+        # in the repository beside the queries it protects;
+        # `tests/db/test_session_jit.py` carries the measurement.
+        # `-c plan_cache_mode=force_custom_plan`: psycopg prepares a
+        # statement after five runs, and Postgres then reuses a generic
+        # plan that cannot see the parameters. For the leaderboard's
+        # traded-accounts query that plan scans `trades` once per user who
+        # never traded: 3.3 s on production on 2026-10-14, against 1 ms.
+        options = "-c jit=off -c plan_cache_mode=force_custom_plan"
+        # Opt-in per-connection limits. A runaway statement is cancelled and
+        # a transaction left open and idle is ended, so neither can hold one
+        # of the pool's connections indefinitely. None leaves the server's
+        # default (no limit) for scripts and tests.
+        if statement_timeout_ms is not None:
+            options += f" -c statement_timeout={int(statement_timeout_ms)}"
+        if idle_in_transaction_timeout_ms is not None:
+            options += (
+                f" -c idle_in_transaction_session_timeout={int(idle_in_transaction_timeout_ms)}"
+            )
         self._pool = ConnectionPool(
             dsn,
             min_size=min_size,
             max_size=max_size,
             max_idle=max_idle,
-            # `-c jit=off`: Postgres decides whether to JIT-compile from the
-            # planner's ESTIMATED cost, and on this schema that estimate is
-            # inflated three orders of magnitude by the mirror tape's share of
-            # `trades` -- the same bad statistic documented on
-            # `TableRead.TRADED_ACCOUNTS_SQL`. Measured on production, the
-            # leaderboard's trade counts spent 220ms in LLVM to do 2ms of work.
-            # Set per-connection rather than on the server so the choice lives
-            # in the repository beside the queries it protects;
-            # `tests/db/test_session_jit.py` carries the measurement.
-            # `-c plan_cache_mode=force_custom_plan`: psycopg prepares a
-            # statement after five runs, and Postgres then reuses a generic
-            # plan that cannot see the parameters. For the leaderboard's
-            # traded-accounts query that plan scans `trades` once per user who
-            # never traded: 3.3 s on production on 2026-10-14, against 1 ms.
             kwargs={
                 "row_factory": ci_dict_row,
                 "autocommit": False,
-                "options": "-c jit=off -c plan_cache_mode=force_custom_plan",
+                "options": options,
             },
             open=True,
         )
         if create_tables:
             with self._pool.connection() as conn:
+                # Schema changes may index or rewrite a large table; they get
+                # no statement timeout. SET LOCAL ends with this transaction.
+                conn.execute("SET LOCAL statement_timeout = 0")
                 TableCreate.create_all_tables(conn)
         DbSession._open.append(self)
 
