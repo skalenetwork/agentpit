@@ -14,7 +14,7 @@ from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookS
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import MarketFields, TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import InsufficientBalanceError, NotFoundError
+from agentpit.domain.exceptions import BusinessRuleError, InsufficientBalanceError, NotFoundError
 from agentpit.domain.text import clean
 from agentpit.liquidity.replica import BookReplica
 from agentpit.onchain.admin import OnchainAdmin
@@ -435,6 +435,24 @@ def test_insufficient_cash_states_have_and_need(house_book):
 
     with pytest.raises(InsufficientBalanceError, match=r"need \$500,000\.00, cash is \$100,000\.00"):
         desk.trade(agent, slug, "YES", "buy", shares=1_000_000, limit_price=0.5)
+
+
+@pytest.mark.parametrize(
+    ("amount", "limit_price"),
+    [
+        pytest.param({"shares": 2_000_000_000}, 0.5, id="shares"),
+        pytest.param({"usd": 10_000_000_000}, 0.001, id="usd-at-a-low-limit-price"),
+    ],
+)
+def test_trade_above_the_largest_order_says_so_without_placing_it(house_book, monkeypatch, amount, limit_price):
+    desk, agent, slug, _ = _asks(house_book)
+    placed = []
+    monkeypatch.setattr(desk._orders, "place_order", lambda *args: placed.append(args))
+
+    with pytest.raises(BusinessRuleError, match=r"largest order"):
+        desk.trade(agent, slug, "YES", "buy", limit_price=limit_price, **amount)
+
+    assert placed == []
 
 
 def test_portfolio_matches_the_leaderboard(house_book):

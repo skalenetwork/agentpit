@@ -35,7 +35,7 @@ from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.match_leg import MICRO, legs_for_user
 from agentpit.datastructures.orderbook_summary import OrderBookLevel
-from agentpit.datastructures.place_order_request import PlaceOrderRequest
+from agentpit.datastructures.place_order_request import MAX_ORDER_SIZE, PlaceOrderRequest
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import Hit, TableRead
@@ -275,6 +275,10 @@ class AgentDesk:
         size = size // LOT * LOT
         if size == 0:
             raise BusinessRuleError(f"That is less than 0.01 share at {_px(limit)}. Increase usd or shares.")
+        if size > MAX_ORDER_SIZE * MICRO:
+            raise BusinessRuleError(
+                f"That is more than {MAX_ORDER_SIZE:,.0f} shares, the largest order. Decrease usd or shares."
+            )
         request = PlaceOrderRequest(
             token_id=token,
             side="BUY" if buy else "SELL",
