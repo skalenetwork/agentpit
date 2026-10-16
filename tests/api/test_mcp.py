@@ -147,6 +147,39 @@ def test_search_markets_refuses_a_query_over_200_characters_and_still_serves_a_s
     assert (edge["isError"], short["isError"]) == (False, False)
 
 
+def test_trade_refuses_an_amount_above_1e15_with_the_validation_message(house_book):
+    key = _agent().api_key
+    with fresh_test_db().write() as conn:
+        event = TableWrite.upsert_event(conn, slug="ev-rain", title="Will it rain?", category="Weather")
+        market = TableWrite.create_market(
+            conn,
+            CreateMarketRequest(
+                question="Will it rain?",
+                description="d",
+                erc1155_tokens=[("rain-y", "Yes"), ("rain-n", "No")],
+                slug="will-it-rain",
+                condition_id=ConditionId("0x" + "ef" * 32),
+                state=MarketState.ACTIVE,
+                event_id=event.event_id,
+                polymarket_id=42,
+            ),
+            is_polygon_market=False,
+        )
+    house_book(market.erc1155_tokens[0][0], bids=(("0.4", "1"),), asks=(("0.6", "1"),))
+    with TestClient(app) as client:
+        result = _call(
+            client,
+            key,
+            "tools/call",
+            {"name": "trade", "arguments": {"market": "will-it-rain", "outcome": "Yes", "side": "buy", "shares": 1e303}},
+            "trade",
+        )
+
+    text = result["content"][0]["text"]
+    assert result["isError"] is True
+    assert "less than or equal" in text and text != "Error executing tool trade"
+
+
 def test_legacy_initialize_carries_the_instructions_and_served_icons():
     key = _agent().api_key
     body = {
