@@ -534,6 +534,17 @@ class TableRead:
         return Owner.model_validate(row) if row else None
 
     @staticmethod
+    def count_owner_agents(db: psycopg.Connection, owner_workos_id: str, since: int) -> int:
+        """The owner's live agents, plus those created at or after `since`
+        whether deleted or not."""
+        row = db.execute(
+            "SELECT COUNT(*) AS N FROM users WHERE OWNER_WORKOS_ID = %s "
+            "AND (DELETED_AT IS NULL OR CREATED_AT >= %s)",
+            (owner_workos_id, since),
+        ).fetchone()
+        return row["N"]
+
+    @staticmethod
     def owner_name_taken(db: psycopg.Connection, name: str, workos_id: str) -> bool:
         row = db.execute(
             "SELECT 1 FROM owners WHERE LOWER(NAME) = LOWER(%s) AND WORKOS_ID <> %s "

@@ -175,6 +175,11 @@ class TableWrite:
             db.execute("INSERT INTO owners (WORKOS_ID, NAME) VALUES (%s, %s) ON CONFLICT DO NOTHING", (workos_id, name))
 
     @staticmethod
+    def lock_owner(db: psycopg.Connection, workos_id: str) -> None:
+        """Hold the owner row until this transaction ends."""
+        db.execute("SELECT 1 FROM owners WHERE WORKOS_ID = %s FOR UPDATE", (workos_id,))
+
+    @staticmethod
     def update_owner(db: psycopg.Connection, workos_id: str, name: str | None, shown: bool | None) -> None:
         db.execute(
             "UPDATE owners SET NAME = COALESCE(%s, NAME), SHOWN = COALESCE(%s, SHOWN) WHERE WORKOS_ID = %s",

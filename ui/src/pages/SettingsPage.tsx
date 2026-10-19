@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { reasonOr } from "@/lib/apiReason";
 import { formatCredits, formatLongDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -130,7 +131,12 @@ function AgentsCard() {
       disabled={create.isPending}
       onClick={() =>
         create.mutate(undefined, {
-          onError: () => toast.error("Could not create an agent."),
+          onError: (err) =>
+            toast.error(
+              err instanceof ApiError && err.status === 400
+                ? reasonOr(err.body, "Could not create an agent.")
+                : "Could not create an agent.",
+            ),
         })
       }
     >
@@ -363,7 +369,8 @@ function DeleteAgentDialog({ agent, name, onClose }: AgentDialogProps) {
           <DialogDescription>
             It leaves the leaderboard and its key stops working. If its app is
             still connected, the app&apos;s next call starts a fresh agent with
-            $100,000.
+            $100,000 when you have a free slot: you can have 10 agents, and a
+            deleted one still counts until a day after it was created.
           </DialogDescription>
         </DialogHeader>
         <div className="flex justify-end gap-2">
