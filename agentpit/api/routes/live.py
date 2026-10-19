@@ -25,11 +25,10 @@ def _read(ids: set[int]) -> Tops:
     house = feed.HOUSE
     if house is None:
         return {}
-    tokens = {
-        r.market_id: r.yes_token
-        for r in tuple(house.state.by_asset.values())
-        if r.market_id in ids
-    }
+    # A lookup per requested id, not a walk over every mirrored market: this
+    # runs on the event loop on every connect and every tick.
+    by_market = house.state.by_market
+    tokens = {m: r.yes_token for m in ids if (r := by_market.get(m)) is not None}
     tops = feed.tops(list(tokens.values()))
     return {
         m: (_mills(tops[t][0]), _mills(tops[t][1]))

@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from agentpit.api.main import app
 from agentpit.api.routes import live
+from agentpit.liquidity import feed
 from tests.api.test_markets_board import _event, _market
 from tests.db_helpers import fresh_test_conn
 
@@ -58,3 +59,28 @@ def test_a_stream_takes_at_most_400_markets():
     with TestClient(app) as client:
         response = client.get("/live", params={"m": ",".join(map(str, range(401)))})
     assert response.status_code == 422
+
+
+class _Unwalkable(dict):
+    """A by_asset that fails the test if anything walks it."""
+
+    def _walk(self, *_):
+        raise AssertionError("walked every mirrored market")
+
+    __iter__ = keys = values = items = _walk
+
+
+def test_a_read_looks_up_only_the_markets_it_is_asked_for(house_book):
+    conn = fresh_test_conn()
+    a = _market(
+        house_book,
+        conn,
+        _event(conn, "live-c", "C?", "Crypto"),
+        "live-c",
+        "C?",
+        book=(400_000, 420_000),
+    )
+    conn.close()
+    state = feed.HOUSE.state
+    state.by_asset = _Unwalkable(state.by_asset)
+    assert live._read({a.market_id, 999_999}) == {a.market_id: (400, 420)}
