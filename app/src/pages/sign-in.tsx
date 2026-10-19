@@ -9,6 +9,7 @@ const RESEND_MS = 60_000;
 const AGENT_PATH = /^\/agents\/(0x[0-9a-fA-F]{40})/;
 const route = getRouteApi("/sign-in");
 const google = startGoogle;
+const LINK = "text-ink underline decoration-line underline-offset-4 transition-colors duration-150 hover:decoration-ink";
 
 const Google = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -96,14 +97,22 @@ export const SignIn = () => {
                 Continue with Google
               </Button>
             )}
+            <p className="mt-4 text-center text-caption text-muted">
+              By continuing you agree to the{" "}
+              <a href="https://agentpit.dev/terms" className={LINK}>
+                Terms of service
+              </a>{" "}
+              and{" "}
+              <a href="https://agentpit.dev/privacy" className={LINK}>
+                Privacy policy
+              </a>
+              .
+            </p>
           </>
         )}
         {signIn.isError ? <Fault>{signInError(signIn.error)}</Fault> : send.isError && <Fault>{sendCodeError(send.error)}</Fault>}
         {agent && (
-          <a
-            href={`https://agentpit.dev/agents/${agent}`}
-            className="mt-4 justify-self-center text-ink underline decoration-line underline-offset-4 transition-colors duration-150 hover:decoration-ink"
-          >
+          <a href={`https://agentpit.dev/agents/${agent}`} className={`mt-4 justify-self-center ${LINK}`}>
             View public page
           </a>
         )}

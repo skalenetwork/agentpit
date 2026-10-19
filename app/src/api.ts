@@ -1,6 +1,6 @@
 import { type MarketContext, profile, type Runner, usd, type WireProfile } from "@agentpit/brand/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type Me, open, request } from "./session";
+import { end, type Me, open, request } from "./session";
 
 interface WireAgent {
   readonly handle: string | null;
@@ -51,6 +51,8 @@ const agent = ({ handle, equity, earned, trend, ...rest }: WireAgent): Agent => 
 });
 
 export const useMe = () => useQuery({ queryKey: ME, queryFn: () => request<Me>("/me"), staleTime: Number.POSITIVE_INFINITY, refetchInterval: false });
+
+export const useDeleteAccount = () => useMutation({ mutationFn: () => request("/me", "DELETE"), onSuccess: end });
 
 export const useOwner = () => {
   const client = useQueryClient();
