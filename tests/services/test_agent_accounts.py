@@ -188,10 +188,7 @@ def _attempt(accounts: AgentAccounts) -> str:
     return "created"
 
 
-def test_two_creations_racing_for_the_last_slot_make_one_agent(monkeypatch):
-    accounts, _, _ = _accounts()
-    for _ in range(MAX_AGENTS_PER_OWNER - 1):
-        accounts.create_api_agent(OWNER)
+def _slow_count(monkeypatch) -> None:
     count = TableRead.count_owner_agents
 
     def slow_count(*args):
@@ -201,7 +198,26 @@ def test_two_creations_racing_for_the_last_slot_make_one_agent(monkeypatch):
 
     monkeypatch.setattr(TableRead, "count_owner_agents", staticmethod(slow_count))
 
+
+def test_two_creations_racing_for_the_last_slot_make_one_agent(monkeypatch):
+    accounts, _, _ = _accounts()
+    for _ in range(MAX_AGENTS_PER_OWNER - 1):
+        accounts.create_api_agent(OWNER)
+    _slow_count(monkeypatch)
+
     with ThreadPoolExecutor(2) as pool:
         outcomes = sorted(pool.map(lambda _: _attempt(accounts), range(2)))
 
     assert outcomes == ["created", "refused"]
+
+
+def test_two_first_sign_ins_from_one_app_at_the_last_slot_share_its_agent(monkeypatch):
+    accounts, _, _ = _accounts()
+    for _ in range(MAX_AGENTS_PER_OWNER - 1):
+        accounts.create_api_agent(OWNER)
+    _slow_count(monkeypatch)
+
+    with ThreadPoolExecutor(2) as pool:
+        first, again = pool.map(lambda _: accounts.agent_for(OWNER, "Claude", None, None), range(2))
+
+    assert first.user_id == again.user_id

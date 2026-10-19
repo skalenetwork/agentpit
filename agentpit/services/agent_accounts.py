@@ -85,7 +85,10 @@ class AgentAccounts:
             with self._db.write() as conn:
                 user_id = self._insert(conn, owner_workos_id, app, client, host)
                 created = TableRead.get_user_by_userid(conn, user_id)
-        except UniqueViolation:
+        except (UniqueViolation, AgentLimitError):
+            # Lost to a request for the same app: the unique index refused the
+            # duplicate, or the winner took the owner's last slot while this
+            # one waited on the owner lock. Either way its agent exists now.
             with self._db.read() as conn:
                 created = TableRead.get_agent(conn, owner_workos_id, app, client)
             if created is None:
