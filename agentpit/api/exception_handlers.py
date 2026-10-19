@@ -1,5 +1,6 @@
 import logging
 
+import psycopg.errors
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -105,6 +106,21 @@ def register_exception_handlers(app: FastAPI) -> None:
         (TransactionPendingError, "a user transaction's outcome is unknown"),
     ):
         app.add_exception_handler(exc_type, _warn_503(what))
+
+    @app.exception_handler(psycopg.errors.QueryCanceled)
+    async def _query_cancelled(
+        request: Request, exc: psycopg.errors.QueryCanceled
+    ) -> JSONResponse:
+        """A statement hit the pool's statement_timeout (or was cancelled).
+        WARNING with the route, so a timeout that is too tight for real
+        traffic shows up in the logs."""
+        log.warning(
+            "query cancelled on %s %s: %s", request.method, request.url.path, exc
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "the database took too long to answer"},
+        )
 
     # Registered ahead of the generic BusinessRuleError handler below it, but
     # order doesn't actually matter to Starlette's lookup -- it walks the

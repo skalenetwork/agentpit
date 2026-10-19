@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+import psycopg.errors
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -124,3 +125,18 @@ def test_a_refusal_on_our_side_is_logged_and_not_a_business_rule_error(
     ours = [rec for rec in caplog.records if rec.name == "agentpit.api.exception_handlers"]
     assert [rec.levelname for rec in ours] == [level]
     assert not issubclass(type(exc), BusinessRuleError)
+
+
+def test_a_cancelled_query_is_a_logged_503(caplog):
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/slow")
+    def _slow():
+        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    with caplog.at_level(logging.WARNING, logger="agentpit.api.exception_handlers"):
+        r = TestClient(app).get("/slow")
+    assert r.status_code == 503
+    assert r.json() == {"detail": "the database took too long to answer"}
+    assert any("GET /slow" in m for m in caplog.messages)
