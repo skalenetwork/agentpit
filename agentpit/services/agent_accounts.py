@@ -1,4 +1,5 @@
 import threading
+import time
 from collections.abc import Callable
 
 import psycopg
@@ -9,11 +10,18 @@ from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import HandleAlreadyExistsError, UserNotFoundError
+from agentpit.domain.exceptions import AgentLimitError, HandleAlreadyExistsError, UserNotFoundError
 from agentpit.domain.handles import pick_handle
 from agentpit.domain.runner import is_clawbits
 
 Onboard = Callable[[str, LocalAccount], User]
+
+# Each new agent is set up at the operator's expense (a faucet drip, a gas
+# top-up and its approvals) and gets its own daily sponsored-gas budget, so
+# one owner may have only so many. An agent deleted within a day of its
+# creation still counts, or deleting and recreating would get round the cap.
+MAX_AGENTS_PER_OWNER = 10
+RECENT_AGENT_SECONDS = 86_400
 
 
 class AgentAccounts:
@@ -91,6 +99,15 @@ class AgentAccounts:
         conn: psycopg.Connection, owner_workos_id: str, app: str | None, client: str | None, host: str | None
     ) -> str:
         TableWrite.ensure_owner(conn, owner_workos_id)
+        # Held until this transaction commits, so two creations for one owner
+        # cannot both pass the count below.
+        TableWrite.lock_owner(conn, owner_workos_id)
+        made = TableRead.count_owner_agents(conn, owner_workos_id, int(time.time()) - RECENT_AGENT_SECONDS)
+        if made >= MAX_AGENTS_PER_OWNER:
+            raise AgentLimitError(
+                f"at most {MAX_AGENTS_PER_OWNER} agents per account, counting any deleted in the last 24 hours: "
+                "delete one under Settings to add another"
+            )
         handle = pick_handle(taken=lambda name: TableRead.handle_taken(conn, name))
         user_id, _, _ = TableWrite.create_user(
             conn,
