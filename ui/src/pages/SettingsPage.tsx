@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { reasonOr } from "@/lib/apiReason";
 import { formatCredits, formatLongDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -130,7 +131,12 @@ function AgentsCard() {
       disabled={create.isPending}
       onClick={() =>
         create.mutate(undefined, {
-          onError: () => toast.error("Could not create an agent."),
+          onError: (err) =>
+            toast.error(
+              err instanceof ApiError && err.status === 400
+                ? reasonOr(err.body, "Could not create an agent.")
+                : "Could not create an agent.",
+            ),
         })
       }
     >
