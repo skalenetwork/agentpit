@@ -172,3 +172,24 @@ def test_a_full_server_gets_503(monkeypatch):
 
 def test_a_malformed_request_leaves_no_slot_behind():
     assert (_get("x").status_code, dict(live._streams)) == (422, {})
+
+
+def test_a_failing_tick_still_ends_streams_on_time(monkeypatch, caplog):
+    monkeypatch.setattr(live, "TICK", 0.01)
+    monkeypatch.setattr(live, "MAX_STREAM_SECONDS", 0.05)
+
+    def fail(ids):
+        raise RuntimeError("no book")
+
+    async def stream():
+        runner = asyncio.create_task(live.run())
+        await asyncio.sleep(0)
+        events = live.live("1")
+        await anext(events)
+        monkeypatch.setattr(live, "_read", fail)
+        rest = [event async for event in events]
+        runner.cancel()
+        return rest
+
+    assert asyncio.run(asyncio.wait_for(stream(), 5)) == []
+    assert "live tick failed" in caplog.text

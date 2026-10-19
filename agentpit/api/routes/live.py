@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections import Counter
 from collections.abc import AsyncIterator, Iterable
 from typing import Annotated
@@ -7,6 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from agentpit.liquidity import feed
+
+log = logging.getLogger(__name__)
 
 TICK = 5
 # A stream ends after this long. The browser's EventSource reconnects on its
@@ -91,7 +94,14 @@ async def run() -> None:
     while True:
         tick = _tick = asyncio.Event()
         await asyncio.sleep(TICK)
-        _tops = _read(set(_watched))
+        # A failed read must not end this loop: every stream is parked on
+        # `tick`, and a restarted loop would wait on a new event, leaving them
+        # asleep past their lifetime. Setting `tick` and then exiting is worse:
+        # `_tick` would stay set and the streams would spin without yielding.
+        try:
+            _tops = _read(set(_watched))
+        except Exception:
+            log.exception("live tick failed")
         tick.set()
 
 
