@@ -181,6 +181,7 @@ def _isolated_db_session():
     from agentpit.api.routes import agents as _agents_route
 
     _agents_route._cards.clear()
+    # And /stats: its 30 s slot would serve a previous test's days.
     from agentpit.api.routes import leaderboard as _leaderboard_route
 
     _leaderboard_route._stats_cache = None
