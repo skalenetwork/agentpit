@@ -36,3 +36,4 @@ class OwnedAgent(AgentSummary):
     place_change: int | None = None
     trend: list[str] = []
     trend_start: date | None = None
+    competitions: list[str] = []

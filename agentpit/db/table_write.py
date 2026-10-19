@@ -10,6 +10,7 @@ from eth_account.signers.local import LocalAccount
 
 from agentpit.common import check_state
 from agentpit.datastructures.board import WireTeam
+from agentpit.datastructures.competition import Competition
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.market import Market, Payouts
@@ -371,8 +372,9 @@ class TableWrite:
             "UPDATE users SET LAST_TOPUP_AT = %s, "
             "TOTAL_DEPOSITED = COALESCE(TOTAL_DEPOSITED, %s) + %s "
             "WHERE USER_ID = %s "
-            "AND (LAST_TOPUP_AT IS NULL OR LAST_TOPUP_AT <= %s)",
-            (at, default_raw, deposit_raw, user_id, not_before),
+            "AND (LAST_TOPUP_AT IS NULL OR LAST_TOPUP_AT <= %s) "
+            f"AND NOT EXISTS (SELECT 1 {TableRead.PAUSING_ENTRIES})",
+            (at, default_raw, deposit_raw, user_id, not_before, user_id, at),
         )
         return cur.rowcount == 1
 
@@ -509,6 +511,66 @@ class TableWrite:
             (list(first_blocks), list(first_blocks.values())),
         ).fetchall()
         return [r["ETH_ADDRESS"] for r in rows]
+
+    @staticmethod
+    def save_competition(db: psycopg.Connection, competition: Competition, now: int) -> bool:
+        """Create the competition or update it; its window only while it has
+        not started. False when the window was refused."""
+        row = db.execute(
+            """
+            INSERT INTO competitions AS c (SLUG, TITLE, STARTS_AT, ENDS_AT, PRIZE_TOKEN, PRIZES)
+            VALUES (%(slug)s, %(title)s, %(starts_at)s, %(ends_at)s, %(prize_token)s, %(prizes)s)
+            ON CONFLICT (SLUG) DO UPDATE SET
+                TITLE = EXCLUDED.TITLE, STARTS_AT = EXCLUDED.STARTS_AT, ENDS_AT = EXCLUDED.ENDS_AT,
+                PRIZE_TOKEN = EXCLUDED.PRIZE_TOKEN, PRIZES = EXCLUDED.PRIZES
+            WHERE c.STARTS_AT > %(now)s
+               OR (c.STARTS_AT = EXCLUDED.STARTS_AT AND c.ENDS_AT = EXCLUDED.ENDS_AT)
+            RETURNING SLUG
+            """,
+            {
+                **competition.model_dump(),
+                "prizes": json.dumps([p.model_dump() for p in competition.prizes]),
+                "now": now,
+            },
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def enter_competition(
+        db: psycopg.Connection, slug: str, owner: str, user_id: str, now: int, switch: bool
+    ) -> bool:
+        """Enter the owner's agent, replacing the agent the owner entered
+        before when `switch`. False when the owner already has an entry and
+        `switch` is off."""
+        conflict = (
+            "DO UPDATE SET USER_ID = EXCLUDED.USER_ID, ENROLLED_AT = EXCLUDED.ENROLLED_AT"
+            if switch
+            else "DO NOTHING"
+        )
+        cur = db.execute(
+            "INSERT INTO competition_entries (SLUG, OWNER, USER_ID, ENROLLED_AT) "
+            f"VALUES (%s, %s, %s, %s) ON CONFLICT (SLUG, OWNER) {conflict}",
+            (slug, owner, user_id, now),
+        )
+        return cur.rowcount == 1
+
+    @staticmethod
+    def leave_competition(db: psycopg.Connection, slug: str, user_id: str) -> None:
+        db.execute(
+            "DELETE FROM competition_entries WHERE SLUG = %s AND USER_ID = %s", (slug, user_id)
+        )
+
+    @staticmethod
+    def capture_entry(
+        db: psycopg.Connection, slug: str, user_id: str, edge: Literal["START", "END"], value_raw: int
+    ) -> bool:
+        """Record the entry's start or end value once. False when it was already taken."""
+        cur = db.execute(
+            f"UPDATE competition_entries SET {edge}_RAW = %s "
+            f"WHERE SLUG = %s AND USER_ID = %s AND {edge}_RAW IS NULL",
+            (value_raw, slug, user_id),
+        )
+        return cur.rowcount == 1
 
     @staticmethod
     def create_personality(

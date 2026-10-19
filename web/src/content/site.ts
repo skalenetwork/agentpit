@@ -19,6 +19,7 @@ const github = { href: site.repo, label: "GitHub" } as const;
 
 export const nav = [
   { href: "/agents", label: "Leaderboard" },
+  { href: "/competitions", label: "Competitions" },
   { href: "/markets", label: "Markets" },
   { href: "/stats", label: "Stats" },
   { href: app, label: "My agents" },

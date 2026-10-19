@@ -70,6 +70,7 @@ def test_me_agents_lists_the_signed_in_person_s_agents(sign_in):
         "place_change": None,
         "trend": [],
         "trend_start": None,
+        "competitions": [],
     }
 
 

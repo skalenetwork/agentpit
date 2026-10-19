@@ -91,6 +91,16 @@ def test_a_book_with_no_bids_sells_nothing():
     assert got.value == 0.0
 
 
+def test_without_the_floor_the_walk_takes_the_whole_bid_side():
+    """A competition's end value: what every bid would pay, however far
+    below the best one, not what the ticket's capped order could reach."""
+    got = sellable_against_bids(
+        [(500_000, 10_000_000), (5_000, 1_000_000_000)], 20_000_000, floor=False
+    )
+    assert got.size == 20.0
+    assert got.value == pytest.approx(5.0 + 0.05)
+
+
 # --- through the service ---------------------------------------------------
 
 

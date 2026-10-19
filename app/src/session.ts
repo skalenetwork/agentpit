@@ -16,8 +16,11 @@ export interface Session {
 }
 
 export class ApiError extends Error {
-  constructor(readonly status: number) {
-    super(`Request failed: ${status}`);
+  constructor(
+    readonly status: number,
+    readonly detail: string | null = null,
+  ) {
+    super(detail ?? `Request failed: ${status}`);
   }
 }
 
@@ -44,8 +47,14 @@ const send = (path: string, method: string, body: unknown, token: string | null)
     ...(body !== undefined && { body: JSON.stringify(body) }),
   });
 
+const detail = (response: Response) =>
+  response.json().then(
+    (body: { readonly detail?: unknown } | null) => (typeof body?.detail === "string" ? body.detail : null),
+    () => null,
+  );
+
 const parse = async <T>(response: Response): Promise<T> => {
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) throw new ApiError(response.status, await detail(response));
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
 };
 

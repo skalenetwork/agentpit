@@ -56,7 +56,7 @@ class Sellable:
 
 
 def sellable_against_bids(
-    bids: list[tuple[int, int]], size_micro: int
+    bids: list[tuple[int, int]], size_micro: int, *, floor: bool = True
 ) -> Sellable:
     """Simulate the market sell of `size_micro` shares against `bids`.
 
@@ -65,16 +65,17 @@ def sellable_against_bids(
     under the floor are invisible to it however deep they are, and
     a position larger than the depth above the floor comes back short rather
     than resting on the book — the ticket cancels that remainder.
+    Without `floor` the walk takes the whole bid side.
     """
     if size_micro <= 0 or not bids:
         return Sellable(0.0, 0.0)
-    floor = max(max(p for p, _ in bids) - SLIPPAGE_CAP_MICRO, MIN_PRICE_MICRO)
+    lowest = max(max(p for p, _ in bids) - SLIPPAGE_CAP_MICRO, MIN_PRICE_MICRO) if floor else 0
     filled_micro = 0
     # Price-micro x size-micro, so the walk needs no intermediate rounding
     # (the same reason `_TokenFlow` carries its costs that way).
     proceeds = 0
     for price, available in sorted(bids, key=lambda b: -b[0]):
-        if price < floor:
+        if price < lowest:
             break
         take = min(available, size_micro - filled_micro)
         if take <= 0:

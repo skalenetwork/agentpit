@@ -1,13 +1,13 @@
 import { type Burst, bursts } from "@agentpit/brand/activity";
-import { explorerAddress, explorerTx, type Fill, type MarketContext, marketCaption, type Profile } from "@agentpit/brand/api";
+import { type Competition, explorerAddress, explorerTx, type Fill, type MarketContext, marketCaption, type Profile, stageText } from "@agentpit/brand/api";
 import { closeLabel, recordBars } from "@agentpit/brand/chart";
-import { cents, clock, count, dollars, exactDollars, pct, shortAddress, shortDay, signedDollars, stamp, tone, utcTime } from "@agentpit/brand/format";
+import { cents, clock, count, dollars, exactDollars, pct, pool, shortAddress, shortDay, signedDollars, span, stamp, tone, utcTime } from "@agentpit/brand/format";
 import polymarket from "@agentpit/brand/polymarket.svg";
 import { recordCalls } from "@agentpit/brand/standing";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, ChartLine, Pencil, Share, Trash2 } from "lucide-react";
+import { ArrowUpRight, ChartLine, Pencil, Share, Trash2, Trophy } from "lucide-react";
 import { type FormEvent, Fragment, type ReactNode, useState } from "react";
-import { type Agent, type Order, useAgents, useDeleteAgent, useOrders, useProfile, useRenameAgent } from "../api";
+import { type Agent, type Order, useAgents, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRenameAgent } from "../api";
 import { Chart } from "../chart";
 import { LastTrade, Sep, TONE } from "../labels";
 import { ApiError } from "../session";
@@ -20,7 +20,7 @@ const POSITIONS = 6;
 const BURSTS = 8;
 const DAY = 86_400;
 const VERB = { BUY: "Bought", SELL: "Sold", SPLIT: "Split", MERGE: "Merged", REDEEM: "Redeemed" } as const;
-const ICON = "max-sm:w-7.5 max-sm:px-0";
+const ICON = "max-md:w-7.5 max-md:px-0";
 const LEAD = "flex min-h-10 items-center text-caption text-muted";
 const POSITION_COLS = "md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px]";
 const BURST_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px]";
@@ -562,8 +562,63 @@ const Delete = ({ agent, onClose }: { agent: Agent; onClose: () => void }) => {
   );
 };
 
+const Contest = ({ agent, competition, other, now }: { agent: Agent; competition: Competition; other: Agent | undefined; now: number }) => {
+  const entry = useEntry(agent.eth_address);
+  const entered = agent.competitions.includes(competition.slug);
+  const upcoming = competition.phase === "upcoming";
+  const line = entered ? (upcoming ? undefined : "Entered") : other && (upcoming ? `Replaces ${other.name}` : `${other.name} is entered`);
+  const action = entered ? (upcoming ? "Leave" : undefined) : upcoming || !other ? "Enter" : undefined;
+  return (
+    <li className="flex min-h-15 items-center justify-between gap-4 border-t border-line py-3">
+      <div className="min-w-0">
+        <p className="font-medium">{competition.title}</p>
+        <p className="flex flex-wrap items-center gap-x-1.5 text-caption text-muted *:whitespace-nowrap">
+          <span>{span(competition.startsAt, competition.endsAt)}</span>
+          <Sep />
+          <span>{stageText(competition, now)}</span>
+          <Sep />
+          <span>{pool(competition.prizes, competition.prizeToken)}</span>
+        </p>
+        {line && <p className="text-caption text-muted">{line}</p>}
+        {entry.isError && <Fault>{(entry.error instanceof ApiError && entry.error.detail) || "Could not update the entry. Try again in a moment."}</Fault>}
+      </div>
+      {action && (
+        <Button variant={entered ? "secondary" : "primary"} disabled={entry.isPending} onClick={() => entry.mutate({ slug: competition.slug, enter: !entered })}>
+          {action}
+        </Button>
+      )}
+    </li>
+  );
+};
+
+const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competitions: readonly Competition[]; now: number; onClose: () => void }) => {
+  const agents = useAgents().data ?? [];
+  return (
+    <Sheet title="Compete" onClose={onClose}>
+      <ul className="mt-4">
+        {competitions.map((competition) => (
+          <Contest
+            key={competition.slug}
+            agent={agent}
+            competition={competition}
+            other={agents.find((owned) => owned.eth_address !== agent.eth_address && owned.competitions.includes(competition.slug))}
+            now={now}
+          />
+        ))}
+      </ul>
+      <p className="mt-4 text-caption text-muted">
+        Top-ups pause from 24 hours before the start until the final values are in.{" "}
+        <a href="https://agentpit.dev/competitions#how-it-works" target="_blank" rel="noreferrer" className={UNDERLINE}>
+          How it works
+        </a>
+      </p>
+    </Sheet>
+  );
+};
+
 const View = ({ agent, now }: { agent: Agent; now: number }) => {
-  const [sheet, setSheet] = useState<"rename" | "delete">();
+  const [sheet, setSheet] = useState<"compete" | "rename" | "delete">();
+  const competitions = useCompetitions().data?.competitions.filter(({ phase }) => phase !== "ended") ?? [];
   const { data: profile, isError } = useProfile(agent);
   const orders = useOrders(agent).data;
   const page = `${SITE}/${agent.eth_address}`;
@@ -583,22 +638,28 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
               className={ICON}
             >
               <Share size={14} strokeWidth={1.75} />
-              <span className="max-sm:sr-only">Share</span>
+              <span className="max-md:sr-only">Share</span>
             </Button>
           )}
           {agent.trades > 0 && (
             <Button href={page} target="_blank" rel="noreferrer" className={ICON}>
               <ArrowUpRight size={14} strokeWidth={1.75} />
-              <span className="max-sm:sr-only">Public page</span>
+              <span className="max-md:sr-only">Public page</span>
+            </Button>
+          )}
+          {competitions.length > 0 && (
+            <Button className={ICON} onClick={() => setSheet("compete")}>
+              <Trophy size={14} strokeWidth={1.75} />
+              <span className="max-md:sr-only">Compete</span>
             </Button>
           )}
           <Button className={ICON} onClick={() => setSheet("rename")}>
             <Pencil size={14} strokeWidth={1.75} />
-            <span className="max-sm:sr-only">Rename</span>
+            <span className="max-md:sr-only">Rename</span>
           </Button>
           <Button variant="warn" className={ICON} onClick={() => setSheet("delete")}>
             <Trash2 size={14} strokeWidth={1.75} />
-            <span className="max-sm:sr-only">Delete</span>
+            <span className="max-md:sr-only">Delete</span>
           </Button>
         </div>
       </Crumbs>
@@ -630,6 +691,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
           )}
         </>
       )}
+      {sheet === "compete" && <Compete agent={agent} competitions={competitions} now={now} onClose={close} />}
       {sheet === "rename" && <Rename agent={agent} onClose={close} />}
       {sheet === "delete" && <Delete agent={agent} onClose={close} />}
     </>

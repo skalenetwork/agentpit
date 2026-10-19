@@ -10,6 +10,7 @@ from agentpit.api.deps import (
     AgentAccountsDep,
     AuthServiceDep,
     BalanceServiceDep,
+    CompetitionServiceDep,
     CurrentUserDep,
     LeaderboardServiceDep,
     OnchainAdminDep,
@@ -74,10 +75,15 @@ def get_me(user: CurrentUserDep, db: SessionDep) -> MeWire:
 
 @router.get("/me/agents", response_model=list[OwnedAgent])
 def get_my_agents(
-    user: CurrentUserDep, db: SessionDep, leaderboard: LeaderboardServiceDep, settings: SettingsDep
+    user: CurrentUserDep,
+    db: SessionDep,
+    leaderboard: LeaderboardServiceDep,
+    competitions: CompetitionServiceDep,
+    settings: SettingsDep,
 ) -> list[OwnedAgent]:
-    """Each agent with its board figures. One that is not on the board holds
-    what it was handed and nothing else."""
+    """Each agent with its board figures and the competitions not yet ended it
+    is entered in. One that is not on the board holds what it was handed and
+    nothing else."""
     if user.workos_user_id is None:
         return []
     with db.read() as conn:
@@ -85,10 +91,11 @@ def get_my_agents(
     if not agents:
         return []
     rows = {r.address: r for r in leaderboard.build_board()}
+    entered = competitions.entered(user.workos_user_id, int(time.time()))
     owned: list[OwnedAgent] = []
     with db.read() as conn:
         for agent in agents:
-            summary = AgentSummary.of(agent).model_dump()
+            summary = {**AgentSummary.of(agent).model_dump(), "competitions": entered.get(agent.user_id, [])}
             row = rows.get(agent.eth_address)
             if row is None:
                 handed = TableRead.get_total_deposited(conn, agent.user_id, settings.paper_balance_target_raw)
@@ -147,6 +154,24 @@ def list_my_agent_orders(
         TitledOpenOrder(**o.model_dump(), **contexts[o.market].model_dump(), title=markets[o.market].question, url=markets[o.market].url)
         for o in open_orders
     ]
+
+
+@router.post("/me/agents/{address}/competitions/{slug}", status_code=204)
+def enter_competition(
+    address: str, slug: str, owner: OwnerDep, db: SessionDep, competitions: CompetitionServiceDep
+) -> Response:
+    """Enter the agent, or switch the owner's entry to it before the lock."""
+    competitions.enroll(_owned_agent(db, owner, address).user_id, slug, int(time.time()), switch=True)
+    return Response(status_code=204)
+
+
+@router.delete("/me/agents/{address}/competitions/{slug}", status_code=204)
+def leave_competition(
+    address: str, slug: str, owner: OwnerDep, db: SessionDep, competitions: CompetitionServiceDep
+) -> Response:
+    """Withdraw the agent, before the lock only."""
+    competitions.leave(_owned_agent(db, owner, address).user_id, slug, int(time.time()))
+    return Response(status_code=204)
 
 
 def _owned_agent(db: DbSession, owner: str, address: str) -> User:

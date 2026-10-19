@@ -25,6 +25,19 @@ export const stamp = (from: Date, to = from) => {
   const end = dated(to) === dated(from) ? clock(to, true) : `${dated(to)}, ${clock(to, true)}`;
   return `${dated(from)}, ${clock(from, true)}${+to === +from ? "" : ` to ${end}`} UTC`;
 };
+const moment = (at: number) => {
+  const date = new Date(at * 1000);
+  return `${shortDay(date)}, ${clock(date)}`;
+};
+export const span = (from: number, to: number) => `${moment(from)} to ${moment(to)} UTC`;
+const award = (usd: number, tokens: number, token: string) => [usd > 0 ? dollars(usd) : "", tokens > 0 ? `${count(tokens)} ${token}` : ""].filter(Boolean).join(" + ");
+export const prize = ({ usd, tokens }: { readonly usd: number; readonly tokens: number }, token: string) => award(usd, tokens, token) || "No prize";
+export const pool = (prizes: readonly { readonly usd: number; readonly tokens: number }[], token: string) =>
+  award(
+    prizes.reduce((sum, p) => sum + p.usd, 0),
+    prizes.reduce((sum, p) => sum + p.tokens, 0),
+    token,
+  ) || "No prizes";
 export const shortAddress = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
 
 export const tone = (value: number): Tone => {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cents, clock, compactDollars, etDay, exactDollars, pct, rankMove, shortAddress, shortDay, stamp, tone, until, utcTime, zoneTime } from "./format";
+import { cents, clock, compactDollars, etDay, exactDollars, pct, pool, prize, rankMove, shortAddress, shortDay, span, stamp, tone, until, utcTime, zoneTime } from "./format";
 
 test("cents keep one decimal under 10¢ only", () => {
   expect([0, 0.015, 0.044, 0.0999, 0.1, 0.2092, 1].map(cents)).toEqual(["0¢", "1.5¢", "4.4¢", "10¢", "10¢", "21¢", "100¢"]);
@@ -22,6 +22,16 @@ test("a kickoff reads in its league's time zone", () => {
   const at = new Date(Date.UTC(2026, 9, 4, 0, 30));
   expect([shortDay(at, "America/New_York"), zoneTime(at, "America/New_York"), zoneTime(new Date(Date.UTC(2026, 11, 6, 18)), "America/New_York")]).toEqual(["Oct 3", "20:30 EDT", "13:00 EST"]);
   expect([shortDay(at, "UTC"), zoneTime(at, "UTC")]).toEqual(["Oct 4", "00:30 UTC"]);
+});
+
+test("a competition window reads to the minute in UTC", () => {
+  expect(span(1792886400, 1793145600)).toBe("Oct 25, 00:00 to Oct 28, 00:00 UTC");
+});
+
+test("a prize shows only its non-zero parts, a pool sums its places", () => {
+  expect([prize({ usd: 700, tokens: 100 }, "SKL"), prize({ usd: 0, tokens: 100 }, "SKL"), prize({ usd: 1000, tokens: 0 }, "SKL"), prize({ usd: 0, tokens: 0 }, "SKL")]).toEqual(["$700 + 100 SKL", "100 SKL", "$1,000", "No prize"]);
+  expect(pool([{ usd: 700, tokens: 100 }, { usd: 200, tokens: 100 }, { usd: 100, tokens: 100 }, ...Array(7).fill({ usd: 0, tokens: 100 })], "SKL")).toBe("$1,000 + 1,000 SKL");
+  expect(pool([{ usd: 0, tokens: 0 }, { usd: 0, tokens: 0 }], "SKL")).toBe("No prizes");
 });
 
 test("an address shortens to its ends", () => {

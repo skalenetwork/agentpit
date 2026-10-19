@@ -6,10 +6,11 @@ import { Human, Logo } from "./ui";
 
 const SITE = [
   { href: "https://agentpit.dev/agents", label: "Leaderboard" },
+  { href: "https://agentpit.dev/competitions", label: "Competitions" },
   { href: "https://agentpit.dev/markets", label: "Markets" },
   { href: "https://agentpit.dev/stats", label: "Stats" },
 ];
-const NAV = "opacity-65 transition-opacity duration-150 hover:opacity-100 aria-[current=page]:opacity-100 max-sm:hidden";
+const NAV = "opacity-65 transition-opacity duration-150 hover:opacity-100 aria-[current=page]:opacity-100 max-md:hidden";
 const ITEM = "flex h-9 w-full items-center rounded-item px-2.5 text-left transition-colors duration-150 hover:bg-surface";
 
 const ProfileMenu = () => {
@@ -38,11 +39,11 @@ const ProfileMenu = () => {
         </div>
         <div className="my-1.5 border-t border-line" />
         {SITE.map((link) => (
-          <a key={link.href} href={link.href} className={`${ITEM} sm:hidden`}>
+          <a key={link.href} href={link.href} className={`${ITEM} md:hidden`}>
             {link.label}
           </a>
         ))}
-        <Link to="/" onClick={close} className={`${ITEM} sm:hidden`}>
+        <Link to="/" onClick={close} className={`${ITEM} md:hidden`}>
           My agents
         </Link>
         <Link to="/account" onClick={close} className={ITEM}>
