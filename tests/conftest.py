@@ -188,11 +188,14 @@ def _isolated_db_session():
 
     _market_service._claim_backoff_until.clear()
     # And for /live: streams a previous test left counted would make the
-    # next test's stream look over its cap.
+    # next test's stream look over its cap, and a tick event left from a
+    # previous test's loop would park the next stream on a dead loop.
     from agentpit.api.routes import live as _live
 
     _live._watched.clear()
     _live._streams.clear()
+    _live._tops = {}
+    _live._tick = None
     before = {id(s) for s in DbSession._open}
     fresh = fresh_test_db()
     previous = app.dependency_overrides.get(get_db_session)
