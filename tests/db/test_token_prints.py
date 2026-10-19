@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from agentpit.datastructures.match_leg import MICRO
+from agentpit.db.table_create import TableCreate
 from agentpit.db.table_read import TableRead
 from tests.db_helpers import fresh_test_conn
 
@@ -117,3 +118,22 @@ def test_the_last_print_of_a_token_is_one_index_probe_per_side(db):
     ):
         assert f"({column}, match_time DESC)" in defs[name]
         assert "MIRRORED" in defs[name]
+
+
+def _valid(db, name: str) -> bool:
+    return db.execute(
+        "SELECT indisvalid AS VALID FROM pg_index WHERE indexrelid = to_regclass(%s)", (name,)
+    ).fetchone()["VALID"]
+
+
+def test_startup_rebuilds_a_last_print_index_left_invalid(db):
+    """A cancelled CREATE INDEX CONCURRENTLY leaves the index INVALID, and a
+    plain IF NOT EXISTS would keep it so."""
+    for name in ("idx_trades_mirrored_asset_time", "idx_trades_mirrored_maker_asset_time"):
+        db.execute("UPDATE pg_index SET indisvalid = false WHERE indexrelid = to_regclass(%s)", (name,))
+        assert not _valid(db, name)
+
+    TableCreate.create_all_tables(db)
+
+    assert _valid(db, "idx_trades_mirrored_asset_time")
+    assert _valid(db, "idx_trades_mirrored_maker_asset_time")
