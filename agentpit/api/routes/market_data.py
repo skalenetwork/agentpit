@@ -1,10 +1,15 @@
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Body
 
 from agentpit.api.deps import OrderServiceDep
 from agentpit.datastructures.book_params import BookParams
 from agentpit.datastructures.orderbook_summary import OrderBookSummary
 
 router = APIRouter(tags=["market-data"])
+
+# Every id costs a book read, so one request asks for at most this many.
+MAX_BOOKS = 500
 
 
 @router.get("/book", response_model=OrderBookSummary)
@@ -14,7 +19,8 @@ def get_book(token_id: str, service: OrderServiceDep) -> OrderBookSummary:
 
 @router.post("/books", response_model=list[OrderBookSummary])
 def get_books(
-    params: list[BookParams], service: OrderServiceDep
+    params: Annotated[list[BookParams], Body(max_length=MAX_BOOKS)],
+    service: OrderServiceDep,
 ) -> list[OrderBookSummary]:
     return service.get_books([p.token_id for p in params])
 

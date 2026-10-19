@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # can't accumulate sub-tick precision — the minimum meaningful step is 0.1¢.
 _PRICE_TICK = Decimal("0.001")
 
+# Far above any order a paper balance can pay for, and small enough that the
+# conversion to base units stays cheap.
+MAX_ORDER_SIZE = Decimal("1000000000")  # 1e9 shares
+
 
 class PlaceOrderRequest(BaseModel):
     """Logical inputs for `POST /order` (§8.1).
@@ -18,7 +22,7 @@ class PlaceOrderRequest(BaseModel):
     token_id: str = Field(min_length=1)
     side: Literal["BUY", "SELL"]
     price: Decimal = Field(gt=0, lt=1)  # probability, 0 < p < 1
-    size: Decimal = Field(gt=0)  # whole shares (× 10⁶ base units internally)
+    size: Decimal = Field(gt=0, le=MAX_ORDER_SIZE)  # whole shares (× 10⁶ base units internally)
     order_type: Literal["GTC", "FOK", "FAK", "GTD"] = "GTC"
     expiration: int = Field(default=0, ge=0)
     client_order_id: str | None = None  # optional per-user idempotency key

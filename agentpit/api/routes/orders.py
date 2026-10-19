@@ -1,4 +1,7 @@
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Body
+from pydantic import Field
 
 from agentpit.api.deps import CurrentUserDep, OrderServiceDep, TradeServiceDep
 from agentpit.datastructures.cancel_orders_response import CancelOrdersResponse
@@ -12,6 +15,9 @@ from agentpit.datastructures.place_order_request import PlaceOrderRequest
 from agentpit.datastructures.trade_wire import TradesEnvelope
 
 router = APIRouter(tags=["orders"])
+
+# One request cancels at most this many ids; order ids are 66 characters.
+MAX_CANCEL_IDS = 1000
 
 
 @router.post("/order", response_model=OrderResponse)
@@ -34,7 +40,9 @@ def cancel_order(
 
 @router.delete("/orders", response_model=CancelOrdersResponse)
 def cancel_orders(
-    order_ids: list[str],
+    order_ids: Annotated[
+        list[Annotated[str, Field(max_length=100)]], Body(max_length=MAX_CANCEL_IDS)
+    ],
     user: CurrentUserDep,
     service: OrderServiceDep,
 ) -> CancelOrdersResponse:

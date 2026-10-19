@@ -35,7 +35,7 @@ from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.match_leg import MICRO, legs_for_user
 from agentpit.datastructures.orderbook_summary import OrderBookLevel
-from agentpit.datastructures.place_order_request import PlaceOrderRequest
+from agentpit.datastructures.place_order_request import MAX_ORDER_SIZE, PlaceOrderRequest
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import Hit, TableRead
@@ -67,6 +67,9 @@ LOT = 10_000
 TOP = 20
 DEPTH = 5
 ACTIVITY = 10
+# The OR fallback ranks every market against each word; a query that long is
+# not a search anyone types.
+_MAX_OR_WORDS = 20
 
 
 def shares_for_usd(levels: list[tuple[int, int]], usd: int, limit: int, buy: bool) -> tuple[int, int]:
@@ -159,7 +162,7 @@ class AgentDesk:
             excluded_categories=self._settings.excluded_categories,
             excluded_tags=self._settings.excluded_tags,
         )
-        words = re.findall(r"\w+", query or "")
+        words = re.findall(r"\w+", query or "")[:_MAX_OR_WORDS]
         match: Match | None = "all" if query else None
         with self._db.read() as conn:
             hits = search(conn, query=query)
@@ -272,6 +275,10 @@ class AgentDesk:
         size = size // LOT * LOT
         if size == 0:
             raise BusinessRuleError(f"That is less than 0.01 share at {_px(limit)}. Increase usd or shares.")
+        if size > MAX_ORDER_SIZE * MICRO:
+            raise BusinessRuleError(
+                f"That is more than {MAX_ORDER_SIZE:,.0f} shares, the largest order. Decrease usd or shares."
+            )
         request = PlaceOrderRequest(
             token_id=token,
             side="BUY" if buy else "SELL",

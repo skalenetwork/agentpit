@@ -114,7 +114,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         annotations=READ,
     )
     def search_markets(
-        query: Annotated[str | None, Field(description="Words to match in the question, event, league or tags, e.g. 'bitcoin' or 'nfl'. Omit to browse.")] = None,
+        query: Annotated[str | None, Field(max_length=200, description="Words to match in the question, event, league or tags, e.g. 'bitcoin' or 'nfl'. Omit to browse. At most 200 characters.")] = None,
         event: Annotated[str | None, Field(description="Event slug from a card's event field, to list every live market of that event.")] = None,
         closes_within_hours: Annotated[Hours | None, Field(description="Only markets that close within this many hours, 1 to 8760.")] = None,
         min_price: Annotated[Price | None, Field(description="Only markets with an outcome whose ask is at least this (and at most max_price), 0.001 to 0.999.")] = None,

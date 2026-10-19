@@ -11,6 +11,10 @@ from decimal import ROUND_HALF_UP, Decimal
 
 _SCALE = Decimal(10**6)
 
+# int() of a Decimal with a huge exponent builds a huge integer; refuse
+# anything above ~10**24 before converting.
+_MAX_ADJUSTED = 24
+
 
 def _trim(d: Decimal) -> str:
     """Fixed-point string with no exponent and no trailing zeros.
@@ -53,15 +57,22 @@ def size_to_float(micro: int) -> float:
     return float(Decimal(micro) / _SCALE)
 
 
+def _bounded(value: str, name: str) -> Decimal:
+    d = Decimal(value)
+    if not d.is_finite() or d.adjusted() > _MAX_ADJUSTED:
+        raise ValueError(f"{name} out of range")
+    return d
+
+
 def decimal_str_to_price_int(value: str) -> int:
     """'0.36' -> 360000 (parse an inbound decimal price to scaled int)."""
-    scaled = int((Decimal(value) * _SCALE).to_integral_value(rounding=ROUND_HALF_UP))
+    scaled = int((_bounded(value, "price") * _SCALE).to_integral_value(rounding=ROUND_HALF_UP))
     _require_non_negative(scaled, "price")
     return scaled
 
 
 def decimal_str_to_size_micro(value: str) -> int:
     """'30' -> 30000000 (parse an inbound decimal share size to base units)."""
-    scaled = int((Decimal(value) * _SCALE).to_integral_value(rounding=ROUND_HALF_UP))
+    scaled = int((_bounded(value, "size") * _SCALE).to_integral_value(rounding=ROUND_HALF_UP))
     _require_non_negative(scaled, "size")
     return scaled

@@ -46,3 +46,15 @@ def test_negative_inputs_raise():
         size_to_float(-1)
     with pytest.raises(ValueError):
         decimal_str_to_price_int("-0.5")
+
+
+@pytest.mark.parametrize("fn", [decimal_str_to_size_micro, decimal_str_to_price_int])
+@pytest.mark.parametrize("value", ["1E+999990", "1e25", "Infinity", "-Infinity", "NaN"])
+def test_out_of_range_values_raise_value_error(fn, value):
+    with pytest.raises(ValueError):
+        fn(value)
+
+
+def test_largest_allowed_magnitude_still_converts():
+    assert decimal_str_to_size_micro("1e24") == 10**30
+    assert decimal_str_to_price_int("0.36") == 360000

@@ -11,7 +11,7 @@ Hours = Annotated[int, Field(ge=1, le=8760)]
 Sort = Literal["best", "movers"]
 Match = Literal["all", "any"]
 BoardLimit = Annotated[int, Field(ge=1, le=50)]
-Amount = Annotated[float, Field(gt=0)]
+Amount = Annotated[float, Field(gt=0, le=1e15, allow_inf_nan=False)]
 Price = Annotated[float, Field(ge=0.001, le=0.999)]
 Name = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_]{1,15}$")]
 
