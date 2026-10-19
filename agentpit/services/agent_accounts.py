@@ -22,9 +22,12 @@ class AgentAccounts:
         self._onboard = onboard
         self._onboarding: dict[str, threading.Lock] = {}
 
-    def agent_for(self, owner_workos_id: str, app: str, client: str | None, host: str | None) -> User:
+    def agent_for(self, owner_workos_id: str, app: str, client: str | None, host: str | None) -> User | None:
         with self._db.read() as conn:
             agent = TableRead.get_agent(conn, owner_workos_id, app, client)
+            person = None if agent else TableRead.get_user_by_workos_id(conn, owner_workos_id)
+        if person is not None and person.deleted_at is not None:
+            return None
         if agent is None and client is not None:
             agent = self._adopt(owner_workos_id, app, client)
         if agent is None:

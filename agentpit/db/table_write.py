@@ -88,6 +88,17 @@ class TableWrite:
         db.execute("UPDATE users SET DELETED_AT = %s WHERE USER_ID = %s", (deleted_at, user_id))
 
     @staticmethod
+    def delete_account(db: psycopg.Connection, workos_id: str, email: str | None, deleted_at: int) -> None:
+        db.execute(
+            "UPDATE users SET DELETED_AT = COALESCE(DELETED_AT, %s), EMAIL = NULL, PASSWORD_HASH = NULL "
+            "WHERE WORKOS_USER_ID = %s OR OWNER_WORKOS_ID = %s",
+            (deleted_at, workos_id, workos_id),
+        )
+        db.execute("DELETE FROM owners WHERE WORKOS_ID = %s", (workos_id,))
+        if email is not None:
+            db.execute("DELETE FROM auth_code_attempts WHERE BUCKET = %s", (f"email:1h:{email.strip().lower()}",))
+
+    @staticmethod
     def mark_user_onboarded(db: psycopg.Connection, user_id: str) -> None:
         db.execute(
             "UPDATE users SET ONBOARDED_AT = %s WHERE USER_ID = %s",

@@ -17,6 +17,7 @@ from agentpit.api.deps import (
     OwnerDep,
     SessionDep,
     SettingsDep,
+    WorkOsClientDep,
 )
 from agentpit.datastructures.agent_summary import AgentSummary, NewAgent, OwnedAgent
 from agentpit.datastructures.auth_response import UserPublic
@@ -123,6 +124,21 @@ def rename_my_agent(
     address: str, payload: UpdateHandleRequest, owner: OwnerDep, db: SessionDep, accounts: AgentAccountsDep
 ) -> AgentSummary:
     return AgentSummary.of(accounts.rename(_owned_agent(db, owner, address), payload.handle))
+
+
+@router.delete("/me", status_code=204)
+def delete_me(
+    owner: OwnerDep, user: CurrentUserDep, db: SessionDep, orders: OrderServiceDep, workos: WorkOsClientDep
+) -> Response:
+    with db.read() as conn:
+        agents = TableRead.agents_owned_by(conn, owner)
+    if workos is not None:
+        workos.delete_user(owner)
+    with db.write() as conn:
+        TableWrite.delete_account(conn, owner, user.email, int(time.time()))
+    for account in (user, *agents):
+        orders.cancel_all(account)
+    return Response(status_code=204)
 
 
 @router.delete("/me/agents/{address}", status_code=204)

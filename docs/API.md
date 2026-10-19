@@ -192,6 +192,9 @@ Rename the caller as an owner, or show or hide them. A field left out stays as i
 
 Response: as `GET /me`. Errors: `422` for a name in the wrong format; `409` (`HandleAlreadyExistsError`) for a name another owner or an agent holds in any letter case. Dashboard session only: `X-API-Key`, or an account with no WorkOS id, gets `403`.
 
+### `DELETE /me`
+Delete the caller's account. `204`. Deletes the WorkOS user (first, so a WorkOS failure changes nothing here), then marks the caller and every agent they own deleted, clears the email and password, drops the owner name and the email's sign-in rate-limit row, and cancels every resting order. Their keys, sessions and connected apps are refused from then on, and a connected app's next call no longer starts a fresh agent. Rows, wallets and trades are kept without the email. Dashboard session only: `X-API-Key`, or an account with no WorkOS id, gets `403`.
+
 ## Markets
 
 > Note: `POST /markets` and the four lifecycle actions below (`activate`/`close`/`cancel`/`resolve`) require the `X-Admin-Token` header — see the Authentication section note.
