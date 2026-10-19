@@ -9,6 +9,10 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from agentpit.liquidity import feed
 
 TICK = 5
+# A stream ends after this long. The browser's EventSource reconnects on its
+# own after the `retry` the first event sets, so a viewer sees no gap, and no
+# stream keeps its slot (or its ids in `_watched`) forever.
+MAX_STREAM_SECONDS = 600
 Tops = dict[int, tuple[int | None, int | None]]
 
 router = APIRouter(tags=["markets"])
@@ -65,11 +69,13 @@ async def live(
     m: Annotated[str, Query(pattern=r"^[0-9]{1,12}(,[0-9]{1,12}){0,399}$")],
 ) -> AsyncIterator[ServerSentEvent]:
     ids = {int(i) for i in m.split(",")}
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + MAX_STREAM_SECONDS
     _watched.update(ids)
     try:
         sent = _read(ids)
         yield ServerSentEvent(data=sent, retry=5000)
-        while _tick is not None:
+        while _tick is not None and loop.time() < deadline:
             await _tick.wait()
             changed = {
                 k: v

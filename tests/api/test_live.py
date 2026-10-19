@@ -105,3 +105,19 @@ def test_a_disconnect_touches_only_its_own_ids(monkeypatch):
 
     asyncio.run(stream())
     assert dict(watched) == others
+
+
+def test_a_stream_ends_once_its_lifetime_is_up(monkeypatch):
+    monkeypatch.setattr(live, "TICK", 0.01)
+    monkeypatch.setattr(live, "MAX_STREAM_SECONDS", 0.05)
+
+    async def stream():
+        runner = asyncio.create_task(live.run())
+        await asyncio.sleep(0)
+        events = live.live("1")
+        await anext(events)
+        rest = [event async for event in events]
+        runner.cancel()
+        return rest, dict(live._watched)
+
+    assert asyncio.run(asyncio.wait_for(stream(), 5)) == ([], {})
