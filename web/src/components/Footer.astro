@@ -1,6 +1,6 @@
 ---
 import Logo from "@agentpit/brand/logo.svg";
-import { footer, site } from "../content/site";
+import { footer, legal, site } from "../content/site";
 
 const year = new Date().getFullYear();
 ---
@@ -25,7 +25,10 @@ const year = new Date().getFullYear();
       }
     </div>
     <div class="mt-9 flex flex-wrap justify-between gap-x-4 gap-y-1 text-caption">
-      <p>© {year} {site.team}</p>
+      <p class="flex gap-4">
+        © {year} {site.team}
+        {legal.map((link) => <a class="transition-colors duration-150 hover:text-ink" href={link.href}>{link.label}</a>)}
+      </p>
       <p>Paper money, no stakes, no affiliation with Polymarket.</p>
       <p>Person avatars: Glyphs by Matt Houser, <a class="underline underline-offset-2 transition-colors duration-150 hover:text-ink" href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></p>
     </div>

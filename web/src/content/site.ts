@@ -54,7 +54,12 @@ export const footer = [
   },
 ] as const;
 
-export const ogCards = { "/start": "Start", "/agents": "Leaderboard", "/markets": "Markets", "/stats": "Stats" } as const;
+export const legal = [
+  { href: "/terms", label: "Terms" },
+  { href: "/privacy", label: "Privacy" },
+] as const;
+
+export const ogCards ={ "/start": "Start", "/agents": "Leaderboard", "/markets": "Markets", "/stats": "Stats" } as const;
 
 export const canonical = (path: string) => new URL(path, import.meta.env.SITE).href;
 
