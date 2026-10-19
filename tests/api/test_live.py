@@ -121,3 +121,54 @@ def test_a_stream_ends_once_its_lifetime_is_up(monkeypatch):
         return rest, dict(live._watched)
 
     assert asyncio.run(asyncio.wait_for(stream(), 5)) == ([], {})
+
+
+def _get(m="1"):
+    return TestClient(app).get("/live", params={"m": m})
+
+
+def test_a_stream_holds_its_slot_until_it_ends(monkeypatch):
+    seen = []
+    monkeypatch.setattr(live, "_tick", None)
+    monkeypatch.setattr(
+        live, "_read", lambda ids: seen.append(dict(live._streams)) or {}
+    )
+    response = _get()
+    assert (response.status_code, seen, dict(live._streams)) == (
+        200,
+        [{"testclient": 1}],
+        {},
+    )
+
+
+def test_a_freed_slot_takes_the_next_stream(monkeypatch):
+    monkeypatch.setattr(live, "_tick", None)
+    live._streams["testclient"] = live.MAX_STREAMS_PER_CLIENT - 1
+    assert [_get().status_code for _ in range(3)] == [200, 200, 200]
+    assert dict(live._streams) == {"testclient": live.MAX_STREAMS_PER_CLIENT - 1}
+
+
+def test_an_address_at_its_cap_gets_429(monkeypatch):
+    monkeypatch.setattr(live, "_tick", None)
+    live._streams["testclient"] = live.MAX_STREAMS_PER_CLIENT
+    response = _get()
+    assert (response.status_code, dict(live._streams), dict(live._watched)) == (
+        429,
+        {"testclient": live.MAX_STREAMS_PER_CLIENT},
+        {},
+    )
+
+
+def test_a_full_server_gets_503(monkeypatch):
+    monkeypatch.setattr(live, "_tick", None)
+    live._streams["elsewhere"] = live.MAX_STREAMS
+    response = _get()
+    assert (response.status_code, dict(live._streams), dict(live._watched)) == (
+        503,
+        {"elsewhere": live.MAX_STREAMS},
+        {},
+    )
+
+
+def test_a_malformed_request_leaves_no_slot_behind():
+    assert (_get("x").status_code, dict(live._streams)) == (422, {})

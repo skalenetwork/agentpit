@@ -3,20 +3,27 @@ from collections import Counter
 from collections.abc import AsyncIterator, Iterable
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from agentpit.liquidity import feed
 
 TICK = 5
 # A stream ends after this long. The browser's EventSource reconnects on its
-# own after the `retry` the first event sets, so a viewer sees no gap, and no
-# stream keeps its slot (or its ids in `_watched`) forever.
+# own after the `retry` the first event sets, so a viewer sees only a short
+# pause, and no stream keeps its slot (or its ids in `_watched`) forever.
 MAX_STREAM_SECONDS = 600
+# Every open stream wakes on every tick and diffs its ids on the event loop
+# the mirror feed runs on, so the number of open streams is what bounds that
+# work (and the sockets it holds). The landing page opens one stream per
+# visible tab; past the cap it gets an error and retries on its own.
+MAX_STREAMS = 500
+MAX_STREAMS_PER_CLIENT = 10
 Tops = dict[int, tuple[int | None, int | None]]
 
 router = APIRouter(tags=["markets"])
 _watched: Counter[int] = Counter()
+_streams: Counter[str] = Counter()  # open streams per client address
 _tops: Tops = {}
 _tick: asyncio.Event | None = None
 
@@ -55,6 +62,30 @@ def _read(ids: set[int]) -> Tops:
     }
 
 
+async def _admit(request: Request) -> AsyncIterator[None]:
+    """Hold a stream slot for the caller's address while its stream is open.
+
+    A dependency, because by the time the stream body runs the 200 has been
+    chosen and a refusal is no longer possible. FastAPI exits a yield
+    dependency only once the response has finished, so the slot is held for
+    the whole stream and given back however the stream ends. The address is
+    the real caller because uvicorn runs with `--proxy-headers` (see
+    deploy/Dockerfile.api).
+    """
+    client = request.client.host if request.client else ""
+    if _streams.total() >= MAX_STREAMS:
+        raise HTTPException(503, "too many live streams are open, try again later")
+    if _streams[client] >= MAX_STREAMS_PER_CLIENT:
+        raise HTTPException(
+            429, f"at most {MAX_STREAMS_PER_CLIENT} live streams per address"
+        )
+    _streams[client] += 1
+    try:
+        yield
+    finally:
+        _drop(_streams, (client,))
+
+
 async def run() -> None:
     global _tops, _tick
     while True:
@@ -64,7 +95,9 @@ async def run() -> None:
         tick.set()
 
 
-@router.get("/live", response_class=EventSourceResponse)
+@router.get(
+    "/live", response_class=EventSourceResponse, dependencies=[Depends(_admit)]
+)
 async def live(
     m: Annotated[str, Query(pattern=r"^[0-9]{1,12}(,[0-9]{1,12}){0,399}$")],
 ) -> AsyncIterator[ServerSentEvent]:
