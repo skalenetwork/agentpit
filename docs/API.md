@@ -392,6 +392,8 @@ Live top of book for the markets a page shows, as server-sent events. Public. Ke
 
 The first event is a snapshot of every listed market that has a book, then each later event holds only the markets whose top changed. Data is `{market: [bid, ask]}` for the Yes token in thousandths (`[455, 470]` is 45.5 to 47 cents); either side is null when empty, and `[null, null]` means the book is gone. The first event sets `retry: 5000`; an idle stream gets a `: ping` comment every 15 s.
 
+At most 500 streams are open at once (`503` past that) and at most 10 from one client address (`429`). A stream ends after 10 minutes; a browser `EventSource` reconnects on its own after the `retry` delay.
+
 ```bash
 curl -sN "http://localhost:8000/live?m=12,34"
 ```
@@ -746,6 +748,7 @@ Response: `{"version": "1.0"}` (freeform string map in the schema, but the handl
 
 Generated from the live OpenAPI schema (`app.openapi()`) on 2026-07-13, cross-checked against the route/service source. Regenerate by dumping `app.openapi()` again after route changes and diffing against this file.
 
+- **2026-10-19: live stream limits.** `GET /live` refuses a new stream with `503` while 500 are open and with `429` while the caller's address has 10 open, and ends each stream after 10 minutes.
 - **2026-10-16: request limits.** `POST /books` takes at most 500 entries, `DELETE /orders` at most 1000 ids, each id at most 100 characters, `GET /markets` `condition_ids` and `clob_token_ids` at most 100 ids each (`422` with a string `detail` above that), `POST /order` `size` at most 1,000,000,000 shares and MCP `search_markets` `query` at most 200 characters. A `422` `detail` lists at most 20 `{type, loc, msg}` entries and no longer repeats the submitted value, and a request body over 1 MB is refused with `413` by the proxy.
 - **2026-10-13: MCP tools.** `search_markets` adds `event`, `closes_within_hours`, `min_price`, `max_price`, `sort` and `offset`, matches tags and ignores accents, falls back to any word, shows at most 3 markets per event and leaves out markets past their end date; cards add `hours_left`, `volume_24h`, `change_1d`, `event` and `more`, and the list adds `match` and `next_offset`. `get_market` and `trade` take a polymarket.com link; `get_market` adds `hours_left`, `volume_24h` and `event`, and its `change_1d` is Polymarket's 1-day change. `portfolio` positions add `question` and `sell_usd`, and `activity` lists the last 10 fills and payouts. `cancel` is no longer marked destructive. The text block of every reply is compact JSON without null keys.
 - **2026-10-12: mainnet.** Settlement moved from SKALE Base Sepolia (324705682) to SKALE on Base mainnet (1187947933) on a fresh database, so every `tx` hash is on mainnet and accounts and API keys from before the move no longer exist.
