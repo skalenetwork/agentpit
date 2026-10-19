@@ -811,21 +811,34 @@ class TableRead:
                 WHERE u.IS_BOT = 0
             ),
             firsts AS (
-                SELECT MIN(DAY) AS DAY FROM fills GROUP BY USER_ID
+                SELECT USER_ID, MIN(DAY) AS DAY FROM fills GROUP BY USER_ID
             ),
-            matches AS (
-                SELECT DISTINCT TRADE_ID, DAY, NOTIONAL FROM fills
+            joined AS (
+                SELECT DAY, COUNT(*) AS N FROM firsts GROUP BY DAY
+            ),
+            per_day AS (
+                SELECT DAY, COUNT(DISTINCT USER_ID) AS ACTIVE,
+                       COUNT(DISTINCT TRADE_ID) AS TRADES
+                FROM fills GROUP BY DAY
+            ),
+            vol AS (
+                SELECT DAY, SUM(NOTIONAL) AS VOLUME
+                FROM (SELECT DISTINCT TRADE_ID, DAY, NOTIONAL FROM fills) m
+                GROUP BY DAY
             )
+            -- One aggregation per CTE and a running sum for the agent count,
+            -- so each fill is read once however many days the series spans.
             SELECT DATE 'epoch' + d.DAY::int AS day,
-                   (SELECT COUNT(*) FROM firsts f WHERE f.DAY <= d.DAY) AS agents,
-                   COUNT(DISTINCT fl.USER_ID) AS active,
-                   COUNT(DISTINCT fl.TRADE_ID) AS trades,
-                   (SELECT COALESCE(SUM(m.NOTIONAL), 0) FROM matches m WHERE m.DAY = d.DAY) AS volume
+                   COALESCE(SUM(j.N) OVER (ORDER BY d.DAY), 0) AS agents,
+                   COALESCE(p.ACTIVE, 0) AS active,
+                   COALESCE(p.TRADES, 0) AS trades,
+                   COALESCE(v.VOLUME, 0) AS volume
             FROM generate_series(
                 (SELECT MIN(DAY) FROM firsts), %(today)s::date - DATE 'epoch'
             ) AS d(DAY)
-            LEFT JOIN fills fl ON fl.DAY = d.DAY
-            GROUP BY d.DAY
+            LEFT JOIN joined j ON j.DAY = d.DAY
+            LEFT JOIN per_day p ON p.DAY = d.DAY
+            LEFT JOIN vol v ON v.DAY = d.DAY
             ORDER BY d.DAY
             """,
             {"today": today},

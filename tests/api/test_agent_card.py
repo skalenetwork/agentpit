@@ -1,5 +1,6 @@
 import struct
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import get_args
 
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from agentpit.api import og_card
 from agentpit.api.main import app
+from agentpit.api.routes import agents as agents_route
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.runner import RunnerSlug
 from agentpit.services.leaderboard_service import Holdings, LeaderboardRow, _holdings
@@ -98,3 +100,100 @@ def test_a_landing_failure_is_an_uncached_503(monkeypatch):
 def test_every_runner_has_a_mark():
     marks = Path(og_card.ASSETS, "runners")
     assert {p.stem for p in marks.glob("*.svg")} == set(get_args(RunnerSlug))
+
+
+def test_an_unchanged_card_is_drawn_once(monkeypatch):
+    address = _agent()
+    requested = _landing(monkeypatch, httpx.Response(200, content=ROBOT))
+    with TestClient(app) as client:
+        first = client.get(f"/agents/{address.lower()}/card.png")
+        again = client.get(f"/agents/{address.upper().replace('0X', '0x')}/card.png")
+    assert (first.status_code, again.status_code) == (200, 200)
+    assert again.content == first.content
+    assert len(requested) == 1
+
+
+def _counted_renders(monkeypatch, pause: float = 0.0) -> list[int]:
+    renders: list[int] = []
+    real = agents_route.render_card
+
+    def render(*args):
+        renders.append(1)
+        time.sleep(pause)
+        return real(*args)
+
+    monkeypatch.setattr(agents_route, "render_card", render)
+    return renders
+
+
+def test_a_card_is_drawn_again_once_its_row_changes_with_the_same_robot(monkeypatch):
+    address = _agent()
+    requested = _landing(monkeypatch, httpx.Response(200, content=ROBOT))
+    renders = _counted_renders(monkeypatch)
+    with TestClient(app) as client:
+        client.get(f"/agents/{address}/card.png")
+        _holdings[address] = Holdings(valued_at=NOW, cash_raw=0, positions=[], closed=[])
+        client.get(f"/agents/{address}/card.png")
+    assert (len(renders), len(requested)) == (2, 1)
+
+
+def test_requests_for_the_same_card_at_once_share_one_draw(monkeypatch):
+    address = _agent()
+    _landing(monkeypatch, httpx.Response(200, content=ROBOT))
+    renders = _counted_renders(monkeypatch, pause=0.2)
+    with TestClient(app) as client, ThreadPoolExecutor(2) as pool:
+        first, again = pool.map(lambda _: client.get(f"/agents/{address}/card.png"), range(2))
+    assert (first.status_code, again.status_code, len(renders)) == (200, 200, 1)
+    assert again.content == first.content
+
+
+def test_a_drawn_card_is_served_while_another_is_drawn(monkeypatch):
+    address = _agent()
+    _landing(monkeypatch, httpx.Response(200, content=ROBOT))
+    with TestClient(app) as client:
+        first = client.get(f"/agents/{address}/card.png")
+        assert agents_route._render_gate.acquire(blocking=False)
+        try:
+            again = client.get(f"/agents/{address}/card.png")
+        finally:
+            agents_route._render_gate.release()
+    assert (again.status_code, again.content) == (200, first.content)
+
+
+def test_a_card_that_cannot_start_its_draw_in_time_gets_a_503(monkeypatch):
+    monkeypatch.setattr(agents_route, "_RENDER_WAIT_S", 0.01)
+    address = _agent()
+    _landing(monkeypatch, httpx.Response(200, content=ROBOT))
+    assert agents_route._render_gate.acquire(blocking=False)
+    try:
+        with TestClient(app) as client:
+            resp = client.get(f"/agents/{address}/card.png")
+    finally:
+        agents_route._render_gate.release()
+    assert resp.status_code == 503
+    assert (resp.headers["cache-control"], resp.headers["retry-after"]) == ("no-store", "1")
+    assert agents_route._cards == {}
+
+
+def test_a_failed_render_frees_the_gate(monkeypatch):
+    address = _agent()
+    _landing(monkeypatch, httpx.Response(200, content=ROBOT))
+
+    def fail(*args):
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr(agents_route, "render_card", fail)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert client.get(f"/agents/{address}/card.png").status_code == 500
+    assert agents_route._render_gate.acquire(blocking=False)
+    agents_route._render_gate.release()
+
+
+def test_the_card_cache_keeps_at_most_its_cap(monkeypatch):
+    monkeypatch.setattr(agents_route, "_CARDS_MAX", 2)
+    agents_route._cards.update({"0xa": ("k", b"", b""), "0xb": ("k", b"", b"")})
+    address = _agent()
+    _landing(monkeypatch, httpx.Response(200, content=ROBOT))
+    with TestClient(app) as client:
+        assert client.get(f"/agents/{address}/card.png").status_code == 200
+    assert list(agents_route._cards) == ["0xb", address.lower()]

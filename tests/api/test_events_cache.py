@@ -12,6 +12,7 @@ request. Subtags are sorted to ensure that `?subtag=a&subtag=b` and
 import agentpit.api.routes.events as events
 from agentpit.api.routes.events import (
     _EVENTS_CACHE_MAX,
+    _EVENTS_CACHE_MAX_LIMIT,
     _EVENTS_TTL_S,
     _list_events_cached,
 )
@@ -100,3 +101,30 @@ def test_cache_is_bounded_against_junk_categories():
     for i in range(_EVENTS_CACHE_MAX * 2):
         _list_events_cached(svc, limit=20, offset=0, category=f"junk-{i}", now=100.0)
     assert len(events._events_cache) <= _EVENTS_CACHE_MAX
+
+
+def test_a_page_larger_than_the_cached_limit_is_never_kept():
+    svc = _FakeService()
+    for limit in range(_EVENTS_CACHE_MAX_LIMIT + 1, _EVENTS_CACHE_MAX_LIMIT + 121):
+        _list_events_cached(svc, limit=limit, offset=0, now=100.0)
+    _list_events_cached(svc, limit=_EVENTS_CACHE_MAX_LIMIT + 1, offset=0, now=100.0)
+    assert (svc.calls, events._events_cache) == (121, {})
+
+
+def test_a_full_cache_keeps_the_entries_already_in_it():
+    svc = _FakeService()
+    _list_events_cached(svc, limit=20, offset=0, now=100.0)
+    for i in range(_EVENTS_CACHE_MAX * 2):
+        _list_events_cached(svc, limit=20, offset=0, category=f"junk-{i}", now=100.0)
+    calls = svc.calls
+    _list_events_cached(svc, limit=20, offset=0, now=101.0)
+    assert svc.calls == calls
+
+
+def test_an_insert_drops_every_expired_entry():
+    svc = _FakeService()
+    _list_events_cached(svc, limit=20, offset=0, category="old", now=100.0)
+    _list_events_cached(
+        svc, limit=20, offset=0, category="new", now=100.0 + _EVENTS_TTL_S
+    )
+    assert [key[2] for key in events._events_cache] == ["new"]
