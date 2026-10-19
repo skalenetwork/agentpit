@@ -1,6 +1,6 @@
 import asyncio
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from typing import Annotated
 
 from fastapi import APIRouter, Query
@@ -19,6 +19,20 @@ _tick: asyncio.Event | None = None
 
 def _mills(price: int | None) -> int | None:
     return None if price is None else price // 1000
+
+
+def _drop(counter: Counter, keys: Iterable) -> None:
+    """Take one off each key and delete it at zero.
+
+    Not `counter -= Counter(keys)`: that also rescans every key in the counter
+    to drop the non-positive ones, so each disconnect would cost as much as
+    the ids every other open stream watches.
+    """
+    for k in keys:
+        if (n := counter[k] - 1) > 0:
+            counter[k] = n
+        else:
+            del counter[k]
 
 
 def _read(ids: set[int]) -> Tops:
@@ -50,7 +64,6 @@ async def run() -> None:
 async def live(
     m: Annotated[str, Query(pattern=r"^[0-9]{1,12}(,[0-9]{1,12}){0,399}$")],
 ) -> AsyncIterator[ServerSentEvent]:
-    global _watched
     ids = {int(i) for i in m.split(",")}
     _watched.update(ids)
     try:
@@ -67,4 +80,4 @@ async def live(
                 sent = sent | changed
                 yield ServerSentEvent(data=changed)
     finally:
-        _watched -= Counter(ids)
+        _drop(_watched, ids)

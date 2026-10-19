@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 
 from fastapi.testclient import TestClient
 
@@ -84,3 +85,23 @@ def test_a_read_looks_up_only_the_markets_it_is_asked_for(house_book):
     state = feed.HOUSE.state
     state.by_asset = _Unwalkable(state.by_asset)
     assert live._read({a.market_id, 999_999}) == {a.market_id: (400, 420)}
+
+
+class _NoRescan(Counter):
+    def _keep_positive(self):
+        raise AssertionError("a disconnect rescanned every watched id")
+
+
+def test_a_disconnect_touches_only_its_own_ids(monkeypatch):
+    others = {i: 1 for i in range(1000, 1500)}
+    watched = _NoRescan(others)
+    monkeypatch.setattr(live, "_watched", watched)
+    monkeypatch.setattr(live, "_tick", None)
+
+    async def stream():
+        events = live.live("1,2,1000")
+        await anext(events)
+        await events.aclose()
+
+    asyncio.run(stream())
+    assert dict(watched) == others
