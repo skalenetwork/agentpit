@@ -30,7 +30,11 @@ def test_last_trade_prices_for_tokens_latest_tape_print():
 
 
 def _rows_read_from_trades(node: dict) -> int:
-    own = node["Actual Rows"] * node["Actual Loops"] if node.get("Relation Name") == "trades" else 0
+    """Rows the scans of `trades` read, kept or filtered out: a walk of the
+    time index that discards other tokens' prints returns few rows but reads
+    the whole tape."""
+    read = (node["Actual Rows"] + node.get("Rows Removed by Filter", 0)) * node["Actual Loops"]
+    own = read if node.get("Relation Name") == "trades" else 0
     return own + sum(_rows_read_from_trades(child) for child in node.get("Plans", []))
 
 
