@@ -101,3 +101,19 @@ def test_both_token_columns_are_indexed(db):
     assert "idx_trades_asset_id" in defs
     assert "idx_trades_maker_asset_id" not in defs
     assert "MIRRORED" in defs["idx_trades_mirrored_maker_asset_id"]
+
+
+def test_the_last_print_of_a_token_is_one_index_probe_per_side(db):
+    defs = {
+        r["INDEXNAME"]: r["INDEXDEF"]
+        for r in db.execute(
+            "SELECT indexname AS INDEXNAME, indexdef AS INDEXDEF FROM pg_indexes "
+            "WHERE tablename='trades'"
+        ).fetchall()
+    }
+    for name, column in (
+        ("idx_trades_mirrored_asset_time", "asset_id"),
+        ("idx_trades_mirrored_maker_asset_time", "maker_asset_id"),
+    ):
+        assert f"({column}, match_time DESC)" in defs[name]
+        assert "MIRRORED" in defs[name]

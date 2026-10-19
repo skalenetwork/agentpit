@@ -88,6 +88,23 @@ class TableCreate:
             "CREATE INDEX IF NOT EXISTS idx_trades_mirrored "
             "ON trades(MATCH_TIME) WHERE STATUS = 'MIRRORED'"
         )
+        # A token's last print, newest first: one probe per token and side
+        # (`TableRead.last_trade_prices_for_tokens`) instead of reading and
+        # sorting the token's whole tape. On a database that already holds a
+        # long tape, build them before deploying, so the tape keeps writing
+        # while they build and these two lines find them:
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trades_mirrored_asset_time
+        #     ON trades(ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED';
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trades_mirrored_maker_asset_time
+        #     ON trades(MAKER_ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED';
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_mirrored_asset_time "
+            "ON trades(ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED'"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_mirrored_maker_asset_time "
+            "ON trades(MAKER_ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED'"
+        )
         conn.execute(
             "UPDATE trades SET STATUS = 'CONFIRMED' "
             "WHERE STATUS = 'PENDING' AND TRANSACTION_HASH = ''"
