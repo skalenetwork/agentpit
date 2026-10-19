@@ -1,3 +1,4 @@
+import threading
 import time
 from typing import Annotated
 
@@ -19,11 +20,15 @@ router = APIRouter(tags=["events"])
 # filtered/sorted request (and vice versa) for up to one TTL. Per-process;
 # staleness is bounded by the TTL.
 _EVENTS_TTL_S = 3.0
-# `category`/`tag`/`subtag` are caller-supplied, so the key space is
-# unbounded: without a cap, `/events?category=<random>` in a loop grows this
-# dict forever (entries are never swept — a stale one is only overwritten
-# when its exact key repeats).
-_EVENTS_CACHE_MAX = 256
+# The key space is caller-supplied (any limit, offset or filter), so the cache
+# is bounded by count AND page size: only pages of at most
+# _EVENTS_CACHE_MAX_LIMIT events are kept (the app asks for 20), so it holds at
+# most _EVENTS_CACHE_MAX * _EVENTS_CACHE_MAX_LIMIT events. Every insert first
+# drops the entries past their TTL, and a cache still full skips the insert
+# instead of flushing the entries other callers are polling.
+_EVENTS_CACHE_MAX = 32
+_EVENTS_CACHE_MAX_LIMIT = 100
+_events_cache_lock = threading.Lock()
 _events_cache: dict[
     tuple[int, int, str | None, str | None, tuple[str, ...], str],
     tuple[float, list[GammaEvent]],
@@ -44,9 +49,10 @@ def _list_events_cached(
     """Return the cached page if it is younger than the TTL, else fetch + store.
 
     `now` is injected (monotonic seconds) so the TTL is deterministically
-    testable. The sync `def` route runs in FastAPI's threadpool; dict get/set
-    are atomic in CPython, so no lock is needed — a rare concurrent miss just
-    does one extra harmless DB read.
+    testable. The sync `def` route runs in FastAPI's threadpool, and an insert
+    walks the dict to drop expired entries, so every change happens under
+    `_events_cache_lock`; a rare concurrent miss just does one extra harmless
+    DB read.
 
     EVERY filter must be part of the key. A key missing `tag` would serve a
     filtered page to an unfiltered request (and the reverse) for up to one TTL.
@@ -81,10 +87,13 @@ def _list_events_cached(
         subtags=list(normalized_subtags),
         sort=resolved_sort,
     )
-    # Entries live 3s, so a plain flush at the cap is enough — no LRU needed.
-    if len(_events_cache) >= _EVENTS_CACHE_MAX:
-        _events_cache.clear()
-    _events_cache[key] = (now, result)
+    if limit > _EVENTS_CACHE_MAX_LIMIT:
+        return result
+    with _events_cache_lock:
+        for k in [k for k, (at, _) in _events_cache.items() if now - at >= _EVENTS_TTL_S]:
+            del _events_cache[k]
+        if key in _events_cache or len(_events_cache) < _EVENTS_CACHE_MAX:
+            _events_cache[key] = (now, result)
     return result
 
 
