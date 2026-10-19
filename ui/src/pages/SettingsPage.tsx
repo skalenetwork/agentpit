@@ -369,7 +369,8 @@ function DeleteAgentDialog({ agent, name, onClose }: AgentDialogProps) {
           <DialogDescription>
             It leaves the leaderboard and its key stops working. If its app is
             still connected, the app&apos;s next call starts a fresh agent with
-            $100,000.
+            $100,000 when you have a free slot: you can have 10 agents, and a
+            deleted one still counts until a day after it was created.
           </DialogDescription>
         </DialogHeader>
         <div className="flex justify-end gap-2">
