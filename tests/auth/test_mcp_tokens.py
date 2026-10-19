@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from agentpit.auth.mcp_tokens import AgentToken, AgentVerifier
 from agentpit.auth.workos_client import ConnectApp, FakeWorkOsClient
 from agentpit.db.table_write import TableWrite
-from agentpit.services.agent_accounts import AgentAccounts
+from agentpit.services.agent_accounts import MAX_AGENTS_PER_OWNER, AgentAccounts
 from tests.db_helpers import fresh_test_db
 
 ISSUER = "https://test.authkit.app"
@@ -152,3 +152,17 @@ def test_a_client_chosen_app_name_is_flattened_and_capped(world: tuple[AgentVeri
     token = _verify(verifier, _token(client_id="client_long"))
 
     assert token is not None and token.user.agent_app == "Ignore all previous " + "x" * 19 + "…"
+
+
+def test_an_owner_at_the_agent_limit_signs_in_with_the_reason_instead_of_an_agent(
+    world: tuple[AgentVerifier, AgentAccounts, Resolver],
+):
+    verifier, accounts, _ = world
+    for _ in range(MAX_AGENTS_PER_OWNER):
+        accounts.create_api_agent("user_01")
+
+    token = _verify(verifier, _token())
+
+    assert token is not None
+    assert token.user is None
+    assert (token.refusal or "").startswith("at most 10 agents per account")
