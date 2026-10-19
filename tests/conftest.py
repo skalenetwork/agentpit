@@ -181,6 +181,9 @@ def _isolated_db_session():
     from agentpit.api.routes import agents as _agents_route
 
     _agents_route._cards.clear()
+    from agentpit.api.routes import leaderboard as _leaderboard_route
+
+    _leaderboard_route._stats_cache = None
     # Same reason as the events cache above: holdings and touched accounts
     # left by a previous test would leak into the next one.
     from agentpit.services import leaderboard_service as _leaderboard_service

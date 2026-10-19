@@ -310,6 +310,21 @@ def test_stats_read_each_fill_once_however_many_days():
     assert loops and max(loops) == 1
 
 
+def test_stats_are_read_once_per_window(monkeypatch):
+    reads = []
+    real = TableRead.daily_activity
+
+    def counted(conn, today):
+        reads.append(today)
+        return real(conn, today)
+
+    monkeypatch.setattr(TableRead, "daily_activity", staticmethod(counted))
+    with TestClient(app) as client:
+        first = client.get("/stats").json()
+        again = client.get("/stats").json()
+    assert (len(reads), again) == (1, first)
+
+
 def _owners_board() -> None:
     base = int(time.time()) // DAY * DAY
     conn = fresh_test_conn()
