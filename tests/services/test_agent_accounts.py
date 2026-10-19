@@ -10,7 +10,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import AgentLimitError
 from agentpit.services.agent_accounts import MAX_AGENTS_PER_OWNER, RECENT_AGENT_SECONDS, AgentAccounts
-from tests.db_helpers import fresh_test_db
+from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 OWNER = "user_owner"
 CLAWBITS = "app.clawbits.ai"
@@ -221,3 +221,19 @@ def test_two_first_sign_ins_from_one_app_at_the_last_slot_share_its_agent(monkey
         first, again = pool.map(lambda _: accounts.agent_for(OWNER, "Claude", None, None), range(2))
 
     assert first.user_id == again.user_id
+
+
+def test_an_owner_at_the_limit_is_refused_without_waiting_on_the_owner_lock():
+    accounts, _, _ = _accounts()
+    for _ in range(MAX_AGENTS_PER_OWNER):
+        accounts.create_api_agent(OWNER)
+
+    pool = ThreadPoolExecutor(1)
+    try:
+        with fresh_test_conn() as holder, holder.transaction():
+            TableWrite.lock_owner(holder, OWNER)
+            outcome = pool.submit(_attempt, accounts).result(timeout=5)
+    finally:
+        pool.shutdown()
+
+    assert outcome == "refused"

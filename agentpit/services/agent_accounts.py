@@ -101,16 +101,16 @@ class AgentAccounts:
     def _insert(
         conn: psycopg.Connection, owner_workos_id: str, app: str | None, client: str | None, host: str | None
     ) -> str:
+        since = int(time.time()) - RECENT_AGENT_SECONDS
+        # Refused before the lock below when already at the cap: an MCP app
+        # with no room comes back on every request, and must not queue behind
+        # the owner's other traffic each time.
+        AgentAccounts._refuse_at_cap(conn, owner_workos_id, since)
         TableWrite.ensure_owner(conn, owner_workos_id)
         # Held until this transaction commits, so two creations for one owner
-        # cannot both pass the count below.
+        # cannot both pass the second count.
         TableWrite.lock_owner(conn, owner_workos_id)
-        made = TableRead.count_owner_agents(conn, owner_workos_id, int(time.time()) - RECENT_AGENT_SECONDS)
-        if made >= MAX_AGENTS_PER_OWNER:
-            raise AgentLimitError(
-                f"at most {MAX_AGENTS_PER_OWNER} agents per account, counting any deleted in the last 24 hours: "
-                "delete one under Settings to add another"
-            )
+        AgentAccounts._refuse_at_cap(conn, owner_workos_id, since)
         handle = pick_handle(taken=lambda name: TableRead.handle_taken(conn, name))
         user_id, _, _ = TableWrite.create_user(
             conn,
@@ -123,3 +123,12 @@ class AgentAccounts:
             agent_client=client,
         )
         return user_id
+
+    @staticmethod
+    def _refuse_at_cap(conn: psycopg.Connection, owner_workos_id: str, since: int) -> None:
+        if TableRead.count_owner_agents(conn, owner_workos_id, since) >= MAX_AGENTS_PER_OWNER:
+            raise AgentLimitError(
+                f"at most {MAX_AGENTS_PER_OWNER} agents per account, and each counts for 24 hours after it was "
+                "created even once deleted: delete one created more than a day ago at app.agentpit.dev/settings, "
+                "or try again later"
+            )
