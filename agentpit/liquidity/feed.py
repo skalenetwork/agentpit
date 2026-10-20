@@ -214,6 +214,7 @@ class FeedConnection:
                             if ev.get("event_type") == "book":
                                 self._awaiting.pop(ev.get("asset_id", ""), None)
                                 delay = RECONNECT_MIN_SECONDS
+                        await asyncio.sleep(0)
                     log.warning(
                         "mirror feed watchdog tripped (%ss silent, %d assets), reconnecting",
                         self._watchdog_seconds, len(self.assets))
