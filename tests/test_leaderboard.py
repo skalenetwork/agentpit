@@ -252,6 +252,17 @@ def test_valuing_an_account_keeps_what_it_holds_for_the_profile():
     assert service.holdings("0xabc") is leaderboard_service._holdings["0xabc"] is held
 
 
+def test_the_board_is_assembled_once_per_ttl(monkeypatch):
+    builds = []
+    monkeypatch.setattr(leaderboard_service, "_board", None)
+    monkeypatch.setattr(LeaderboardService, "_assemble_board", lambda self: builds.append(len(builds)) or [])
+    cached = LeaderboardService(db=None, onchain=None, accounts=None, settings=Settings(AGENTPIT_BOARD_TTL_SECONDS=60))
+    assert cached.build_board() is cached.build_board()
+    fresh = LeaderboardService(db=None, onchain=None, accounts=None, settings=Settings(AGENTPIT_BOARD_TTL_SECONDS=0))
+    fresh.build_board()
+    assert builds == [0, 1]
+
+
 def test_holdings_the_pass_has_not_reached_are_valued_once_on_demand():
     service = LeaderboardService(
         db=None,
