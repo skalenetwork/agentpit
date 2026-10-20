@@ -29,12 +29,15 @@ export default defineConfig({
   security: {
     csp: {
       algorithm: "SHA-256",
-      scriptDirective: { hashes: [hash("copy.js"), hash("markets.js"), hash("live.js"), hash("hero.js"), hash("countdown.js")] },
+      scriptDirective: {
+        resources: ["'self'", "https://static.cloudflareinsights.com"],
+        hashes: [hash("copy.js"), hash("markets.js"), hash("live.js"), hash("hero.js"), hash("countdown.js")],
+      },
       directives: [
         "default-src 'self'",
         "img-src 'self' data: https://polymarket-upload.s3.us-east-2.amazonaws.com",
         "font-src 'self'",
-        `connect-src 'self' ${new URL(process.env.PUBLIC_API_URL ?? API).origin}`,
+        `connect-src 'self' ${new URL(process.env.PUBLIC_API_URL ?? API).origin} https://cloudflareinsights.com`,
         "frame-ancestors 'none'",
         "base-uri 'self'",
         "form-action 'self'",
