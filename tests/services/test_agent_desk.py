@@ -23,7 +23,7 @@ from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.web3_client import Web3Client
-from agentpit.services.agent_desk import AgentDesk, shares_for_usd, snap
+from agentpit.services.agent_desk import ENTER_HINT, AgentDesk, shares_for_usd, snap
 from agentpit.services.leaderboard_service import RANK_FLOOR, drain, pct
 from tests.db_helpers import fresh_test_db
 from tests.onchain._helpers import create_market, fresh_client, house, register
@@ -527,7 +527,10 @@ def test_portfolio_lists_competitions_not_yet_ended_with_this_agents_run():
                 (f"t{k}", key, now - 60),
             )
 
-    upcoming, live = _desk().portfolio(_user(key)).competitions
+    portfolio = _desk().portfolio(_user(key))
+    upcoming, live = portfolio.competitions
+
+    assert portfolio.competitions_hint == ENTER_HINT
 
     assert (upcoming.competition, upcoming.phase, upcoming.entered, upcoming.trades, upcoming.rank) == (
         "next", "upcoming", False, None, None
