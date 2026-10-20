@@ -556,8 +556,8 @@ const Delete = ({ agent, onClose }: { agent: Agent; onClose: () => void }) => {
     <Sheet title={`Delete ${agent.name}?`} onClose={onClose}>
       <p className="mt-3 text-muted">
         Its wallet, positions and history are removed. This cannot be undone.{" "}
-        {agent.runner.slug === "api" ? "Its API key stops working." : `If ${agent.runner.label} is still connected, its next call starts a new agent. Remove the connector there to stop it.`}{" "}
-        It still counts toward your agent limit until a day after it was created.
+        {agent.runner.slug === "api" ? "Its API key stops working." : `If ${agent.runner.label} is still connected, its next call starts a new agent. Remove the connector there to stop it.`} It still
+        counts toward your agent limit until a day after it was created.
       </p>
       {remove.isError && <Fault>Could not delete the agent. Try again in a moment.</Fault>}
       <Actions onClose={onClose}>
