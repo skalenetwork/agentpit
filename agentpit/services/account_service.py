@@ -514,20 +514,30 @@ class AccountService:
         limit: int = 100,
         offset: int = 0,
     ) -> list[ActivityWire]:
-        cap = None if type_filter or market else offset + limit
+        # The filters run in SQL, so each source reads at most the newest
+        # offset + limit rows that match: the page is among them, filtered or
+        # not, instead of the account's whole history being loaded and cut.
+        cap = offset + limit
+        types = set(type_filter) if type_filter else None
+        tx_types = None if types is None else sorted(types - {"TRADE"})
         with self._db.read() as conn:
             user = TableRead.get_user_by_eth_address(conn, eth_address)
             if user is None:
                 return []
-            acts: list[ActivityWire] = AccountService._trade_activity(
-                conn, user.api_key, eth_address, cap
+            acts: list[ActivityWire] = (
+                AccountService._trade_activity(conn, user.api_key, eth_address, cap, markets=market)
+                if types is None or "TRADE" in types
+                else []
             )
-            tx_rows = conn.execute(
+            tx_rows = [] if tx_types == [] else conn.execute(
                 "SELECT TRANSACTION_TYPE, MARKET_ID, DETAILS, "
                 "EXTRACT(EPOCH FROM TIMESTAMP)::bigint AS TS "
                 "FROM transactions WHERE API_KEY = %s "
+                "AND (%s::text[] IS NULL OR TRANSACTION_TYPE = ANY(%s)) "
+                "AND (%s::text[] IS NULL OR MARKET_ID IN "
+                "     (SELECT MARKET_ID FROM markets WHERE CONDITION_ID = ANY(%s))) "
                 "ORDER BY TIMESTAMP DESC LIMIT %s",
-                (user.api_key, cap),
+                (user.api_key, tx_types, tx_types, market, market, cap),
             ).fetchall()
 
             # One account fills the same handful of markets repeatedly, so the
@@ -565,18 +575,20 @@ class AccountService:
                     url=mkt.url if mkt else None,
                 ))
 
-        if type_filter:
-            acts = [a for a in acts if a.type in type_filter]
-        if market:
-            acts = [a for a in acts if a.conditionId in market]
         acts.sort(key=lambda a: a.timestamp, reverse=True)
         return acts[offset:offset + limit]
 
     @staticmethod
     def _trade_activity(
-        conn, api_key: str, eth_address: str, limit: int | None = None
+        conn,
+        api_key: str,
+        eth_address: str,
+        limit: int | None = None,
+        *,
+        markets: "list[str] | None" = None,
     ) -> "list[ActivityWire]":
-        """One ActivityWire per leg this account holds.
+        """One ActivityWire per leg this account holds, newest first, from at
+        most `limit` fills, only those of `markets` (condition ids) if given.
 
         A NORMAL self-match yields two rows, a buy and a sell — that is the
         account genuinely standing on both sides. A MINT/MERGE maker's row
@@ -587,8 +599,9 @@ class AccountService:
             "TRADE_SIZE, MATCH_TIME, TRANSACTION_HASH, TAKER_API_KEY, "
             "MAKER_API_KEY FROM trades "
             "WHERE (TAKER_API_KEY = %s OR MAKER_API_KEY = %s) AND STATUS != 'FAILED' "
+            "AND (%s::text[] IS NULL OR MARKET = ANY(%s)) "
             "ORDER BY MATCH_TIME DESC LIMIT %s",
-            (api_key, api_key, limit),
+            (api_key, api_key, markets, markets, limit),
         ).fetchall()
 
         acts: list[ActivityWire] = []
