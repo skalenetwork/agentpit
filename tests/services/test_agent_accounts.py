@@ -151,7 +151,7 @@ def test_an_owner_at_the_limit_gets_no_new_agent_but_keeps_the_ones_it_has():
     for _ in range(MAX_AGENTS_PER_OWNER - 1):
         accounts.create_api_agent(OWNER)
 
-    with pytest.raises(AgentLimitError, match="at most 10 agents per account"):
+    with pytest.raises(AgentLimitError, match="You can have at most 10 agents"):
         accounts.create_api_agent(OWNER)
     with pytest.raises(AgentLimitError):
         accounts.agent_for(OWNER, "Codex", None, None)
