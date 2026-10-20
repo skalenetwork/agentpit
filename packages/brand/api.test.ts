@@ -179,7 +179,7 @@ test("a competition page maps earned to dollars and reads its stage", () => {
   const page = competitionPage(wire);
   expect(page.standings.map((s) => [s.name, s.pnl])).toEqual([["Alpha", -2144]]);
   expect([stageText(page, 1792800000 - 7200), stageText({ ...page, phase: "locked" }, 1792886400 - 60), stageText({ ...page, phase: "live" }, 1792886400), stageText({ ...page, phase: "ended" }, 1793145600)]).toEqual([
-    "Closes in 2h",
+    "Starts in 1d 2h",
     "Starts in 1:00",
     "Ends in 3d",
     "Ended",

@@ -278,14 +278,12 @@ export const competitionPage = ({ standings, ...rest }: WireCompetitionPage): Co
   standings: standings.map(({ earned, ...standing }) => ({ ...standing, pnl: usd(earned) })),
 });
 
-export const stageText = ({ phase, locksAt, startsAt, endsAt }: Competition, now: number) =>
-  phase === "upcoming"
-    ? `Closes in ${until(Math.max(0, locksAt - now))}`
-    : phase === "locked"
-      ? `Starts in ${until(Math.max(0, startsAt - now))}`
-      : phase === "live"
-        ? `Ends in ${until(Math.max(0, endsAt - now))}`
-        : "Ended";
+export const stageText = ({ phase, startsAt, endsAt }: Competition, now: number) =>
+  phase === "upcoming" || phase === "locked"
+    ? `Starts in ${until(Math.max(0, startsAt - now))}`
+    : phase === "live"
+      ? `Ends in ${until(Math.max(0, endsAt - now))}`
+      : "Ended";
 
 export const EXPLORER = "https://skale-base-explorer.skalenodes.com";
 export const explorerTx = (hash: string) => `${EXPLORER}/tx/${hash}`;

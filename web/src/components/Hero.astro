@@ -10,12 +10,20 @@ interface Props {
 const { lead, class: className, panel = "rounded-[28px] sm:rounded-[40px]" } = Astro.props;
 const visual = Astro.slots.has("visual") ? (await Astro.slots.render("visual")).trim() : "";
 const actions = Astro.slots.has("actions");
+const above = Astro.slots.has("above");
 ---
 
 <section class:list={["relative isolate px-4 py-16 sm:px-12 sm:py-25", className]}>
   {visual && <Sombra class="absolute inset-x-0 -top-15 bottom-0 -z-10" />}
   <div class="mx-auto flex w-full max-w-page flex-col items-center text-center">
     <div class:list={["flex flex-col items-center", visual && "scheme-dark [--color-muted:#cbd5e1]"]}>
+      {
+        above && (
+          <div class="mb-8 flex w-full justify-center">
+            <slot name="above" />
+          </div>
+        )
+      }
       <h1 class="max-w-text text-display text-balance text-ink [text-box:trim-end_cap_alphabetic]"><slot /></h1>
       {
         lead && (

@@ -1,0 +1,16 @@
+---
+import countdown from "../scripts/countdown.js?raw";
+
+interface Props {
+  at: number;
+  class?: string;
+}
+
+const { at, class: className } = Astro.props;
+const pad = (n: number) => String(n).padStart(2, "0");
+const s = Math.max(0, Math.ceil(at - Date.now() / 1000));
+const [d, h, m] = [Math.floor(s / 86_400), Math.floor((s % 86_400) / 3_600), Math.floor((s % 3_600) / 60)];
+---
+
+<time class:list={["tabular-nums", className]} datetime={new Date(at * 1000).toISOString()} data-countdown={at}>{`${d ? `${d}d ${pad(h)}` : h}:${pad(m)}:${pad(s % 60)}`}</time>
+<script is:inline set:html={countdown} />
