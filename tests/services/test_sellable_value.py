@@ -1,7 +1,7 @@
 """What a position would actually fetch if it were sold right now.
 
-A row's `currentValue` is `curPrice x size` and `curPrice` is the book
-MIDPOINT, so the profile was quoting a price no one had offered: a sale
+A row's `currentValue` is `curPrice x size` and `curPrice` is a mark (the book
+midpoint on a two-sided book), so the profile was quoting a price no one had offered: a sale
 executes against the bids, below the mid, and walks down as it eats depth.
 `sellableValue` / `sellableSize` are that walk, mirroring the order the Sell
 button sends -- a GTC limit for the whole size at `max(best_bid - 0.02, 0.01)`

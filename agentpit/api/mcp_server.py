@@ -40,7 +40,7 @@ from agentpit.datastructures.agent_desk import (
     TradeResult,
 )
 from agentpit.datastructures.user import User
-from agentpit.domain.exceptions import DomainError, OnboardingError
+from agentpit.domain.exceptions import AgentLimitError, DomainError, OnboardingError
 from agentpit.services.agent_accounts import AgentAccounts
 from agentpit.services.agent_desk import AgentDesk
 
@@ -95,7 +95,10 @@ def _icon(theme: str) -> Route:
 
 def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts, desk: AgentDesk) -> MCPServer:
     def agent() -> User:
-        return accounts.ready(cast(AgentToken, get_access_token()).user)
+        token = cast(AgentToken, get_access_token())
+        if token.user is None:
+            raise AgentLimitError(token.refusal or "")
+        return accounts.ready(token.user)
 
     apps = Apps()
     csp = ResourceCsp(resource_domains=["https://agentpit.dev", "https://assets.claude.ai"])

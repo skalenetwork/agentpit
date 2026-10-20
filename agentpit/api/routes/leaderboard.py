@@ -151,14 +151,29 @@ def get_owner_page(name: str, service: LeaderboardServiceDep) -> OwnerPage | Res
     )
 
 
+# /stats changes only when a trade settles, and every view of the landing's
+# stats page asks for it: one read per 30 s serves them all. The UTC day is
+# part of the slot, so the first request after midnight reads the new day.
+_STATS_TTL_S = 30.0
+_stats_cache: tuple[float, date, StatsResponse] | None = None
+
+
 @router.get("/stats", response_model=StatsResponse)
 def get_stats(db: SessionDep) -> StatsResponse:
     """Agents, trades and paper volume per UTC day, from the first trade to today."""
+    global _stats_cache
+    now = time.monotonic()
+    today = datetime.now(UTC).date()
+    hit = _stats_cache
+    if hit is not None and hit[1] == today and now - hit[0] < _STATS_TTL_S:
+        return hit[2]
     with db.read() as conn:
-        activity = TableRead.daily_activity(conn, datetime.now(UTC).date())
-    return StatsResponse(
+        activity = TableRead.daily_activity(conn, today)
+    result = StatsResponse(
         days=[
             StatsDay(day=a.day, agents=a.agents, active=a.active, trades=a.trades, volume=str(a.volume))
             for a in activity
         ]
     )
+    _stats_cache = (now, today, result)
+    return result

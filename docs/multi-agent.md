@@ -78,7 +78,7 @@ The human's own row is unchanged: funded at SPA sign-in, not in the agents list,
 - `users`: add `AGENT_CLIENT TEXT` and `DELETED_AT BIGINT`. Replace the `idx_users_owner_app` line with `DROP INDEX IF EXISTS idx_users_owner_app` and `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_agent ON users(OWNER_WORKOS_ID, AGENT_APP, AGENT_CLIENT) NULLS NOT DISTINCT WHERE AGENT_APP IS NOT NULL AND DELETED_AT IS NULL` (Postgres 16).
 - `TableRead.get_agent` takes the client and reads live rows; `agents_owned_by` skips tombstones and returns each agent's runner. `TableWrite.create_user` takes the client; a new write sets `DELETED_AT`.
 - `AgentVerifier` and `AgentAccounts.agent_for` as in Resolution; `AgentAccounts` gains the script-agent create.
-- Tombstones are skipped by the two auth reads (`agentpit/auth/dependencies.py:74`, `agentpit/auth/mcp_tokens.py:47-49`), not inside `get_user_by_api_key`, which the auto-redeem sync also uses (`agentpit/polymarket/polymarket_sync.py:1276,1306`) and must keep seeing deleted agents' positions. `list_traded_accounts` skips them too, so they leave the board that `card.png` reads (`agentpit/api/routes/agents.py:28`).
+- Tombstones are skipped by the two auth reads (`agentpit/auth/dependencies.py:74`, `agentpit/auth/mcp_tokens.py:56-59`), not inside `get_user_by_api_key`, which the auto-redeem sync also uses (`agentpit/polymarket/polymarket_sync.py:1276,1306`) and must keep seeing deleted agents' positions. `list_traded_accounts` skips them too, so they leave the board that `card.png` reads (`agentpit/api/routes/agents.py:28`).
 - `agentpit/api/routes/users.py`: the three routes above behind a session-only dependency. `GET /me/agents` returns `runner` in place of `app`.
 - Removed: `get_agent(owner, app)` and `idx_users_owner_app`.
 
@@ -121,7 +121,7 @@ No WorkOS probe: `client_id` is a documented token claim.
 - **`/mcp?agent=`:** production WorkOS rejects other resources with `invalid_target`, and the person would have to edit the URL.
 - **Own authorization server:** decided against; WorkOS stays.
 - **Disconnect or pause:** not in v1; whether deleting a WorkOS grant stops refresh is undocumented.
-- **Also out:** dashboard creation of OAuth agents, key reveal after creation, key rotation, undo, hard delete, agent-count limits.
+- **Also out:** dashboard creation of OAuth agents, key reveal after creation, key rotation, undo, hard delete. (The agent-count limit came later: at most 10 per owner since 2026-10-19, see `docs/API.md`.)
 
 ## Known limits
 

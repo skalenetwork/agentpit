@@ -153,8 +153,9 @@ def test_a_claimable_position_is_priced_at_one_dollar(claimable_position):
 
 
 def test_an_open_position_keeps_its_market_price(open_position):
+    """No book and no print: marked at what it cost, not at a flat 0.5."""
     assert open_position.redeemable is False
-    assert open_position.curPrice != 1.0
+    assert open_position.curPrice == 0.4
 
 
 def test_the_losing_side_of_a_resolved_market_is_not_claimable(losing_position):

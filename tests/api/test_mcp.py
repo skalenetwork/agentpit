@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from agentpit.api.app import create_app
 from agentpit.api.mcp_server import CARD
+from agentpit.auth.mcp_tokens import AgentVerifier
 from agentpit.config import Settings
 from agentpit.datastructures.competition import Competition
 from agentpit.datastructures.condition_id import ConditionId
@@ -16,6 +17,7 @@ from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.domain.exceptions import AgentLimitError
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -309,3 +311,17 @@ def test_without_a_usable_config_there_is_no_mcp_and_rest_still_serves(settings:
         assert client.post("/mcp", json={}).status_code == 404
         assert client.get("/.well-known/oauth-protected-resource/mcp").status_code == 404
         assert client.get("/").status_code == 200
+
+
+def test_with_no_room_for_its_agent_a_tool_says_why_and_reads_still_work(monkeypatch):
+    def full(self, token: str):
+        raise AgentLimitError("at most 10 agents per account")
+
+    monkeypatch.setattr(AgentVerifier, "_oauth_user", full)
+    with TestClient(app) as client:
+        refused = _call(client, "a.b.c", "tools/call", {"name": "portfolio", "arguments": {}}, "portfolio")
+        board = _call(client, "a.b.c", "tools/call", {"name": "leaderboard", "arguments": {}}, "leaderboard")
+
+    assert refused["isError"] is True
+    assert "at most 10 agents per account" in refused["content"][0]["text"]
+    assert board["isError"] is False

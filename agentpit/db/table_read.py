@@ -576,6 +576,17 @@ class TableRead:
         return Owner.model_validate(row) if row else None
 
     @staticmethod
+    def count_owner_agents(db: psycopg.Connection, owner_workos_id: str, since: int) -> int:
+        """The owner's live agents, plus those created at or after `since`
+        whether deleted or not."""
+        row = db.execute(
+            "SELECT COUNT(*) AS N FROM users WHERE OWNER_WORKOS_ID = %s "
+            "AND (DELETED_AT IS NULL OR CREATED_AT >= %s)",
+            (owner_workos_id, since),
+        ).fetchone()
+        return row["N"]
+
+    @staticmethod
     def owner_name_taken(db: psycopg.Connection, name: str, workos_id: str) -> bool:
         row = db.execute(
             "SELECT 1 FROM owners WHERE LOWER(NAME) = LOWER(%s) AND WORKOS_ID <> %s "
@@ -853,21 +864,34 @@ class TableRead:
                 WHERE u.IS_BOT = 0
             ),
             firsts AS (
-                SELECT MIN(DAY) AS DAY FROM fills GROUP BY USER_ID
+                SELECT USER_ID, MIN(DAY) AS DAY FROM fills GROUP BY USER_ID
             ),
-            matches AS (
-                SELECT DISTINCT TRADE_ID, DAY, NOTIONAL FROM fills
+            joined AS (
+                SELECT DAY, COUNT(*) AS N FROM firsts GROUP BY DAY
+            ),
+            per_day AS (
+                SELECT DAY, COUNT(DISTINCT USER_ID) AS ACTIVE,
+                       COUNT(DISTINCT TRADE_ID) AS TRADES
+                FROM fills GROUP BY DAY
+            ),
+            vol AS (
+                SELECT DAY, SUM(NOTIONAL) AS VOLUME
+                FROM (SELECT DISTINCT TRADE_ID, DAY, NOTIONAL FROM fills) m
+                GROUP BY DAY
             )
+            -- One aggregation per CTE and a running sum for the agent count,
+            -- so each fill is read once however many days the series spans.
             SELECT DATE 'epoch' + d.DAY::int AS day,
-                   (SELECT COUNT(*) FROM firsts f WHERE f.DAY <= d.DAY) AS agents,
-                   COUNT(DISTINCT fl.USER_ID) AS active,
-                   COUNT(DISTINCT fl.TRADE_ID) AS trades,
-                   (SELECT COALESCE(SUM(m.NOTIONAL), 0) FROM matches m WHERE m.DAY = d.DAY) AS volume
+                   COALESCE(SUM(j.N) OVER (ORDER BY d.DAY), 0) AS agents,
+                   COALESCE(p.ACTIVE, 0) AS active,
+                   COALESCE(p.TRADES, 0) AS trades,
+                   COALESCE(v.VOLUME, 0) AS volume
             FROM generate_series(
                 (SELECT MIN(DAY) FROM firsts), %(today)s::date - DATE 'epoch'
             ) AS d(DAY)
-            LEFT JOIN fills fl ON fl.DAY = d.DAY
-            GROUP BY d.DAY
+            LEFT JOIN joined j ON j.DAY = d.DAY
+            LEFT JOIN per_day p ON p.DAY = d.DAY
+            LEFT JOIN vol v ON v.DAY = d.DAY
             ORDER BY d.DAY
             """,
             {"today": today},
@@ -1871,21 +1895,44 @@ class TableRead:
     def last_trade_prices_for_tokens(
         db: psycopg.Connection, token_ids: "list[str]"
     ) -> "dict[str, int]":
-        """Most-recent price print per token, batched.
+        """Most-recent price print per token, batched."""
+        return {t: price for t, (price, _) in TableRead.last_prints_for_tokens(db, token_ids).items()}
+
+    @staticmethod
+    def last_prints_for_tokens(
+        db: psycopg.Connection, token_ids: "list[str]"
+    ) -> "dict[str, tuple[int, int]]":
+        """token -> (price, MATCH_TIME) of its most recent print, batched.
 
         Reads prints rather than raw rows: a YES print also prints NO at
-        MICRO - p.
+        MICRO - p, the same two sides as `TOKEN_PRINTS_CTE`. Each side is one
+        probe of its (token, MATCH_TIME DESC) index: a catalogue page used to
+        read and sort every print of every token on it, and the tape grows by
+        about half a million rows a day.
         """
         if not token_ids:
             return {}
-        ids = list(token_ids)
         rows = db.execute(
-            TableRead.TOKEN_PRINTS_CTE
-            + "SELECT DISTINCT ON (TOKEN_ID) TOKEN_ID, PRICE FROM prints "
-              "ORDER BY TOKEN_ID, MATCH_TIME DESC",
-            (ids, ids),
+            """
+            SELECT t.TOKEN_ID, newest.PRICE, newest.MATCH_TIME
+            FROM (SELECT DISTINCT unnest(%s::text[]) AS TOKEN_ID) t
+            CROSS JOIN LATERAL (
+                SELECT PRICE, MATCH_TIME FROM (
+                    (SELECT PRICE, MATCH_TIME FROM trades
+                     WHERE STATUS = 'MIRRORED' AND ASSET_ID = t.TOKEN_ID
+                     ORDER BY MATCH_TIME DESC LIMIT 1)
+                    UNION ALL
+                    (SELECT 1000000 - PRICE, MATCH_TIME FROM trades
+                     WHERE STATUS = 'MIRRORED' AND MAKER_ASSET_ID = t.TOKEN_ID
+                       AND MAKER_ASSET_ID <> ASSET_ID
+                     ORDER BY MATCH_TIME DESC LIMIT 1)
+                ) sides
+                ORDER BY MATCH_TIME DESC LIMIT 1
+            ) newest
+            """,
+            (list(token_ids),),
         ).fetchall()
-        return {r["TOKEN_ID"]: int(r["PRICE"]) for r in rows}
+        return {r["TOKEN_ID"]: (int(r["PRICE"]), int(r["MATCH_TIME"] or 0)) for r in rows}
 
     @staticmethod
     def list_resolved_unredeemed_markets(db: psycopg.Connection) -> "list[Market]":

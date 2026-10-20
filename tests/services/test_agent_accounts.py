@@ -1,11 +1,16 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 from eth_account.signers.local import LocalAccount
 
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.services.agent_accounts import AgentAccounts
-from tests.db_helpers import fresh_test_db
+from agentpit.domain.exceptions import AgentLimitError
+from agentpit.services.agent_accounts import MAX_AGENTS_PER_OWNER, RECENT_AGENT_SECONDS, AgentAccounts
+from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 OWNER = "user_owner"
 CLAWBITS = "app.clawbits.ai"
@@ -138,3 +143,97 @@ def test_ready_onboards_once():
     assert accounts.ready(agent).onboarded_at is not None
     assert accounts.ready(funded) is funded
     assert onboard.calls == [agent.user_id]
+
+
+def test_an_owner_at_the_limit_gets_no_new_agent_but_keeps_the_ones_it_has():
+    accounts, onboard, db = _accounts()
+    claude = accounts.agent_for(OWNER, "Claude", None, None)
+    for _ in range(MAX_AGENTS_PER_OWNER - 1):
+        accounts.create_api_agent(OWNER)
+
+    with pytest.raises(AgentLimitError, match="at most 10 agents per account"):
+        accounts.create_api_agent(OWNER)
+    with pytest.raises(AgentLimitError):
+        accounts.agent_for(OWNER, "Codex", None, None)
+
+    assert accounts.agent_for(OWNER, "Claude", None, None).user_id == claude.user_id
+    assert accounts.create_api_agent("user_other").user_id
+    with db.read() as conn:
+        assert len(TableRead.agents_owned_by(conn, OWNER)) == MAX_AGENTS_PER_OWNER
+    assert onboard.calls == []
+
+
+def test_an_agent_deleted_within_a_day_of_its_creation_still_counts():
+    accounts, _, db = _accounts()
+    made = [accounts.create_api_agent(OWNER) for _ in range(MAX_AGENTS_PER_OWNER)]
+    now = int(time.time())
+    with db.write() as conn:
+        TableWrite.delete_agent(conn, made[0].user_id, now)
+        TableWrite.delete_agent(conn, made[1].user_id, now)
+        conn.execute(
+            "UPDATE users SET CREATED_AT = %s WHERE USER_ID = %s",
+            (now - RECENT_AGENT_SECONDS - 1, made[1].user_id),
+        )
+
+    accounts.create_api_agent(OWNER)
+    with pytest.raises(AgentLimitError):
+        accounts.create_api_agent(OWNER)
+
+
+def _attempt(accounts: AgentAccounts) -> str:
+    try:
+        accounts.create_api_agent(OWNER)
+    except AgentLimitError:
+        return "refused"
+    return "created"
+
+
+def _slow_count(monkeypatch) -> None:
+    count = TableRead.count_owner_agents
+
+    def slow_count(*args):
+        made = count(*args)
+        time.sleep(0.5)  # hold both creations between the count and the insert
+        return made
+
+    monkeypatch.setattr(TableRead, "count_owner_agents", staticmethod(slow_count))
+
+
+def test_two_creations_racing_for_the_last_slot_make_one_agent(monkeypatch):
+    accounts, _, _ = _accounts()
+    for _ in range(MAX_AGENTS_PER_OWNER - 1):
+        accounts.create_api_agent(OWNER)
+    _slow_count(monkeypatch)
+
+    with ThreadPoolExecutor(2) as pool:
+        outcomes = sorted(pool.map(lambda _: _attempt(accounts), range(2)))
+
+    assert outcomes == ["created", "refused"]
+
+
+def test_two_first_sign_ins_from_one_app_at_the_last_slot_share_its_agent(monkeypatch):
+    accounts, _, _ = _accounts()
+    for _ in range(MAX_AGENTS_PER_OWNER - 1):
+        accounts.create_api_agent(OWNER)
+    _slow_count(monkeypatch)
+
+    with ThreadPoolExecutor(2) as pool:
+        first, again = pool.map(lambda _: accounts.agent_for(OWNER, "Claude", None, None), range(2))
+
+    assert first.user_id == again.user_id
+
+
+def test_an_owner_at_the_limit_is_refused_without_waiting_on_the_owner_lock():
+    accounts, _, _ = _accounts()
+    for _ in range(MAX_AGENTS_PER_OWNER):
+        accounts.create_api_agent(OWNER)
+
+    pool = ThreadPoolExecutor(1)
+    try:
+        with fresh_test_conn() as holder, holder.transaction():
+            TableWrite.lock_owner(holder, OWNER)
+            outcome = pool.submit(_attempt, accounts).result(timeout=5)
+    finally:
+        pool.shutdown()
+
+    assert outcome == "refused"

@@ -87,6 +87,33 @@ class TableCreate:
             "CREATE INDEX IF NOT EXISTS idx_trades_mirrored "
             "ON trades(MATCH_TIME) WHERE STATUS = 'MIRRORED'"
         )
+        # A token's last print, newest first: one probe per token and side
+        # (`TableRead.last_trade_prices_for_tokens`) instead of reading and
+        # sorting the token's whole tape. On a database that already holds a
+        # long tape, build them before deploying, so the tape keeps writing
+        # while they build and these two lines find them:
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trades_mirrored_asset_time
+        #     ON trades(ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED';
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trades_mirrored_maker_asset_time
+        #     ON trades(MAKER_ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED';
+        # one statement at a time, from a session that survives a dropped
+        # connection. A cancelled build leaves the index INVALID, which IF NOT
+        # EXISTS would keep, and the query without these indexes walks the
+        # whole tape per token: an invalid one is dropped here and rebuilt.
+        for name in ("idx_trades_mirrored_asset_time", "idx_trades_mirrored_maker_asset_time"):
+            invalid = conn.execute(
+                "SELECT 1 FROM pg_index WHERE indexrelid = to_regclass(%s) AND NOT indisvalid", (name,)
+            ).fetchone()
+            if invalid is not None:
+                conn.execute(f"DROP INDEX {name}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_mirrored_asset_time "
+            "ON trades(ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED'"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_mirrored_maker_asset_time "
+            "ON trades(MAKER_ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED'"
+        )
         conn.execute(
             "UPDATE trades SET STATUS = 'CONFIRMED' "
             "WHERE STATUS = 'PENDING' AND TRANSACTION_HASH = ''"

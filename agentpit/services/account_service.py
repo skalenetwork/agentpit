@@ -27,6 +27,7 @@ class _TokenFlow:
     sold_size: int
     sold_proceeds: int
     last_sell_time: int
+    last_buy_time: int
 
     @property
     def net_size(self) -> int:
@@ -36,6 +37,17 @@ class _TokenFlow:
     def avg_buy_price_micro(self) -> int:
         """Size-weighted micro-price paid per share; 0 when nothing was bought."""
         return self.bought_cost // self.bought_size if self.bought_size else 0
+
+    def entry_price_micro(self, held_micro: int) -> int:
+        """What the `held_micro` shares still held cost, per share: the
+        average buy price, but never more than the net cash put into the
+        token (bought minus sold) spread over them. The average alone counts
+        shares already sold, so cheap shares bought after a few round trips
+        would carry the dearer ones' price."""
+        if held_micro <= 0:
+            return 0
+        net_cash = max(0, self.bought_cost - self.sold_proceeds)
+        return min(self.avg_buy_price_micro, net_cash // held_micro)
 
 
 #: A market sell is a GTC limit for the whole size at
@@ -150,7 +162,8 @@ class AccountService:
                     and bal * mkt.payouts[idx] // sum(mkt.payouts)
                     >= self._min_claim_micro
                 )
-                avg_price = self._avg_fill_price(conn, user.api_key, token_id)
+                flow = self._token_flow(conn, user.api_key, token_id)
+                avg_price = price_to_float(flow.avg_buy_price_micro)
                 settled = mkt.market_state == MarketState.RESOLVED
                 # A resolved market has no live book any more, so
                 # `_live_pricing` would fall through to the last trade print
@@ -165,7 +178,14 @@ class AccountService:
                     cur_price = mkt.payouts[idx] / sum(mkt.payouts)
                     sellable = Sellable(0.0, 0.0)
                 else:
-                    pricing = self._live_pricing(conn, token_id, opp_token, bal)
+                    pricing = self._live_pricing(
+                        conn,
+                        token_id,
+                        opp_token,
+                        bal,
+                        entry_price=price_to_float(flow.entry_price_micro(bal)),
+                        bought_at=flow.last_buy_time,
+                    )
                     cur_price = pricing.cur_price
                     sellable = pricing.sellable
                 initial_value = avg_price * size
@@ -419,7 +439,7 @@ class AccountService:
             (api_key, token_id, api_key, token_id),
         ).fetchall()
         bought_size = bought_cost = sold_size = sold_proceeds = 0
-        last_sell_time = 0
+        last_sell_time = last_buy_time = 0
         for r in rows:
             for leg in legs_for_user(r, api_key):
                 if leg.token_id != token_id:
@@ -427,6 +447,7 @@ class AccountService:
                 if leg.side == "BUY":
                     bought_size += leg.size_micro
                     bought_cost += leg.price_micro * leg.size_micro
+                    last_buy_time = max(last_buy_time, int(r["MATCH_TIME"] or 0))
                 else:
                     sold_size += leg.size_micro
                     sold_proceeds += leg.price_micro * leg.size_micro
@@ -437,6 +458,7 @@ class AccountService:
             sold_size=sold_size,
             sold_proceeds=sold_proceeds,
             last_sell_time=last_sell_time,
+            last_buy_time=last_buy_time,
         )
 
     def total_value(self, eth_address: str) -> list[dict]:
@@ -597,20 +619,48 @@ class AccountService:
 
     @staticmethod
     def _live_pricing(
-        conn, token_id: str, opposite: str, size_micro: int
+        conn,
+        token_id: str,
+        opposite: str,
+        size_micro: int,
+        *,
+        entry_price: float,
+        bought_at: int,
     ) -> "_LivePricing":
-        """Book midpoint (fall back to the last print, then 1 - the opposite
-        token's last print, else 0.5) AND what a market sell of `size_micro`
-        shares would fetch, from ONE snapshot of Polymarket's book.
+        """The position's mark AND what a market sell of `size_micro` shares
+        would fetch, from ONE snapshot of Polymarket's book.
+
+        A two-sided book marks at its midpoint, and with bids only at the best
+        bid, which is what selling gets. Otherwise (asks only, or no book at
+        all) the mark is the last print, then 1 - the opposite token's last
+        print, then `entry_price`, what the shares held cost; never above
+        `entry_price` when the account bought (`bought_at`) after that print,
+        and never above the best ask when there is one. Never a flat guess:
+        an outcome the house sells at 0.001 marked at 0.5 would put whoever
+        bought it at the top of the board.
         """
         snap = feed.book(token_id)
-        sellable = sellable_against_bids(list(snap.bids) if snap else [], size_micro)
-        if snap is not None and snap.bids and snap.asks:
-            mid = price_to_float((snap.bids[0][0] + snap.asks[0][0]) // 2)
+        bids = list(snap.bids) if snap else []
+        asks = list(snap.asks) if snap else []
+        sellable = sellable_against_bids(bids, size_micro)
+        if bids and asks:
+            mid = price_to_float((bids[0][0] + asks[0][0]) // 2)
             return _LivePricing(mid, sellable)
-        lasts = TableRead.last_trade_prices_for_tokens(conn, [token_id, opposite])
-        if token_id in lasts:
-            return _LivePricing(price_to_float(lasts[token_id]), sellable)
-        if opposite in lasts:
-            return _LivePricing(price_to_float(MICRO - lasts[opposite]), sellable)
-        return _LivePricing(0.5, sellable)
+        if bids:
+            return _LivePricing(price_to_float(bids[0][0]), sellable)
+        prints = TableRead.last_prints_for_tokens(conn, [token_id, opposite])
+        if token_id in prints:
+            price, printed_at = prints[token_id]
+            mark = price_to_float(price)
+        elif opposite in prints:
+            price, printed_at = prints[opposite]
+            mark = price_to_float(MICRO - price)
+        else:
+            mark, printed_at = entry_price, 0
+        if bought_at > printed_at:
+            # The account bought after the market last printed: that buy says
+            # more about the price than the older print does.
+            mark = min(mark, entry_price)
+        if asks:
+            mark = min(mark, price_to_float(asks[0][0]))
+        return _LivePricing(mark, sellable)
