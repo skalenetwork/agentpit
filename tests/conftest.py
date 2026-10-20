@@ -74,6 +74,7 @@ os.environ.setdefault("LIQUIDITY_ENGINE", "false")
 # off the same way the other timers above are, so a developer's .env can't
 # make every TestClient(app) lifespan start ticking it.
 os.environ.setdefault("AGENTPIT_LEADERBOARD_ENABLED", "false")
+os.environ.setdefault("AGENTPIT_BOARD_TTL_SECONDS", "0")
 os.environ.setdefault("JWT_SECRET", "test-only-secret")
 # The $1 minimum order (AGENTPIT_MIN_ORDER_NOTIONAL_MICRO) would reject the
 # small orders much of the suite places; guard tests set it explicitly.

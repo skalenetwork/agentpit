@@ -168,6 +168,7 @@ class Settings(BaseSettings):
     leaderboard_interval_seconds: int = Field(
         default=300, validation_alias="AGENTPIT_LEADERBOARD_INTERVAL_SECONDS"
     )
+    board_ttl_seconds: float = Field(default=5.0, validation_alias="AGENTPIT_BOARD_TTL_SECONDS")
     cors_origins: list[str] = Field(
         default=["http://localhost:5173"], validation_alias="AGENTPIT_CORS_ORIGINS"
     )

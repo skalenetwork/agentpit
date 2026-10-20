@@ -73,6 +73,8 @@ class Holdings:
 
 
 _holdings: dict[str, Holdings] = {}
+_board_lock = threading.Lock()
+_board: "tuple[float, list[LeaderboardRow]] | None" = None
 _dirty: set[str] = set()
 _dirty_lock = threading.Lock()
 
@@ -293,6 +295,15 @@ class LeaderboardService:
             return TableWrite.thin_account_snapshots(conn, now - DENSE_WINDOW)
 
     def build_board(self) -> "list[LeaderboardRow]":
+        """The assembled board, shared by every caller for `board_ttl_seconds`."""
+        global _board
+        with _board_lock:
+            started = time.monotonic()
+            if _board is None or started - _board[0] >= self._settings.board_ttl_seconds:
+                _board = (started, self._assemble_board())
+            return _board[1]
+
+    def _assemble_board(self) -> "list[LeaderboardRow]":
         """Assemble the board from the latest snapshot of each account, with each
         place now and its change since the previous UTC day's close.
 
