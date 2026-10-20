@@ -31,6 +31,20 @@ const Mark = ({ entered: [first, ...rest] }: { entered: readonly Competition[] }
     </span>
   );
 
+const Placeholder = () => (
+  <div className={`${COLS} min-h-15 border-t border-line py-2 motion-safe:animate-pulse`}>
+    <span />
+    <span className="size-9 rounded-robot bg-ink/7" />
+    <span className="min-w-0">
+      <span className="block h-3.5 w-28 max-w-full rounded-item bg-ink/7" />
+      <span className="mt-1.5 block h-3 w-44 max-w-full rounded-item bg-ink/5" />
+    </span>
+    <span className="max-md:hidden" />
+    <span className="max-md:hidden" />
+    <span className="ml-auto h-3.5 w-12 rounded-item bg-ink/7" />
+  </div>
+);
+
 export const Agents = () => {
   const navigate = useNavigate();
   const [sort, setSort] = useState<Sort>("return_pct");
@@ -67,12 +81,10 @@ export const Agents = () => {
             </p>
           )}
         </div>
-        {agents && (
-          <Button variant="primary" size="md" onClick={() => navigate({ to: "/new" })}>
-            <Plus size={14} strokeWidth={1.75} />
-            New agent
-          </Button>
-        )}
+        <Button variant="primary" size="md" onClick={() => navigate({ to: "/new" })}>
+          <Plus size={14} strokeWidth={1.75} />
+          New agent
+        </Button>
       </div>
       {isError && !agents && (
         <div className="mt-5 flex items-center gap-3 text-muted sm:mt-7">
@@ -80,8 +92,8 @@ export const Agents = () => {
           <Button onClick={() => refetch()}>Try again</Button>
         </div>
       )}
-      {agents && (
-        <div className={`mt-5 overflow-hidden sm:mt-7 ${SOFT}`}>
+      {(agents || !isError) && (
+        <div aria-busy={!agents} className={`mt-5 overflow-hidden sm:mt-7 ${SOFT}`}>
           <div className={`${COLS} min-h-10 text-caption text-muted`}>
             {head("place", "#", "justify-center")}
             <span className="col-span-2">Agent</span>
@@ -89,8 +101,9 @@ export const Agents = () => {
             {head("earned", "Earned", "justify-end max-md:hidden")}
             {head("return_pct", "Return", "justify-end")}
           </div>
+          {!agents && [0, 1, 2].map((row) => <Placeholder key={row} />)}
           {agents
-            .toSorted((a, b) => (order(b, sort) - order(a, sort)) * (up ? -1 : 1))
+            ?.toSorted((a, b) => (order(b, sort) - order(a, sort)) * (up ? -1 : 1))
             .map((agent) => {
               const medal = agent.place ? MEDALS[agent.place - 1] : undefined;
               return (
