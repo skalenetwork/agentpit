@@ -364,7 +364,7 @@ bun install && cd app && bun run dev   # http://localhost:5173
 
 ## Tests
 
-184 backend test files, plus 7 for the console, the landing and the shared
+186 backend test files, plus 7 for the console, the landing and the shared
 `packages/brand`.
 
 The suite runs against a **real** local Postgres and a **real** local chain —
