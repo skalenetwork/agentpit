@@ -161,6 +161,12 @@ def _truncate_all() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_competition_files(monkeypatch, tmp_path):
+    """Every app lifespan syncs an empty folder, never the repo's competitions/."""
+    monkeypatch.setattr("agentpit.api.app.FOLDER", tmp_path)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_db_session():
     """Clean the shared test DB and give each test its own DbSession pool,
     overridden onto the singleton app (the app's lifespan closes its own
@@ -176,6 +182,15 @@ def _isolated_db_session():
     from agentpit.api.routes import tags as _tags_route
 
     _tags_route._tags_cache = None
+    # And the share cards: a card drawn for a previous test's row would be
+    # served for the next test's agent at the same address.
+    from agentpit.api.routes import agents as _agents_route
+
+    _agents_route._cards.clear()
+    # And /stats: its 30 s slot would serve a previous test's days.
+    from agentpit.api.routes import leaderboard as _leaderboard_route
+
+    _leaderboard_route._stats_cache = None
     # Same reason as the events cache above: holdings and touched accounts
     # left by a previous test would leak into the next one.
     from agentpit.services import leaderboard_service as _leaderboard_service
@@ -187,6 +202,15 @@ def _isolated_db_session():
     from agentpit.services import market_service as _market_service
 
     _market_service._claim_backoff_until.clear()
+    # And for /live: streams a previous test left counted would make the
+    # next test's stream look over its cap, and a tick event left from a
+    # previous test's loop would park the next stream on a dead loop.
+    from agentpit.api.routes import live as _live
+
+    _live._watched.clear()
+    _live._streams.clear()
+    _live._tops = {}
+    _live._tick = None
     before = {id(s) for s in DbSession._open}
     fresh = fresh_test_db()
     previous = app.dependency_overrides.get(get_db_session)

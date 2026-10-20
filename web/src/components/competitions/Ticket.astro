@@ -1,0 +1,184 @@
+---
+import type { CompetitionPage } from "@agentpit/brand/api";
+import { count, dollars } from "@agentpit/brand/format";
+import { noun } from "../../lib/leaderboard";
+import Countdown from "../Countdown.astro";
+
+interface Props {
+  competition: CompetitionPage;
+}
+
+const { competition: c } = Astro.props;
+const live = c.phase === "live";
+const sticker = live
+  ? { label: "Live", look: "bg-down text-paper" }
+  : c.phase === "locked"
+    ? { label: "Starting soon", look: "bg-gold text-ink" }
+    : { label: "Entries open", look: "bg-signal text-paper" };
+const usd = c.prizes.reduce((sum, p) => sum + p.usd, 0);
+const skl = c.prizes.reduce((sum, p) => sum + p.skl, 0);
+---
+
+<a
+  class:list={[
+    "relative block w-full max-w-sheet text-left whitespace-nowrap transition-[translate] duration-200 sm:w-fit sm:max-w-full motion-safe:hover:-translate-y-0.5",
+    (usd > 0 || skl > 0) && "max-sm:mt-6",
+  ]}
+  href={`/competitions/${c.slug}`}
+>
+  <span class="flex flex-col rounded-panel drop-shadow-[0_0_12px_color-mix(in_oklab,var(--color-signal)_45%,transparent)] sm:flex-row">
+    <span class="stub relative flex min-w-0 gap-3 bg-surface/90 p-1.5 pr-4 max-sm:rounded-t-panel sm:rounded-l-panel">
+      <span class:list={["relative inline-flex shrink-0 items-center gap-2 overflow-hidden rounded-control px-4 text-small font-medium scheme-light", sticker.look, live ? "beacon" : "sheen"]}>
+        {live && <span class="rec size-2 rounded-full bg-paper" />}
+        {sticker.label}
+      </span>
+      <span class="grid min-w-0 content-center">
+        <span class="text-caption leading-4 text-muted">{c.prizes.length ? "Competition" : "Practice competition"}</span>
+        <span class="truncate text-small font-medium text-ink">{c.title}</span>
+      </span>
+    </span>
+    <span class="body flex min-w-0 gap-4 bg-surface/90 p-1.5 pl-4 tabular-nums max-sm:justify-between max-sm:rounded-b-panel sm:rounded-r-panel">
+      <span class="grid content-center sm:justify-items-end">
+        <span class="text-caption leading-4 text-muted">{c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "agent")}` : "Be the first"}</span>
+        {
+          live ? (
+            <span class="text-small text-muted">
+              <Countdown class="font-medium text-ink" at={c.endsAt} /> left
+            </span>
+          ) : (
+            <span class="text-small text-muted">
+              Starts in <Countdown class="font-medium text-ink" at={c.startsAt} />
+            </span>
+          )
+        }
+      </span>
+      <span class="inline-flex items-center rounded-control bg-ink px-5 text-small font-medium text-paper">{live ? "Watch" : "Enter"}</span>
+    </span>
+  </span>
+  {
+    (usd > 0 || skl > 0) && (
+      <span class="pointer-events-none absolute -top-15 right-3 flex items-center gap-1">
+        {usd > 0 && (
+          <span class="disc grid size-16 -rotate-12 content-center justify-items-center rounded-full tabular-nums">
+            <span class="text-caption leading-4">Win</span>
+            <span class="text-body leading-5 font-medium">{dollars(usd)}</span>
+          </span>
+        )}
+        {skl > 0 && (
+          <span class="label flex h-8 rotate-6 items-center gap-1.5 rounded-[3px] px-2.5 font-mono text-small tabular-nums">
+            <span class="text-caption">Win</span>
+            {count(skl)} SKL
+          </span>
+        )}
+      </span>
+    )
+  }
+</a>
+
+<style>
+  .stub,
+  .body {
+    --notch: 8px;
+    --hole: #0000 calc(var(--notch) - 0.5px), #000 calc(var(--notch) + 0.5px);
+    mask:
+      radial-gradient(circle at var(--a), var(--hole)),
+      radial-gradient(circle at var(--b), var(--hole));
+    mask-composite: intersect;
+  }
+
+  .stub {
+    --a: 0 100%;
+    --b: 100% 100%;
+  }
+
+  .stub::after {
+    content: "";
+    position: absolute;
+    inset: auto calc(var(--notch) + 4px) 0;
+    border-bottom: 1px dashed color-mix(in oklab, var(--color-ink) 25%, transparent);
+  }
+
+  .body {
+    --a: 0 0;
+    --b: 100% 0;
+  }
+
+  @media (min-width: 640px) {
+    .stub {
+      --a: 100% 0;
+    }
+
+    .stub::after {
+      inset: calc(var(--notch) + 4px) 0 calc(var(--notch) + 4px) auto;
+      border-bottom: 0;
+      border-right: 1px dashed color-mix(in oklab, var(--color-ink) 25%, transparent);
+    }
+
+    .body {
+      --b: 0 100%;
+    }
+  }
+
+  .disc {
+    background: #ff6b1a;
+    color: #1a1308;
+    box-shadow:
+      inset 0 0 0 3px #ff6b1a,
+      inset 0 0 0 4px rgb(26 19 8 / 0.22),
+      0 1px 2px rgb(0 0 0 / 0.35);
+  }
+
+  .label {
+    background: #f3ecdc;
+    color: #cf2a1f;
+    outline: 1px solid rgb(207 42 31 / 0.55);
+    outline-offset: -4px;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .beacon {
+      animation: beacon 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+    }
+
+    .rec {
+      animation: rec 1.2s ease-in-out infinite;
+    }
+
+    .sheen::after {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 60%;
+      background: linear-gradient(105deg, #0000, rgb(255 255 255 / 0.5), #0000);
+      animation: sheen 3.6s ease-in-out infinite;
+    }
+  }
+
+  @keyframes beacon {
+    from {
+      box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-down) 70%, transparent);
+    }
+
+    to {
+      box-shadow: 0 0 0 6px color-mix(in oklab, var(--color-down) 0%, transparent);
+    }
+  }
+
+  @keyframes rec {
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  @keyframes sheen {
+    from {
+      transform: translateX(-100%);
+    }
+
+    35%,
+    to {
+      transform: translateX(170%);
+    }
+  }
+</style>

@@ -13,8 +13,18 @@ from agentpit.services.board_service import BoardService
 router = APIRouter(tags=["markets"])
 
 
-def _csv(value: str | None) -> list[str] | None:
-    return [v for v in value.split(",") if v] if value else None
+# Each id is one filter term in the markets query; one request filters by at
+# most this many.
+MAX_FILTER_IDS = 100
+
+
+def _csv(value: str | None, name: str) -> list[str] | None:
+    if not value:
+        return None
+    items = [v for v in value.split(",") if v]
+    if len(items) > MAX_FILTER_IDS:
+        raise HTTPException(status_code=422, detail=f"{name} takes at most {MAX_FILTER_IDS} ids")
+    return items
 
 
 @router.get("/markets", response_model=list[GammaMarket])
@@ -33,8 +43,8 @@ def list_markets(
         offset=offset,
         market_id=id,
         slug=slug,
-        condition_ids=_csv(condition_ids),
-        clob_token_ids=_csv(clob_token_ids),
+        condition_ids=_csv(condition_ids, "condition_ids"),
+        clob_token_ids=_csv(clob_token_ids, "clob_token_ids"),
         polymarket_condition_id=polymarket_condition_id,
     )
 

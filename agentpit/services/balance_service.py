@@ -1,4 +1,6 @@
 """Restoring a user's paper balance to the target, at most once a day."""
+import time
+
 from pydantic import BaseModel
 
 from agentpit.config import Settings
@@ -52,11 +54,13 @@ class BalanceService:
 
         Backs the GET side of the top-up endpoint, so the button knows when
         it may be clicked without paying for an RPC round-trip or touching
-        LAST_TOPUP_AT the way a real top-up attempt would.
+        LAST_TOPUP_AT the way a real top-up attempt would. A competition entry
+        past its lock pauses top-ups until its end value is taken.
         """
         with self._db.read() as conn:
             last = TableRead.get_last_topup_at(conn, user.user_id)
-        return next_allowed_at(last, self._settings.topup_cooldown_seconds)
+            paused = TableRead.topup_paused_until(conn, user.user_id, int(time.time()))
+        return max(next_allowed_at(last, self._settings.topup_cooldown_seconds), paused or 0)
 
     def _net_worth_raw(self, address: str) -> int:
         """Cash plus what the open positions are currently worth, raw.
@@ -82,7 +86,10 @@ class BalanceService:
 
         with self._db.read() as conn:
             last = TableRead.get_last_topup_at(conn, user.user_id)
-        allowed_at = next_allowed_at(last, self._settings.topup_cooldown_seconds)
+            paused = TableRead.topup_paused_until(conn, user.user_id, now)
+        allowed_at = max(next_allowed_at(last, self._settings.topup_cooldown_seconds), paused or 0)
+        if paused is not None:
+            return TopUpResult(balance_raw=balance, minted_raw=0, next_allowed_at=allowed_at)
 
         minted = topup_amount_raw(balance, self._settings.paper_balance_target_raw)
         if minted == 0:

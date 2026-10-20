@@ -380,20 +380,23 @@ class OrderService:
         """Cancel a set of the caller's live orders by id (§8.2)."""
         order_ids = list(dict.fromkeys(order_ids))  # dedup, preserve order (Polymarket ignores dupes)
         result = CancelOrdersResponse()
-        now = int(time.time())
+        if not order_ids:
+            return result
         with self._db.write() as conn:
-            for order_id in order_ids:
-                cur = conn.execute(
-                    "UPDATE orders SET STATUS = 'cancelled' "
-                    f"WHERE ORDER_ID = %s AND API_KEY = %s AND {TableRead.LIVE_ORDER}",
-                    (order_id, user.api_key, now),
+            rows = conn.execute(
+                "UPDATE orders SET STATUS = 'cancelled' "
+                f"WHERE ORDER_ID = ANY(%s) AND API_KEY = %s AND {TableRead.LIVE_ORDER} "
+                "RETURNING ORDER_ID",
+                (order_ids, user.api_key, int(time.time())),
+            ).fetchall()
+        done = {r["ORDER_ID"] for r in rows}
+        for order_id in order_ids:
+            if order_id in done:
+                result.canceled.append(order_id)
+            else:
+                result.not_canceled[order_id] = (
+                    "order not found, not yours, or not live"
                 )
-                if cur.rowcount > 0:
-                    result.canceled.append(order_id)
-                else:
-                    result.not_canceled[order_id] = (
-                        "order not found, not yours, or not live"
-                    )
         return result
 
     def cancel_all(self, user: User) -> CancelOrdersResponse:

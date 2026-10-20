@@ -2,7 +2,6 @@
 # own connection from the pool, so the methods below may run concurrently
 # across threads — every one of them operates only on the connection it is
 # given.
-import json
 
 import psycopg
 from eth_utils.crypto import keccak
@@ -87,6 +86,33 @@ class TableCreate:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trades_mirrored "
             "ON trades(MATCH_TIME) WHERE STATUS = 'MIRRORED'"
+        )
+        # A token's last print, newest first: one probe per token and side
+        # (`TableRead.last_trade_prices_for_tokens`) instead of reading and
+        # sorting the token's whole tape. On a database that already holds a
+        # long tape, build them before deploying, so the tape keeps writing
+        # while they build and these two lines find them:
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trades_mirrored_asset_time
+        #     ON trades(ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED';
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trades_mirrored_maker_asset_time
+        #     ON trades(MAKER_ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED';
+        # one statement at a time, from a session that survives a dropped
+        # connection. A cancelled build leaves the index INVALID, which IF NOT
+        # EXISTS would keep, and the query without these indexes walks the
+        # whole tape per token: an invalid one is dropped here and rebuilt.
+        for name in ("idx_trades_mirrored_asset_time", "idx_trades_mirrored_maker_asset_time"):
+            invalid = conn.execute(
+                "SELECT 1 FROM pg_index WHERE indexrelid = to_regclass(%s) AND NOT indisvalid", (name,)
+            ).fetchone()
+            if invalid is not None:
+                conn.execute(f"DROP INDEX {name}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_mirrored_asset_time "
+            "ON trades(ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED'"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_mirrored_maker_asset_time "
+            "ON trades(MAKER_ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED'"
         )
         conn.execute(
             "UPDATE trades SET STATUS = 'CONFIRMED' "
@@ -639,6 +665,45 @@ class TableCreate:
         )
 
     @staticmethod
+    def create_competitions_table(conn: psycopg.Connection) -> None:
+        """PRIZES is a JSON list of `Prize`, item `i` being place `i + 1`."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS competitions (
+                SLUG      TEXT PRIMARY KEY,
+                TITLE     TEXT NOT NULL,
+                STARTS_AT BIGINT NOT NULL,
+                ENDS_AT   BIGINT NOT NULL,
+                PRIZES    TEXT NOT NULL,
+                CHECK (ENDS_AT > STARTS_AT)
+            )
+            """
+        )
+
+    @staticmethod
+    def create_competition_entries_table(conn: psycopg.Connection) -> None:
+        """One agent per owner per competition. START_RAW and END_RAW are the
+        account's value at its run start and at the end, NULL until captured."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS competition_entries (
+                SLUG            TEXT NOT NULL,
+                OWNER           TEXT NOT NULL,
+                USER_ID         TEXT NOT NULL,
+                ENROLLED_AT     BIGINT NOT NULL,
+                START_RAW       BIGINT,
+                END_RAW         BIGINT,
+                DISQUALIFIED_AT BIGINT,
+                PRIMARY KEY (SLUG, OWNER)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_competition_entries_user_id "
+            "ON competition_entries(USER_ID)"
+        )
+
+    @staticmethod
     def create_all_tables(conn: psycopg.Connection) -> None:
         # errors propagate; no exception handling here
         TableCreate.create_orders_table(conn)
@@ -658,3 +723,5 @@ class TableCreate:
         TableCreate.create_auth_code_attempts_table(conn)
         TableCreate.create_sponsored_gas_table(conn)
         TableCreate.create_pending_user_txs_table(conn)
+        TableCreate.create_competitions_table(conn)
+        TableCreate.create_competition_entries_table(conn)

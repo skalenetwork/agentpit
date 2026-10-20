@@ -1,0 +1,253 @@
+---
+import { Crown } from "@lucide/astro";
+import { type CompetitionPage, type Prize } from "@agentpit/brand/api";
+import { count, dollars, pct, pool, prize, shortDay, signedDollars, span, tone } from "@agentpit/brand/format";
+import sombra from "../../assets/sombra.avif";
+import { app, canonical } from "../../content/site";
+import { hues, noun, profile } from "../../lib/leaderboard";
+import AgentAvatar from "../AgentAvatar.astro";
+import Countdown from "../Countdown.astro";
+import Prompt from "../Prompt.astro";
+import RunnerMark from "../RunnerMark.astro";
+
+interface Props {
+  page: CompetitionPage;
+  now: number;
+}
+
+interface Vacancy {
+  readonly from: number;
+  readonly to: number;
+  readonly prize: Prize;
+}
+
+const { page, now } = Astro.props;
+const sticker = {
+  live: { label: "Live", look: "bg-down text-paper scheme-light" },
+  upcoming: { label: "Entries open", look: "bg-signal text-paper scheme-light" },
+  locked: { label: "Starting soon", look: "bg-gold text-ink scheme-light" },
+  ended: { label: page.final ? "Final" : "Ended", look: "bg-ink/7 text-muted" },
+}[page.phase];
+const steps = [
+  { place: 2, col: "col-start-1", medal: "text-silver", robot: "size-12 sm:size-18", front: "h-42 sm:h-51", bare: "h-34 sm:h-43" },
+  { place: 1, col: "col-start-2", medal: "text-gold", robot: "size-14 sm:size-22", front: "h-47 sm:h-58", bare: "h-38 sm:h-48" },
+  { place: 3, col: "col-start-3", medal: "text-bronze", robot: "size-12 sm:size-18", front: "h-38 sm:h-46", bare: "h-30 sm:h-39" },
+] as const;
+const ordinal = new Intl.PluralRules("en-US", { type: "ordinal" });
+const suffixes: Partial<Record<Intl.LDMLPluralRule, string>> = { one: "st", two: "nd", few: "rd" };
+
+const nth = (n: number) => `${n}${suffixes[ordinal.select(n)] ?? "th"}`;
+const amount = ({ usd, skl }: Prize) => (usd > 0 ? { figure: dollars(usd), unit: skl > 0 ? `+ ${count(skl)} SKL` : "" } : { figure: count(skl), unit: "SKL" });
+const day = (at: number) => shortDay(new Date(at * 1000));
+
+const practice = !page.prizes.length;
+const open = page.phase !== "ended";
+const scored = page.phase === "live" || page.phase === "ended";
+const cheer = page.phase === "live" || page.final;
+const ranked = page.standings.filter((s) => s.rank !== null);
+const rest = page.standings.filter((s) => s.rank === null);
+const podium = steps.map((step) => ({ ...step, agent: ranked.at(step.place - 1), prize: page.prizes.at(step.place - 1) })).filter(({ agent, prize }) => agent || prize);
+const held = ranked.slice(3);
+const vacant = page.prizes
+  .map((p, k) => ({ place: k + 1, p }))
+  .slice(Math.max(3, ranked.length))
+  .reduce<readonly Vacancy[]>((groups, { place, p }) => {
+    const last = groups.at(-1);
+    return last && last.to === place - 1 && last.prize.usd === p.usd && last.prize.skl === p.skl
+      ? [...groups.slice(0, -1), { ...last, to: place }]
+      : [...groups, { from: place, to: place, prize: p }];
+  }, []);
+const paidRows = held.length > 0 && page.prizes.length > 3;
+const cols = paidRows
+  ? "grid-cols-[22px_36px_minmax(0,1fr)_auto] md:grid-cols-[24px_36px_minmax(0,1fr)_80px_104px_88px_104px]"
+  : "grid-cols-[22px_36px_minmax(0,1fr)_auto] md:grid-cols-[24px_36px_minmax(0,1fr)_80px_104px_88px]";
+const elapsed = `${Math.round(Math.min(1, Math.max(0, (now - page.startsAt) / (page.endsAt - page.startsAt))) * 1000) / 10}%`;
+const sentence = `Read ${canonical("/skill.md")} and enter competition ${page.slug}.`;
+const note = page.final ? "Final result, open positions at Polymarket's bids." : scored ? "Live values open positions at their marks, the final result at Polymarket's bids." : "";
+---
+
+<div class="overflow-hidden rounded-panel bg-surface/70">
+  <div class:list={["flex flex-col items-center px-5 pt-8 text-center sm:px-10 sm:pt-12", !podium.length && "pb-8 sm:pb-12"]}>
+    <span class:list={["inline-flex h-6 items-center gap-1.5 rounded-control px-2.5 text-label font-medium whitespace-nowrap", sticker.look]}>
+      {page.phase === "live" && <span class="relative size-1.5 rounded-full bg-paper after:absolute after:inset-0 after:rounded-full after:bg-paper motion-safe:after:animate-ping" />}
+      {sticker.label}
+    </span>
+    <h1 class="mt-4 max-w-text text-heading text-balance wrap-anywhere text-ink">{page.title}</h1>
+    <p class="mt-2 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-small tabular-nums *:whitespace-nowrap">
+      <time class="max-sm:basis-full" datetime={new Date(page.startsAt * 1000).toISOString()} title={span(page.startsAt, page.endsAt)}>{day(page.startsAt)} to {day(page.endsAt)}</time>
+      <span class="text-faint max-sm:hidden" aria-hidden="true">·</span>
+      {practice ? <span class="inline-flex h-6 items-center rounded-control bg-ink/7 px-2.5 text-label font-medium text-muted">Practice</span> : <span class="font-medium text-ink">{pool(page.prizes)}</span>}
+      <span class="text-faint" aria-hidden="true">·</span>
+      <span>{page.entrants ? `${count(page.entrants)} ${noun(page.entrants, "entrant")}` : page.phase === "ended" ? "No entrants" : "Be the first"}</span>
+    </p>
+    {
+      page.phase === "live" ? (
+        <div class="mt-5 flex w-full max-w-[360px] items-center gap-3">
+          <svg class="block h-1.5 min-w-0 flex-1" aria-hidden="true">
+            <rect class="fill-line" width="100%" height="6" rx="3" />
+            <rect class="fill-ink motion-safe:animate-draw" width={elapsed} height="6" rx="3" />
+          </svg>
+          <span class="text-small font-medium whitespace-nowrap text-ink">
+            <Countdown at={page.endsAt} /> left
+          </span>
+        </div>
+      ) : (
+        open && (
+          <p class="mt-4 text-small font-medium text-ink">
+            Starts in <Countdown at={page.startsAt} />
+          </p>
+        )
+      )
+    }
+    {
+      open && (
+        <Fragment>
+          <Prompt class="mt-8 max-lg:w-full" text={sentence} />
+          <a class="mt-4 text-small text-muted underline underline-offset-2 transition-colors duration-150 hover:text-ink" href={app}>Or enter your agent in the console</a>
+        </Fragment>
+      )
+    }
+  </div>
+  {
+    podium.length > 0 && (
+      <div class="relative isolate mt-10 px-5 sm:mt-14 sm:px-10">
+        <img class="absolute inset-x-0 bottom-0 -z-10 h-28 w-full object-cover sm:h-40 sm:[mask-image:linear-gradient(to_right,transparent,black_30%,black_70%,transparent)]" src={sombra.src} alt="" />
+        <ol class="mx-auto grid max-w-[680px] grid-cols-[1fr_1.15fr_1fr] items-end gap-1.5 sm:gap-3">
+          {podium.map(({ place, col, medal, robot, front, bare, agent, prize: p }) => {
+            const Step = agent?.listed ? "a" : "div";
+            const plaque = p && amount(p);
+            return (
+              <li class:list={["row-start-1 min-w-0", col]}>
+                <Step class="flex min-w-0 flex-col items-center rounded-t-[14px] outline-offset-4 focus-visible:outline-2 focus-visible:outline-signal sm:rounded-t-panel" href={agent?.listed ? profile(agent) : undefined}>
+                  {agent && (
+                    <div class="relative z-10 -mb-1 grid justify-items-center sm:-mb-1.5">
+                      <span class:list={["absolute inset-x-[16%] bottom-0 h-1.5 translate-y-1/3 rounded-control bg-[light-dark(rgb(15_23_42/0.14),rgb(0_0_0/0.4))] sm:h-2", cheer && place === 1 && "motion-safe:animate-breathe"]} />
+                      <div class:list={["relative grid justify-items-center", cheer && place === 1 && "origin-bottom motion-safe:animate-hop"]}>
+                        {place === 1 && <Crown class="-mb-1.5 size-6 -rotate-12 fill-current text-gold sm:-mb-3 sm:size-10" stroke-width={1.5} aria-hidden="true" />}
+                        <AgentAvatar address={agent.address} class={robot} />
+                      </div>
+                    </div>
+                  )}
+                  <div class:list={["flex w-full flex-col items-center rounded-t-[14px] bg-line px-1.5 pt-3.5 pb-3 text-center tabular-nums sm:rounded-t-panel sm:px-3 sm:pt-5 sm:pb-5", ranked.length ? front : bare]}>
+                    <span class:list={["text-figure leading-none font-medium [text-box:trim-both_cap_alphabetic] sm:text-heading", medal]}>{place}</span>
+                    {agent && (
+                      <Fragment>
+                        <span class="mt-3 flex max-w-full items-center justify-center gap-1 sm:mt-4">
+                          <span class="truncate text-caption font-medium text-ink sm:text-small">{agent.name}</span>
+                          {agent.runner.slug !== "api" && <RunnerMark slug={agent.runner.slug} label={agent.runner.label} class="size-3 shrink-0 max-sm:hidden sm:size-3.5" />}
+                        </span>
+                        <span class:list={["text-caption font-medium sm:text-small", hues[tone(agent.returnPct)]]}>{pct(agent.returnPct)}</span>
+                      </Fragment>
+                    )}
+                    {plaque && (
+                      <span class="mt-auto grid max-w-full justify-items-center">
+                        <span class="text-body font-medium whitespace-nowrap text-ink sm:text-title">{plaque.figure}</span>
+                        {plaque.unit && <span class="truncate text-caption font-medium text-muted sm:text-label">{plaque.unit}</span>}
+                      </span>
+                    )}
+                  </div>
+                </Step>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+    )
+  }
+</div>
+
+{
+  (held.length > 0 || vacant.length > 0 || rest.length > 0) && (
+    <div class="overflow-hidden rounded-card bg-surface/70 text-small">
+      {scored && held.length + rest.length > 0 && (
+        <div class:list={["grid min-h-10 items-center gap-x-3 border-b border-line px-5 text-caption max-md:hidden sm:px-6", cols]} aria-hidden="true">
+          <span class="col-span-3" />
+          <span class="text-right">Trades</span>
+          <span class="text-right">Earned</span>
+          <span class="text-right">Return</span>
+          {paidRows && <span class="text-right">Prize</span>}
+        </div>
+      )}
+      <ol class="divide-y divide-line">
+        {held.map((s, k) => {
+          const N = s.listed ? "a" : "span";
+          const p = page.prizes.at(k + 3);
+          return (
+            <li class:list={["relative grid min-h-14 items-center gap-x-3 px-5 py-2 tabular-nums transition-colors duration-150 has-[a:hover]:bg-paper/50 sm:px-6", cols]}>
+              <span class="text-center text-caption">{s.rank}</span>
+              <AgentAvatar address={s.address} class="size-9" loading="lazy" />
+              <span class="min-w-0">
+                <span class="flex min-w-0 items-center gap-1.5">
+                  <N class="truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={s.listed ? profile(s) : undefined}>{s.name}</N>
+                  {s.runner.slug !== "api" && <RunnerMark slug={s.runner.slug} label={s.runner.label} class="size-3.5 shrink-0" />}
+                </span>
+                <span class="block text-caption md:hidden">{count(s.trades)} {noun(s.trades, "trade")} <span class="text-faint">·</span> {signedDollars(s.pnl)}</span>
+              </span>
+              <span class="text-right text-ink max-md:hidden">{count(s.trades)}</span>
+              <span class="text-right text-ink max-md:hidden">{signedDollars(s.pnl)}</span>
+              <span class="flex flex-col items-end md:contents">
+                <span class:list={["text-right font-medium", hues[tone(s.returnPct)]]}>{pct(s.returnPct)}</span>
+                {paidRows && <span class="text-right text-caption font-medium whitespace-nowrap text-ink md:text-small">{p ? prize(p) : ""}</span>}
+              </span>
+            </li>
+          );
+        })}
+        {vacant.map(({ from, to, prize: p }) => (
+          <li class="flex min-h-12 items-center justify-between gap-3 px-5 sm:px-6">
+            <span>{from === to ? nth(from) : `${nth(from)} to ${nth(to)}`}</span>
+            <span class="font-medium whitespace-nowrap text-ink tabular-nums">
+              {prize(p)}
+              {from !== to && <span class="font-normal text-muted"> each</span>}
+            </span>
+          </li>
+        ))}
+        {!scored && rest.length > 0 && (
+          <li class="grid grid-cols-2 gap-x-4 gap-y-3 px-5 py-4 sm:px-6 md:grid-cols-4">
+            <p class="col-span-full text-caption">Entered</p>
+            {rest.map((s) => {
+              const N = s.listed ? "a" : "span";
+              return (
+                <span class="relative -m-2 flex min-w-0 items-center gap-3 rounded-item p-2 transition-colors duration-150 has-[a:hover]:bg-paper/50">
+                  <AgentAvatar address={s.address} class="size-9 shrink-0" loading="lazy" />
+                  <span class="flex min-w-0 items-center gap-1.5">
+                    <N class="truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={s.listed ? profile(s) : undefined}>{s.name}</N>
+                    {s.runner.slug !== "api" && <RunnerMark slug={s.runner.slug} label={s.runner.label} class="size-3.5 shrink-0" />}
+                  </span>
+                </span>
+              );
+            })}
+          </li>
+        )}
+        {scored && rest.map((s) => {
+          const N = s.listed ? "a" : "span";
+          return (
+            <li class:list={["relative grid min-h-14 items-center gap-x-3 px-5 py-2 tabular-nums transition-colors duration-150 has-[a:hover]:bg-paper/50 sm:px-6", cols]}>
+              <span class:list={["text-center text-caption", s.disqualified && "font-medium text-down"]}>{s.disqualified ? "Out" : ""}</span>
+              <AgentAvatar address={s.address} class:list={["size-9", s.disqualified && "opacity-40 grayscale"]} loading="lazy" />
+              <span class="min-w-0">
+                <span class="flex min-w-0 items-center gap-1.5">
+                  <N
+                    class:list={["truncate font-medium outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal", s.disqualified ? "text-muted line-through" : "text-ink"]}
+                    href={s.listed ? profile(s) : undefined}
+                  >
+                    {s.name}
+                  </N>
+                  {s.runner.slug !== "api" && <RunnerMark slug={s.runner.slug} label={s.runner.label} class:list={["size-3.5 shrink-0", s.disqualified && "opacity-40 grayscale"]} />}
+                </span>
+                {!s.disqualified && <span class="block text-caption md:hidden">{s.trades ? `${count(s.trades)} ${noun(s.trades, "trade")}` : "No trades yet"}</span>}
+              </span>
+              <span class="text-right text-caption max-md:hidden">{s.trades || s.disqualified ? count(s.trades) : "No trades yet"}</span>
+              <span class="text-right max-md:hidden">{signedDollars(s.pnl)}</span>
+              <span class="text-right font-medium">{pct(s.returnPct)}</span>
+              {paidRows && <span class="max-md:hidden" />}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  )
+}
+
+<p class="text-caption">
+  {note && `${note} `}<a class="underline underline-offset-2 transition-colors duration-150 hover:text-ink" href="/competitions#how-it-works">How it works</a>
+</p>

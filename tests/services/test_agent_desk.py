@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 import pytest
 
 from agentpit.config import Settings
+from agentpit.datastructures.agent_desk import CompetitionCard
+from agentpit.datastructures.competition import PLACE_FLOOR, Competition, Prize
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
@@ -14,14 +16,14 @@ from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookS
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import MarketFields, TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import InsufficientBalanceError, NotFoundError
+from agentpit.domain.exceptions import BusinessRuleError, InsufficientBalanceError, NotFoundError
 from agentpit.domain.text import clean
 from agentpit.liquidity.replica import BookReplica
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.web3_client import Web3Client
-from agentpit.services.agent_desk import AgentDesk, shares_for_usd, snap
+from agentpit.services.agent_desk import ENTER_HINT, AgentDesk, shares_for_usd, snap
 from agentpit.services.leaderboard_service import RANK_FLOOR, drain, pct
 from tests.db_helpers import fresh_test_db
 from tests.onchain._helpers import create_market, fresh_client, house, register
@@ -226,6 +228,21 @@ def test_a_game_gives_its_kickoff_and_is_found_by_its_league(house_book):
     assert desk.search_markets("nfl").markets == []
 
 
+def test_search_uses_at_most_20_words_for_its_or_fallback(monkeypatch):
+    queries: list[str] = []
+
+    def spy(conn, *, query, **kwargs):
+        queries.append(query)
+        return []
+
+    monkeypatch.setattr(TableRead, "search_live_markets", spy)
+    words = [f"w{i}" for i in range(50)]
+
+    _desk().search_markets(query=" ".join(words))
+
+    assert queries == [" ".join(words), " or ".join(words[:20])]
+
+
 NFL = (("nfl", "NFL"), ("super-bowl", "Super Bowl"))
 ELECTION = "presidential-election-winner-2028"
 
@@ -422,6 +439,24 @@ def test_insufficient_cash_states_have_and_need(house_book):
         desk.trade(agent, slug, "YES", "buy", shares=1_000_000, limit_price=0.5)
 
 
+@pytest.mark.parametrize(
+    ("amount", "limit_price"),
+    [
+        pytest.param({"shares": 2_000_000_000}, 0.5, id="shares"),
+        pytest.param({"usd": 10_000_000_000}, 0.001, id="usd-at-a-low-limit-price"),
+    ],
+)
+def test_trade_above_the_largest_order_says_so_without_placing_it(house_book, monkeypatch, amount, limit_price):
+    desk, agent, slug, _ = _asks(house_book)
+    placed = []
+    monkeypatch.setattr(desk._orders, "place_order", lambda *args: placed.append(args))
+
+    with pytest.raises(BusinessRuleError, match=r"largest order"):
+        desk.trade(agent, slug, "YES", "buy", limit_price=limit_price, **amount)
+
+    assert placed == []
+
+
 def test_portfolio_matches_the_leaderboard(house_book):
     desk, agent, slug, book = _asks(house_book)
     desk.trade(agent, slug, "YES", "buy", usd=30)
@@ -449,7 +484,7 @@ def test_portfolio_matches_the_leaderboard(house_book):
         ("buy", slug, "YES", 50, 0.4, 20)
     ]
     assert [(o.market, o.side, o.price, o.shares) for o in warming.open_orders] == [(slug, "buy", 0.1, 10)]
-    assert warming.next_top_up_at is None
+    assert (warming.next_top_up_at, warming.competitions) == (None, [])
     assert desk.leaderboard().agents == []
 
     for _ in range(RANK_FLOOR - 1):
@@ -465,6 +500,52 @@ def test_portfolio_matches_the_leaderboard(house_book):
     assert mine.ranked_agents == board.total == 1
     assert mine.share == (
         f"{mine.agent} is #{mine.rank} of 1 on AgentPit with a {pct(standing.return_pct)} return on paper money: {dated}"
+    )
+
+
+DAY = 86_400
+PRIZES = [Prize(usd=700, skl=100), Prize(usd=0, skl=100)]
+
+
+def _competition(conn, slug: str, starts: int, ends: int) -> None:
+    competition = Competition(slug=slug, title=slug.title(), starts_at=starts, ends_at=ends, prizes=PRIZES)
+    TableWrite.save_competition(conn, competition, 0)
+
+
+def test_portfolio_lists_competitions_not_yet_ended_with_this_agents_run():
+    now = int(time.time())
+    with fresh_test_db().write() as conn:
+        user_id, _, key = TableWrite.create_user(conn, None, None, owner_workos_id="user_o")
+        for slug, starts in (("past", now - 3 * DAY), ("live", now - DAY), ("next", now + 2 * DAY)):
+            _competition(conn, slug, starts, starts + 2 * DAY)
+        for slug in ("past", "live"):
+            TableWrite.enter_competition(conn, slug, "user_o", user_id, now - 4 * DAY, False)
+        TableWrite.capture_entry(conn, "live", user_id, "START", 100_000_000_000)
+        for k in range(PLACE_FLOOR):
+            conn.execute(
+                "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) VALUES (%s, %s, %s, 'CONFIRMED')",
+                (f"t{k}", key, now - 60),
+            )
+
+    portfolio = _desk().portfolio(_user(key))
+    upcoming, live = portfolio.competitions
+
+    assert portfolio.competitions_hint == ENTER_HINT
+
+    assert (upcoming.competition, upcoming.phase, upcoming.entered, upcoming.trades, upcoming.rank) == (
+        "next", "upcoming", False, None, None
+    )
+    assert live == CompetitionCard(
+        competition="live",
+        title="Live",
+        phase="live",
+        starts_at=datetime.fromtimestamp(now - DAY, UTC),
+        ends_at=datetime.fromtimestamp(now + DAY, UTC),
+        prizes=PRIZES,
+        entered=True,
+        trades=PLACE_FLOOR,
+        rank=1,
+        url="https://agentpit.dev/competitions/live",
     )
 
 
@@ -517,6 +598,18 @@ def test_top_up_during_cooldown_adds_nothing():
 
     assert result.added_usd == 0
     assert result.next_top_up_at is not None
+
+
+def test_top_up_adds_nothing_while_an_entered_competition_pauses_it():
+    now = int(time.time())
+    with fresh_test_db().write() as conn:
+        user_id, _, key = TableWrite.create_user(conn, None, None, owner_workos_id="user_o")
+        _competition(conn, "locked", now + 3_600, now + DAY)
+        TableWrite.enter_competition(conn, "locked", "user_o", user_id, now - 60, False)
+
+    result = _desk().top_up(_user(key))
+
+    assert (result.added_usd, result.next_top_up_at) == (0, datetime.fromtimestamp(now + DAY, UTC))
 
 
 def test_leaderboard_carries_the_agent_app():

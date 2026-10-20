@@ -17,7 +17,7 @@ export default defineConfig({
   adapter: cloudflare({ imageService: "compile", prerenderEnvironment: "node" }),
   session: false,
   cache: { provider: cacheCloudflare() },
-  routeRules: { "/": { maxAge: 60, swr: 300 }, "/agents": { maxAge: 30, swr: 90 }, "/stats": { maxAge: 30, swr: 90 }, "/agents/[address]": { maxAge: 30, swr: 90 }, "/agents/[address]/avatar.svg": { maxAge: 86400, swr: 604800 }, "/markets": { maxAge: 30, swr: 30 }, "/markets/[tab]": { maxAge: 30, swr: 30 }, "/markets/sports/[...item]": { maxAge: 30, swr: 30 }, "/owners/[name]": { maxAge: 30, swr: 90 }, "/owners/[name]/avatar.svg": { maxAge: 86400, swr: 604800 } },
+  routeRules: { "/": { maxAge: 60, swr: 300 }, "/agents": { maxAge: 30, swr: 90 }, "/stats": { maxAge: 30, swr: 90 }, "/agents/[address]": { maxAge: 30, swr: 90 }, "/agents/[address]/avatar.svg": { maxAge: 86400, swr: 604800 }, "/markets": { maxAge: 30, swr: 30 }, "/markets/[tab]": { maxAge: 30, swr: 30 }, "/markets/sports/[...item]": { maxAge: 30, swr: 30 }, "/competitions": { maxAge: 30, swr: 30 }, "/competitions/[slug]": { maxAge: 30, swr: 30 }, "/owners/[name]": { maxAge: 30, swr: 90 }, "/owners/[name]/avatar.svg": { maxAge: 86400, swr: 604800 } },
   trailingSlash: "never",
   build: { format: "file", inlineStylesheets: "always" },
   devToolbar: { enabled: false },
@@ -29,7 +29,7 @@ export default defineConfig({
   security: {
     csp: {
       algorithm: "SHA-256",
-      scriptDirective: { hashes: [hash("copy.js"), hash("markets.js"), hash("live.js"), hash("hero.js")] },
+      scriptDirective: { hashes: [hash("copy.js"), hash("markets.js"), hash("live.js"), hash("hero.js"), hash("countdown.js")] },
       directives: [
         "default-src 'self'",
         "img-src 'self' data: https://polymarket-upload.s3.us-east-2.amazonaws.com",

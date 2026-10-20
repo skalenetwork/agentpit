@@ -11,6 +11,8 @@ from agentpit.datastructures.agent_desk import (
     Amount,
     BoardLimit,
     CancelResult,
+    CompetitionCard,
+    Enrolled,
     Holding,
     Hours,
     Leaderboard,
@@ -35,7 +37,7 @@ from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.match_leg import MICRO, legs_for_user
 from agentpit.datastructures.orderbook_summary import OrderBookLevel
-from agentpit.datastructures.place_order_request import PlaceOrderRequest
+from agentpit.datastructures.place_order_request import MAX_ORDER_SIZE, PlaceOrderRequest
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import Hit, TableRead
@@ -52,6 +54,7 @@ from agentpit.onchain.admin import OnchainAdmin
 from agentpit.polymarket.format import decimal_str_to_price_int, decimal_str_to_size_micro
 from agentpit.services.account_service import MIN_PRICE_MICRO, SLIPPAGE_CAP_MICRO, AccountService
 from agentpit.services.balance_service import BalanceService
+from agentpit.services.competition_service import CompetitionService
 from agentpit.services.leaderboard_service import (
     RANK_FLOOR,
     LeaderboardService,
@@ -67,6 +70,14 @@ LOT = 10_000
 TOP = 20
 DEPTH = 5
 ACTIVITY = 10
+ENTER_HINT = (
+    "Enter one with enroll only when your human asks. If enroll is not in your tools, your client loaded "
+    "AgentPit's tools before it existed: reconnect AgentPit to reload them, or your human can enter you from "
+    "the competition's url."
+)
+# The OR fallback ranks every market against each word; a query that long is
+# not a search anyone types.
+_MAX_OR_WORDS = 20
 
 
 def shares_for_usd(levels: list[tuple[int, int]], usd: int, limit: int, buy: bool) -> tuple[int, int]:
@@ -128,6 +139,7 @@ class AgentDesk:
         self._orders = OrderService(db, onchain, settings)
         self._balance = BalanceService(db, onchain, settings, self._accounts)
         self._board = LeaderboardService(db, onchain, self._accounts, settings)
+        self._competitions = CompetitionService(db, onchain, self._accounts, settings)
 
     def search_markets(
         self,
@@ -159,7 +171,7 @@ class AgentDesk:
             excluded_categories=self._settings.excluded_categories,
             excluded_tags=self._settings.excluded_tags,
         )
-        words = re.findall(r"\w+", query or "")
+        words = re.findall(r"\w+", query or "")[:_MAX_OR_WORDS]
         match: Match | None = "all" if query else None
         with self._db.read() as conn:
             hits = search(conn, query=query)
@@ -272,6 +284,10 @@ class AgentDesk:
         size = size // LOT * LOT
         if size == 0:
             raise BusinessRuleError(f"That is less than 0.01 share at {_px(limit)}. Increase usd or shares.")
+        if size > MAX_ORDER_SIZE * MICRO:
+            raise BusinessRuleError(
+                f"That is more than {MAX_ORDER_SIZE:,.0f} shares, the largest order. Decrease usd or shares."
+            )
         request = PlaceOrderRequest(
             token_id=token,
             side="BUY" if buy else "SELL",
@@ -329,6 +345,9 @@ class AgentDesk:
             with self._db.read() as conn:
                 found = TableRead.list_markets_filtered(conn, condition_ids=list({o.market for o in shown}), limit=TOP)
             slugs = {m.condition_id.value: m.slug for m in found}
+        now = int(time.time())
+        pages = [self._competitions.page(c.competition.slug, now) for c in self._competitions.listing(now) if c.phase != "ended"]
+        entries = [(p, next((s for s in p.standings if s.address == user.eth_address), None)) for p in pages]
         return Portfolio(
             agent=display_name(user.handle, user.eth_address),
             address=user.eth_address,
@@ -375,6 +394,22 @@ class AgentDesk:
             ],
             open_orders_total=len(orders),
             activity=self._activity(user.api_key),
+            competitions=[
+                CompetitionCard(
+                    competition=p.competition.slug,
+                    title=p.competition.title,
+                    phase=p.phase,
+                    starts_at=datetime.fromtimestamp(p.competition.starts_at, UTC),
+                    ends_at=datetime.fromtimestamp(p.competition.ends_at, UTC),
+                    prizes=p.competition.prizes,
+                    entered=s is not None,
+                    trades=None if s is None else s.trades,
+                    rank=None if s is None else s.rank,
+                    url=f"{self._settings.landing_url}/competitions/{p.competition.slug}",
+                )
+                for p, s in entries
+            ],
+            competitions_hint=ENTER_HINT if any(s is None for _, s in entries) else None,
         )
 
     def top_up(self, user: User) -> TopUp:
@@ -384,6 +419,16 @@ class AgentDesk:
             added_usd=_usd(result.minted_raw),
             equity_usd=_usd(result.balance_raw),
             next_top_up_at=_when(result.next_allowed_at if result.next_allowed_at > now else None),
+        )
+
+    def enroll(self, user: User, competition: str) -> Enrolled:
+        slug = urlsplit(competition).path.rstrip("/").rsplit("/", 1)[-1]
+        entry = self._competitions.enroll(user.user_id, slug, int(time.time()), switch=False)
+        return Enrolled(
+            competition=entry.slug,
+            run_starts_at=datetime.fromtimestamp(entry.run_starts_at, UTC),
+            ends_at=datetime.fromtimestamp(entry.ends_at, UTC),
+            url=f"{self._settings.landing_url}/competitions/{entry.slug}",
         )
 
     def leaderboard(self, limit: BoardLimit = 10) -> Leaderboard:

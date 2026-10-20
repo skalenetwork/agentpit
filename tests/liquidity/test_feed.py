@@ -30,6 +30,15 @@ def test_shard():
     assert shard([], 2) == []
 
 
+def test_state_indexes_markets_by_id():
+    st = MirrorState([_ref("PM-A", 1), _ref("PM-B", 2)])
+    st.set_targets([_ref("PM-B", 2), _ref("PM-C", 3)])
+    assert {m: r.pm_yes_token for m, r in st.by_market.items()} == {
+        2: "PM-B",
+        3: "PM-C",
+    }
+
+
 def test_state_routes_book_and_price_change():
     st = MirrorState([_ref()])
     st.handle_event({"event_type": "book", "asset_id": "PM-YES",

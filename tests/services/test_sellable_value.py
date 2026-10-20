@@ -1,12 +1,11 @@
 """What a position would actually fetch if it were sold right now.
 
-A row's `currentValue` is `curPrice x size` and `curPrice` is the book
-MIDPOINT, so the profile was quoting a price no one had offered: a sale
+A row's `currentValue` is `curPrice x size` and `curPrice` is a mark (the book
+midpoint on a two-sided book), so the profile was quoting a price no one had offered: a sale
 executes against the bids, below the mid, and walks down as it eats depth.
-`sellableValue` / `sellableSize` are that walk, mirroring the order the Sell
-button sends -- a GTC limit for the whole size at `max(best_bid - 0.02, 0.01)`
-with the remainder cancelled (`placeMarketOrder` in `ui/src/api/orders.ts`,
-`computeMarketSell` in `ui/src/components/orders/orderMath.ts`).
+`sellableValue` / `sellableSize` are that walk, mirroring a market sell -- a
+GTC limit for the whole size at `max(best_bid - 0.02, 0.01)` with the
+remainder cancelled.
 """
 
 from __future__ import annotations
@@ -89,6 +88,16 @@ def test_a_book_with_no_bids_sells_nothing():
     got = sellable_against_bids([], 100_000_000)
     assert got.size == 0.0
     assert got.value == 0.0
+
+
+def test_without_the_floor_the_walk_takes_the_whole_bid_side():
+    """A competition's end value: what every bid would pay, however far
+    below the best one, not what the ticket's capped order could reach."""
+    got = sellable_against_bids(
+        [(500_000, 10_000_000), (5_000, 1_000_000_000)], 20_000_000, floor=False
+    )
+    assert got.size == 20.0
+    assert got.value == pytest.approx(5.0 + 0.05)
 
 
 # --- through the service ---------------------------------------------------

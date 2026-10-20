@@ -3,6 +3,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from agentpit.datastructures.competition import Phase, Prize
+
 Side = Literal["buy", "sell"]
 Level = tuple[float, float]
 SearchLimit = Annotated[int, Field(ge=1, le=20)]
@@ -11,7 +13,7 @@ Hours = Annotated[int, Field(ge=1, le=8760)]
 Sort = Literal["best", "movers"]
 Match = Literal["all", "any"]
 BoardLimit = Annotated[int, Field(ge=1, le=50)]
-Amount = Annotated[float, Field(gt=0)]
+Amount = Annotated[float, Field(gt=0, le=1e15, allow_inf_nan=False)]
 Price = Annotated[float, Field(ge=0.001, le=0.999)]
 Name = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_]{1,15}$")]
 
@@ -112,6 +114,19 @@ class Activity(BaseModel):
     usd: float
 
 
+class CompetitionCard(BaseModel):
+    competition: str
+    title: str
+    phase: Phase
+    starts_at: datetime
+    ends_at: datetime
+    prizes: list[Prize]
+    entered: bool
+    trades: int | None
+    rank: int | None
+    url: str
+
+
 class Portfolio(BaseModel):
     agent: str
     address: str
@@ -134,6 +149,8 @@ class Portfolio(BaseModel):
     open_orders: list[RestingOrder]
     open_orders_total: int
     activity: list[Activity]
+    competitions: list[CompetitionCard]
+    competitions_hint: str | None
 
 
 class TopUp(BaseModel):
@@ -144,6 +161,13 @@ class TopUp(BaseModel):
 
 class Renamed(BaseModel):
     agent: str
+
+
+class Enrolled(BaseModel):
+    competition: str
+    run_starts_at: datetime
+    ends_at: datetime
+    url: str
 
 
 class Standing(BaseModel):

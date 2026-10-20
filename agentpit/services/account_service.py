@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from agentpit.datastructures.activity_wire import ActivityWire
 from agentpit.datastructures.market import Market
@@ -27,6 +27,7 @@ class _TokenFlow:
     sold_size: int
     sold_proceeds: int
     last_sell_time: int
+    last_buy_time: int
 
     @property
     def net_size(self) -> int:
@@ -37,12 +38,51 @@ class _TokenFlow:
         """Size-weighted micro-price paid per share; 0 when nothing was bought."""
         return self.bought_cost // self.bought_size if self.bought_size else 0
 
+    def entry_price_micro(self, held_micro: int) -> int:
+        """What the `held_micro` shares still held cost, per share: the
+        average buy price, but never more than the net cash put into the
+        token (bought minus sold) spread over them. The average alone counts
+        shares already sold, so cheap shares bought after a few round trips
+        would carry the dearer ones' price."""
+        if held_micro <= 0:
+            return 0
+        net_cash = max(0, self.bought_cost - self.sold_proceeds)
+        return min(self.avg_buy_price_micro, net_cash // held_micro)
+
+    def plus(self, side: str, price_micro: int, size_micro: int, at: int) -> "_TokenFlow":
+        """This flow with one more leg of the account's, filled at `at`."""
+        if side == "BUY":
+            return replace(
+                self,
+                bought_size=self.bought_size + size_micro,
+                bought_cost=self.bought_cost + price_micro * size_micro,
+                last_buy_time=max(self.last_buy_time, at),
+            )
+        return replace(
+            self,
+            sold_size=self.sold_size + size_micro,
+            sold_proceeds=self.sold_proceeds + price_micro * size_micro,
+            last_sell_time=max(self.last_sell_time, at),
+        )
+
+
+#: A token the account never filled.
+_NO_FLOW = _TokenFlow(
+    bought_size=0, bought_cost=0, sold_size=0, sold_proceeds=0, last_sell_time=0, last_buy_time=0
+)
+
+#: The columns `legs_for_user` reads, from the account's live and settled fills.
+_FLOW_SQL = (
+    "SELECT SIDE, PRICE, TRADE_SIZE, MATCH_TIME, MATCH_KIND, "
+    "ASSET_ID, MAKER_ASSET_ID, TAKER_API_KEY, MAKER_API_KEY "
+    "FROM trades WHERE STATUS != 'FAILED' "
+)
+
 
 #: A market sell is a GTC limit for the whole size at
 #: `max(best_bid - SLIPPAGE_CAP, MIN_PROB)` with the unfilled remainder
-#: cancelled -- `placeMarketOrder` in `ui/src/api/orders.ts` on top of
-#: `computeMarketSell` in `ui/src/components/orders/orderMath.ts`. In micro
-#: units here because that is what the `orders` rows carry.
+#: cancelled. In micro units here because that is what the `orders` rows
+#: carry.
 SLIPPAGE_CAP_MICRO = 20_000
 MIN_PRICE_MICRO = 10_000
 
@@ -56,7 +96,7 @@ class Sellable:
 
 
 def sellable_against_bids(
-    bids: list[tuple[int, int]], size_micro: int
+    bids: list[tuple[int, int]], size_micro: int, *, floor: bool = True
 ) -> Sellable:
     """Simulate the market sell of `size_micro` shares against `bids`.
 
@@ -65,16 +105,17 @@ def sellable_against_bids(
     under the floor are invisible to it however deep they are, and
     a position larger than the depth above the floor comes back short rather
     than resting on the book — the ticket cancels that remainder.
+    Without `floor` the walk takes the whole bid side.
     """
     if size_micro <= 0 or not bids:
         return Sellable(0.0, 0.0)
-    floor = max(max(p for p, _ in bids) - SLIPPAGE_CAP_MICRO, MIN_PRICE_MICRO)
+    lowest = max(max(p for p, _ in bids) - SLIPPAGE_CAP_MICRO, MIN_PRICE_MICRO) if floor else 0
     filled_micro = 0
     # Price-micro x size-micro, so the walk needs no intermediate rounding
     # (the same reason `_TokenFlow` carries its costs that way).
     proceeds = 0
     for price, available in sorted(bids, key=lambda b: -b[0]):
-        if price < floor:
+        if price < lowest:
             break
         take = min(available, size_micro - filled_micro)
         if take <= 0:
@@ -134,11 +175,17 @@ class AccountService:
             eth_address, [int(t[2]) for t in scanned]
         )
 
+        held = [t[2] for t, bal in zip(scanned, balances) if bal > 0]
+        if not held:
+            return []
         out: list[PositionWire] = []
         # One connection for the whole build, not one per token: the pricing
         # reads below are small, and acquiring a pooled connection per token
         # was the second cost in this loop.
         with self._db.read() as conn:
+            # Only the held tokens' fills: an account that has traded a lot
+            # but holds little should not read its whole history here.
+            flows = self._token_flows(conn, user.api_key, held)
             for (mkt, idx, token_id, label), bal in zip(scanned, balances):
                 if bal <= 0:
                     continue
@@ -149,7 +196,8 @@ class AccountService:
                     and bal * mkt.payouts[idx] // sum(mkt.payouts)
                     >= self._min_claim_micro
                 )
-                avg_price = self._avg_fill_price(conn, user.api_key, token_id)
+                flow = flows.get(token_id, _NO_FLOW)
+                avg_price = price_to_float(flow.avg_buy_price_micro)
                 settled = mkt.market_state == MarketState.RESOLVED
                 # A resolved market has no live book any more, so
                 # `_live_pricing` would fall through to the last trade print
@@ -164,7 +212,14 @@ class AccountService:
                     cur_price = mkt.payouts[idx] / sum(mkt.payouts)
                     sellable = Sellable(0.0, 0.0)
                 else:
-                    pricing = self._live_pricing(conn, token_id, opp_token, bal)
+                    pricing = self._live_pricing(
+                        conn,
+                        token_id,
+                        opp_token,
+                        bal,
+                        entry_price=price_to_float(flow.entry_price_micro(bal)),
+                        bought_at=flow.last_buy_time,
+                    )
                     cur_price = pricing.cur_price
                     sellable = pricing.sellable
                 initial_value = avg_price * size
@@ -213,6 +268,7 @@ class AccountService:
             user = TableRead.get_user_by_eth_address(conn, eth_address)
             if user is None:
                 return []
+            flows = self._token_flows(conn, user.api_key)
             redeem_rows = conn.execute(
                 "SELECT MARKET_ID, DETAILS FROM transactions "
                 "WHERE API_KEY = %s AND TRANSACTION_TYPE = 'REDEEM'",
@@ -249,7 +305,7 @@ class AccountService:
                     continue  # binary markets only for now
                 payouts = mkt.payouts
                 if payouts[0] == payouts[1]:
-                    pos_idx = max((0, 1), key=lambda i: self._net_bought(conn, user.api_key, tokens[i][0]))
+                    pos_idx = max((0, 1), key=lambda i: flows.get(tokens[i][0], _NO_FLOW).net_size)
                 else:
                     pos_idx = payouts.index(max(payouts) if payout > 0 else min(payouts))
                 cur_price = payouts[pos_idx] / sum(payouts)
@@ -259,13 +315,13 @@ class AccountService:
                 else:
                     # Lost: held the losing outcome (redeemed for $0). Size comes
                     # from the user's net buys of that token.
-                    net = self._net_bought(conn, user.api_key, tokens[pos_idx][0])
+                    net = flows.get(tokens[pos_idx][0], _NO_FLOW).net_size
                     if net <= 0:
                         continue
                     size = size_to_float(net)
                     value = 0.0
                 token_id = tokens[pos_idx][0]
-                avg = self._avg_fill_price(conn, user.api_key, token_id)
+                avg = price_to_float(flows.get(token_id, _NO_FLOW).avg_buy_price_micro)
                 cost = avg * size
                 pnl = value - cost
                 pct = (pnl / cost * 100) if cost else 0.0
@@ -298,13 +354,19 @@ class AccountService:
                 )
             out.extend(
                 self._sold_out_positions(
-                    conn, eth_address, user.api_key, skip_market_ids=set(payout_micro)
+                    conn, eth_address, user.api_key, flows, skip_market_ids=set(payout_micro)
                 )
             )
         return out
 
     def _sold_out_positions(
-        self, conn, eth_address: str, api_key: str, *, skip_market_ids: set[int]
+        self,
+        conn,
+        eth_address: str,
+        api_key: str,
+        flows: "dict[str, _TokenFlow]",
+        *,
+        skip_market_ids: set[int],
     ) -> list[PositionWire]:
         """Positions the user closed by SELLING every share back.
 
@@ -329,7 +391,7 @@ class AccountService:
         for mkt in candidates:
             tokens = mkt.erc1155_tokens
             for idx, (token_id, label) in enumerate(tokens):
-                flow = self._token_flow(conn, api_key, token_id)
+                flow = flows.get(token_id, _NO_FLOW)
                 # Sold out exactly: bought something, sold it all back. A
                 # partial exit still holds tokens and belongs in Active, where
                 # its remaining size and live price are the interesting numbers.
@@ -381,18 +443,12 @@ class AccountService:
         return out
 
     @staticmethod
-    def _net_bought(conn, api_key: str, token_id: str) -> int:
-        """Net outcome tokens the user bought of `token_id` (effective buys minus
-        sells; a maker fills the side opposite the stored taker SIDE)."""
-        return AccountService._token_flow(conn, api_key, token_id).net_size
-
-    @staticmethod
     def _token_flow(conn, api_key: str, token_id: str) -> "_TokenFlow":
         """Everything the user's fills of one token add up to, in one pass.
 
         Reconstructing a position that was closed by SELLING needs the sale
-        proceeds and the sale time, not just the net quantity `_net_bought`
-        reports, and it must not double-count a maker fill as the taker's side.
+        proceeds and the sale time, not just the net quantity, and it must not
+        double-count a maker fill as the taker's side.
 
         A trade row's stored PRICE is always the MAKER's price; which token
         moved and in which direction depends on `MATCH_KIND` — the truth
@@ -410,33 +466,54 @@ class AccountService:
         than picking one via a single `is_taker`.
         """
         rows = conn.execute(
-            "SELECT SIDE, PRICE, TRADE_SIZE, MATCH_TIME, MATCH_KIND, "
-            "ASSET_ID, MAKER_ASSET_ID, TAKER_API_KEY, MAKER_API_KEY "
-            "FROM trades WHERE STATUS != 'FAILED' "
-            "AND ((TAKER_API_KEY = %s AND ASSET_ID = %s) "
+            _FLOW_SQL
+            + "AND ((TAKER_API_KEY = %s AND ASSET_ID = %s) "
             "  OR (MAKER_API_KEY = %s AND COALESCE(MAKER_ASSET_ID, ASSET_ID) = %s))",
             (api_key, token_id, api_key, token_id),
         ).fetchall()
-        bought_size = bought_cost = sold_size = sold_proceeds = 0
-        last_sell_time = 0
+        return AccountService._sum_flows(rows, api_key).get(token_id, _NO_FLOW)
+
+    @staticmethod
+    def _token_flows(conn, api_key: str, tokens: "list[str] | None" = None) -> "dict[str, _TokenFlow]":
+        """`_token_flow` of every token the account ever filled, or of
+        `tokens` only, from ONE read of its fills. Read a token at a time,
+        the closed-position list cost a query per token of every market the
+        account touched, and each of those read all of the account's maker
+        fills to find the token's."""
+        if tokens is None:
+            rows = conn.execute(
+                _FLOW_SQL + "AND (TAKER_API_KEY = %s OR MAKER_API_KEY = %s)",
+                (api_key, api_key),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                _FLOW_SQL
+                + "AND ((TAKER_API_KEY = %s AND ASSET_ID = ANY(%s)) "
+                "  OR (MAKER_API_KEY = %s AND COALESCE(MAKER_ASSET_ID, ASSET_ID) = ANY(%s)))",
+                (api_key, tokens, api_key, tokens),
+            ).fetchall()
+        return AccountService._sum_flows(rows, api_key)
+
+    @staticmethod
+    def _sum_flows(rows, api_key: str) -> "dict[str, _TokenFlow]":
+        """token -> what the account's legs of `rows` add up to."""
+        flows: dict[str, _TokenFlow] = {}
         for r in rows:
+            at = int(r["MATCH_TIME"] or 0)
             for leg in legs_for_user(r, api_key):
-                if leg.token_id != token_id:
-                    continue
-                if leg.side == "BUY":
-                    bought_size += leg.size_micro
-                    bought_cost += leg.price_micro * leg.size_micro
-                else:
-                    sold_size += leg.size_micro
-                    sold_proceeds += leg.price_micro * leg.size_micro
-                    last_sell_time = max(last_sell_time, int(r["MATCH_TIME"] or 0))
-        return _TokenFlow(
-            bought_size=bought_size,
-            bought_cost=bought_cost,
-            sold_size=sold_size,
-            sold_proceeds=sold_proceeds,
-            last_sell_time=last_sell_time,
-        )
+                flows[leg.token_id] = flows.get(leg.token_id, _NO_FLOW).plus(
+                    leg.side, leg.price_micro, leg.size_micro, at
+                )
+        return flows
+
+    def is_public(self, eth_address: str) -> bool:
+        """Whether the anonymous by-address reads serve this address: a live
+        account that is not a bot. The house is the maker of every fill, so
+        its history is every account's history; a deleted agent has left the
+        board and its page, and these reads leave it too."""
+        with self._db.read() as conn:
+            user = TableRead.get_user_by_eth_address(conn, eth_address)
+        return user is not None and not user.is_bot and user.deleted_at is None
 
     def total_value(self, eth_address: str) -> list[dict]:
         value = sum(p.currentValue for p in self.list_positions(eth_address))
@@ -451,20 +528,31 @@ class AccountService:
         limit: int = 100,
         offset: int = 0,
     ) -> list[ActivityWire]:
-        cap = None if type_filter or market else offset + limit
+        # The filters run in SQL, so each source reads at most the newest
+        # offset + limit rows that match: the page is among them, filtered or
+        # not, instead of the account's whole history being loaded and cut.
+        cap = offset + limit
+        types = set(type_filter) if type_filter else None
+        tx_types = None if types is None else sorted(types - {"TRADE"})
+        market = market or None  # `market=,` is no filter, not an empty one
         with self._db.read() as conn:
             user = TableRead.get_user_by_eth_address(conn, eth_address)
             if user is None:
                 return []
-            acts: list[ActivityWire] = AccountService._trade_activity(
-                conn, user.api_key, eth_address, cap
+            acts: list[ActivityWire] = (
+                AccountService._trade_activity(conn, user.api_key, eth_address, cap, markets=market)
+                if types is None or "TRADE" in types
+                else []
             )
-            tx_rows = conn.execute(
+            tx_rows = [] if tx_types == [] else conn.execute(
                 "SELECT TRANSACTION_TYPE, MARKET_ID, DETAILS, "
                 "EXTRACT(EPOCH FROM TIMESTAMP)::bigint AS TS "
                 "FROM transactions WHERE API_KEY = %s "
-                "ORDER BY TIMESTAMP DESC LIMIT %s",
-                (user.api_key, cap),
+                "AND (%s::text[] IS NULL OR TRANSACTION_TYPE = ANY(%s)) "
+                "AND (%s::text[] IS NULL OR MARKET_ID IN "
+                "     (SELECT MARKET_ID FROM markets WHERE CONDITION_ID = ANY(%s))) "
+                "ORDER BY TIMESTAMP DESC, TRANSACTION_ID DESC LIMIT %s",
+                (user.api_key, tx_types, tx_types, market, market, cap),
             ).fetchall()
 
             # One account fills the same handful of markets repeatedly, so the
@@ -502,18 +590,20 @@ class AccountService:
                     url=mkt.url if mkt else None,
                 ))
 
-        if type_filter:
-            acts = [a for a in acts if a.type in type_filter]
-        if market:
-            acts = [a for a in acts if a.conditionId in market]
         acts.sort(key=lambda a: a.timestamp, reverse=True)
         return acts[offset:offset + limit]
 
     @staticmethod
     def _trade_activity(
-        conn, api_key: str, eth_address: str, limit: int | None = None
+        conn,
+        api_key: str,
+        eth_address: str,
+        limit: int | None = None,
+        *,
+        markets: "list[str] | None" = None,
     ) -> "list[ActivityWire]":
-        """One ActivityWire per leg this account holds.
+        """One ActivityWire per leg this account holds, newest first, from at
+        most `limit` fills, only those of `markets` (condition ids) if given.
 
         A NORMAL self-match yields two rows, a buy and a sell — that is the
         account genuinely standing on both sides. A MINT/MERGE maker's row
@@ -524,8 +614,9 @@ class AccountService:
             "TRADE_SIZE, MATCH_TIME, TRANSACTION_HASH, TAKER_API_KEY, "
             "MAKER_API_KEY FROM trades "
             "WHERE (TAKER_API_KEY = %s OR MAKER_API_KEY = %s) AND STATUS != 'FAILED' "
-            "ORDER BY MATCH_TIME DESC LIMIT %s",
-            (api_key, api_key, limit),
+            "AND (%s::text[] IS NULL OR MARKET = ANY(%s)) "
+            "ORDER BY MATCH_TIME DESC, TRADE_ID DESC LIMIT %s",
+            (api_key, api_key, markets, markets, limit),
         ).fetchall()
 
         acts: list[ActivityWire] = []
@@ -596,20 +687,48 @@ class AccountService:
 
     @staticmethod
     def _live_pricing(
-        conn, token_id: str, opposite: str, size_micro: int
+        conn,
+        token_id: str,
+        opposite: str,
+        size_micro: int,
+        *,
+        entry_price: float,
+        bought_at: int,
     ) -> "_LivePricing":
-        """Book midpoint (fall back to the last print, then 1 - the opposite
-        token's last print, else 0.5) AND what a market sell of `size_micro`
-        shares would fetch, from ONE snapshot of Polymarket's book.
+        """The position's mark AND what a market sell of `size_micro` shares
+        would fetch, from ONE snapshot of Polymarket's book.
+
+        A two-sided book marks at its midpoint, and with bids only at the best
+        bid, which is what selling gets. Otherwise (asks only, or no book at
+        all) the mark is the last print, then 1 - the opposite token's last
+        print, then `entry_price`, what the shares held cost; never above
+        `entry_price` when the account bought (`bought_at`) after that print,
+        and never above the best ask when there is one. Never a flat guess:
+        an outcome the house sells at 0.001 marked at 0.5 would put whoever
+        bought it at the top of the board.
         """
         snap = feed.book(token_id)
-        sellable = sellable_against_bids(list(snap.bids) if snap else [], size_micro)
-        if snap is not None and snap.bids and snap.asks:
-            mid = price_to_float((snap.bids[0][0] + snap.asks[0][0]) // 2)
+        bids = list(snap.bids) if snap else []
+        asks = list(snap.asks) if snap else []
+        sellable = sellable_against_bids(bids, size_micro)
+        if bids and asks:
+            mid = price_to_float((bids[0][0] + asks[0][0]) // 2)
             return _LivePricing(mid, sellable)
-        lasts = TableRead.last_trade_prices_for_tokens(conn, [token_id, opposite])
-        if token_id in lasts:
-            return _LivePricing(price_to_float(lasts[token_id]), sellable)
-        if opposite in lasts:
-            return _LivePricing(price_to_float(MICRO - lasts[opposite]), sellable)
-        return _LivePricing(0.5, sellable)
+        if bids:
+            return _LivePricing(price_to_float(bids[0][0]), sellable)
+        prints = TableRead.last_prints_for_tokens(conn, [token_id, opposite])
+        if token_id in prints:
+            price, printed_at = prints[token_id]
+            mark = price_to_float(price)
+        elif opposite in prints:
+            price, printed_at = prints[opposite]
+            mark = price_to_float(MICRO - price)
+        else:
+            mark, printed_at = entry_price, 0
+        if bought_at > printed_at:
+            # The account bought after the market last printed: that buy says
+            # more about the price than the older print does.
+            mark = min(mark, entry_price)
+        if asks:
+            mark = min(mark, price_to_float(asks[0][0]))
+        return _LivePricing(mark, sellable)

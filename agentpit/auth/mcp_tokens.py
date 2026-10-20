@@ -7,14 +7,17 @@ from agentpit.auth.workos_client import ConnectApp, WorkOsClient
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
-from agentpit.domain.exceptions import InvalidCredentialsError
+from agentpit.domain.exceptions import AgentLimitError, InvalidCredentialsError
 from agentpit.domain.runner import is_clawbits
 from agentpit.domain.text import clean
 from agentpit.services.agent_accounts import AgentAccounts
 
 
 class AgentToken(AccessToken):
-    user: User
+    # None when the owner signed in but has no room for this app's agent: the
+    # session stands, and every tool that needs the agent answers `refusal`.
+    user: User | None
+    refusal: str | None = None
 
 
 class AgentVerifier:
@@ -40,7 +43,12 @@ class AgentVerifier:
         return await anyio.to_thread.run_sync(self._verify, token)
 
     def _verify(self, token: str) -> AgentToken | None:
-        user = self._oauth_user(token) if token.count(".") == 2 else self._key_user(token)
+        try:
+            user = self._oauth_user(token) if token.count(".") == 2 else self._key_user(token)
+        except AgentLimitError as exc:
+            # A failed verification would read as a failed sign-in, and the
+            # client would loop on it: answer the reason in the tools instead.
+            return AgentToken(token=token, client_id="", scopes=[], resource=self._resource, user=None, refusal=str(exc))
         if user is None:
             return None
         return AgentToken(token=token, client_id=user.user_id, scopes=[], resource=self._resource, user=user)

@@ -7,7 +7,7 @@ from agentpit.datastructures.market_state import MarketState
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.liquidity import feed
-from agentpit.services.account_service import AccountService
+from agentpit.services.account_service import AccountService, _TokenFlow
 from tests.db_helpers import fresh_test_conn
 
 
@@ -101,7 +101,7 @@ def test_valuation_marks_at_the_mid_and_sells_into_the_bids(house_book):
         yes, no = _market(conn, "rain", 1)
         house_book(yes, bids=(("0.3", "10"),), asks=(("0.4", "10"), ("0.41", "10")))
         priced = {
-            t: AccountService._live_pricing(conn, t, o, 15_000_000)
+            t: AccountService._live_pricing(conn, t, o, 15_000_000, entry_price=0.5, bought_at=0)
             for t, o in ((yes, no), (no, yes))
         }
     assert {
@@ -112,14 +112,80 @@ def test_valuation_marks_at_the_mid_and_sells_into_the_bids(house_book):
     }
 
 
+def _yes_print(conn, yes: str, no: str, price_micro: int, at: int = 1000) -> None:
+    """A tape row as `tape.insert_mirrored_trades` writes it: the YES token
+    printed at `price_micro`, which prints NO at 1 - p."""
+    conn.execute(
+        "INSERT INTO trades (TRADE_ID, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, "
+        "SIDE, PRICE, TRADE_SIZE, STATUS, MATCH_TIME, TAKER_API_KEY, "
+        "MAKER_API_KEY) VALUES (%s, %s, %s, 'NORMAL', 'BUY', %s, 100, "
+        "'MIRRORED', %s, 'tk', 'mk')",
+        (f"t{at}", yes, no, price_micro, at),
+    )
+
+
+def _mark(conn, token: str, opposite: str, *, entry_price: float, bought_at: int = 0) -> float:
+    return AccountService._live_pricing(
+        conn, token, opposite, 1_000_000, entry_price=entry_price, bought_at=bought_at
+    ).cur_price
+
+
 def test_a_bookless_no_is_valued_at_one_minus_the_last_yes_print():
     with fresh_test_conn() as conn:
         yes, no = _market(conn, "dry", 1)
-        conn.execute(
-            "INSERT INTO trades (TRADE_ID, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, "
-            "SIDE, PRICE, TRADE_SIZE, STATUS, MATCH_TIME, TAKER_API_KEY, "
-            "MAKER_API_KEY) VALUES ('t', %s, %s, 'NORMAL', 'BUY', 300000, 100, "
-            "'MIRRORED', 1000, 'tk', 'mk')",
-            (yes, yes),
-        )
-        assert AccountService._live_pricing(conn, no, yes, 0).cur_price == 0.7
+        _yes_print(conn, yes, no, 300_000)
+        assert _mark(conn, no, yes, entry_price=0.2) == 0.7
+
+
+def test_a_one_sided_book_marks_at_its_own_side_never_at_a_flat_half(house_book):
+    with fresh_test_conn() as conn:
+        yes, no = _market(conn, "decided", 1)
+        house_book(yes, bids=(("0.999", "10"),))
+        marks = {t: _mark(conn, t, o, entry_price=0.3) for t, o in ((yes, no), (no, yes))}
+    assert marks == {yes: 0.999, no: 0.001}
+
+
+def test_an_asks_only_book_caps_a_stale_print_and_a_bids_only_one_ignores_it(house_book):
+    with fresh_test_conn() as conn:
+        yes, no = _market(conn, "stale", 1)
+        _yes_print(conn, yes, no, 400_000)
+        house_book(yes, bids=(("0.999", "10"),))
+        assert (_mark(conn, yes, no, entry_price=0.3), _mark(conn, no, yes, entry_price=0.3)) == (0.999, 0.001)
+
+
+def test_with_no_book_and_no_print_a_position_is_marked_at_what_it_cost():
+    with fresh_test_conn() as conn:
+        yes, no = _market(conn, "closed", 1)
+        assert _mark(conn, no, yes, entry_price=0.002, bought_at=5000) == 0.002
+
+
+def test_with_no_book_a_print_older_than_the_last_buy_marks_no_higher_than_its_cost():
+    with fresh_test_conn() as conn:
+        yes, no = _market(conn, "late", 1)
+        _yes_print(conn, yes, no, 400_000, at=1000)
+        assert (
+            _mark(conn, no, yes, entry_price=0.001, bought_at=2000),
+            _mark(conn, no, yes, entry_price=0.001, bought_at=500),
+        ) == (0.001, 0.6)
+
+
+def test_what_held_shares_cost_is_no_more_than_the_net_cash_put_in():
+    # 40,000 shares bought and sold again at 0.50, then 960,000 bought at 0.001.
+    churned = _TokenFlow(
+        bought_size=1_000_000_000_000,
+        bought_cost=500_000 * 40_000_000_000 + 1_000 * 960_000_000_000,
+        sold_size=40_000_000_000,
+        sold_proceeds=500_000 * 40_000_000_000,
+        last_sell_time=0,
+        last_buy_time=0,
+    )
+    held = _TokenFlow(
+        bought_size=100_000_000,
+        bought_cost=400_000 * 100_000_000,
+        sold_size=0,
+        sold_proceeds=0,
+        last_sell_time=0,
+        last_buy_time=0,
+    )
+    assert (churned.avg_buy_price_micro, churned.entry_price_micro(960_000_000_000)) == (20_960, 1_000)
+    assert held.entry_price_micro(100_000_000) == 400_000

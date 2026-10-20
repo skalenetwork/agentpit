@@ -1,10 +1,11 @@
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi.testclient import TestClient
 
 from agentpit.api.deps import get_account_service, get_onchain_admin
 from agentpit.api.main import app
+from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.services.leaderboard_service import TREND_DAYS
 from tests.db_helpers import fresh_test_conn
@@ -279,6 +280,49 @@ def test_rank_has_the_floor_and_moves_against_yesterdays_close():
 def test_stats_on_an_empty_platform_is_an_empty_list():
     with TestClient(app) as client:
         assert client.get("/stats").json() == {"days": []}
+
+
+def _cte_scan_loops(node: dict) -> list[int]:
+    own = [node["Actual Loops"]] if node["Node Type"] == "CTE Scan" else []
+    return own + [n for child in node.get("Plans", []) for n in _cte_scan_loops(child)]
+
+
+def test_stats_read_each_fill_once_however_many_days():
+    conn = fresh_test_conn()
+    _, house = _account(conn, "house")
+    TableWrite.mark_user_as_bot(conn, house)
+    _, a = _account(conn, "alpha")
+    for d in range(5):
+        _trade(conn, f"t{d}", a, house, X + d * DAY + 100)
+    sent = {}
+
+    class _Spy:
+        def execute(self, sql, params):
+            sent.update(sql=sql, params=params)
+            return conn.execute(sql, params)
+
+    TableRead.daily_activity(_Spy(), date(2026, 1, 10))
+    plan = conn.execute(
+        "EXPLAIN (ANALYZE, FORMAT JSON) " + sent["sql"], sent["params"]
+    ).fetchone()
+    conn.close()
+    loops = _cte_scan_loops(next(iter(plan.values()))[0]["Plan"])
+    assert loops and max(loops) == 1
+
+
+def test_stats_are_read_once_per_window(monkeypatch):
+    reads = []
+    real = TableRead.daily_activity
+
+    def counted(conn, today):
+        reads.append(today)
+        return real(conn, today)
+
+    monkeypatch.setattr(TableRead, "daily_activity", staticmethod(counted))
+    with TestClient(app) as client:
+        first = client.get("/stats").json()
+        again = client.get("/stats").json()
+    assert (len(reads), again) == (1, first)
 
 
 def _owners_board() -> None:

@@ -314,10 +314,10 @@ With `LIQUIDITY_ENGINE=false` there is no book and nothing fills.
 
 ## Running the stack locally
 
-Four processes: Postgres, a local chain, the API, and (optionally) the UI.
+Four processes: Postgres, a local chain, the API, and (optionally) the console.
 
 **Prerequisites:** Python 3.13, Postgres 15+, [Foundry](https://book.getfoundry.sh)
-(`anvil`, `forge`, `cast`), `jq`, and Node 24 + Yarn 4 if you want the UI.
+(`anvil`, `forge`, `cast`), `jq`, and Node 24 + Bun 1.4 if you want the console.
 
 ```bash
 git clone --recurse-submodules https://github.com/kladkostan/agentpit.git
@@ -354,17 +354,18 @@ The schema is rebuilt on startup, so a wiped database needs no migration step.
 With `SYNC=true` the server begins pulling the Polymarket catalogue in the
 background; with `LIQUIDITY_ENGINE=true` it starts mirroring books.
 
-For the UI:
+For the console:
 
 ```bash
-cd ui && corepack enable && yarn install && yarn dev   # http://localhost:5173
+bun install && cd app && bun run dev   # http://localhost:5173
 ```
 
 ---
 
 ## Tests
 
-127 backend test files, plus 23 on the UI side.
+186 backend test files, plus 7 for the console, the landing and the shared
+`packages/brand`.
 
 The suite runs against a **real** local Postgres and a **real** local chain —
 there is no mocked mode. Start Postgres and anvil and deploy the exchange
@@ -374,7 +375,7 @@ first, exactly as above. Skip that and collection fails before the first test:
 ```bash
 .venv/bin/python -m pytest
 .venv/bin/python -m pytest tests/services/test_order_crossing.py
-cd ui && yarn test
+cd app && bun test               # likewise in web/ and packages/brand/
 ```
 
 > Do not source `.env` into a pytest run. `tests/conftest.py` uses

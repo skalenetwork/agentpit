@@ -1,4 +1,6 @@
 import json
+import time
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -6,13 +8,16 @@ from fastapi.testclient import TestClient
 
 from agentpit.api.app import create_app
 from agentpit.api.mcp_server import CARD
+from agentpit.auth.mcp_tokens import AgentVerifier
 from agentpit.config import Settings
+from agentpit.datastructures.competition import Competition
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.domain.exceptions import AgentLimitError
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_db
 
@@ -70,13 +75,15 @@ def test_get_is_not_allowed():
     assert resp.json() == {"detail": "Method Not Allowed"}
 
 
-def test_modern_tools_list_carries_eight_annotated_tools():
+def test_modern_tools_list_carries_nine_annotated_tools():
     key = _agent().api_key
     with TestClient(app) as client:
         result = _call(client, key, "tools/list", {})
 
     tools = {t["name"]: t for t in result["tools"]}
-    assert set(tools) == {"search_markets", "get_market", "trade", "cancel", "portfolio", "top_up", "rename", "leaderboard"}
+    assert set(tools) == {
+        "search_markets", "get_market", "trade", "cancel", "portfolio", "top_up", "rename", "enroll", "leaderboard"
+    }
     assert all(t["title"] and t["annotations"]["openWorldHint"] is False for t in tools.values())
     assert tools["portfolio"]["annotations"]["readOnlyHint"] is True
     assert tools["trade"]["annotations"] == {
@@ -86,6 +93,7 @@ def test_modern_tools_list_carries_eight_annotated_tools():
         "openWorldHint": False,
     }
     assert tools["cancel"]["annotations"]["destructiveHint"] is False
+    assert tools["enroll"]["annotations"]["idempotentHint"] is True
     assert (result["ttlMs"], result["cacheScope"]) == (3_600_000, "public")
 
 
@@ -134,6 +142,50 @@ def test_search_markets_replies_with_the_polymarket_url_the_card_opens_and_compa
     assert (card["market"], card["url"], card["starts_at"]) == ("will-it-rain", "https://polymarket.com/market/will-it-rain", None)
     assert "\n" not in text and "null" not in text and json.loads(text)["markets"][0]["url"] == card["url"]
     assert "openLink(url)" in read["contents"][0]["text"]
+
+
+def test_search_markets_refuses_a_query_over_200_characters_and_still_serves_a_short_one():
+    key = _agent().api_key
+    with TestClient(app) as client:
+        long = _call(client, key, "tools/call", {"name": "search_markets", "arguments": {"query": "x" * 201}}, "search_markets")
+        edge = _call(client, key, "tools/call", {"name": "search_markets", "arguments": {"query": "x" * 200}}, "search_markets")
+        short = _call(client, key, "tools/call", {"name": "search_markets", "arguments": {"query": "bitcoin"}}, "search_markets")
+
+    assert long["isError"] is True
+    assert (edge["isError"], short["isError"]) == (False, False)
+
+
+def test_trade_refuses_an_amount_above_1e15_with_the_validation_message(house_book):
+    key = _agent().api_key
+    with fresh_test_db().write() as conn:
+        event = TableWrite.upsert_event(conn, slug="ev-rain", title="Will it rain?", category="Weather")
+        market = TableWrite.create_market(
+            conn,
+            CreateMarketRequest(
+                question="Will it rain?",
+                description="d",
+                erc1155_tokens=[("rain-y", "Yes"), ("rain-n", "No")],
+                slug="will-it-rain",
+                condition_id=ConditionId("0x" + "ef" * 32),
+                state=MarketState.ACTIVE,
+                event_id=event.event_id,
+                polymarket_id=42,
+            ),
+            is_polygon_market=False,
+        )
+    house_book(market.erc1155_tokens[0][0], bids=(("0.4", "1"),), asks=(("0.6", "1"),))
+    with TestClient(app) as client:
+        result = _call(
+            client,
+            key,
+            "tools/call",
+            {"name": "trade", "arguments": {"market": "will-it-rain", "outcome": "Yes", "side": "buy", "shares": 1e303}},
+            "trade",
+        )
+
+    text = result["content"][0]["text"]
+    assert result["isError"] is True
+    assert "less than or equal" in text and text != "Error executing tool trade"
 
 
 def test_legacy_initialize_carries_the_instructions_and_served_icons():
@@ -202,11 +254,41 @@ def test_rename_changes_the_name_and_refuses_a_taken_or_malformed_one():
     assert stored is not None and stored.handle == "Ziggy"
 
 
+def test_enroll_enters_once_and_refuses_another_agent_of_the_same_owner():
+    db = fresh_test_db()
+    accounts = AgentAccounts(db, lambda *_: pytest.fail("agent_for must not onboard"))
+    agent = accounts.agent_for("user_owner", "Claude", None, None)
+    other = accounts.agent_for("user_owner", "Codex", None, None)
+    starts = int(time.time()) + 2 * 86_400
+    competition = Competition(slug="october-test", title="October test", starts_at=starts, ends_at=starts + 86_400, prizes=[])
+    with db.write() as conn:
+        for user in (agent, other):
+            TableWrite.mark_user_onboarded(conn, user.user_id)
+
+    with TestClient(app) as client:
+        with db.write() as conn:
+            TableWrite.save_competition(conn, competition, 0)
+        first, again, refused = (
+            _call(client, user.api_key, "tools/call", {"name": "enroll", "arguments": {"competition": ref}}, "enroll")
+            for user, ref in (
+                (agent, "https://agentpit.dev/competitions/october-test"),
+                (agent, "october-test"),
+                (other, "october-test"),
+            )
+        )
+
+    entry = first["structuredContent"]
+    assert (first["isError"], again["isError"], again["structuredContent"]) == (False, False, entry)
+    assert (entry["competition"], entry["url"]) == ("october-test", "https://agentpit.dev/competitions/october-test")
+    assert datetime.fromisoformat(entry["run_starts_at"]).timestamp() == starts
+    assert refused["isError"] is True and "console" in refused["content"][0]["text"]
+
+
 def test_a_second_lifespan_still_serves():
     key = _agent().api_key
     for _ in range(2):
         with TestClient(app) as client:
-            assert len(_call(client, key, "tools/list", {})["tools"]) == 8
+            assert len(_call(client, key, "tools/list", {})["tools"]) == 9
 
 
 def test_mcp_adds_no_openapi_paths():
@@ -229,3 +311,17 @@ def test_without_a_usable_config_there_is_no_mcp_and_rest_still_serves(settings:
         assert client.post("/mcp", json={}).status_code == 404
         assert client.get("/.well-known/oauth-protected-resource/mcp").status_code == 404
         assert client.get("/").status_code == 200
+
+
+def test_with_no_room_for_its_agent_a_tool_says_why_and_reads_still_work(monkeypatch):
+    def full(self, token: str):
+        raise AgentLimitError("at most 10 agents per account")
+
+    monkeypatch.setattr(AgentVerifier, "_oauth_user", full)
+    with TestClient(app) as client:
+        refused = _call(client, "a.b.c", "tools/call", {"name": "portfolio", "arguments": {}}, "portfolio")
+        board = _call(client, "a.b.c", "tools/call", {"name": "leaderboard", "arguments": {}}, "leaderboard")
+
+    assert refused["isError"] is True
+    assert "at most 10 agents per account" in refused["content"][0]["text"]
+    assert board["isError"] is False

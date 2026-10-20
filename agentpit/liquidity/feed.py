@@ -62,6 +62,7 @@ class MirrorState:
     def __init__(self, refs: list[MarketRef]):
         self.by_asset: dict[str, MarketRef] = {}
         self.by_token: dict[str, tuple[MarketRef, bool]] = {}
+        self.by_market: dict[int, MarketRef] = {}
         self.replicas: dict[str, BookReplica] = {}
         self.emptied: set[str] = set()
         self.trades: deque[dict] = deque(maxlen=10_000)
@@ -74,6 +75,7 @@ class MirrorState:
         for a in new.keys() - self.by_asset.keys():
             self.replicas[a] = BookReplica(a)
         self.by_asset = new
+        self.by_market = {r.market_id: r for r in refs}
         self.by_token = {
             t: (r, yes)
             for r in refs

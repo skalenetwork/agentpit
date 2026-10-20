@@ -81,6 +81,10 @@ class AgentAlreadyExistsError(AlreadyExistsError):
         self.agent_id = agent_id
 
 
+class AgentLimitError(BusinessRuleError):
+    """The owner already has as many agents as one owner may."""
+
+
 class InsufficientBalanceError(BusinessRuleError):
     pass
 

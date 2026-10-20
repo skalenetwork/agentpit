@@ -154,10 +154,6 @@ deployments/
 
 
 
-# agentpit-trader live status + leaderboard (runtime, written by the bot each cycle)
-ui/public/bot-status*.json
-ui/public/leaderboard.json
-
 # anvil chain state persisted by scripts/run_node.sh --state
 .anvil-state.json
 

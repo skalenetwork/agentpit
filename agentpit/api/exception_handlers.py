@@ -1,6 +1,9 @@
 import logging
 
+import psycopg.errors
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from agentpit.auth.workos_client import (
@@ -26,6 +29,11 @@ from agentpit.domain.exceptions import (
 
 log = logging.getLogger(__name__)
 
+# A 422 names what was wrong, not what was sent: FastAPI's default handler
+# copies each offending value back (`input`), so a large invalid body came
+# back as a response of the same size. Twenty errors is plenty to fix a request.
+_MAX_VALIDATION_ERRORS = 20
+
 
 def _warn_503(what: str):
     """A handler that logs `what` at WARNING and answers 503 with the detail."""
@@ -38,6 +46,14 @@ def _warn_503(what: str):
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = [
+            {k: v for k, v in error.items() if k not in ("input", "url")}
+            for error in exc.errors()[:_MAX_VALIDATION_ERRORS]
+        ]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
     @app.exception_handler(NotFoundError)
     async def _not_found(_: Request, exc: NotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
@@ -105,6 +121,21 @@ def register_exception_handlers(app: FastAPI) -> None:
         (TransactionPendingError, "a user transaction's outcome is unknown"),
     ):
         app.add_exception_handler(exc_type, _warn_503(what))
+
+    @app.exception_handler(psycopg.errors.QueryCanceled)
+    async def _query_cancelled(
+        request: Request, exc: psycopg.errors.QueryCanceled
+    ) -> JSONResponse:
+        """A statement hit the pool's statement_timeout (or was cancelled).
+        WARNING with the route, so a timeout that is too tight for real
+        traffic shows up in the logs."""
+        log.warning(
+            "query cancelled on %s %s: %s", request.method, request.url.path, exc
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "the database took too long to answer"},
+        )
 
     # Registered ahead of the generic BusinessRuleError handler below it, but
     # order doesn't actually matter to Starlette's lookup -- it walks the

@@ -1,13 +1,13 @@
 import { type Burst, bursts } from "@agentpit/brand/activity";
-import { explorerAddress, explorerTx, type Fill, type MarketContext, marketCaption, type Profile } from "@agentpit/brand/api";
+import { type Competition, explorerAddress, explorerTx, type Fill, type MarketContext, marketCaption, type Profile, stageText } from "@agentpit/brand/api";
 import { closeLabel, recordBars } from "@agentpit/brand/chart";
-import { cents, clock, count, dollars, exactDollars, pct, shortAddress, shortDay, signedDollars, stamp, tone, utcTime } from "@agentpit/brand/format";
+import { cents, clock, count, dollars, exactDollars, pct, pool, shortAddress, shortDay, signedDollars, span, stamp, tone, utcTime } from "@agentpit/brand/format";
 import polymarket from "@agentpit/brand/polymarket.svg";
 import { recordCalls } from "@agentpit/brand/standing";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, ChartLine, Pencil, Share, Trash2 } from "lucide-react";
+import { ArrowUpRight, ChartLine, Pencil, Share, Trash2, Trophy } from "lucide-react";
 import { type FormEvent, Fragment, type ReactNode, useState } from "react";
-import { type Agent, type Order, useAgents, useDeleteAgent, useOrders, useProfile, useRenameAgent } from "../api";
+import { type Agent, type Order, useAgents, useCompetition, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRenameAgent } from "../api";
 import { Chart } from "../chart";
 import { LastTrade, Sep, TONE } from "../labels";
 import { ApiError } from "../session";
@@ -15,17 +15,23 @@ import { Crumbs } from "../shell";
 import { Thumb } from "../thumb";
 import { Actions, Button, Card, Copy, Fault, Input, Note, RankPill, Robot, Sheet, SOFT } from "../ui";
 
-const SITE = "https://agentpit.dev/agents";
+const SITE = "https://agentpit.dev";
 const POSITIONS = 6;
 const BURSTS = 8;
 const DAY = 86_400;
 const VERB = { BUY: "Bought", SELL: "Sold", SPLIT: "Split", MERGE: "Merged", REDEEM: "Redeemed" } as const;
-const ICON = "max-sm:w-7.5 max-sm:px-0";
+const ICON = "max-md:w-7.5 max-md:px-0";
 const LEAD = "flex min-h-10 items-center text-caption text-muted";
 const POSITION_COLS = "md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px]";
 const BURST_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px]";
 const ACTIVITY_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_72px_104px]";
 const UNDERLINE = "underline decoration-faint underline-offset-[3px] transition-colors duration-150 hover:text-ink hover:decoration-current";
+const STICKER = {
+  live: ["Live", "bg-down text-paper scheme-light"],
+  upcoming: ["Entries open", "bg-signal text-paper scheme-light"],
+  locked: ["Starting soon", "bg-gold text-ink scheme-light"],
+  ended: ["Ended", "bg-ink/7 text-muted"],
+} as const satisfies Record<Competition["phase"], readonly [string, string]>;
 
 const route = getRouteApi("/console/agents/$address");
 
@@ -562,11 +568,111 @@ const Delete = ({ agent, onClose }: { agent: Agent; onClose: () => void }) => {
   );
 };
 
+const Contest = ({ agent, competition, other, now }: { agent: Agent; competition: Competition; other: Agent | undefined; now: number }) => {
+  const entry = useEntry(agent.eth_address);
+  const entered = agent.competitions.includes(competition.slug);
+  const upcoming = competition.phase === "upcoming";
+  const line = entered ? (upcoming ? undefined : "Entered") : other && (upcoming ? `Replaces ${other.name}` : `${other.name} is entered`);
+  const action = entered ? (upcoming ? "Leave" : undefined) : upcoming || !other ? "Enter" : undefined;
+  return (
+    <li className="flex min-h-15 items-center justify-between gap-4 border-t border-line py-3">
+      <div className="min-w-0">
+        <p className="font-medium">{competition.title}</p>
+        <p className="flex flex-wrap items-center gap-x-1.5 text-caption text-muted *:whitespace-nowrap">
+          <span>{span(competition.startsAt, competition.endsAt)}</span>
+          <Sep />
+          <span>{stageText(competition, now)}</span>
+          <Sep />
+          <span>{pool(competition.prizes)}</span>
+        </p>
+        {line && <p className="text-caption text-muted">{line}</p>}
+        {entry.isError && <Fault>{(entry.error instanceof ApiError && entry.error.detail) || "Could not update the entry. Try again in a moment."}</Fault>}
+      </div>
+      {action && (
+        <Button variant={entered ? "secondary" : "primary"} disabled={entry.isPending} onClick={() => entry.mutate({ slug: competition.slug, enter: !entered })}>
+          {action}
+        </Button>
+      )}
+    </li>
+  );
+};
+
+const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competitions: readonly Competition[]; now: number; onClose: () => void }) => {
+  const agents = useAgents().data ?? [];
+  return (
+    <Sheet title="Compete" onClose={onClose}>
+      <ul className="mt-4">
+        {competitions.map((competition) => (
+          <Contest
+            key={competition.slug}
+            agent={agent}
+            competition={competition}
+            other={agents.find((owned) => owned.eth_address !== agent.eth_address && owned.competitions.includes(competition.slug))}
+            now={now}
+          />
+        ))}
+      </ul>
+      <p className="mt-4 text-caption text-muted">
+        Top-ups pause from 24 hours before the start until the final values are in.{" "}
+        <a href={`${SITE}/competitions#how-it-works`} target="_blank" rel="noreferrer" className={UNDERLINE}>
+          How it works
+        </a>
+      </p>
+    </Sheet>
+  );
+};
+
+const Entry = ({ slug, address, now }: { slug: string; address: string; now: number }) => {
+  const page = useCompetition(slug).data;
+  if (!page) return null;
+  const [label, look] = STICKER[page.phase];
+  const standing = (page.phase === "live" || page.phase === "ended") && page.standings.find((entrant) => entrant.address.toLowerCase() === address.toLowerCase());
+  return (
+    <li className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+      <div className="grid min-w-0 flex-1 gap-0.5">
+        <p className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-medium">{page.title}</span>
+          <span className={`inline-flex h-6 shrink-0 items-center gap-1.5 rounded-control px-2.5 text-label font-medium ${look}`}>
+            {page.phase === "live" && <span className="size-1.5 rounded-full bg-paper" />}
+            {page.phase === "ended" && page.final ? "Final" : label}
+          </span>
+        </p>
+        <p className="flex flex-wrap items-center gap-x-1.5 text-caption text-muted tabular-nums *:whitespace-nowrap">
+          <span>{stageText(page, now)}</span>
+          {standing && (
+            <>
+              <Sep />
+              {standing.disqualified ? (
+                <span className="font-medium text-down">Out</span>
+              ) : standing.rank === null ? (
+                <span>{standing.trades ? `${count(standing.trades)} ${standing.trades === 1 ? "trade" : "trades"}` : "No trades yet"}</span>
+              ) : (
+                <>
+                  <span>
+                    #{standing.rank} of {page.standings.filter(({ rank }) => rank !== null).length}
+                  </span>
+                  <Sep />
+                  <span className={`font-medium ${TONE[tone(standing.returnPct)]}`}>{pct(standing.returnPct)}</span>
+                </>
+              )}
+            </>
+          )}
+        </p>
+      </div>
+      <Button href={`${SITE}/competitions/${slug}`} target="_blank" rel="noreferrer" variant="paper" className={ICON}>
+        <ArrowUpRight size={14} strokeWidth={1.75} />
+        <span className="max-md:sr-only">View</span>
+      </Button>
+    </li>
+  );
+};
+
 const View = ({ agent, now }: { agent: Agent; now: number }) => {
-  const [sheet, setSheet] = useState<"rename" | "delete">();
+  const [sheet, setSheet] = useState<"compete" | "rename" | "delete">();
+  const competitions = useCompetitions().data?.competitions.filter(({ phase }) => phase !== "ended") ?? [];
   const { data: profile, isError } = useProfile(agent);
   const orders = useOrders(agent).data;
-  const page = `${SITE}/${agent.eth_address}`;
+  const page = `${SITE}/agents/${agent.eth_address}`;
   const icons = new Map([...(profile?.positions.open ?? []), ...(profile?.activity ?? [])].map((item) => [item.title, item.icon]));
   const ordersTab: readonly Tab[] = orders?.length ? [{ label: "Orders", count: orders.length, panel: <OrdersPanel orders={orders} icons={icons} now={now} /> }] : [];
   const close = () => setSheet(undefined);
@@ -583,29 +689,44 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
               className={ICON}
             >
               <Share size={14} strokeWidth={1.75} />
-              <span className="max-sm:sr-only">Share</span>
+              <span className="max-md:sr-only">Share</span>
             </Button>
           )}
           {agent.trades > 0 && (
             <Button href={page} target="_blank" rel="noreferrer" className={ICON}>
               <ArrowUpRight size={14} strokeWidth={1.75} />
-              <span className="max-sm:sr-only">Public page</span>
+              <span className="max-md:sr-only">Public page</span>
+            </Button>
+          )}
+          {competitions.length > 0 && (
+            <Button className={ICON} onClick={() => setSheet("compete")}>
+              <Trophy size={14} strokeWidth={1.75} />
+              <span className="max-md:sr-only">Compete</span>
             </Button>
           )}
           <Button className={ICON} onClick={() => setSheet("rename")}>
             <Pencil size={14} strokeWidth={1.75} />
-            <span className="max-sm:sr-only">Rename</span>
+            <span className="max-md:sr-only">Rename</span>
           </Button>
           <Button variant="warn" className={ICON} onClick={() => setSheet("delete")}>
             <Trash2 size={14} strokeWidth={1.75} />
-            <span className="max-sm:sr-only">Delete</span>
+            <span className="max-md:sr-only">Delete</span>
           </Button>
         </div>
       </Crumbs>
       <Header agent={agent} profile={profile} now={now} />
-      {profile ? (
-        <>
-          <div className="mt-5 grid gap-5 sm:mt-7">
+      <div className="mt-5 grid gap-5 sm:mt-7">
+        {agent.competitions.length > 0 && (
+          <Card title="Competitions" icon={Trophy}>
+            <ul className="divide-y divide-line">
+              {agent.competitions.map((slug) => (
+                <Entry key={slug} slug={slug} address={agent.eth_address} now={now} />
+              ))}
+            </ul>
+          </Card>
+        )}
+        {profile ? (
+          <>
             <EarnedCard money={profile.money} valuedAt={profile.valuedAt} />
             <Tabs
               tabs={[
@@ -615,21 +736,18 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
                 ...ordersTab,
               ]}
             />
-          </div>
-          <Wallet address={profile.address} />
-        </>
-      ) : (
-        <>
-          {(agent.trades === 0 || isError) && (
-            <p className="mt-5 text-muted sm:mt-7">{agent.trades === 0 ? `${dollars(agent.equity)} of paper money is ready.` : "Could not load this agent. Reload to try again."}</p>
-          )}
-          {ordersTab.length > 0 && (
-            <div className="mt-5 sm:mt-7">
-              <Tabs tabs={ordersTab} />
-            </div>
-          )}
-        </>
-      )}
+          </>
+        ) : (
+          <>
+            {(agent.trades === 0 || isError) && (
+              <p className="text-muted">{agent.trades === 0 ? `${dollars(agent.equity)} of paper money is ready.` : "Could not load this agent. Reload to try again."}</p>
+            )}
+            {ordersTab.length > 0 && <Tabs tabs={ordersTab} />}
+          </>
+        )}
+      </div>
+      {profile && <Wallet address={profile.address} />}
+      {sheet === "compete" && <Compete agent={agent} competitions={competitions} now={now} onClose={close} />}
       {sheet === "rename" && <Rename agent={agent} onClose={close} />}
       {sheet === "delete" && <Delete agent={agent} onClose={close} />}
     </>

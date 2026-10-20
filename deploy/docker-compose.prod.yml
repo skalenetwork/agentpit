@@ -100,6 +100,14 @@ services:
       RPC_URL: ${RPC_URL:?set in .env}
     volumes:
       - ../deployments:/app/deployments:ro
+    # The default soft limit of 1024 open files is shared by every client
+    # connection, the database pool and outbound calls. /live streams are
+    # capped in the app (agentpit/api/routes/live.py); this keeps that cap,
+    # not the descriptor limit, the one that applies.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     depends_on:
       postgres:
         condition: service_healthy

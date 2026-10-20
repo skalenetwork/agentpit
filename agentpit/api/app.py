@@ -26,6 +26,7 @@ from agentpit.api.routes import (
     admin,
     agents,
     auth,
+    competitions,
     data_api,
     events,
     leaderboard,
@@ -73,6 +74,7 @@ from agentpit.services.account_service import AccountService
 from agentpit.services.agent_accounts import AgentAccounts
 from agentpit.services.agent_desk import AgentDesk
 from agentpit.services.auth_service import AuthService
+from agentpit.services.competition_service import FOLDER, CompetitionService
 from agentpit.services.event_service import EventService
 from agentpit.services.leaderboard_service import LeaderboardService, drain
 from agentpit.services.market_service import ChainTask, sweep
@@ -228,6 +230,12 @@ async def _leaderboard_loop(service: LeaderboardService, interval_seconds: int) 
         await asyncio.sleep(_LEADERBOARD_TICK_SECONDS)
 
 
+async def _capture_loop(service: CompetitionService) -> None:
+    while True:
+        await asyncio.to_thread(service.capture, int(time.time()))
+        await asyncio.sleep(_LEADERBOARD_TICK_SECONDS)
+
+
 def _warn_if_simulated_on_durable_chain(settings: Settings, chain_id: int) -> None:
     """AGENTPIT_SIMULATED_CHAIN=true outside anvil is ignored (see
     `is_disposable_chain`), but it is still a wrong config worth a loud line."""
@@ -287,6 +295,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         min_size=settings.pool_min_size,
         max_idle=settings.pool_max_idle,
         create_tables=False,
+        statement_timeout_ms=settings.db_statement_timeout_ms,
+        idle_in_transaction_timeout_ms=settings.db_idle_in_transaction_timeout_ms,
     )
     coder = JwtCoder(settings)
     onchain_admin = _build_onchain_admin(settings)
@@ -369,10 +379,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.database_url, onchain_admin.oracle_address
         )
         with db_session.write() as conn:
+            # Schema changes may index or rewrite a large table; they get no
+            # statement timeout. SET LOCAL ends with this transaction.
+            conn.execute("SET LOCAL statement_timeout = 0")
             TableCreate.create_all_tables(conn)
             TableCreate.migrate_markets(conn, onchain_admin.oracle_address)
             for workos_id in TableRead.unnamed_owners(conn):
                 TableWrite.ensure_owner(conn, workos_id)
+            CompetitionService.sync(conn, FOLDER, int(time.time()))
         try:
             wrapped = EventService(db_session).ensure_singleton_events_for_orphans()
             if wrapped:
@@ -397,26 +411,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             log.info("Polymarket sync disabled (set SYNC=true to enable)")
 
-        leaderboard_task: asyncio.Task | None = None
+        leaderboard_tasks: list[asyncio.Task] = []
         if settings.leaderboard_enabled:
             log.info(
                 "Leaderboard loop enabled (interval=%ds)",
                 settings.leaderboard_interval_seconds,
             )
+            account_service = AccountService(
+                db_session, onchain_admin, min_claim_micro=settings.min_claim_micro
+            )
             leaderboard_service = LeaderboardService(
-                db_session,
-                onchain_admin,
-                AccountService(
-                    db_session, onchain_admin, min_claim_micro=settings.min_claim_micro
+                db_session, onchain_admin, account_service, settings
+            )
+            competition_service = CompetitionService(
+                db_session, onchain_admin, account_service, settings
+            )
+            leaderboard_tasks = [
+                asyncio.create_task(
+                    _leaderboard_loop(
+                        leaderboard_service,
+                        settings.leaderboard_interval_seconds,
+                    )
                 ),
-                settings,
-            )
-            leaderboard_task = asyncio.create_task(
-                _leaderboard_loop(
-                    leaderboard_service,
-                    settings.leaderboard_interval_seconds,
-                )
-            )
+                asyncio.create_task(
+                    supervise("captures", lambda: _capture_loop(competition_service))
+                ),
+            ]
         else:
             log.warning(
                 "Leaderboard loop disabled (set AGENTPIT_LEADERBOARD_ENABLED=true "
@@ -478,7 +498,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 yield
         finally:
             for task in (
-                leaderboard_task,
+                *leaderboard_tasks,
                 order_cleanup_task,
                 live_task,
                 admin_gas_task,
@@ -526,6 +546,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(events.router)
     app.include_router(tags.router)
     app.include_router(leaderboard.router)
+    app.include_router(competitions.router)
     app.include_router(live.router)
     app.include_router(orders.router)
     app.include_router(market_data.router)

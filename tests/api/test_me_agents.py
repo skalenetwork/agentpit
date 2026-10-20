@@ -17,7 +17,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import AdminGasPausedError
 from agentpit.domain.handles import generate_handle
-from agentpit.services.agent_accounts import AgentAccounts
+from agentpit.services.agent_accounts import MAX_AGENTS_PER_OWNER, AgentAccounts
 from agentpit.services.leaderboard_service import RANK_FLOOR, Holdings, _holdings
 from tests.db_helpers import fresh_test_conn, fresh_test_db
 
@@ -70,6 +70,7 @@ def test_me_agents_lists_the_signed_in_person_s_agents(sign_in):
         "place_change": None,
         "trend": [],
         "trend_start": None,
+        "competitions": [],
     }
 
 
@@ -376,3 +377,19 @@ def test_a_picked_owner_name_skips_owner_names_and_handles_in_any_case():
     owners = [TableRead.get_owner(conn, w) for w in ("user_a", "user_b")]
     conn.close()
     assert len({first.lower(), *(o.name.lower() for o in owners if o)}) == 3
+
+
+def test_an_owner_at_the_agent_limit_gets_a_400_with_the_reason_and_nothing_is_set_up(sign_in, monkeypatch):
+    onboarded: list[str] = []
+    accounts = AgentAccounts(fresh_test_db(), lambda user_id, _acct: onboarded.append(user_id))
+    monkeypatch.setitem(app.dependency_overrides, get_agent_accounts, lambda: accounts)
+    with TestClient(app) as client:
+        headers, owner = _owner(client, sign_in, "owner@example.com")
+        for _ in range(MAX_AGENTS_PER_OWNER):
+            accounts.create_api_agent(owner)
+
+        refused = client.post("/me/agents", headers=headers)
+
+    assert refused.status_code == 400
+    assert refused.json()["detail"].startswith("at most 10 agents per account")
+    assert onboarded == []

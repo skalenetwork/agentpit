@@ -1,6 +1,5 @@
 import json
 import time
-import uuid
 from collections.abc import Iterable
 from datetime import date
 from typing import NamedTuple
@@ -9,11 +8,11 @@ import psycopg
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from pydantic import BaseModel
-from web3 import Web3
 
 from agentpit.utils.parse import parse_32b_hex_private_key
 from agentpit.datastructures.agent_desk import Sort
 from agentpit.datastructures.board import WireTeam
+from agentpit.datastructures.competition import LOCK, Competition
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.event_sort import EventSort
 from agentpit.datastructures.market import Market
@@ -57,6 +56,41 @@ class DailyClose(BaseModel):
     day: date
     capital: int
     deposited: int
+
+
+class Seat(BaseModel):
+    """An account as a would-be entrant: its owner when it may enter, when it
+    entered if it is its owner's entry, and whether the owner entered another."""
+
+    owner: str | None
+    eth_address: str
+    enrolled_at: int | None
+    taken: bool
+
+
+class PendingCapture(BaseModel):
+    slug: str
+    user_id: str
+    eth_address: str
+    run_starts_at: int
+    ends_at: int
+    start_raw: int | None
+
+
+class Entrant(BaseModel):
+    """One non-deleted entry with the figures its standing is built from."""
+
+    eth_address: str
+    handle: str | None
+    app: str | None
+    host: str | None
+    run_starts_at: int
+    start_raw: int | None
+    end_raw: int | None
+    earned_raw: int
+    trades: int
+    listed: bool
+    disqualified: bool
 
 
 class MarketFields(NamedTuple):
@@ -267,6 +301,14 @@ class TableRead:
     LIVE_ORDER = (
         "STATUS = 'live' AND (EXPIRATION IS NULL OR EXPIRATION = 0 "
         f"OR EXPIRATION > %s + {EXPIRY_GRACE_SECONDS})"
+    )
+
+    #: An account's competition entries that pause its top-ups: past their
+    #: lock and still without an end value. Takes TWO parameters, the user id
+    #: and `now`. Prefix your own `SELECT ...`.
+    PAUSING_ENTRIES = (
+        "FROM competition_entries e JOIN competitions c ON c.SLUG = e.SLUG "
+        f"WHERE e.USER_ID = %s AND e.END_RAW IS NULL AND c.STARTS_AT <= %s + {LOCK}"
     )
 
     #: One price print per Polymarket print and token: "this token traded at
@@ -532,6 +574,17 @@ class TableRead:
     def get_owner(db: psycopg.Connection, workos_id: str) -> Owner | None:
         row = db.execute("SELECT NAME, SHOWN FROM owners WHERE WORKOS_ID = %s", (workos_id,)).fetchone()
         return Owner.model_validate(row) if row else None
+
+    @staticmethod
+    def count_owner_agents(db: psycopg.Connection, owner_workos_id: str, since: int) -> int:
+        """The owner's live agents, plus those created at or after `since`
+        whether deleted or not."""
+        row = db.execute(
+            "SELECT COUNT(*) AS N FROM users WHERE OWNER_WORKOS_ID = %s "
+            "AND (DELETED_AT IS NULL OR CREATED_AT >= %s)",
+            (owner_workos_id, since),
+        ).fetchone()
+        return row["N"]
 
     @staticmethod
     def owner_name_taken(db: psycopg.Connection, name: str, workos_id: str) -> bool:
@@ -811,21 +864,34 @@ class TableRead:
                 WHERE u.IS_BOT = 0
             ),
             firsts AS (
-                SELECT MIN(DAY) AS DAY FROM fills GROUP BY USER_ID
+                SELECT USER_ID, MIN(DAY) AS DAY FROM fills GROUP BY USER_ID
             ),
-            matches AS (
-                SELECT DISTINCT TRADE_ID, DAY, NOTIONAL FROM fills
+            joined AS (
+                SELECT DAY, COUNT(*) AS N FROM firsts GROUP BY DAY
+            ),
+            per_day AS (
+                SELECT DAY, COUNT(DISTINCT USER_ID) AS ACTIVE,
+                       COUNT(DISTINCT TRADE_ID) AS TRADES
+                FROM fills GROUP BY DAY
+            ),
+            vol AS (
+                SELECT DAY, SUM(NOTIONAL) AS VOLUME
+                FROM (SELECT DISTINCT TRADE_ID, DAY, NOTIONAL FROM fills) m
+                GROUP BY DAY
             )
+            -- One aggregation per CTE and a running sum for the agent count,
+            -- so each fill is read once however many days the series spans.
             SELECT DATE 'epoch' + d.DAY::int AS day,
-                   (SELECT COUNT(*) FROM firsts f WHERE f.DAY <= d.DAY) AS agents,
-                   COUNT(DISTINCT fl.USER_ID) AS active,
-                   COUNT(DISTINCT fl.TRADE_ID) AS trades,
-                   (SELECT COALESCE(SUM(m.NOTIONAL), 0) FROM matches m WHERE m.DAY = d.DAY) AS volume
+                   COALESCE(SUM(j.N) OVER (ORDER BY d.DAY), 0) AS agents,
+                   COALESCE(p.ACTIVE, 0) AS active,
+                   COALESCE(p.TRADES, 0) AS trades,
+                   COALESCE(v.VOLUME, 0) AS volume
             FROM generate_series(
                 (SELECT MIN(DAY) FROM firsts), %(today)s::date - DATE 'epoch'
             ) AS d(DAY)
-            LEFT JOIN fills fl ON fl.DAY = d.DAY
-            GROUP BY d.DAY
+            LEFT JOIN joined j ON j.DAY = d.DAY
+            LEFT JOIN per_day p ON p.DAY = d.DAY
+            LEFT JOIN vol v ON v.DAY = d.DAY
             ORDER BY d.DAY
             """,
             {"today": today},
@@ -855,6 +921,144 @@ class TableRead:
         ):
             closes.setdefault(r["user_id"], []).append(DailyClose.model_validate(r))
         return closes
+
+    @staticmethod
+    def topup_paused_until(db: psycopg.Connection, user_id: str, now: int) -> int | None:
+        """The latest end among the entries pausing the account's top-ups; None when none do."""
+        row = db.execute(
+            f"SELECT MAX(c.ENDS_AT) AS UNTIL {TableRead.PAUSING_ENTRIES}", (user_id, now)
+        ).fetchone()
+        return row["UNTIL"]
+
+    @staticmethod
+    def competitions(
+        db: psycopg.Connection, slug: str | None = None
+    ) -> "list[tuple[Competition, int]]":
+        """Every competition, or the one called `slug`, latest start first, each
+        with its number of entries by accounts not deleted."""
+        rows = db.execute(
+            """
+            SELECT c.SLUG, c.TITLE, c.STARTS_AT, c.ENDS_AT, c.PRIZES,
+                   (SELECT COUNT(*) FROM competition_entries e
+                    JOIN users u ON u.USER_ID = e.USER_ID
+                    WHERE e.SLUG = c.SLUG AND u.DELETED_AT IS NULL) AS ENTRANTS
+            FROM competitions c
+            WHERE %(slug)s::text IS NULL OR c.SLUG = %(slug)s
+            ORDER BY c.STARTS_AT DESC, c.SLUG
+            """,
+            {"slug": slug},
+        ).fetchall()
+        return [
+            (Competition.model_validate({**r, "prizes": json.loads(r["PRIZES"])}), r["ENTRANTS"])
+            for r in rows
+        ]
+
+    @staticmethod
+    def seat(db: psycopg.Connection, slug: str, user_id: str) -> "Seat | None":
+        """The account's owner only when it is an agent that may enter: not a
+        bot, not deleted, not peer-flagged and onboarded."""
+        row = db.execute(
+            """
+            SELECT CASE WHEN u.IS_BOT = 0 AND u.DELETED_AT IS NULL
+                         AND u.PEER_TRANSFER_BLOCK IS NULL AND u.ONBOARDED_AT IS NOT NULL
+                        THEN u.OWNER_WORKOS_ID END AS OWNER,
+                   u.ETH_ADDRESS,
+                   CASE WHEN e.USER_ID = u.USER_ID THEN e.ENROLLED_AT END AS ENROLLED_AT,
+                   COALESCE(e.USER_ID <> u.USER_ID, false) AS TAKEN
+            FROM users u
+            LEFT JOIN competition_entries e ON e.SLUG = %s AND e.OWNER = u.OWNER_WORKOS_ID
+            WHERE u.USER_ID = %s
+            """,
+            (slug, user_id),
+        ).fetchone()
+        return Seat.model_validate(row) if row else None
+
+    @staticmethod
+    def entered_by_owner(db: psycopg.Connection, owner: str, now: int) -> "dict[str, list[str]]":
+        """user_id -> the competitions not yet ended its owner entered it in."""
+        entered: dict[str, list[str]] = {}
+        for r in db.execute(
+            "SELECT e.USER_ID, e.SLUG FROM competition_entries e "
+            "JOIN competitions c ON c.SLUG = e.SLUG "
+            "WHERE e.OWNER = %s AND c.ENDS_AT > %s ORDER BY c.STARTS_AT, e.SLUG",
+            (owner, now),
+        ):
+            entered.setdefault(r["USER_ID"], []).append(r["SLUG"])
+        return entered
+
+    @staticmethod
+    def pending_captures(db: psycopg.Connection, now: int, topped_up_before: int) -> "list[PendingCapture]":
+        """Entries of accounts not deleted whose start value is due, or whose
+        end value is due and no fill from before the end is still PENDING.
+        A start waits for onboarding and for a top-up after `topped_up_before`
+        to land."""
+        rows = db.execute(
+            """
+            SELECT e.SLUG, e.USER_ID, u.ETH_ADDRESS,
+                   GREATEST(c.STARTS_AT, e.ENROLLED_AT) AS RUN_STARTS_AT, c.ENDS_AT, e.START_RAW
+            FROM competition_entries e
+            JOIN competitions c ON c.SLUG = e.SLUG
+            JOIN users u ON u.USER_ID = e.USER_ID
+            WHERE u.DELETED_AT IS NULL AND (
+                (e.START_RAW IS NULL AND %(now)s >= GREATEST(c.STARTS_AT, e.ENROLLED_AT)
+                 AND u.ONBOARDED_AT IS NOT NULL
+                 AND (u.LAST_TOPUP_AT IS NULL OR u.LAST_TOPUP_AT <= %(topped)s))
+                OR (e.START_RAW IS NOT NULL AND e.END_RAW IS NULL AND %(now)s >= c.ENDS_AT
+                    AND NOT EXISTS (
+                        SELECT 1 FROM trades t WHERE t.TAKER_API_KEY = u.API_KEY
+                        AND t.STATUS = 'PENDING' AND t.MATCH_TIME < c.ENDS_AT)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM trades t WHERE t.MAKER_API_KEY = u.API_KEY
+                        AND t.STATUS = 'PENDING' AND t.MATCH_TIME < c.ENDS_AT))
+            )
+            """,
+            {"now": now, "topped": topped_up_before},
+        ).fetchall()
+        return [PendingCapture.model_validate(r) for r in rows]
+
+    @staticmethod
+    def entrants(db: psycopg.Connection, slug: str) -> "list[Entrant]":
+        """Each entry by an account not deleted. Earned is capital less the
+        start value, capital being the end value, else the latest valuation
+        since the run start, else the start value; 0 before the start value.
+        Run trades are the non-failed fills, either side, from the run start
+        to the end; listed means the account is on the public board."""
+        rows = db.execute(
+            """
+            SELECT u.ETH_ADDRESS, u.HANDLE, u.AGENT_APP AS APP, u.AGENT_HOST AS HOST,
+                   GREATEST(c.STARTS_AT, e.ENROLLED_AT) AS RUN_STARTS_AT,
+                   e.START_RAW, e.END_RAW,
+                   COALESCE(COALESCE(e.END_RAW, s.CAPITAL_RAW) - e.START_RAW, 0) AS EARNED_RAW,
+                   x.TRADES,
+                   x.TRADED > 0 AND u.PEER_TRANSFER_BLOCK IS NULL AS LISTED,
+                   e.DISQUALIFIED_AT IS NOT NULL OR u.PEER_TRANSFER_BLOCK IS NOT NULL AS DISQUALIFIED
+            FROM competition_entries e
+            JOIN competitions c ON c.SLUG = e.SLUG
+            JOIN users u ON u.USER_ID = e.USER_ID
+            LEFT JOIN LATERAL (
+                SELECT CAPITAL_RAW FROM account_snapshots
+                WHERE USER_ID = e.USER_ID AND T >= GREATEST(c.STARTS_AT, e.ENROLLED_AT)
+                ORDER BY T DESC, SNAPSHOT_ID DESC LIMIT 1
+            ) s ON true
+            CROSS JOIN LATERAL (
+                SELECT COUNT(DISTINCT f.TRADE_ID) AS TRADED,
+                       COUNT(DISTINCT f.TRADE_ID) FILTER (
+                           WHERE f.MATCH_TIME >= GREATEST(c.STARTS_AT, e.ENROLLED_AT)
+                             AND f.MATCH_TIME < c.ENDS_AT
+                       ) AS TRADES
+                FROM (
+                    SELECT TRADE_ID, MATCH_TIME FROM trades
+                    WHERE TAKER_API_KEY = u.API_KEY AND STATUS != 'FAILED'
+                    UNION ALL
+                    SELECT TRADE_ID, MATCH_TIME FROM trades
+                    WHERE MAKER_API_KEY = u.API_KEY AND STATUS != 'FAILED'
+                ) f
+            ) x
+            WHERE e.SLUG = %s AND u.DELETED_AT IS NULL
+            """,
+            (slug,),
+        ).fetchall()
+        return [Entrant.model_validate(r) for r in rows]
 
     @staticmethod
     def read_market(db: psycopg.Connection, market_id: int) -> "Market | None":
@@ -1691,21 +1895,44 @@ class TableRead:
     def last_trade_prices_for_tokens(
         db: psycopg.Connection, token_ids: "list[str]"
     ) -> "dict[str, int]":
-        """Most-recent price print per token, batched.
+        """Most-recent price print per token, batched."""
+        return {t: price for t, (price, _) in TableRead.last_prints_for_tokens(db, token_ids).items()}
+
+    @staticmethod
+    def last_prints_for_tokens(
+        db: psycopg.Connection, token_ids: "list[str]"
+    ) -> "dict[str, tuple[int, int]]":
+        """token -> (price, MATCH_TIME) of its most recent print, batched.
 
         Reads prints rather than raw rows: a YES print also prints NO at
-        MICRO - p.
+        MICRO - p, the same two sides as `TOKEN_PRINTS_CTE`. Each side is one
+        probe of its (token, MATCH_TIME DESC) index: a catalogue page used to
+        read and sort every print of every token on it, and the tape grows by
+        about half a million rows a day.
         """
         if not token_ids:
             return {}
-        ids = list(token_ids)
         rows = db.execute(
-            TableRead.TOKEN_PRINTS_CTE
-            + "SELECT DISTINCT ON (TOKEN_ID) TOKEN_ID, PRICE FROM prints "
-              "ORDER BY TOKEN_ID, MATCH_TIME DESC",
-            (ids, ids),
+            """
+            SELECT t.TOKEN_ID, newest.PRICE, newest.MATCH_TIME
+            FROM (SELECT DISTINCT unnest(%s::text[]) AS TOKEN_ID) t
+            CROSS JOIN LATERAL (
+                SELECT PRICE, MATCH_TIME FROM (
+                    (SELECT PRICE, MATCH_TIME FROM trades
+                     WHERE STATUS = 'MIRRORED' AND ASSET_ID = t.TOKEN_ID
+                     ORDER BY MATCH_TIME DESC LIMIT 1)
+                    UNION ALL
+                    (SELECT 1000000 - PRICE, MATCH_TIME FROM trades
+                     WHERE STATUS = 'MIRRORED' AND MAKER_ASSET_ID = t.TOKEN_ID
+                       AND MAKER_ASSET_ID <> ASSET_ID
+                     ORDER BY MATCH_TIME DESC LIMIT 1)
+                ) sides
+                ORDER BY MATCH_TIME DESC LIMIT 1
+            ) newest
+            """,
+            (list(token_ids),),
         ).fetchall()
-        return {r["TOKEN_ID"]: int(r["PRICE"]) for r in rows}
+        return {r["TOKEN_ID"]: (int(r["PRICE"]), int(r["MATCH_TIME"] or 0)) for r in rows}
 
     @staticmethod
     def list_resolved_unredeemed_markets(db: psycopg.Connection) -> "list[Market]":
