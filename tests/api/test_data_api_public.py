@@ -61,12 +61,25 @@ def test_the_public_reads_skip_the_house_bots_and_deleted_agents(served):
     assert served == [live] * 4
 
 
-def test_an_activity_page_is_bounded_like_polymarket_s():
+def test_an_activity_page_is_bounded_like_polymarket_s(monkeypatch):
+    pages: list[tuple[int, int]] = []
+
+    def listed(self, address, *, limit, offset, **kwargs):
+        pages.append((limit, offset))
+        return []
+
+    monkeypatch.setattr(AccountService, "list_activity", listed)
+    conn = fresh_test_conn()
+    _, live, _ = _account(conn, "Pager")
+    conn.close()
     with TestClient(app) as client:
-        codes = [
-            client.get("/activity", params={"user": "0xabc", **params}).status_code
-            for params in ({"limit": 501}, {"limit": -1}, {"offset": 1001}, {"offset": -1})
+        refused = [
+            client.get("/activity", params={"user": live, **params}).status_code
+            for params in ({"limit": -1}, {"offset": -1}, {"offset": 5001})
         ]
-        fits = client.get("/activity", params={"user": "0xabc", "limit": 500, "offset": 1000})
-    assert codes == [422, 422, 422, 422]
-    assert (fits.status_code, fits.json()) == (200, [])
+        served = [
+            client.get("/activity", params={"user": live, **params}).status_code
+            for params in ({"limit": 10_000}, {"limit": 500, "offset": 5000})
+        ]
+    assert (refused, served) == ([422, 422, 422], [200, 200])
+    assert pages == [(500, 0), (500, 5000)]

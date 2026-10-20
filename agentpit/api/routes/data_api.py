@@ -8,9 +8,10 @@ from agentpit.datastructures.position_wire import PositionWire
 
 router = APIRouter(tags=["data-api"])
 
-# Polymarket's Data API bounds /activity the same way.
+# As Polymarket's Data API pages /activity: a larger limit is clamped to
+# MAX_ACTIVITY_LIMIT, an offset past MAX_ACTIVITY_OFFSET is refused.
 MAX_ACTIVITY_LIMIT = 500
-MAX_ACTIVITY_OFFSET = 1000
+MAX_ACTIVITY_OFFSET = 5000
 
 
 def _csv(value: str | None) -> list[str] | None:
@@ -50,11 +51,15 @@ def get_activity(
     service: AccountServiceDep,
     type: str | None = None,
     market: str | None = None,
-    limit: Annotated[int, Query(ge=0, le=MAX_ACTIVITY_LIMIT)] = 100,
+    limit: Annotated[int, Query(ge=0)] = 100,
     offset: Annotated[int, Query(ge=0, le=MAX_ACTIVITY_OFFSET)] = 0,
 ) -> list[ActivityWire]:
     if not service.is_public(user):
         return []
     return service.list_activity(
-        user, type_filter=_csv(type), market=_csv(market), limit=limit, offset=offset
+        user,
+        type_filter=_csv(type),
+        market=_csv(market),
+        limit=min(limit, MAX_ACTIVITY_LIMIT),
+        offset=offset,
     )
