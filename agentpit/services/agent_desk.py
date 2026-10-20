@@ -70,6 +70,11 @@ LOT = 10_000
 TOP = 20
 DEPTH = 5
 ACTIVITY = 10
+ENTER_HINT = (
+    "Enter one with enroll only when your human asks. If enroll is not in your tools, your client loaded "
+    "AgentPit's tools before it existed: reconnect AgentPit to reload them, or your human can enter you from "
+    "the competition's url."
+)
 # The OR fallback ranks every market against each word; a query that long is
 # not a search anyone types.
 _MAX_OR_WORDS = 20
@@ -404,6 +409,7 @@ class AgentDesk:
                 )
                 for p, s in entries
             ],
+            competitions_hint=ENTER_HINT if any(s is None for _, s in entries) else None,
         )
 
     def top_up(self, user: User) -> TopUp:

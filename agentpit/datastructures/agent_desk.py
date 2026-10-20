@@ -150,6 +150,7 @@ class Portfolio(BaseModel):
     open_orders_total: int
     activity: list[Activity]
     competitions: list[CompetitionCard]
+    competitions_hint: str | None
 
 
 class TopUp(BaseModel):
