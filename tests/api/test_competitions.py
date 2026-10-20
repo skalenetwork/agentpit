@@ -4,52 +4,70 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agentpit.api.main import app
+from agentpit.datastructures.competition import Competition, Prize
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.services.agent_accounts import AgentAccounts
 from tests.db_helpers import fresh_test_conn, fresh_test_db
 
-ADMIN = {"X-Admin-Token": "dev-admin-token"}
+DAY = 86_400
 NOW = int(time.time())
-BODY = {
-    "title": "October test",
-    "startsAt": NOW + 2 * 86_400,
-    "endsAt": NOW + 5 * 86_400,
-    "prizeToken": "SKL",
-    "prizes": [{"usd": 0, "tokens": 0}],
-}
+TEST = Competition(slug="october-test", title="October test", starts_at=NOW + 2 * DAY, ends_at=NOW + 5 * DAY, prizes=[])
 
 
-def test_a_competition_the_admin_puts_is_public_with_its_prizes():
-    pilot = {**BODY, "title": "Pilot", "startsAt": NOW + 3 * 86_400, "prizes": [{"usd": 700, "tokens": 100}, {"tokens": 100}]}
+def _save(*competitions: Competition) -> None:
+    conn = fresh_test_conn()
+    for competition in competitions:
+        TableWrite.save_competition(conn, competition, NOW)
+    conn.close()
+
+
+def test_competitions_are_public_with_their_prizes():
+    pilot = Competition(
+        slug="pilot", title="Pilot", starts_at=NOW + 3 * DAY, ends_at=NOW + 5 * DAY, prizes=[Prize(usd=700, skl=100), Prize(usd=0, skl=100)]
+    )
     with TestClient(app) as client:
-        created = client.put("/admin/competitions/october-test", json=BODY, headers=ADMIN)
-        client.put("/admin/competitions/pilot", json=pilot, headers=ADMIN)
+        _save(TEST, pilot)
         listed = client.get("/competitions").json()["competitions"]
         page = client.get("/competitions/october-test").json()
         missing = client.get("/competitions/nope")
 
-    assert created.json() == {
+    assert page == {
         "slug": "october-test",
         "title": "October test",
-        "startsAt": BODY["startsAt"],
-        "locksAt": BODY["startsAt"] - 86_400,
-        "endsAt": BODY["endsAt"],
+        "startsAt": TEST.starts_at,
+        "locksAt": TEST.starts_at - DAY,
+        "endsAt": TEST.ends_at,
         "phase": "upcoming",
-        "prizeToken": "SKL",
-        "prizes": [{"usd": 0, "tokens": 0}],
+        "prizes": [],
         "entrants": 0,
+        "final": False,
+        "standings": [],
     }
     assert [c["slug"] for c in listed] == ["pilot", "october-test"]
-    assert listed[0]["prizes"] == [{"usd": 700, "tokens": 100}, {"usd": 0, "tokens": 100}]
-    assert page == {**created.json(), "final": False, "standings": []}
+    assert listed[0]["prizes"] == [{"usd": 700, "skl": 100}, {"usd": 0, "skl": 100}]
     assert missing.status_code == 404
+
+
+def test_the_list_carries_the_first_six_standings_of_each_page():
+    conn = fresh_test_conn()
+    with TestClient(app) as client:
+        _save(TEST)
+        for k in range(7):
+            user_id, _, _ = TableWrite.create_user(conn, None, None, owner_workos_id=f"user_{k}")
+            TableWrite.enter_competition(conn, "october-test", f"user_{k}", user_id, NOW, False)
+        listed = client.get("/competitions").json()["competitions"]
+        page = client.get("/competitions/october-test").json()
+    conn.close()
+
+    assert len(page["standings"]) == 7
+    assert listed == [{**page, "standings": page["standings"][:6]}]
 
 
 def test_an_owner_enters_and_leaves_with_only_their_own_agents(sign_in):
     accounts = AgentAccounts(fresh_test_db(), lambda *_: pytest.fail("must not onboard"))
     with TestClient(app) as client:
-        client.put("/admin/competitions/october-test", json=BODY, headers=ADMIN)
+        _save(TEST)
         token = sign_in(client, "owner@example.com")["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
         owner = token.removeprefix("at-")
@@ -80,7 +98,7 @@ def test_an_owner_enters_and_leaves_with_only_their_own_agents(sign_in):
                 "address": mine.eth_address,
                 "runner": {"slug": "claude", "label": "Claude", "host": None},
                 "listed": False,
-                "runStartsAt": BODY["startsAt"],
+                "runStartsAt": TEST.starts_at,
                 "earned": "0",
                 "returnPct": 0.0,
                 "trades": 0,
@@ -91,27 +109,3 @@ def test_an_owner_enters_and_leaves_with_only_their_own_agents(sign_in):
     assert (keyed.status_code, foreign.status_code) == (403, 404)
     assert left.status_code == 204 and after[0]["competitions"] == []
 
-
-def test_the_admin_put_is_validated_guarded_and_keeps_a_started_window():
-    bad = [
-        ("Bad_Slug", BODY),
-        ("x" * 65, BODY),
-        ("ok", {**BODY, "title": ""}),
-        ("ok", {**BODY, "endsAt": BODY["startsAt"]}),
-        ("ok", {**BODY, "startsAt": 0}),
-        ("ok", {**BODY, "endsAt": 10**10}),
-        ("ok", {**BODY, "prizes": []}),
-        ("ok", {**BODY, "prizes": [{"usd": -1}]}),
-    ]
-    started = {**BODY, "startsAt": NOW - 60}
-    with TestClient(app) as client:
-        unauthorized = client.put("/admin/competitions/ok", json=BODY)
-        codes = [client.put(f"/admin/competitions/{slug}", json=body, headers=ADMIN).status_code for slug, body in bad]
-        client.put("/admin/competitions/live", json=started, headers=ADMIN)
-        moved = client.put("/admin/competitions/live", json={**started, "endsAt": BODY["endsAt"] + 1}, headers=ADMIN)
-        renamed = client.put("/admin/competitions/live", json={**started, "title": "Renamed"}, headers=ADMIN)
-
-    assert unauthorized.status_code == 401
-    assert codes == [422] * len(bad)
-    assert moved.status_code == 400 and "cannot change" in moved.json()["detail"]
-    assert (renamed.json()["title"], renamed.json()["phase"]) == ("Renamed", "live")

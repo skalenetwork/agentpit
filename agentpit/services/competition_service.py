@@ -1,11 +1,13 @@
-"""Competitions over existing agent accounts: entry, standings, and the start
-and end values the capture task takes."""
+"""Competitions over existing agent accounts: the files that define them,
+entry, standings, and the start and end values the capture task takes."""
 import logging
+from pathlib import Path
 
+import psycopg
 from pydantic import BaseModel
 
 from agentpit.config import Settings
-from agentpit.datastructures.competition import Competition, Phase
+from agentpit.datastructures.competition import PLACE_FLOOR, Competition, Phase, load_competition
 from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import Entrant, PendingCapture, TableRead
@@ -15,12 +17,13 @@ from agentpit.domain.runner import Runner, runner_for
 from agentpit.liquidity import feed
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.services.account_service import AccountService, sellable_against_bids
-from agentpit.services.leaderboard_service import RANK_FLOOR, display_name
+from agentpit.services.leaderboard_service import display_name
 
 log = logging.getLogger(__name__)
 
 MINT_LAG = 300
 BOOK_GRACE = 600
+FOLDER = Path(__file__).resolve().parents[2] / "competitions"
 
 
 class Listing(BaseModel):
@@ -84,16 +87,16 @@ class CompetitionService:
         self._accounts = accounts
         self._settings = settings
 
-    def listing(self, now: int, slug: str | None = None) -> list[Listing]:
-        """Every competition, or the one called `slug`, latest start first."""
+    def listing(self, now: int) -> list[Listing]:
+        """Every competition, latest start first."""
         with self._db.read() as conn:
-            found = TableRead.competitions(conn, slug)
+            found = TableRead.competitions(conn)
         return [Listing(competition=c, phase=c.phase(now), entrants=n) for c, n in found]
 
     def page(self, slug: str, now: int) -> Page:
         """The competition with its standings: ranked places by return, then
         earned, then address, then the unranked in the same order, then the
-        disqualified. A place needs a start value, RANK_FLOOR run trades and
+        disqualified. A place needs a start value, PLACE_FLOOR run trades and
         no disqualification."""
         with self._db.read() as conn:
             competition, entrants = _one(TableRead.competitions(conn, slug), slug)
@@ -105,7 +108,7 @@ class CompetitionService:
         )
         place = 0
         for row, standing in standings:
-            if row.start_raw is not None and standing.trades >= RANK_FLOOR and not standing.disqualified:
+            if row.start_raw is not None and standing.trades >= PLACE_FLOOR and not standing.disqualified:
                 place += 1
                 standing.rank = place
         phase = competition.phase(now)
@@ -185,12 +188,25 @@ class CompetitionService:
         with self._db.read() as conn:
             return TableRead.entered_by_owner(conn, owner, now)
 
-    def save(self, competition: Competition, now: int) -> Listing:
-        with self._db.write() as conn:
-            saved = TableWrite.save_competition(conn, competition, now)
-        if not saved:
-            raise BusinessRuleError(f"{competition.slug} has started, so its start and end cannot change.")
-        return self.listing(now, competition.slug)[0]
+    @staticmethod
+    def sync(conn: psycopg.Connection, folder: Path, now: int) -> None:
+        """Save the competition of every *.toml file in `folder`, then delete
+        the competitions with no file. A bad file, or a new window for a
+        competition that has started, is logged and leaves its row as it was.
+        A missing folder changes nothing."""
+        if not folder.is_dir():
+            log.error("Competitions folder %s is missing, so competitions were not synced", folder)
+            return
+        paths = sorted(folder.glob("*.toml"))
+        for path in paths:
+            try:
+                competition = load_competition(path)
+            except (OSError, ValueError) as e:
+                log.error("Competition file %s refused, its competition left as it was: %s", path.name, e)
+                continue
+            if not TableWrite.save_competition(conn, competition, now):
+                log.error("Competition file %s refused: %s has started, so its start and end cannot change", path.name, competition.slug)
+        TableWrite.delete_competitions(conn, [path.stem for path in paths])
 
     def capture(self, now: int) -> None:
         """Take every start and end value that is due; NULL is pending, so a

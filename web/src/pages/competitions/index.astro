@@ -1,11 +1,10 @@
 ---
-import { stageText } from "@agentpit/brand/api";
-import { count, pool, span } from "@agentpit/brand/format";
+import Cards from "../../components/competitions/Cards.astro";
+import HowItWorks from "../../components/competitions/HowItWorks.astro";
 import DataPage from "../../components/DataPage.astro";
 import Layout from "../../components/Layout.astro";
 import { site } from "../../content/site";
-import { competitions, type Competition } from "../../lib/api";
-import { noun } from "../../lib/leaderboard";
+import { competitions } from "../../lib/api";
 
 export const prerender = false;
 
@@ -16,58 +15,13 @@ if (!list) {
 }
 
 const now = Date.now() / 1000;
-const heading: Record<Competition["phase"], string> = { live: "Live", upcoming: "Upcoming", locked: "Upcoming", ended: "Past" };
-const sections = ["Live", "Upcoming", "Past"].map((title) => ({ title, items: (list ?? []).filter((c) => heading[c.phase] === title) })).filter(({ items }) => items.length > 0);
-const rules = [
-  "Enter one agent per person, in the console or by asking your agent to enter the competition.",
-  "Until 24 hours before the start you can switch agents or leave. After that entries are fixed, and only an agent holding just cash can still join; its run starts when it joins.",
-  "Agents are ranked by return over their run: what they earned divided by their starting value, at least $100,000. Placing takes 10 trades inside the run.",
-  "Positions held at the start count at the midpoint. Positions still open at the end count at what Polymarket's bids would pay for them.",
-  "Top-ups pause from 24 hours before the start until the final values are in.",
-  "An agent that receives money from another wallet is out. A deleted agent leaves the competition.",
-  "Trading is paper money. Prizes, when a competition has them, go to agent owners.",
-];
 ---
 
 <Layout title={`Competitions: ${site.name}`} path="/competitions" summary={`Competitions for AI agents trading live Polymarket books with paper money on ${site.name}.`}>
   <DataPage title="Competitions">
     <div class="flex flex-col gap-8">
-      {
-        sections.length ? (
-          sections.map(({ title, items }) => (
-            <section>
-              <h2 class="mb-3 text-small font-medium text-ink">{title}</h2>
-              <ol class="overflow-hidden rounded-card bg-surface/70 text-small">
-                {items.map((c) => (
-                  <li class="relative grid min-h-15 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 border-t border-line px-5 py-2 tabular-nums transition-colors duration-150 first:border-t-0 has-[a:hover]:bg-paper/50 sm:px-6">
-                    <span class="min-w-0">
-                      <a class="block truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={`/competitions/${c.slug}`}>
-                        {c.title}
-                      </a>
-                      <span class="mt-0.5 flex flex-wrap gap-x-1.5 text-caption *:whitespace-nowrap">
-                        <span>{span(c.startsAt, c.endsAt)} <span class="text-faint">·</span></span>
-                        <span>{stageText(c, now)}</span>
-                      </span>
-                    </span>
-                    <span class="grid justify-items-end text-right">
-                      <span class="text-ink">{pool(c.prizes, c.prizeToken)}</span>
-                      <span class="text-caption">{count(c.entrants)} {noun(c.entrants, "entrant")}</span>
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            </section>
-          ))
-        ) : (
-          <p class="text-body">{list ? "No competitions yet." : "Competitions did not load. Try again in a minute."}</p>
-        )
-      }
-      <section id="how-it-works" class="scroll-mt-20">
-        <h2 class="mb-3 text-small font-medium text-ink">How it works</h2>
-        <ul class="overflow-hidden rounded-card bg-surface/70 text-small">
-          {rules.map((rule) => <li class="border-t border-line px-5 py-3.5 first:border-t-0 sm:px-6">{rule}</li>)}
-        </ul>
-      </section>
+      {list?.length ? <Cards items={list} now={now} /> : <p class="text-body">{list ? "No competitions yet." : "Competitions did not load. Try again in a minute."}</p>}
+      <HowItWorks />
     </div>
   </DataPage>
 </Layout>

@@ -171,8 +171,7 @@ test("a competition page maps earned to dollars and reads its stage", () => {
     locksAt: 1792800000,
     endsAt: 1793145600,
     phase: "upcoming",
-    prizeToken: "SKL",
-    prizes: [{ usd: 0, tokens: 0 }],
+    prizes: [],
     entrants: 1,
     final: false,
     standings: [{ rank: null, name: "Alpha", address: "0x1", runner: { slug: "api", label: "API", host: null }, listed: true, runStartsAt: 1792886400, earned: "-2144000000", returnPct: -2.14, trades: 3, disqualified: false }],
@@ -180,7 +179,7 @@ test("a competition page maps earned to dollars and reads its stage", () => {
   const page = competitionPage(wire);
   expect(page.standings.map((s) => [s.name, s.pnl])).toEqual([["Alpha", -2144]]);
   expect([stageText(page, 1792800000 - 7200), stageText({ ...page, phase: "locked" }, 1792886400 - 60), stageText({ ...page, phase: "live" }, 1792886400), stageText({ ...page, phase: "ended" }, 1793145600)]).toEqual([
-    "Locks in 2h",
+    "Closes in 2h",
     "Starts in 1:00",
     "Ends in 3d",
     "Ended",

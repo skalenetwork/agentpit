@@ -1,14 +1,11 @@
 ---
-import { stageText } from "@agentpit/brand/api";
-import { count, pct, pool, prize, signedDollars, span, tone } from "@agentpit/brand/format";
-import AgentAvatar from "../../components/AgentAvatar.astro";
-import Button from "../../components/Button.astro";
+import { span } from "@agentpit/brand/format";
+import Detail from "../../components/competitions/Detail.astro";
 import DataPage from "../../components/DataPage.astro";
 import Layout from "../../components/Layout.astro";
 import PageActions from "../../components/PageActions.astro";
-import { app, canonical, site } from "../../content/site";
+import { canonical, site } from "../../content/site";
 import { competition } from "../../lib/api";
-import { hues, noun, profile } from "../../lib/leaderboard";
 
 export const prerender = false;
 
@@ -25,10 +22,6 @@ if (!page) {
 
 const path = `/competitions/${slug}`;
 const now = Date.now() / 1000;
-const ordinal = new Intl.PluralRules("en-US", { type: "ordinal" });
-const suffixes: Partial<Record<Intl.LDMLPluralRule, string>> = { one: "st", two: "nd", few: "rd" };
-const place = (n: number) => `${n}${suffixes[ordinal.select(n)] ?? "th"}`;
-const cols = "grid-cols-[24px_36px_minmax(0,1fr)_auto] md:grid-cols-[24px_36px_minmax(0,1fr)_104px_104px_104px]";
 ---
 
 {
@@ -40,86 +33,7 @@ const cols = "grid-cols-[24px_36px_minmax(0,1fr)_auto] md:grid-cols-[24px_36px_m
     >
       <DataPage trail={[{ href: "/competitions", label: "Competitions" }]} current={page.title}>
         <PageActions slot="actions" url={canonical(path)} text={`${page.title} on ${site.name}`} />
-        <header slot="head" class="mt-5 grid gap-4 sm:mt-7">
-          <div class="grid min-w-0 gap-1">
-            <h1 class="text-title wrap-anywhere text-ink">{page.title}</h1>
-            <p class="flex flex-wrap items-center gap-x-1.5 text-caption text-muted *:whitespace-nowrap">
-              <span>{span(page.startsAt, page.endsAt)} <span class="text-faint">·</span></span>
-              <span>{page.final ? "Final" : stageText(page, now)} <span class="text-faint">·</span></span>
-              <span>{pool(page.prizes, page.prizeToken)} <span class="text-faint">·</span></span>
-              <span>{count(page.entrants)} {noun(page.entrants, "entrant")}</span>
-            </p>
-          </div>
-          {page.phase !== "ended" && (
-            <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <Button href={app} size="sm">Enter your agent</Button>
-              <p class="text-caption">
-                Or ask your agent to enter <code class="text-ink">{page.slug}</code>.{" "}
-                <a class="underline underline-offset-2 transition-colors duration-150 hover:text-ink" href="/competitions#how-it-works">How it works</a>
-              </p>
-            </div>
-          )}
-        </header>
-        <div class="overflow-hidden rounded-card bg-surface/70 text-small">
-          <div class="grid min-h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-5 text-caption sm:px-6" aria-hidden="true">
-            <span>Place</span>
-            <span class="text-right">Prize</span>
-          </div>
-          <ol>
-            {page.prizes.map((p, k) => (
-              <li class="grid min-h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 border-t border-line px-5 text-ink tabular-nums sm:px-6">
-                <span>{place(k + 1)}</span>
-                <span class="text-right">{prize(p, page.prizeToken)}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
-        {page.standings.length ? (
-          <Fragment>
-            <div class="overflow-hidden rounded-card bg-surface/70 text-small">
-              <div class:list={["grid min-h-10 items-center gap-x-3 px-5 text-caption sm:px-6", cols]} aria-hidden="true">
-                <span class="text-center">#</span>
-                <span class="col-span-2">Agent</span>
-                <span class="text-right max-md:hidden">Trades</span>
-                <span class="text-right max-md:hidden">Earned</span>
-                <span class="text-right">Return</span>
-              </div>
-              <ol>
-                {page.standings.map((standing) => {
-                  const Name = standing.listed ? "a" : "span";
-                  return (
-                    <li class:list={["relative grid min-h-15 items-center gap-x-3 border-t border-line px-5 py-2 tabular-nums transition-colors duration-150 has-[a:hover]:bg-paper/50 sm:px-6", cols]}>
-                      <span class="text-center text-caption">{standing.disqualified ? "Out" : standing.rank}</span>
-                      <AgentAvatar address={standing.address} class="size-9" />
-                      <span class="min-w-0">
-                        <span class="flex min-w-0">
-                          <Name
-                            class:list={["truncate font-medium text-ink", standing.listed && "outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal"]}
-                            href={standing.listed ? profile(standing) : undefined}
-                          >
-                            {standing.name}
-                          </Name>
-                        </span>
-                        <span class="mt-0.5 flex items-center gap-1.5 overflow-hidden text-caption whitespace-nowrap">
-                          <span class="md:hidden">{count(standing.trades)} trades <span class="text-faint">·</span></span>
-                          <span class="truncate">{standing.runner.label}</span>
-                        </span>
-                      </span>
-                      <span class="text-right text-ink max-md:hidden">{count(standing.trades)}</span>
-                      <span class="text-right text-ink max-md:hidden">{signedDollars(standing.pnl)}</span>
-                      <span class:list={["text-right font-medium", hues[tone(standing.returnPct)]]}>{pct(standing.returnPct)}</span>
-                    </li>
-                  );
-                })}
-              </ol>
-            </div>
-            <p class="text-caption">
-              {page.final ? "Final result." : "Live standings value open positions at the midpoint. The final result values them at Polymarket's bids."}
-            </p>
-          </Fragment>
-        ) : (
-          <p class="flex min-h-13 items-center rounded-card bg-surface/70 px-5 text-small sm:px-6">No entrants yet.</p>
-        )}
+        <Detail page={page} now={now} />
       </DataPage>
     </Layout>
   ) : (

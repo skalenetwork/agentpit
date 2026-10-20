@@ -74,7 +74,7 @@ from agentpit.services.account_service import AccountService
 from agentpit.services.agent_accounts import AgentAccounts
 from agentpit.services.agent_desk import AgentDesk
 from agentpit.services.auth_service import AuthService
-from agentpit.services.competition_service import CompetitionService
+from agentpit.services.competition_service import FOLDER, CompetitionService
 from agentpit.services.event_service import EventService
 from agentpit.services.leaderboard_service import LeaderboardService, drain
 from agentpit.services.market_service import ChainTask, sweep
@@ -386,6 +386,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             TableCreate.migrate_markets(conn, onchain_admin.oracle_address)
             for workos_id in TableRead.unnamed_owners(conn):
                 TableWrite.ensure_owner(conn, workos_id)
+            CompetitionService.sync(conn, FOLDER, int(time.time()))
         try:
             wrapped = EventService(db_session).ensure_singleton_events_for_orphans()
             if wrapped:

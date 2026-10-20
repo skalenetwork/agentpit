@@ -518,11 +518,11 @@ class TableWrite:
         not started. False when the window was refused."""
         row = db.execute(
             """
-            INSERT INTO competitions AS c (SLUG, TITLE, STARTS_AT, ENDS_AT, PRIZE_TOKEN, PRIZES)
-            VALUES (%(slug)s, %(title)s, %(starts_at)s, %(ends_at)s, %(prize_token)s, %(prizes)s)
+            INSERT INTO competitions AS c (SLUG, TITLE, STARTS_AT, ENDS_AT, PRIZES)
+            VALUES (%(slug)s, %(title)s, %(starts_at)s, %(ends_at)s, %(prizes)s)
             ON CONFLICT (SLUG) DO UPDATE SET
                 TITLE = EXCLUDED.TITLE, STARTS_AT = EXCLUDED.STARTS_AT, ENDS_AT = EXCLUDED.ENDS_AT,
-                PRIZE_TOKEN = EXCLUDED.PRIZE_TOKEN, PRIZES = EXCLUDED.PRIZES
+                PRIZES = EXCLUDED.PRIZES
             WHERE c.STARTS_AT > %(now)s
                OR (c.STARTS_AT = EXCLUDED.STARTS_AT AND c.ENDS_AT = EXCLUDED.ENDS_AT)
             RETURNING SLUG
@@ -534,6 +534,11 @@ class TableWrite:
             },
         ).fetchone()
         return row is not None
+
+    @staticmethod
+    def delete_competitions(db: psycopg.Connection, keep: list[str]) -> None:
+        """Delete every competition whose slug is not in `keep`; entries stay."""
+        db.execute("DELETE FROM competitions WHERE SLUG <> ALL(%s::text[])", (keep,))
 
     @staticmethod
     def enter_competition(

@@ -1,4 +1,4 @@
-import { type Competition, type MarketContext, profile, type Runner, usd, type WireProfile } from "@agentpit/brand/api";
+import { type Competition, competitionPage, type MarketContext, profile, type Runner, usd, type WireCompetitionPage, type WireProfile } from "@agentpit/brand/api";
 import { type QueryKey, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Me, open, request } from "./session";
 
@@ -71,6 +71,9 @@ export const useOrders = ({ eth_address }: Agent) => useQuery({ queryKey: ["orde
 
 export const useCompetitions = () =>
   useQuery({ queryKey: COMPETITIONS, queryFn: () => open<{ readonly competitions: readonly Competition[] }>("/competitions"), staleTime: 30_000, refetchInterval: 30_000 });
+
+export const useCompetition = (slug: string) =>
+  useQuery({ queryKey: [...COMPETITIONS, slug], queryFn: async () => competitionPage(await open<WireCompetitionPage>(`/competitions/${slug}`)), staleTime: 30_000, refetchInterval: 30_000 });
 
 const useAgentMutation = <Input, Output>(run: (input: Input) => Promise<Output>, keys: readonly QueryKey[] = [AGENTS]) => {
   const client = useQueryClient();

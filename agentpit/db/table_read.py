@@ -1,6 +1,5 @@
 import json
 import time
-import uuid
 from collections.abc import Iterable
 from datetime import date
 from typing import NamedTuple
@@ -9,7 +8,6 @@ import psycopg
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from pydantic import BaseModel
-from web3 import Web3
 
 from agentpit.utils.parse import parse_32b_hex_private_key
 from agentpit.datastructures.agent_desk import Sort
@@ -916,7 +914,7 @@ class TableRead:
         with its number of entries by accounts not deleted."""
         rows = db.execute(
             """
-            SELECT c.SLUG, c.TITLE, c.STARTS_AT, c.ENDS_AT, c.PRIZE_TOKEN, c.PRIZES,
+            SELECT c.SLUG, c.TITLE, c.STARTS_AT, c.ENDS_AT, c.PRIZES,
                    (SELECT COUNT(*) FROM competition_entries e
                     JOIN users u ON u.USER_ID = e.USER_ID
                     WHERE e.SLUG = c.SLUG AND u.DELETED_AT IS NULL) AS ENTRANTS

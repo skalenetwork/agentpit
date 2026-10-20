@@ -8,6 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY agentpit/ agentpit/
+COPY competitions/ competitions/
 # The one-off backfills are written to be run against production
 # (`docker exec agentpit-api python -m scripts.<name> --dry-run`), so they
 # have to be in the image — the API itself never imports them. Only the

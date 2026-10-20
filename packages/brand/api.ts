@@ -233,7 +233,7 @@ export const ownerPage = ({ money, agents, ...rest }: WireOwnerPage): OwnerPage 
 
 export interface Prize {
   readonly usd: number;
-  readonly tokens: number;
+  readonly skl: number;
 }
 
 export interface Competition {
@@ -243,7 +243,6 @@ export interface Competition {
   readonly locksAt: number;
   readonly endsAt: number;
   readonly phase: "upcoming" | "locked" | "live" | "ended";
-  readonly prizeToken: string;
   readonly prizes: readonly Prize[];
   readonly entrants: number;
 }
@@ -281,7 +280,7 @@ export const competitionPage = ({ standings, ...rest }: WireCompetitionPage): Co
 
 export const stageText = ({ phase, locksAt, startsAt, endsAt }: Competition, now: number) =>
   phase === "upcoming"
-    ? `Locks in ${until(Math.max(0, locksAt - now))}`
+    ? `Closes in ${until(Math.max(0, locksAt - now))}`
     : phase === "locked"
       ? `Starts in ${until(Math.max(0, startsAt - now))}`
       : phase === "live"

@@ -1,18 +1,35 @@
-import { RANK_FLOOR } from "@agentpit/brand/api";
+import { type Competition, RANK_FLOOR } from "@agentpit/brand/api";
 import { count, dollars, pct, signedDollars, tone } from "@agentpit/brand/format";
 import { Link, Navigate, useNavigate } from "@tanstack/react-router";
-import { ArrowDown, ArrowUp, Plus } from "lucide-react";
+import { ArrowDown, ArrowUp, Plus, Trophy } from "lucide-react";
 import { useState } from "react";
-import { type Agent, useAgents } from "../api";
+import { type Agent, useAgents, useCompetitions } from "../api";
 import { Spark } from "../chart";
 import { LastTrade, Sep, TONE } from "../labels";
 import { Button, MEDALS, RankMove, Robot, SOFT } from "../ui";
 
 const COLS = "grid grid-cols-[22px_36px_minmax(0,1fr)_auto] items-center gap-x-3 px-5 sm:px-6 md:grid-cols-[24px_36px_minmax(0,1fr)_104px_104px_104px]";
 
+const TINT = {
+  live: "bg-down/10 text-down dark:bg-down/16",
+  upcoming: "bg-signal/10 text-signal dark:bg-signal/16",
+  locked: "bg-gold/16 text-ink dark:bg-gold/20",
+  ended: "bg-ink/7 text-muted",
+} satisfies Record<Competition["phase"], string>;
+
 type Sort = "place" | "earned" | "return_pct";
 
 const order = (agent: Agent, sort: Sort) => (sort === "place" ? -(agent.place ?? Number.POSITIVE_INFINITY) : agent.trades ? agent[sort] : Number.NEGATIVE_INFINITY);
+
+const Mark = ({ entered: [first, ...rest] }: { entered: readonly Competition[] }) =>
+  first && (
+    <span title={[first, ...rest].map(({ title }) => title).join(", ")} className={`inline-flex h-5 shrink-0 items-center gap-1 rounded-control px-2 text-caption font-medium ${TINT[first.phase]}`}>
+      <Trophy size={12} strokeWidth={1.75} aria-hidden="true" />
+      {first.phase === "live" && <span className="size-1.5 rounded-full bg-current" />}
+      <span className="max-w-40 truncate max-sm:sr-only">{first.title}</span>
+      {rest.length > 0 && <span className="max-sm:hidden">+{rest.length}</span>}
+    </span>
+  );
 
 export const Agents = () => {
   const navigate = useNavigate();
@@ -20,6 +37,7 @@ export const Agents = () => {
   const [up, setUp] = useState(false);
   const Arrow = up ? ArrowUp : ArrowDown;
   const { data: agents, isError, refetch, dataUpdatedAt } = useAgents();
+  const competitions = useCompetitions().data?.competitions ?? [];
   const now = dataUpdatedAt / 1000;
   const head = (key: Sort, label: string, className: string) => (
     <button
@@ -88,7 +106,10 @@ export const Agents = () => {
                   </span>
                   <Robot address={agent.eth_address} className="size-9" />
                   <span className="min-w-0">
-                    <span className="block truncate font-medium">{agent.name}</span>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate font-medium">{agent.name}</span>
+                      <Mark entered={agent.competitions.flatMap((slug) => competitions.filter((competition) => competition.slug === slug))} />
+                    </span>
                     <span className="mt-0.5 block truncate text-caption text-muted">
                       {agent.last_trade_at === null ? (
                         "No trades yet"

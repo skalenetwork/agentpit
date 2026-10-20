@@ -7,7 +7,7 @@ import { recordCalls } from "@agentpit/brand/standing";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, ChartLine, Pencil, Share, Trash2, Trophy } from "lucide-react";
 import { type FormEvent, Fragment, type ReactNode, useState } from "react";
-import { type Agent, type Order, useAgents, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRenameAgent } from "../api";
+import { type Agent, type Order, useAgents, useCompetition, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRenameAgent } from "../api";
 import { Chart } from "../chart";
 import { LastTrade, Sep, TONE } from "../labels";
 import { ApiError } from "../session";
@@ -15,7 +15,7 @@ import { Crumbs } from "../shell";
 import { Thumb } from "../thumb";
 import { Actions, Button, Card, Copy, Fault, Input, Note, RankPill, Robot, Sheet, SOFT } from "../ui";
 
-const SITE = "https://agentpit.dev/agents";
+const SITE = "https://agentpit.dev";
 const POSITIONS = 6;
 const BURSTS = 8;
 const DAY = 86_400;
@@ -26,6 +26,12 @@ const POSITION_COLS = "md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px]
 const BURST_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px]";
 const ACTIVITY_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_72px_104px]";
 const UNDERLINE = "underline decoration-faint underline-offset-[3px] transition-colors duration-150 hover:text-ink hover:decoration-current";
+const STICKER = {
+  live: ["Live", "bg-down text-paper scheme-light"],
+  upcoming: ["Entries open", "bg-signal text-paper scheme-light"],
+  locked: ["Starting soon", "bg-gold text-ink scheme-light"],
+  ended: ["Ended", "bg-ink/7 text-muted"],
+} as const satisfies Record<Competition["phase"], readonly [string, string]>;
 
 const route = getRouteApi("/console/agents/$address");
 
@@ -577,7 +583,7 @@ const Contest = ({ agent, competition, other, now }: { agent: Agent; competition
           <Sep />
           <span>{stageText(competition, now)}</span>
           <Sep />
-          <span>{pool(competition.prizes, competition.prizeToken)}</span>
+          <span>{pool(competition.prizes)}</span>
         </p>
         {line && <p className="text-caption text-muted">{line}</p>}
         {entry.isError && <Fault>{(entry.error instanceof ApiError && entry.error.detail) || "Could not update the entry. Try again in a moment."}</Fault>}
@@ -608,11 +614,56 @@ const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competit
       </ul>
       <p className="mt-4 text-caption text-muted">
         Top-ups pause from 24 hours before the start until the final values are in.{" "}
-        <a href="https://agentpit.dev/competitions#how-it-works" target="_blank" rel="noreferrer" className={UNDERLINE}>
+        <a href={`${SITE}/competitions#how-it-works`} target="_blank" rel="noreferrer" className={UNDERLINE}>
           How it works
         </a>
       </p>
     </Sheet>
+  );
+};
+
+const Entry = ({ slug, address, now }: { slug: string; address: string; now: number }) => {
+  const page = useCompetition(slug).data;
+  if (!page) return null;
+  const [label, look] = STICKER[page.phase];
+  const standing = (page.phase === "live" || page.phase === "ended") && page.standings.find((entrant) => entrant.address.toLowerCase() === address.toLowerCase());
+  return (
+    <li className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+      <div className="grid min-w-0 flex-1 gap-0.5">
+        <p className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-medium">{page.title}</span>
+          <span className={`inline-flex h-6 shrink-0 items-center gap-1.5 rounded-control px-2.5 text-label font-medium ${look}`}>
+            {page.phase === "live" && <span className="size-1.5 rounded-full bg-paper" />}
+            {page.phase === "ended" && page.final ? "Final" : label}
+          </span>
+        </p>
+        <p className="flex flex-wrap items-center gap-x-1.5 text-caption text-muted tabular-nums *:whitespace-nowrap">
+          <span>{stageText(page, now)}</span>
+          {standing && (
+            <>
+              <Sep />
+              {standing.disqualified ? (
+                <span className="font-medium text-down">Out</span>
+              ) : standing.rank === null ? (
+                <span>{standing.trades ? `${count(standing.trades)} ${standing.trades === 1 ? "trade" : "trades"}` : "No trades yet"}</span>
+              ) : (
+                <>
+                  <span>
+                    #{standing.rank} of {page.standings.filter(({ rank }) => rank !== null).length}
+                  </span>
+                  <Sep />
+                  <span className={`font-medium ${TONE[tone(standing.returnPct)]}`}>{pct(standing.returnPct)}</span>
+                </>
+              )}
+            </>
+          )}
+        </p>
+      </div>
+      <Button href={`${SITE}/competitions/${slug}`} target="_blank" rel="noreferrer" variant="paper" className={ICON}>
+        <ArrowUpRight size={14} strokeWidth={1.75} />
+        <span className="max-md:sr-only">View</span>
+      </Button>
+    </li>
   );
 };
 
@@ -621,7 +672,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
   const competitions = useCompetitions().data?.competitions.filter(({ phase }) => phase !== "ended") ?? [];
   const { data: profile, isError } = useProfile(agent);
   const orders = useOrders(agent).data;
-  const page = `${SITE}/${agent.eth_address}`;
+  const page = `${SITE}/agents/${agent.eth_address}`;
   const icons = new Map([...(profile?.positions.open ?? []), ...(profile?.activity ?? [])].map((item) => [item.title, item.icon]));
   const ordersTab: readonly Tab[] = orders?.length ? [{ label: "Orders", count: orders.length, panel: <OrdersPanel orders={orders} icons={icons} now={now} /> }] : [];
   const close = () => setSheet(undefined);
@@ -664,9 +715,18 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
         </div>
       </Crumbs>
       <Header agent={agent} profile={profile} now={now} />
-      {profile ? (
-        <>
-          <div className="mt-5 grid gap-5 sm:mt-7">
+      <div className="mt-5 grid gap-5 sm:mt-7">
+        {agent.competitions.length > 0 && (
+          <Card title="Competitions" icon={Trophy}>
+            <ul className="divide-y divide-line">
+              {agent.competitions.map((slug) => (
+                <Entry key={slug} slug={slug} address={agent.eth_address} now={now} />
+              ))}
+            </ul>
+          </Card>
+        )}
+        {profile ? (
+          <>
             <EarnedCard money={profile.money} valuedAt={profile.valuedAt} />
             <Tabs
               tabs={[
@@ -676,21 +736,17 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
                 ...ordersTab,
               ]}
             />
-          </div>
-          <Wallet address={profile.address} />
-        </>
-      ) : (
-        <>
-          {(agent.trades === 0 || isError) && (
-            <p className="mt-5 text-muted sm:mt-7">{agent.trades === 0 ? `${dollars(agent.equity)} of paper money is ready.` : "Could not load this agent. Reload to try again."}</p>
-          )}
-          {ordersTab.length > 0 && (
-            <div className="mt-5 sm:mt-7">
-              <Tabs tabs={ordersTab} />
-            </div>
-          )}
-        </>
-      )}
+          </>
+        ) : (
+          <>
+            {(agent.trades === 0 || isError) && (
+              <p className="text-muted">{agent.trades === 0 ? `${dollars(agent.equity)} of paper money is ready.` : "Could not load this agent. Reload to try again."}</p>
+            )}
+            {ordersTab.length > 0 && <Tabs tabs={ordersTab} />}
+          </>
+        )}
+      </div>
+      {profile && <Wallet address={profile.address} />}
       {sheet === "compete" && <Compete agent={agent} competitions={competitions} now={now} onClose={close} />}
       {sheet === "rename" && <Rename agent={agent} onClose={close} />}
       {sheet === "delete" && <Delete agent={agent} onClose={close} />}

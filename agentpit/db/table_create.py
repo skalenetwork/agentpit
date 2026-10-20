@@ -2,7 +2,6 @@
 # own connection from the pool, so the methods below may run concurrently
 # across threads — every one of them operates only on the connection it is
 # given.
-import json
 
 import psycopg
 from eth_utils.crypto import keccak
@@ -644,12 +643,11 @@ class TableCreate:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS competitions (
-                SLUG        TEXT PRIMARY KEY,
-                TITLE       TEXT NOT NULL,
-                STARTS_AT   BIGINT NOT NULL,
-                ENDS_AT     BIGINT NOT NULL,
-                PRIZE_TOKEN TEXT NOT NULL,
-                PRIZES      TEXT NOT NULL,
+                SLUG      TEXT PRIMARY KEY,
+                TITLE     TEXT NOT NULL,
+                STARTS_AT BIGINT NOT NULL,
+                ENDS_AT   BIGINT NOT NULL,
+                PRIZES    TEXT NOT NULL,
                 CHECK (ENDS_AT > STARTS_AT)
             )
             """

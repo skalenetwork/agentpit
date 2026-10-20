@@ -1,9 +1,12 @@
+import logging
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
 from agentpit.config import Settings
-from agentpit.datastructures.competition import LOCK, Competition, Prize
+from agentpit.datastructures.competition import LOCK, PLACE_FLOOR, Competition, Prize
 from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
@@ -12,7 +15,6 @@ from agentpit.liquidity import feed
 from agentpit.liquidity.replica import BookSnapshot
 from agentpit.services.balance_service import BalanceService
 from agentpit.services.competition_service import CompetitionService, Enrollment
-from agentpit.services.leaderboard_service import RANK_FLOOR
 from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 G = 100_000_000_000
@@ -53,7 +55,7 @@ def _service(chain: _Chain | None = None, positions: list[PositionWire] | None =
 
 
 def _competition(conn, starts: int = STARTS, ends: int = ENDS) -> None:
-    competition = Competition(slug=SLUG, title="October test", starts_at=starts, ends_at=ends, prize_token="SKL", prizes=[Prize()])
+    competition = Competition(slug=SLUG, title="October test", starts_at=starts, ends_at=ends, prizes=[])
     TableWrite.save_competition(conn, competition, 0)
 
 
@@ -72,8 +74,13 @@ def _entry(conn, user_id: str):
     return conn.execute("SELECT * FROM competition_entries WHERE USER_ID = %s", (user_id,)).fetchone()
 
 
+def _file(folder: Path, slug: str, title: str, ends: int = ENDS, prizes: str = "") -> None:
+    window = f"starts_at = {datetime.fromtimestamp(STARTS, UTC).isoformat()}\nends_at = {datetime.fromtimestamp(ends, UTC).isoformat()}"
+    (folder / f"{slug}.toml").write_text(f'title = "{title}"\n{window}\n{prizes}')
+
+
 def test_the_phase_turns_at_the_lock_the_start_and_the_end():
-    competition = Competition(slug=SLUG, title="T", starts_at=STARTS, ends_at=ENDS, prize_token="SKL", prizes=[Prize()])
+    competition = Competition(slug=SLUG, title="T", starts_at=STARTS, ends_at=ENDS, prizes=[])
     nows = (LOCKS - 1, LOCKS, STARTS - 1, STARTS, ENDS - 1, ENDS)
     assert [competition.phase(now) for now in nows] == ["upcoming", "locked", "locked", "live", "live", "ended"]
 
@@ -218,15 +225,15 @@ def test_standings_rank_by_return_from_the_floor_and_turn_final_with_every_end_v
             )
         return user_id, address
 
-    a = entrant("user_a", 10, RANK_FLOOR)
-    b = entrant("user_b", 20, RANK_FLOOR - 1, before=5)
-    c = entrant("user_c", 5, RANK_FLOOR)
-    d = entrant("user_d", 30, RANK_FLOOR)
+    a = entrant("user_a", 10, PLACE_FLOOR)
+    b = entrant("user_b", 20, PLACE_FLOOR - 1, before=5)
+    c = entrant("user_c", 5, PLACE_FLOOR)
+    d = entrant("user_d", 30, PLACE_FLOOR)
     conn.execute("UPDATE competition_entries SET DISQUALIFIED_AT = 1 WHERE USER_ID = %s", (d[0],))
     e = entrant("user_e", 0, 0, start=None)
-    g = entrant("user_g", 40, RANK_FLOOR)
+    g = entrant("user_g", 40, PLACE_FLOOR)
     TableWrite.flag_peer_transfers(conn, {g[1].lower(): 9})
-    gone = entrant("user_f", 50, RANK_FLOOR)
+    gone = entrant("user_f", 50, PLACE_FLOOR)
     TableWrite.delete_agent(conn, gone[0], STARTS)
     service = _service()
 
@@ -240,12 +247,12 @@ def test_standings_rank_by_return_from_the_floor_and_turn_final_with_every_end_v
 
     shown = [(s.address, s.rank, s.trades, s.listed, s.disqualified) for s in live.standings]
     assert shown == [
-        (a[1], 1, RANK_FLOOR, True, False),
-        (c[1], 2, RANK_FLOOR, True, False),
-        (b[1], None, RANK_FLOOR - 1, True, False),
+        (a[1], 1, PLACE_FLOOR, True, False),
+        (c[1], 2, PLACE_FLOOR, True, False),
+        (b[1], None, PLACE_FLOOR - 1, True, False),
         (e[1], None, 0, False, False),
-        (g[1], None, RANK_FLOOR, False, True),
-        (d[1], None, RANK_FLOOR, True, True),
+        (g[1], None, PLACE_FLOOR, False, True),
+        (d[1], None, PLACE_FLOOR, True, True),
     ]
     assert (live.phase, live.entrants, live.final) == ("live", 6, False)
     assert (live.standings[0].earned_raw, live.standings[0].return_pct) == (G // 10, 10.0)
@@ -276,3 +283,40 @@ def test_an_entry_pauses_top_ups_from_its_lock_until_its_end_value():
     assert before == 0
     assert (paused.minted_raw, paused.next_allowed_at, status, claimed) == (0, ends, ends, False)
     assert resumed.minted_raw == G // 2
+
+
+def test_the_sync_saves_every_file_keeps_a_refused_one_as_it_was_and_deletes_competitions_with_no_file(tmp_path, caplog):
+    conn = fresh_test_conn()
+    old = Competition(slug="x", title="Old", starts_at=STARTS, ends_at=ENDS, prizes=[])
+    for slug in ("bad", "moved", "renamed", "gone"):
+        TableWrite.save_competition(conn, old.model_copy(update={"slug": slug}), 0)
+    TableWrite.save_competition(conn, old.model_copy(update={"slug": "later", "starts_at": STARTS + 1}), 0)
+    TableWrite.enter_competition(conn, "gone", "user_owner", "user_id", 0, False)
+    _file(tmp_path, "new", "New", prizes="[prizes]\n1-2 = { usd = 5, skl = 1 }\n")
+    _file(tmp_path, "moved", "New", ends=ENDS + 1)
+    _file(tmp_path, "later", "New", ends=ENDS + 1)
+    _file(tmp_path, "renamed", "New")
+    _file(tmp_path, "bad", "New", prizes="[prizes]\n")
+    (tmp_path / "notes.md").write_text("not a competition")
+
+    with caplog.at_level(logging.ERROR):
+        CompetitionService.sync(conn, tmp_path, STARTS)
+
+    assert {c.slug: c for c, _ in TableRead.competitions(conn)} == {
+        "new": Competition(slug="new", title="New", starts_at=STARTS, ends_at=ENDS, prizes=[Prize(usd=5, skl=1)] * 2),
+        "renamed": old.model_copy(update={"slug": "renamed", "title": "New"}),
+        "moved": old.model_copy(update={"slug": "moved"}),
+        "later": Competition(slug="later", title="New", starts_at=STARTS, ends_at=ENDS + 1, prizes=[]),
+        "bad": old.model_copy(update={"slug": "bad"}),
+    }
+    assert [m.split(" ")[2] for m in caplog.messages] == ["bad.toml", "moved.toml"]
+    assert _entry(conn, "user_id") is not None
+
+
+def test_the_sync_changes_nothing_without_its_folder(tmp_path):
+    conn = fresh_test_conn()
+    _competition(conn)
+
+    CompetitionService.sync(conn, tmp_path / "competitions", STARTS)
+
+    assert [c.slug for c, _ in TableRead.competitions(conn)] == [SLUG]

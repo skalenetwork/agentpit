@@ -8,7 +8,7 @@ import pytest
 
 from agentpit.config import Settings
 from agentpit.datastructures.agent_desk import CompetitionCard
-from agentpit.datastructures.competition import Competition, Prize
+from agentpit.datastructures.competition import PLACE_FLOOR, Competition, Prize
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
@@ -504,11 +504,11 @@ def test_portfolio_matches_the_leaderboard(house_book):
 
 
 DAY = 86_400
-PRIZES = [Prize(usd=700, tokens=100), Prize(tokens=100)]
+PRIZES = [Prize(usd=700, skl=100), Prize(usd=0, skl=100)]
 
 
 def _competition(conn, slug: str, starts: int, ends: int) -> None:
-    competition = Competition(slug=slug, title=slug.title(), starts_at=starts, ends_at=ends, prize_token="SKL", prizes=PRIZES)
+    competition = Competition(slug=slug, title=slug.title(), starts_at=starts, ends_at=ends, prizes=PRIZES)
     TableWrite.save_competition(conn, competition, 0)
 
 
@@ -521,7 +521,7 @@ def test_portfolio_lists_competitions_not_yet_ended_with_this_agents_run():
         for slug in ("past", "live"):
             TableWrite.enter_competition(conn, slug, "user_o", user_id, now - 4 * DAY, False)
         TableWrite.capture_entry(conn, "live", user_id, "START", 100_000_000_000)
-        for k in range(RANK_FLOOR - 1):
+        for k in range(PLACE_FLOOR):
             conn.execute(
                 "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) VALUES (%s, %s, %s, 'CONFIRMED')",
                 (f"t{k}", key, now - 60),
@@ -540,8 +540,8 @@ def test_portfolio_lists_competitions_not_yet_ended_with_this_agents_run():
         ends_at=datetime.fromtimestamp(now + DAY, UTC),
         prizes=PRIZES,
         entered=True,
-        trades=RANK_FLOOR - 1,
-        rank=None,
+        trades=PLACE_FLOOR,
+        rank=1,
         url="https://agentpit.dev/competitions/live",
     )
 

@@ -1,3 +1,5 @@
+import type { Prize } from "./api";
+
 export type Tone = "up" | "down" | "flat";
 
 export const ACTIVE_SECONDS = 1800;
@@ -30,14 +32,8 @@ const moment = (at: number) => {
   return `${shortDay(date)}, ${clock(date)}`;
 };
 export const span = (from: number, to: number) => `${moment(from)} to ${moment(to)} UTC`;
-const award = (usd: number, tokens: number, token: string) => [usd > 0 ? dollars(usd) : "", tokens > 0 ? `${count(tokens)} ${token}` : ""].filter(Boolean).join(" + ");
-export const prize = ({ usd, tokens }: { readonly usd: number; readonly tokens: number }, token: string) => award(usd, tokens, token) || "No prize";
-export const pool = (prizes: readonly { readonly usd: number; readonly tokens: number }[], token: string) =>
-  award(
-    prizes.reduce((sum, p) => sum + p.usd, 0),
-    prizes.reduce((sum, p) => sum + p.tokens, 0),
-    token,
-  ) || "No prizes";
+export const prize = ({ usd, skl }: Prize) => [usd > 0 ? dollars(usd) : "", skl > 0 ? `${count(skl)} SKL` : ""].filter(Boolean).join(" + ");
+export const pool = (prizes: readonly Prize[]) => prize({ usd: prizes.reduce((sum, p) => sum + p.usd, 0), skl: prizes.reduce((sum, p) => sum + p.skl, 0) }) || "Practice";
 export const shortAddress = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
 
 export const tone = (value: number): Tone => {

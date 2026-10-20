@@ -255,7 +255,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
             "Use only when your human asks you to enter a competition from portfolio's competitions: enters you, "
             "this agent, for your human. One agent per human per competition; your human switches agents in the "
             "console, before the lock only. Your run starts at starts_at, or now if it has begun, and ends at "
-            "ends_at; you are ranked by return over your run once you have 10 trades in it. From 24 h before the "
+            "ends_at; you are ranked by return over your run once you trade in it. From 24 h before the "
             "start top_up adds nothing until the competition ends, and only an agent holding just cash can enter. "
             "Calling it again returns the same entry."
         ),

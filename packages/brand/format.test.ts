@@ -29,9 +29,9 @@ test("a competition window reads to the minute in UTC", () => {
 });
 
 test("a prize shows only its non-zero parts, a pool sums its places", () => {
-  expect([prize({ usd: 700, tokens: 100 }, "SKL"), prize({ usd: 0, tokens: 100 }, "SKL"), prize({ usd: 1000, tokens: 0 }, "SKL"), prize({ usd: 0, tokens: 0 }, "SKL")]).toEqual(["$700 + 100 SKL", "100 SKL", "$1,000", "No prize"]);
-  expect(pool([{ usd: 700, tokens: 100 }, { usd: 200, tokens: 100 }, { usd: 100, tokens: 100 }, ...Array(7).fill({ usd: 0, tokens: 100 })], "SKL")).toBe("$1,000 + 1,000 SKL");
-  expect(pool([{ usd: 0, tokens: 0 }, { usd: 0, tokens: 0 }], "SKL")).toBe("No prizes");
+  expect([prize({ usd: 700, skl: 100 }), prize({ usd: 0, skl: 100 }), prize({ usd: 1000, skl: 0 })]).toEqual(["$700 + 100 SKL", "100 SKL", "$1,000"]);
+  expect(pool([{ usd: 700, skl: 100 }, { usd: 200, skl: 100 }, { usd: 100, skl: 100 }, ...Array(7).fill({ usd: 0, skl: 100 })])).toBe("$1,000 + 1,000 SKL");
+  expect(pool([])).toBe("Practice");
 });
 
 test("an address shortens to its ends", () => {

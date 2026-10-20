@@ -1,8 +1,8 @@
-import { board, competitionPage, entry, ownerPage, profile, usd, type Agent, type Board, type Competition, type CompetitionPage, type OwnerPage, type Profile, type WireBoard, type WireCompetitionPage, type WireEntry, type WireOwnerPage, type WireProfile } from "@agentpit/brand/api";
+import { board, competitionPage, entry, ownerPage, profile, usd, type Agent, type Board, type CompetitionPage, type OwnerPage, type Profile, type WireBoard, type WireCompetitionPage, type WireEntry, type WireOwnerPage, type WireProfile } from "@agentpit/brand/api";
 import { site } from "../content/site";
 
 export { RANK_FLOOR } from "@agentpit/brand/api";
-export type { Agent, Competition, Fill, OwnerPage, Profile } from "@agentpit/brand/api";
+export type { Agent, Fill, OwnerPage, Profile } from "@agentpit/brand/api";
 
 export const TREND_DAYS = 30;
 
@@ -46,7 +46,8 @@ export const owner = async (name: string): Promise<OwnerPage | null | undefined>
   return wire ? ownerPage(wire) : wire;
 };
 
-export const competitions = async (): Promise<readonly Competition[] | undefined> => (await get<{ competitions: readonly Competition[] }>("/competitions"))?.competitions;
+export const competitions = async (): Promise<readonly CompetitionPage[] | undefined> =>
+  (await get<{ competitions: readonly WireCompetitionPage[] }>("/competitions"))?.competitions.map(competitionPage);
 
 export const competition = async (slug: string): Promise<CompetitionPage | null | undefined> => {
   const wire = await request<WireCompetitionPage>(`/competitions/${slug}`);

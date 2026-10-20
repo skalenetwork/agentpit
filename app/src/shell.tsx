@@ -94,8 +94,8 @@ export const Crumbs = ({ current, children }: { current: string; children?: Reac
   <div className="flex h-7.5 items-center justify-between gap-3">
     <nav aria-label="Breadcrumb" className="min-w-0">
       <ol className="flex min-w-0 items-center gap-2 font-medium">
-        <li>
-          <Link to="/" className="text-muted transition-colors duration-150 hover:text-ink">
+        <li className="shrink-0">
+          <Link to="/" className="whitespace-nowrap text-muted transition-colors duration-150 hover:text-ink">
             My agents
           </Link>
         </li>
