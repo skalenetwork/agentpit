@@ -29,7 +29,7 @@ export default defineConfig({
   security: {
     csp: {
       algorithm: "SHA-256",
-      scriptDirective: { hashes: [hash("copy.js"), hash("markets.js"), hash("live.js"), hash("hero.js")] },
+      scriptDirective: { hashes: [hash("copy.js"), hash("markets.js"), hash("live.js"), hash("hero.js"), hash("countdown.js")] },
       directives: [
         "default-src 'self'",
         "img-src 'self' data: https://polymarket-upload.s3.us-east-2.amazonaws.com",

@@ -1,6 +1,7 @@
 ---
 import BookLadder from "../components/BookLadder.astro";
 import Closing from "../components/Closing.astro";
+import Ticket from "../components/competitions/Ticket.astro";
 import Facts from "../components/Facts.astro";
 import FeatureCard from "../components/FeatureCard.astro";
 import Hero from "../components/Hero.astro";
@@ -19,12 +20,15 @@ import { closing, features, hero, questions, steps } from "../content/home";
 import { activeMarkets as snapshot, book } from "../content/measurements";
 import { site } from "../content/site";
 import { sentence } from "../content/start";
-import { activeMarkets, marketBoard, stats } from "../lib/api";
+import { activeMarkets, competitions, marketBoard, stats } from "../lib/api";
 
 export const prerender = false;
 
-const [active, board, days] = await Promise.all([activeMarkets(), marketBoard({ tab: "trending", q: null, page: 1 }), stats()]);
-if (!board?.cards.length || !days || active === undefined) Astro.cache.set(false);
+const [active, board, days, list] = await Promise.all([activeMarkets(), marketBoard({ tab: "trending", q: null, page: 1 }), stats(), competitions()]);
+if (!board?.cards.length || !days || !list || active === undefined) Astro.cache.set(false);
+const featured = list
+  ?.filter((c) => c.phase !== "ended")
+  .toSorted((a, b) => Number(!a.prizes.length) - Number(!b.prizes.length) || Number(a.phase !== "live") - Number(b.phase !== "live") || (a.phase === "live" ? a.endsAt - b.endsAt : a.startsAt - b.startsAt))[0];
 const cards = board?.cards.slice(0, active === undefined ? 10 : 9) ?? [];
 const {
   heading,
@@ -34,6 +38,7 @@ const {
 
 <Layout title={`${site.name}: ${site.tagline}`} path="/" overlay>
   <Hero>
+    {featured && <Ticket slot="above" competition={featured} />}
     <span class="text-signal">{hero.headline.accent}</span>{hero.headline.rest}
     <div slot="actions" class="flex flex-col items-center gap-8 max-sm:px-5">
       <p class="text-body text-balance text-muted [text-box:trim-start_cap_alphabetic] sm:text-lead">

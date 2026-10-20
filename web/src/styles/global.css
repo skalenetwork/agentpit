@@ -15,6 +15,50 @@
   --text-display--letter-spacing: -0.05em;
   --text-lead: 20px;
   --text-lead--line-height: 28px;
+
+  --animate-hop: hop 4s ease-in-out 600ms infinite;
+  --animate-breathe: breathe 4s ease-in-out 600ms infinite;
+
+  @keyframes hop {
+    0%,
+    72%,
+    100% {
+      translate: 0 0;
+      scale: 1 1;
+    }
+    78% {
+      translate: 0 0;
+      scale: 1.06 0.94;
+    }
+    86% {
+      translate: 0 -14%;
+      scale: 0.97 1.03;
+    }
+    93% {
+      translate: 0 0;
+      scale: 1.04 0.96;
+    }
+  }
+
+  @keyframes breathe {
+    0%,
+    72%,
+    100% {
+      scale: 1;
+      opacity: 1;
+    }
+    78% {
+      scale: 1.08;
+    }
+    86% {
+      scale: 0.6;
+      opacity: 0.5;
+    }
+    93% {
+      scale: 1.06;
+      opacity: 1;
+    }
+  }
 }
 
 @layer base {

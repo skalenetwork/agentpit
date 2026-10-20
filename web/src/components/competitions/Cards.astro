@@ -1,10 +1,11 @@
 ---
 import { Crown } from "@lucide/astro";
 import { type CompetitionPage, type Prize, type Standing } from "@agentpit/brand/api";
-import { count, dollars, pct, tone, until } from "@agentpit/brand/format";
+import { count, dollars, pct, tone } from "@agentpit/brand/format";
 import sombra from "../../assets/sombra.avif";
 import { hues, noun } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
+import Countdown from "../Countdown.astro";
 
 interface Props {
   items: readonly CompetitionPage[];
@@ -22,7 +23,8 @@ const order: Record<CompetitionPage["phase"], number> = { live: 0, upcoming: 1, 
 const list = items.toSorted(
   (a, b) =>
     order[a.phase] - order[b.phase] ||
-    (a.phase === "live" ? a.endsAt - b.endsAt : a.phase === "ended" ? b.endsAt - a.endsAt : Number(b.prizes.length > 0) - Number(a.prizes.length > 0) || a.startsAt - b.startsAt),
+    Number(!a.prizes.length) - Number(!b.prizes.length) ||
+    (a.phase === "live" ? a.endsAt - b.endsAt : a.phase === "ended" ? b.endsAt - a.endsAt : a.startsAt - b.startsAt),
 );
 const steps = [
   { place: 2, medal: "text-silver", step: "h-11", hero: "h-21 md:h-28", robot: "size-9", heroRobot: "size-11 md:size-15" },
@@ -45,14 +47,6 @@ const ranked = (c: CompetitionPage): readonly Standing[] => (c.phase === "live" 
 const elapsed = (c: CompetitionPage) => `${Math.round(Math.min(1, Math.max(0, (now - c.startsAt) / (c.endsAt - c.startsAt))) * 1000) / 10}%`;
 const visual = (c: CompetitionPage, top: readonly Standing[], pool: Amount | null) =>
   top.length ? "podium" : pool && c.phase !== "ended" ? "ladder" : c.standings.length ? "lineup" : c.phase === "ended" ? null : "date";
-const countdown = (c: CompetitionPage): readonly [string, string] | null =>
-  c.phase === "upcoming"
-    ? ["Closes in", until(Math.max(0, c.locksAt - now))]
-    : c.phase === "locked"
-      ? ["Starts in", until(Math.max(0, c.startsAt - now))]
-      : c.phase === "live"
-        ? ["Ends in", until(Math.max(0, c.endsAt - now))]
-        : null;
 const month = (at: number) => new Date(at * 1000).toLocaleDateString("en-US", { month: "short", timeZone: "UTC" });
 const day = (at: number) => new Date(at * 1000).getUTCDate();
 ---
@@ -66,29 +60,32 @@ const day = (at: number) => new Date(at * 1000).getUTCDate();
       const winner = c.final ? top[0] : undefined;
       const pool = c.prizes.length ? amount(total(c.prizes)) : null;
       const shown = visual(c, top, pool);
-      const clock = countdown(c);
+      const cheer = hero || c.final;
       const crowd = shown === "ladder" ? c.standings.slice(0, CROWD) : [];
       const places = c.phase !== "ended" ? c.prizes.length : 0;
       const stage = shown && (
         <div
           class:list={[
-            "relative isolate flex items-end justify-center gap-1.5",
+            "relative isolate flex justify-center gap-1.5",
+            hero && (shown === "date" || shown === "lineup") ? "items-center" : "items-end",
             hero ? "order-last -mx-4 mt-6 -mb-4 h-44 overflow-hidden sm:-mx-5 sm:-mb-5 md:mx-0 md:mt-0 md:-mr-5 md:h-auto md:min-h-64 md:gap-2" : "h-32 border-b border-line",
           ]}
           aria-hidden="true"
         >
           {hero && <img class="absolute inset-x-0 bottom-0 -z-10 h-24 w-full object-cover md:h-32 md:[mask-image:linear-gradient(to_right,transparent,black_35%)]" src={sombra.src} alt="" />}
           {shown === "date" ? (
-            <span class="mb-3 grid w-15 overflow-hidden rounded-item bg-paper text-center ring-1 ring-line ring-inset">
-              <span class="bg-signal text-label font-medium text-paper">{month(c.startsAt)}</span>
-              <span class="py-1 text-figure text-ink tabular-nums">{day(c.startsAt)}</span>
+            <span class:list={["grid overflow-hidden bg-paper text-center ring-1 ring-line ring-inset", hero ? "w-24 rounded-card" : "mb-3 w-15 rounded-item"]}>
+              <span class:list={["bg-signal font-medium text-paper", hero ? "py-1 text-small" : "text-label"]}>{month(c.startsAt)}</span>
+              <span class:list={["text-ink tabular-nums", hero ? "py-2.5 text-stat" : "py-1 text-figure"]}>{day(c.startsAt)}</span>
             </span>
           ) : shown === "lineup" ? (
             <Fragment>
               {c.standings.slice(0, LINEUP).map((s) => (
-                <AgentAvatar address={s.address} class="mb-px size-9" />
+                <AgentAvatar address={s.address} class={hero ? "size-11 md:size-16" : "mb-px size-9"} />
               ))}
-              {c.entrants > LINEUP && <span class="mb-2 ml-1 text-label font-medium text-muted tabular-nums">+{count(c.entrants - LINEUP)}</span>}
+              {c.entrants > LINEUP && (
+                <span class:list={["ml-1 font-medium text-muted tabular-nums", hero ? "text-body" : "mb-2 text-label"]}>+{count(c.entrants - LINEUP)}</span>
+              )}
             </Fragment>
           ) : (
             steps
@@ -100,11 +97,13 @@ const day = (at: number) => new Date(at * 1000).getUTCDate();
                   <div class:list={["flex min-w-0 flex-col items-center", hero ? "w-24 md:w-30" : "w-16"]}>
                     {agent ? (
                       <div class:list={["relative z-10 grid justify-items-center", hero ? "-mb-1.5 md:-mb-2" : "-mb-1"]}>
-                        <span class="absolute inset-x-[16%] bottom-0 h-1.5 translate-y-1/3 rounded-control bg-[light-dark(rgb(15_23_42/0.14),rgb(0_0_0/0.4))] md:h-2" />
-                        {place === 1 && (
-                          <Crown class:list={["-rotate-12 fill-current text-gold", hero ? "-mb-2 size-7 md:-mb-3 md:size-10" : "-mb-1.5 size-6"]} stroke-width={1.5} />
-                        )}
-                        <AgentAvatar address={agent.address} class:list={["relative", hero ? heroRobot : robot]} />
+                        <span class:list={["absolute inset-x-[16%] bottom-0 h-1.5 translate-y-1/3 rounded-control bg-[light-dark(rgb(15_23_42/0.14),rgb(0_0_0/0.4))] md:h-2", cheer && place === 1 && "motion-safe:animate-breathe"]} />
+                        <div class:list={["relative grid justify-items-center", cheer && place === 1 && "origin-bottom motion-safe:animate-hop"]}>
+                          {place === 1 && (
+                            <Crown class:list={["-rotate-12 fill-current text-gold", hero ? "-mb-2 size-7 md:-mb-3 md:size-10" : "-mb-1.5 size-6"]} stroke-width={1.5} />
+                          )}
+                          <AgentAvatar address={agent.address} class={hero ? heroRobot : robot} />
+                        </div>
                       </div>
                     ) : (
                       prize && <span class="mb-1.5 text-small font-medium whitespace-nowrap text-ink tabular-nums">{prize}</span>
@@ -132,12 +131,12 @@ const day = (at: number) => new Date(at * 1000).getUTCDate();
       return (
         <li
           class:list={[
-            "relative flex flex-col overflow-hidden rounded-panel bg-surface/70 p-4 transition-[translate] duration-200 has-[a:focus-visible]:outline-2 has-[a:focus-visible]:outline-offset-2 has-[a:focus-visible]:outline-signal sm:p-5 motion-safe:hover:-translate-y-0.5",
+            "relative isolate flex flex-col overflow-hidden rounded-panel bg-surface/70 p-4 transition-[translate] duration-200 has-[a:focus-visible]:outline-2 has-[a:focus-visible]:outline-offset-2 has-[a:focus-visible]:outline-signal sm:p-5 motion-safe:hover:-translate-y-0.5",
             hero && "md:col-span-2 md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] md:gap-x-10",
           ]}
         >
           <span class:list={["pointer-events-none absolute top-3 right-3 z-10 inline-flex h-6 items-center gap-1.5 rounded-control px-2.5 text-label font-medium whitespace-nowrap", badge[c.phase].look]}>
-            {hero && <span class="size-1.5 rounded-full bg-paper" />}
+            {hero && <span class="relative size-1.5 rounded-full bg-paper after:absolute after:inset-0 after:rounded-full after:bg-paper motion-safe:after:animate-ping" />}
             {c.phase === "ended" && !c.final ? "Ended" : badge[c.phase].label}
           </span>
           {!hero && stage}
@@ -147,13 +146,15 @@ const day = (at: number) => new Date(at * 1000).getUTCDate();
                 {c.title}
               </a>
             </h2>
-            {hero && clock ? (
+            {hero ? (
               <div class="mt-4 flex items-center gap-3">
                 <svg class="block h-1.5 min-w-0 flex-1" aria-hidden="true">
                   <rect class="fill-line" width="100%" height="6" rx="3" />
-                  <rect class="fill-ink" width={elapsed(c)} height="6" rx="3" />
+                  <rect class="fill-ink motion-safe:animate-draw" width={elapsed(c)} height="6" rx="3" />
                 </svg>
-                <span class="text-small font-medium whitespace-nowrap text-ink tabular-nums">{clock[1]} left</span>
+                <span class="text-small font-medium whitespace-nowrap text-ink">
+                  <Countdown at={c.endsAt} /> left
+                </span>
               </div>
             ) : (
               <p class="mt-0.5 truncate text-label">
@@ -162,13 +163,12 @@ const day = (at: number) => new Date(at * 1000).getUTCDate();
                     Won by <span class="font-medium text-ink">{winner.name}</span>{" "}
                     <span class:list={["font-medium", hues[tone(winner.returnPct)]]}>{pct(winner.returnPct)}</span>
                   </Fragment>
-                ) : clock ? (
-                  <Fragment>
-                    {`${clock[0]} `}
-                    <span class="font-medium text-ink tabular-nums">{clock[1]}</span>
-                  </Fragment>
-                ) : (
+                ) : c.phase === "ended" ? (
                   "Ended"
+                ) : (
+                  <Fragment>
+                    Starts in <Countdown class="font-medium text-ink" at={c.startsAt} />
+                  </Fragment>
                 )}
               </p>
             )}

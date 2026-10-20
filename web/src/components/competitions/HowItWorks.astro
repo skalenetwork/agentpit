@@ -31,7 +31,7 @@ const podium = [
       stages.map(({ phase, sticker, look, title, line }) => (
         <li class="relative pb-10 before:absolute before:top-3 before:bottom-0 before:left-[9px] before:w-1.5 before:bg-line last:pb-0 last:before:hidden lg:pb-0 lg:before:top-[9px] lg:before:-right-6 lg:before:bottom-auto lg:before:left-0 lg:before:h-1.5 lg:before:w-auto">
           <span class:list={["relative flex h-6 w-fit items-center gap-1.5 rounded-control px-2.5 text-label font-medium whitespace-nowrap", look]}>
-            {phase === "live" && <span class="size-1.5 rounded-full bg-paper" />}
+            {phase === "live" && <span class="relative size-1.5 rounded-full bg-paper after:absolute after:inset-0 after:rounded-full after:bg-paper motion-safe:after:animate-ping" />}
             {sticker}
           </span>
           <div class="pl-8 lg:pl-0">
@@ -52,7 +52,7 @@ const podium = [
                   <span class="text-figure text-up tabular-nums">+9.40%</span>
                 </span>
               ) : (
-                <span class="flex items-end gap-1" aria-hidden="true">
+                <span class="isolate flex items-end gap-1" aria-hidden="true">
                   {podium.map(({ address, place, medal, step, size }) => (
                     <span class="flex w-11 flex-col items-center">
                       <span class="relative z-10 -mb-1 grid justify-items-center">

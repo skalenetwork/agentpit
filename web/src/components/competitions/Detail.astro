@@ -1,11 +1,12 @@
 ---
 import { Crown } from "@lucide/astro";
-import { type CompetitionPage, type Prize, stageText } from "@agentpit/brand/api";
-import { count, dollars, pct, pool, prize, shortDay, signedDollars, span, tone, until } from "@agentpit/brand/format";
+import { type CompetitionPage, type Prize } from "@agentpit/brand/api";
+import { count, dollars, pct, pool, prize, shortDay, signedDollars, span, tone } from "@agentpit/brand/format";
 import sombra from "../../assets/sombra.avif";
 import { app, canonical } from "../../content/site";
 import { hues, noun, profile } from "../../lib/leaderboard";
 import AgentAvatar from "../AgentAvatar.astro";
+import Countdown from "../Countdown.astro";
 import Prompt from "../Prompt.astro";
 import RunnerMark from "../RunnerMark.astro";
 
@@ -42,6 +43,7 @@ const day = (at: number) => shortDay(new Date(at * 1000));
 const practice = !page.prizes.length;
 const open = page.phase !== "ended";
 const scored = page.phase === "live" || page.phase === "ended";
+const cheer = page.phase === "live" || page.final;
 const ranked = page.standings.filter((s) => s.rank !== null);
 const rest = page.standings.filter((s) => s.rank === null);
 const podium = steps.map((step) => ({ ...step, agent: ranked.at(step.place - 1), prize: page.prizes.at(step.place - 1) })).filter(({ agent, prize }) => agent || prize);
@@ -67,7 +69,7 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
 <div class="overflow-hidden rounded-panel bg-surface/70">
   <div class:list={["flex flex-col items-center px-5 pt-8 text-center sm:px-10 sm:pt-12", !podium.length && "pb-8 sm:pb-12"]}>
     <span class:list={["inline-flex h-6 items-center gap-1.5 rounded-control px-2.5 text-label font-medium whitespace-nowrap", sticker.look]}>
-      {page.phase === "live" && <span class="size-1.5 rounded-full bg-paper" />}
+      {page.phase === "live" && <span class="relative size-1.5 rounded-full bg-paper after:absolute after:inset-0 after:rounded-full after:bg-paper motion-safe:after:animate-ping" />}
       {sticker.label}
     </span>
     <h1 class="mt-4 max-w-text text-heading text-balance wrap-anywhere text-ink">{page.title}</h1>
@@ -83,14 +85,16 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
         <div class="mt-5 flex w-full max-w-[360px] items-center gap-3">
           <svg class="block h-1.5 min-w-0 flex-1" aria-hidden="true">
             <rect class="fill-line" width="100%" height="6" rx="3" />
-            <rect class="fill-ink" width={elapsed} height="6" rx="3" />
+            <rect class="fill-ink motion-safe:animate-draw" width={elapsed} height="6" rx="3" />
           </svg>
-          <span class="text-small font-medium whitespace-nowrap text-ink tabular-nums">{until(Math.max(0, page.endsAt - now))} left</span>
+          <span class="text-small font-medium whitespace-nowrap text-ink">
+            <Countdown at={page.endsAt} /> left
+          </span>
         </div>
       ) : (
         open && (
-          <p class="mt-4 text-small font-medium text-ink tabular-nums">
-            {stageText(page, now)}
+          <p class="mt-4 text-small font-medium text-ink">
+            Starts in <Countdown at={page.startsAt} />
           </p>
         )
       )
@@ -117,9 +121,11 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
                 <Step class="flex min-w-0 flex-col items-center rounded-t-[14px] outline-offset-4 focus-visible:outline-2 focus-visible:outline-signal sm:rounded-t-panel" href={agent?.listed ? profile(agent) : undefined}>
                   {agent && (
                     <div class="relative z-10 -mb-1 grid justify-items-center sm:-mb-1.5">
-                      <span class="absolute inset-x-[16%] bottom-0 h-1.5 translate-y-1/3 rounded-control bg-[light-dark(rgb(15_23_42/0.14),rgb(0_0_0/0.4))] sm:h-2" />
-                      {place === 1 && <Crown class="-mb-1.5 size-6 -rotate-12 fill-current text-gold sm:-mb-3 sm:size-10" stroke-width={1.5} aria-hidden="true" />}
-                      <AgentAvatar address={agent.address} class:list={["relative", robot]} />
+                      <span class:list={["absolute inset-x-[16%] bottom-0 h-1.5 translate-y-1/3 rounded-control bg-[light-dark(rgb(15_23_42/0.14),rgb(0_0_0/0.4))] sm:h-2", cheer && place === 1 && "motion-safe:animate-breathe"]} />
+                      <div class:list={["relative grid justify-items-center", cheer && place === 1 && "origin-bottom motion-safe:animate-hop"]}>
+                        {place === 1 && <Crown class="-mb-1.5 size-6 -rotate-12 fill-current text-gold sm:-mb-3 sm:size-10" stroke-width={1.5} aria-hidden="true" />}
+                        <AgentAvatar address={agent.address} class={robot} />
+                      </div>
                     </div>
                   )}
                   <div class:list={["flex w-full flex-col items-center rounded-t-[14px] bg-line px-1.5 pt-3.5 pb-3 text-center tabular-nums sm:rounded-t-panel sm:px-3 sm:pt-5 sm:pb-5", ranked.length ? front : bare]}>
