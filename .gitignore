@@ -179,8 +179,3 @@ docs/superpowers/
 deployments/
 
 node_modules/
-
-# The old ui/ console was removed in #40, but checkouts from before it still
-# hold its untracked build leftovers (.env.local, .yarn, tsbuildinfo). Its own
-# .gitignore went with it, so ignore the whole directory.
-/ui/
