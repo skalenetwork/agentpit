@@ -164,7 +164,7 @@ class AccountService:
                     cur_price = mkt.payouts[idx] / sum(mkt.payouts)
                     sellable = Sellable(0.0, 0.0)
                 else:
-                    pricing = self._live_pricing(conn, token_id, opp_token, bal)
+                    pricing = self._live_pricing(conn, token_id, opp_token, bal, entry_price=avg_price)
                     cur_price = pricing.cur_price
                     sellable = pricing.sellable
                 initial_value = avg_price * size
@@ -596,20 +596,35 @@ class AccountService:
 
     @staticmethod
     def _live_pricing(
-        conn, token_id: str, opposite: str, size_micro: int
+        conn, token_id: str, opposite: str, size_micro: int, *, entry_price: float
     ) -> "_LivePricing":
-        """Book midpoint (fall back to the last print, then 1 - the opposite
-        token's last print, else 0.5) AND what a market sell of `size_micro`
-        shares would fetch, from ONE snapshot of Polymarket's book.
+        """The position's mark AND what a market sell of `size_micro` shares
+        would fetch, from ONE snapshot of Polymarket's book.
+
+        A two-sided book marks at its midpoint. A one-sided book still prices
+        the token: with bids only, the best bid is what selling it gets; with
+        asks only, it is worth no more than the best ask. Without a book, the
+        last print, then 1 - the opposite token's last print, then
+        `entry_price`, what the account paid. Never a flat guess: an outcome
+        the house sells at 0.001 marked at 0.5 would put whoever bought it at
+        the top of the board.
         """
         snap = feed.book(token_id)
-        sellable = sellable_against_bids(list(snap.bids) if snap else [], size_micro)
-        if snap is not None and snap.bids and snap.asks:
-            mid = price_to_float((snap.bids[0][0] + snap.asks[0][0]) // 2)
+        bids = list(snap.bids) if snap else []
+        asks = list(snap.asks) if snap else []
+        sellable = sellable_against_bids(bids, size_micro)
+        if bids and asks:
+            mid = price_to_float((bids[0][0] + asks[0][0]) // 2)
             return _LivePricing(mid, sellable)
+        if bids:
+            return _LivePricing(price_to_float(bids[0][0]), sellable)
         lasts = TableRead.last_trade_prices_for_tokens(conn, [token_id, opposite])
         if token_id in lasts:
-            return _LivePricing(price_to_float(lasts[token_id]), sellable)
-        if opposite in lasts:
-            return _LivePricing(price_to_float(MICRO - lasts[opposite]), sellable)
-        return _LivePricing(0.5, sellable)
+            mark = price_to_float(lasts[token_id])
+        elif opposite in lasts:
+            mark = price_to_float(MICRO - lasts[opposite])
+        else:
+            mark = entry_price
+        if asks:
+            mark = min(mark, price_to_float(asks[0][0]))
+        return _LivePricing(mark, sellable)

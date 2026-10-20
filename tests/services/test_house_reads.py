@@ -101,7 +101,7 @@ def test_valuation_marks_at_the_mid_and_sells_into_the_bids(house_book):
         yes, no = _market(conn, "rain", 1)
         house_book(yes, bids=(("0.3", "10"),), asks=(("0.4", "10"), ("0.41", "10")))
         priced = {
-            t: AccountService._live_pricing(conn, t, o, 15_000_000)
+            t: AccountService._live_pricing(conn, t, o, 15_000_000, entry_price=0.5)
             for t, o in ((yes, no), (no, yes))
         }
     assert {
@@ -112,14 +112,43 @@ def test_valuation_marks_at_the_mid_and_sells_into_the_bids(house_book):
     }
 
 
+def _yes_print(conn, yes: str, price_micro: int) -> None:
+    conn.execute(
+        "INSERT INTO trades (TRADE_ID, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, "
+        "SIDE, PRICE, TRADE_SIZE, STATUS, MATCH_TIME, TAKER_API_KEY, "
+        "MAKER_API_KEY) VALUES ('t', %s, %s, 'NORMAL', 'BUY', %s, 100, "
+        "'MIRRORED', 1000, 'tk', 'mk')",
+        (yes, yes, price_micro),
+    )
+
+
 def test_a_bookless_no_is_valued_at_one_minus_the_last_yes_print():
     with fresh_test_conn() as conn:
         yes, no = _market(conn, "dry", 1)
-        conn.execute(
-            "INSERT INTO trades (TRADE_ID, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, "
-            "SIDE, PRICE, TRADE_SIZE, STATUS, MATCH_TIME, TAKER_API_KEY, "
-            "MAKER_API_KEY) VALUES ('t', %s, %s, 'NORMAL', 'BUY', 300000, 100, "
-            "'MIRRORED', 1000, 'tk', 'mk')",
-            (yes, yes),
-        )
-        assert AccountService._live_pricing(conn, no, yes, 0).cur_price == 0.7
+        _yes_print(conn, yes, 300_000)
+        assert AccountService._live_pricing(conn, no, yes, 0, entry_price=0.2).cur_price == 0.7
+
+
+def test_a_one_sided_book_marks_at_its_own_side_never_at_a_flat_half(house_book):
+    with fresh_test_conn() as conn:
+        yes, no = _market(conn, "decided", 1)
+        house_book(yes, bids=(("0.999", "10"),))
+        marks = {
+            t: AccountService._live_pricing(conn, t, o, 1_000_000, entry_price=0.001).cur_price
+            for t, o in ((yes, no), (no, yes))
+        }
+    assert marks == {yes: 0.999, no: 0.001}
+
+
+def test_an_asks_only_book_caps_a_stale_print(house_book):
+    with fresh_test_conn() as conn:
+        yes, no = _market(conn, "stale", 1)
+        _yes_print(conn, yes, 400_000)
+        house_book(yes, bids=(("0.999", "10"),))
+        assert AccountService._live_pricing(conn, no, yes, 1_000_000, entry_price=0.001).cur_price == 0.001
+
+
+def test_with_no_book_and_no_print_a_position_is_marked_at_what_it_cost():
+    with fresh_test_conn() as conn:
+        yes, no = _market(conn, "closed", 1)
+        assert AccountService._live_pricing(conn, no, yes, 1_000_000, entry_price=0.002).cur_price == 0.002
