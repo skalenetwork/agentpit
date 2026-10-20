@@ -366,3 +366,21 @@ def test_sold_out_position_without_an_event_leaves_the_slug_empty():
     )
     p = AccountService(db, onchain=None).list_closed_positions(address)[0]  # type: ignore[arg-type]
     assert p.eventSlug == ""
+
+
+def test_closed_positions_read_the_account_s_fills_in_one_pass(monkeypatch):
+    db, address, _m = _sell_closed_fixture(
+        "onepass@x.com", "s9", "st9",
+        buys=[(480_000, 20_000_000, 100)],
+        sells=[(510_000, 20_000_000, 300)],
+    )
+    per_token: list[str] = []
+    real = AccountService._token_flow
+
+    def counted(conn, api_key, token_id):
+        per_token.append(token_id)
+        return real(conn, api_key, token_id)
+
+    monkeypatch.setattr(AccountService, "_token_flow", staticmethod(counted))
+    out = AccountService(db, onchain=None).list_closed_positions(address)  # type: ignore[arg-type]
+    assert ([p.asset for p in out], per_token) == (["st9"], [])
