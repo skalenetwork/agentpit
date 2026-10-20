@@ -1718,16 +1718,32 @@ class TableRead:
         """Most-recent price print per token, batched.
 
         Reads prints rather than raw rows: a YES print also prints NO at
-        MICRO - p.
+        MICRO - p, the same two sides as `TOKEN_PRINTS_CTE`. Each side is one
+        probe of its (token, MATCH_TIME DESC) index: a catalogue page used to
+        read and sort every print of every token on it, and the tape grows by
+        about half a million rows a day.
         """
         if not token_ids:
             return {}
-        ids = list(token_ids)
         rows = db.execute(
-            TableRead.TOKEN_PRINTS_CTE
-            + "SELECT DISTINCT ON (TOKEN_ID) TOKEN_ID, PRICE FROM prints "
-              "ORDER BY TOKEN_ID, MATCH_TIME DESC",
-            (ids, ids),
+            """
+            SELECT t.TOKEN_ID, newest.PRICE
+            FROM (SELECT DISTINCT unnest(%s::text[]) AS TOKEN_ID) t
+            CROSS JOIN LATERAL (
+                SELECT PRICE FROM (
+                    (SELECT PRICE, MATCH_TIME FROM trades
+                     WHERE STATUS = 'MIRRORED' AND ASSET_ID = t.TOKEN_ID
+                     ORDER BY MATCH_TIME DESC LIMIT 1)
+                    UNION ALL
+                    (SELECT 1000000 - PRICE, MATCH_TIME FROM trades
+                     WHERE STATUS = 'MIRRORED' AND MAKER_ASSET_ID = t.TOKEN_ID
+                       AND MAKER_ASSET_ID <> ASSET_ID
+                     ORDER BY MATCH_TIME DESC LIMIT 1)
+                ) sides
+                ORDER BY MATCH_TIME DESC LIMIT 1
+            ) newest
+            """,
+            (list(token_ids),),
         ).fetchall()
         return {r["TOKEN_ID"]: int(r["PRICE"]) for r in rows}
 
