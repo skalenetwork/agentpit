@@ -189,6 +189,19 @@ async def test_target_changes_are_in_place_frames_in_chunks(monkeypatch):
     await _stop(task)
 
 
+async def test_a_backlog_of_frames_leaves_the_event_loop_free(monkeypatch):
+    st = MirrorState([_ref()])
+    ws = FakeWs([_book("PM-YES")] * 100)
+    _fast(monkeypatch, ws, FakeWs())
+    conn = FeedConnection(st, 30.0)
+    await conn.subscribe(["PM-YES"])
+    task = asyncio.create_task(conn.run())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert ws.sent and len(ws.frames) > 90
+    await _stop(task)
+
+
 async def test_an_asset_with_no_snapshot_is_resubscribed(monkeypatch):
     st = MirrorState([_ref("A", 1), _ref("B", 2)])
     ws = FakeWs([_book("A")])
