@@ -47,5 +47,6 @@ const url = canonical(path);
     <Header overlay={overlay} />
     <main id="main" class="grow pt-15"><slot /></main>
     <Footer />
+    {import.meta.env.PROD && <script is:inline defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon={JSON.stringify({ token: "6e384d3f41cc423d9efbbc46d3578b6e" })}></script>}
   </body>
 </html>
