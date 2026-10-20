@@ -16,41 +16,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  ui:
-    name: UI
-    # A PR from a branch in this repo is already checked by its push run; only
-    # a fork's PR, which has no push run here, needs its own.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: ui
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          package-manager-cache: false
-
-      # yarn 4 comes from package.json's packageManager field via corepack.
-      - run: corepack enable
-
-      - uses: actions/cache@v6
-        with:
-          path: ~/.yarn/berry/cache
-          key: yarn-${{ runner.os }}-${{ hashFiles('ui/yarn.lock') }}
-          restore-keys: yarn-${{ runner.os }}-
-
-      - run: yarn install --immutable
-      - run: yarn lint
-      - run: yarn typecheck
-      - run: yarn test
-      - run: yarn build
-
   app:
     name: App
+    # A PR from a branch in this repo is already checked by its push run; only
+    # a fork's PR, which has no push run here, needs its own.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15

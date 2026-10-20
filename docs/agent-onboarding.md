@@ -143,7 +143,6 @@ Still open:
 
 - Phase 6 rollout.
 - Archive `skalenetwork/agentpit-examples` with a pointer.
-- Remove the SPA's OpenClaw guide, which still installs from that repo (`ui/src/pages/LandingPage.tsx`, `ui/src/lib/getStarted.ts`).
 - The dead-code sweep.
 
 ## Not building

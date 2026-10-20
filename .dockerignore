@@ -4,11 +4,6 @@
 .env
 .anvil-state.json
 .superpowers
-ui/node_modules
-ui/dist
-ui/.yarn
-ui/public/leaderboard.json
-ui/public/bot-status*.json
 vendor
 deployments
 docs
