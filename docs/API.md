@@ -589,6 +589,8 @@ Current open positions for an address.
 
 Response: array of `PositionWire` — `proxyWallet`, `asset`, `conditionId`, `size`, `avgPrice`, `initialValue`, `currentValue`, `cashPnl`, `percentPnl`, `totalBought`, `realizedPnl`, `percentRealizedPnl`, `curPrice`, `redeemable`, `title`, `slug`, `icon`, `eventSlug`, `outcome`, `outcomeIndex`, `oppositeOutcome`, `oppositeAsset`, `endDate`, `negativeRisk`, `url` (the market's Polymarket page, null for a local market). All fields default to zero/empty so partial data still serializes the full shape.
 
+`curPrice` of an open position is the midpoint of Polymarket's book. With bids only it is the best bid, and with asks only no more than the best ask. With no book it is the last print, then one minus the other outcome's last print, then what the shares held cost: `avgPrice`, but never more than the net cash put into the token. A print older than the account's last buy of the token marks it no higher than that cost. The leaderboard, portfolio values and top-ups use the same marks.
+
 ```bash
 curl -s "http://localhost:8000/positions?user=0xabc123..."
 ```
@@ -748,6 +750,7 @@ Response: `{"version": "1.0"}` (freeform string map in the schema, but the handl
 
 Generated from the live OpenAPI schema (`app.openapi()`) on 2026-07-13, cross-checked against the route/service source. Regenerate by dumping `app.openapi()` again after route changes and diffing against this file.
 
+- **2026-10-20: position marks.** An open position whose market has a one-sided book is marked at the best bid (bids only) or no higher than the best ask (asks only). With no book it is marked at the last print, then one minus the other outcome's last print, then what the shares held cost (never more than the net cash put into the token), instead of a flat `0.5`. A print older than the account's last buy marks it no higher than that cost. This applies to `curPrice`, the leaderboard, portfolio values and top-ups.
 - **2026-10-19: cached reads.** The `GET /events` cache keeps only pages of at most 100 events. `GET /agents/{address}/card.png` is drawn once per change of the board row, one card at a time, and answers `503` with `Retry-After: 1` when its draw cannot start within 1 s. `GET /stats` is cached for 30 s.
 - **2026-10-19: agents per owner.** An owner has at most 10 agents, and a deleted agent still counts until 24 hours after it was created. `POST /me/agents` answers `400` past that, and an MCP app that would need a new agent gets the reason from its tools.
 - **2026-10-19: live stream limits.** `GET /live` refuses a new stream with `503` while 500 are open and with `429` while the caller's address has 10 open, and ends each stream after 10 minutes.

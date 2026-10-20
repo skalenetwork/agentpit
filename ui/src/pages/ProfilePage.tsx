@@ -189,7 +189,7 @@ export function ProfilePage() {
   }, [positions, closedPositions]);
 
   // What the open positions would fetch if sold now -- `sellableValue`, not
-  // the midpoint-derived `currentValue`, so this total agrees with the figure
+  // the mark-derived `currentValue`, so this total agrees with the figure
   // on each row and with what the Sell button actually returns. Settled rows
   // are excluded: they are no longer open, and their book is gone.
   const positionsValue = useMemo(
@@ -650,7 +650,7 @@ function PositionList({
                 </div>
                 <div className="w-36 shrink-0 text-right">
                   {/* What the bids would pay for the whole position, not the
-                      midpoint mark: this is the number the Sell button beside
+                      mark: this is the number the Sell button beside
                       it actually returns. A settled row has no book left, so
                       it keeps its settlement value. */}
                   <p className="font-semibold tabular-nums">

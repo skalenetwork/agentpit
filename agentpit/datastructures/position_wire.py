@@ -18,7 +18,8 @@ class PositionWire(BaseModel):
     realizedPnl: float = 0.0
     percentRealizedPnl: float = 0.0
     curPrice: float = 0.0
-    # `currentValue` is a mark (`curPrice` is the book MIDPOINT), which is the
+    # `currentValue` is a mark (`curPrice` is the book midpoint, or the best
+    # bid or a capped fallback when the book is one-sided or gone), which is the
     # right number for a portfolio but not the one to put next to a Sell
     # button: a sale executes against the bids and walks down as it eats
     # depth. These two say what the book would actually pay for the whole

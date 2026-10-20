@@ -1715,7 +1715,14 @@ class TableRead:
     def last_trade_prices_for_tokens(
         db: psycopg.Connection, token_ids: "list[str]"
     ) -> "dict[str, int]":
-        """Most-recent price print per token, batched.
+        """Most-recent price print per token, batched."""
+        return {t: price for t, (price, _) in TableRead.last_prints_for_tokens(db, token_ids).items()}
+
+    @staticmethod
+    def last_prints_for_tokens(
+        db: psycopg.Connection, token_ids: "list[str]"
+    ) -> "dict[str, tuple[int, int]]":
+        """token -> (price, MATCH_TIME) of its most recent print, batched.
 
         Reads prints rather than raw rows: a YES print also prints NO at
         MICRO - p, the same two sides as `TOKEN_PRINTS_CTE`. Each side is one
@@ -1727,10 +1734,10 @@ class TableRead:
             return {}
         rows = db.execute(
             """
-            SELECT t.TOKEN_ID, newest.PRICE
+            SELECT t.TOKEN_ID, newest.PRICE, newest.MATCH_TIME
             FROM (SELECT DISTINCT unnest(%s::text[]) AS TOKEN_ID) t
             CROSS JOIN LATERAL (
-                SELECT PRICE FROM (
+                SELECT PRICE, MATCH_TIME FROM (
                     (SELECT PRICE, MATCH_TIME FROM trades
                      WHERE STATUS = 'MIRRORED' AND ASSET_ID = t.TOKEN_ID
                      ORDER BY MATCH_TIME DESC LIMIT 1)
@@ -1745,7 +1752,7 @@ class TableRead:
             """,
             (list(token_ids),),
         ).fetchall()
-        return {r["TOKEN_ID"]: int(r["PRICE"]) for r in rows}
+        return {r["TOKEN_ID"]: (int(r["PRICE"]), int(r["MATCH_TIME"] or 0)) for r in rows}
 
     @staticmethod
     def list_resolved_unredeemed_markets(db: psycopg.Connection) -> "list[Market]":
