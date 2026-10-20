@@ -175,12 +175,17 @@ class AccountService:
             eth_address, [int(t[2]) for t in scanned]
         )
 
+        held = [t[2] for t, bal in zip(scanned, balances) if bal > 0]
+        if not held:
+            return []
         out: list[PositionWire] = []
         # One connection for the whole build, not one per token: the pricing
         # reads below are small, and acquiring a pooled connection per token
         # was the second cost in this loop.
         with self._db.read() as conn:
-            flows = self._token_flows(conn, user.api_key)
+            # Only the held tokens' fills: an account that has traded a lot
+            # but holds little should not read its whole history here.
+            flows = self._token_flows(conn, user.api_key, held)
             for (mkt, idx, token_id, label), bal in zip(scanned, balances):
                 if bal <= 0:
                     continue
@@ -469,15 +474,24 @@ class AccountService:
         return AccountService._sum_flows(rows, api_key).get(token_id, _NO_FLOW)
 
     @staticmethod
-    def _token_flows(conn, api_key: str) -> "dict[str, _TokenFlow]":
-        """`_token_flow` of every token the account ever filled, from ONE read
-        of its fills. Read a token at a time, a position list costs a query
-        per token of every market the account touched, and each of those reads
-        all of the account's maker fills to find the token's."""
-        rows = conn.execute(
-            _FLOW_SQL + "AND (TAKER_API_KEY = %s OR MAKER_API_KEY = %s)",
-            (api_key, api_key),
-        ).fetchall()
+    def _token_flows(conn, api_key: str, tokens: "list[str] | None" = None) -> "dict[str, _TokenFlow]":
+        """`_token_flow` of every token the account ever filled, or of
+        `tokens` only, from ONE read of its fills. Read a token at a time,
+        the closed-position list cost a query per token of every market the
+        account touched, and each of those read all of the account's maker
+        fills to find the token's."""
+        if tokens is None:
+            rows = conn.execute(
+                _FLOW_SQL + "AND (TAKER_API_KEY = %s OR MAKER_API_KEY = %s)",
+                (api_key, api_key),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                _FLOW_SQL
+                + "AND ((TAKER_API_KEY = %s AND ASSET_ID = ANY(%s)) "
+                "  OR (MAKER_API_KEY = %s AND COALESCE(MAKER_ASSET_ID, ASSET_ID) = ANY(%s)))",
+                (api_key, tokens, api_key, tokens),
+            ).fetchall()
         return AccountService._sum_flows(rows, api_key)
 
     @staticmethod
@@ -520,6 +534,7 @@ class AccountService:
         cap = offset + limit
         types = set(type_filter) if type_filter else None
         tx_types = None if types is None else sorted(types - {"TRADE"})
+        market = market or None  # `market=,` is no filter, not an empty one
         with self._db.read() as conn:
             user = TableRead.get_user_by_eth_address(conn, eth_address)
             if user is None:
@@ -536,7 +551,7 @@ class AccountService:
                 "AND (%s::text[] IS NULL OR TRANSACTION_TYPE = ANY(%s)) "
                 "AND (%s::text[] IS NULL OR MARKET_ID IN "
                 "     (SELECT MARKET_ID FROM markets WHERE CONDITION_ID = ANY(%s))) "
-                "ORDER BY TIMESTAMP DESC LIMIT %s",
+                "ORDER BY TIMESTAMP DESC, TRANSACTION_ID DESC LIMIT %s",
                 (user.api_key, tx_types, tx_types, market, market, cap),
             ).fetchall()
 
@@ -600,7 +615,7 @@ class AccountService:
             "MAKER_API_KEY FROM trades "
             "WHERE (TAKER_API_KEY = %s OR MAKER_API_KEY = %s) AND STATUS != 'FAILED' "
             "AND (%s::text[] IS NULL OR MARKET = ANY(%s)) "
-            "ORDER BY MATCH_TIME DESC LIMIT %s",
+            "ORDER BY MATCH_TIME DESC, TRADE_ID DESC LIMIT %s",
             (api_key, api_key, markets, markets, limit),
         ).fetchall()
 

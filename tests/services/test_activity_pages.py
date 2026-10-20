@@ -56,6 +56,7 @@ def test_a_filtered_activity_page_reads_only_as_much_history_as_it_shows(monkeyp
     trades = service.list_activity(address, type_filter=["TRADE"], market=[_hex32("pa1")], limit=2)
     splits = service.list_activity(address, type_filter=["SPLIT"], market=[_hex32("pa1")])
     other = service.list_activity(address, market=[_hex32("pa2")])
+    unfiltered = service.list_activity(address, market=[])
 
     assert [(a.type, a.timestamp) for a in trades] == [("TRADE", 6), ("TRADE", 4)]
     assert [(a.type, a.conditionId) for a in splits] == [("SPLIT", _hex32("pa1"))]
@@ -64,4 +65,6 @@ def test_a_filtered_activity_page_reads_only_as_much_history_as_it_shows(monkeyp
         ("TRADE", _hex32("pa2"), 3),
         ("TRADE", _hex32("pa2"), 1),
     ]
-    assert asked == [2, 100]
+    # An empty market list (`market=,`) is no filter, as it always was.
+    assert len(unfiltered) == 7
+    assert asked == [2, 100, 100]
