@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from agentpit.datastructures.activity_wire import ActivityWire
 from agentpit.datastructures.market import Market
@@ -48,6 +48,35 @@ class _TokenFlow:
             return 0
         net_cash = max(0, self.bought_cost - self.sold_proceeds)
         return min(self.avg_buy_price_micro, net_cash // held_micro)
+
+    def plus(self, side: str, price_micro: int, size_micro: int, at: int) -> "_TokenFlow":
+        """This flow with one more leg of the account's, filled at `at`."""
+        if side == "BUY":
+            return replace(
+                self,
+                bought_size=self.bought_size + size_micro,
+                bought_cost=self.bought_cost + price_micro * size_micro,
+                last_buy_time=max(self.last_buy_time, at),
+            )
+        return replace(
+            self,
+            sold_size=self.sold_size + size_micro,
+            sold_proceeds=self.sold_proceeds + price_micro * size_micro,
+            last_sell_time=max(self.last_sell_time, at),
+        )
+
+
+#: A token the account never filled.
+_NO_FLOW = _TokenFlow(
+    bought_size=0, bought_cost=0, sold_size=0, sold_proceeds=0, last_sell_time=0, last_buy_time=0
+)
+
+#: The columns `legs_for_user` reads, from the account's live and settled fills.
+_FLOW_SQL = (
+    "SELECT SIDE, PRICE, TRADE_SIZE, MATCH_TIME, MATCH_KIND, "
+    "ASSET_ID, MAKER_ASSET_ID, TAKER_API_KEY, MAKER_API_KEY "
+    "FROM trades WHERE STATUS != 'FAILED' "
+)
 
 
 #: A market sell is a GTC limit for the whole size at
@@ -151,6 +180,7 @@ class AccountService:
         # reads below are small, and acquiring a pooled connection per token
         # was the second cost in this loop.
         with self._db.read() as conn:
+            flows = self._token_flows(conn, user.api_key)
             for (mkt, idx, token_id, label), bal in zip(scanned, balances):
                 if bal <= 0:
                     continue
@@ -161,7 +191,7 @@ class AccountService:
                     and bal * mkt.payouts[idx] // sum(mkt.payouts)
                     >= self._min_claim_micro
                 )
-                flow = self._token_flow(conn, user.api_key, token_id)
+                flow = flows.get(token_id, _NO_FLOW)
                 avg_price = price_to_float(flow.avg_buy_price_micro)
                 settled = mkt.market_state == MarketState.RESOLVED
                 # A resolved market has no live book any more, so
@@ -233,6 +263,7 @@ class AccountService:
             user = TableRead.get_user_by_eth_address(conn, eth_address)
             if user is None:
                 return []
+            flows = self._token_flows(conn, user.api_key)
             redeem_rows = conn.execute(
                 "SELECT MARKET_ID, DETAILS FROM transactions "
                 "WHERE API_KEY = %s AND TRANSACTION_TYPE = 'REDEEM'",
@@ -269,7 +300,7 @@ class AccountService:
                     continue  # binary markets only for now
                 payouts = mkt.payouts
                 if payouts[0] == payouts[1]:
-                    pos_idx = max((0, 1), key=lambda i: self._net_bought(conn, user.api_key, tokens[i][0]))
+                    pos_idx = max((0, 1), key=lambda i: flows.get(tokens[i][0], _NO_FLOW).net_size)
                 else:
                     pos_idx = payouts.index(max(payouts) if payout > 0 else min(payouts))
                 cur_price = payouts[pos_idx] / sum(payouts)
@@ -279,13 +310,13 @@ class AccountService:
                 else:
                     # Lost: held the losing outcome (redeemed for $0). Size comes
                     # from the user's net buys of that token.
-                    net = self._net_bought(conn, user.api_key, tokens[pos_idx][0])
+                    net = flows.get(tokens[pos_idx][0], _NO_FLOW).net_size
                     if net <= 0:
                         continue
                     size = size_to_float(net)
                     value = 0.0
                 token_id = tokens[pos_idx][0]
-                avg = self._avg_fill_price(conn, user.api_key, token_id)
+                avg = price_to_float(flows.get(token_id, _NO_FLOW).avg_buy_price_micro)
                 cost = avg * size
                 pnl = value - cost
                 pct = (pnl / cost * 100) if cost else 0.0
@@ -318,13 +349,19 @@ class AccountService:
                 )
             out.extend(
                 self._sold_out_positions(
-                    conn, eth_address, user.api_key, skip_market_ids=set(payout_micro)
+                    conn, eth_address, user.api_key, flows, skip_market_ids=set(payout_micro)
                 )
             )
         return out
 
     def _sold_out_positions(
-        self, conn, eth_address: str, api_key: str, *, skip_market_ids: set[int]
+        self,
+        conn,
+        eth_address: str,
+        api_key: str,
+        flows: "dict[str, _TokenFlow]",
+        *,
+        skip_market_ids: set[int],
     ) -> list[PositionWire]:
         """Positions the user closed by SELLING every share back.
 
@@ -349,7 +386,7 @@ class AccountService:
         for mkt in candidates:
             tokens = mkt.erc1155_tokens
             for idx, (token_id, label) in enumerate(tokens):
-                flow = self._token_flow(conn, api_key, token_id)
+                flow = flows.get(token_id, _NO_FLOW)
                 # Sold out exactly: bought something, sold it all back. A
                 # partial exit still holds tokens and belongs in Active, where
                 # its remaining size and live price are the interesting numbers.
@@ -401,18 +438,12 @@ class AccountService:
         return out
 
     @staticmethod
-    def _net_bought(conn, api_key: str, token_id: str) -> int:
-        """Net outcome tokens the user bought of `token_id` (effective buys minus
-        sells; a maker fills the side opposite the stored taker SIDE)."""
-        return AccountService._token_flow(conn, api_key, token_id).net_size
-
-    @staticmethod
     def _token_flow(conn, api_key: str, token_id: str) -> "_TokenFlow":
         """Everything the user's fills of one token add up to, in one pass.
 
         Reconstructing a position that was closed by SELLING needs the sale
-        proceeds and the sale time, not just the net quantity `_net_bought`
-        reports, and it must not double-count a maker fill as the taker's side.
+        proceeds and the sale time, not just the net quantity, and it must not
+        double-count a maker fill as the taker's side.
 
         A trade row's stored PRICE is always the MAKER's price; which token
         moved and in which direction depends on `MATCH_KIND` — the truth
@@ -430,35 +461,36 @@ class AccountService:
         than picking one via a single `is_taker`.
         """
         rows = conn.execute(
-            "SELECT SIDE, PRICE, TRADE_SIZE, MATCH_TIME, MATCH_KIND, "
-            "ASSET_ID, MAKER_ASSET_ID, TAKER_API_KEY, MAKER_API_KEY "
-            "FROM trades WHERE STATUS != 'FAILED' "
-            "AND ((TAKER_API_KEY = %s AND ASSET_ID = %s) "
+            _FLOW_SQL
+            + "AND ((TAKER_API_KEY = %s AND ASSET_ID = %s) "
             "  OR (MAKER_API_KEY = %s AND COALESCE(MAKER_ASSET_ID, ASSET_ID) = %s))",
             (api_key, token_id, api_key, token_id),
         ).fetchall()
-        bought_size = bought_cost = sold_size = sold_proceeds = 0
-        last_sell_time = last_buy_time = 0
+        return AccountService._sum_flows(rows, api_key).get(token_id, _NO_FLOW)
+
+    @staticmethod
+    def _token_flows(conn, api_key: str) -> "dict[str, _TokenFlow]":
+        """`_token_flow` of every token the account ever filled, from ONE read
+        of its fills. Read a token at a time, a position list costs a query
+        per token of every market the account touched, and each of those reads
+        all of the account's maker fills to find the token's."""
+        rows = conn.execute(
+            _FLOW_SQL + "AND (TAKER_API_KEY = %s OR MAKER_API_KEY = %s)",
+            (api_key, api_key),
+        ).fetchall()
+        return AccountService._sum_flows(rows, api_key)
+
+    @staticmethod
+    def _sum_flows(rows, api_key: str) -> "dict[str, _TokenFlow]":
+        """token -> what the account's legs of `rows` add up to."""
+        flows: dict[str, _TokenFlow] = {}
         for r in rows:
+            at = int(r["MATCH_TIME"] or 0)
             for leg in legs_for_user(r, api_key):
-                if leg.token_id != token_id:
-                    continue
-                if leg.side == "BUY":
-                    bought_size += leg.size_micro
-                    bought_cost += leg.price_micro * leg.size_micro
-                    last_buy_time = max(last_buy_time, int(r["MATCH_TIME"] or 0))
-                else:
-                    sold_size += leg.size_micro
-                    sold_proceeds += leg.price_micro * leg.size_micro
-                    last_sell_time = max(last_sell_time, int(r["MATCH_TIME"] or 0))
-        return _TokenFlow(
-            bought_size=bought_size,
-            bought_cost=bought_cost,
-            sold_size=sold_size,
-            sold_proceeds=sold_proceeds,
-            last_sell_time=last_sell_time,
-            last_buy_time=last_buy_time,
-        )
+                flows[leg.token_id] = flows.get(leg.token_id, _NO_FLOW).plus(
+                    leg.side, leg.price_micro, leg.size_micro, at
+                )
+        return flows
 
     def total_value(self, eth_address: str) -> list[dict]:
         value = sum(p.currentValue for p in self.list_positions(eth_address))

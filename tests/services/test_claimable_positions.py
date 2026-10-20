@@ -206,3 +206,16 @@ def test_the_minimum_is_the_one_the_service_was_given():
     )
     assert p.redeemable is False
     assert p.curPrice == 1.0
+
+
+def test_open_positions_read_the_account_s_fills_in_one_pass(monkeypatch):
+    per_token: list[str] = []
+    real = AccountService._token_flow
+
+    def counted(conn, api_key, token_id):
+        per_token.append(token_id)
+        return real(conn, api_key, token_id)
+
+    monkeypatch.setattr(AccountService, "_token_flow", staticmethod(counted))
+    position = _make_position("onepass@x.com", "cp9", resolved_outcome=None, held_idx=0)
+    assert (position.curPrice, per_token) == (0.4, [])
