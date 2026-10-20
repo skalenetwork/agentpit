@@ -160,7 +160,7 @@ export const AddAgent = () => {
               <Button variant="paper" size="lg" disabled={create.isPending} onClick={() => create.mutate()}>
                 {create.isPending ? "Generating key" : create.isError ? "Try again" : "Generate API key"}
               </Button>
-              {create.isError && <p role="alert">AgentPit is busy, so nothing was created.</p>}
+              {create.isError && <p role="alert">{(create.error instanceof ApiError && create.error.detail) || "AgentPit is busy, so nothing was created."}</p>}
             </Tile>
           </div>
         </>
