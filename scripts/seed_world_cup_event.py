@@ -212,7 +212,7 @@ def main() -> int:
     attached = attach_markets_to_event(market_ids)
     print(f"   attached {attached}/{len(market_ids)}")
 
-    print(f"\n✓ done — open {args.base.replace(':8000', ':5173')}/events/{EVENT_SLUG}")
+    print(f"\n✓ done — {args.base}/events/{EVENT_SLUG}")
     return 0
 
 

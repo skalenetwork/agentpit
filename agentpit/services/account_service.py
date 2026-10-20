@@ -81,9 +81,8 @@ _FLOW_SQL = (
 
 #: A market sell is a GTC limit for the whole size at
 #: `max(best_bid - SLIPPAGE_CAP, MIN_PROB)` with the unfilled remainder
-#: cancelled -- `placeMarketOrder` in `ui/src/api/orders.ts` on top of
-#: `computeMarketSell` in `ui/src/components/orders/orderMath.ts`. In micro
-#: units here because that is what the `orders` rows carry.
+#: cancelled. In micro units here because that is what the `orders` rows
+#: carry.
 SLIPPAGE_CAP_MICRO = 20_000
 MIN_PRICE_MICRO = 10_000
 

@@ -3,10 +3,9 @@
 A row's `currentValue` is `curPrice x size` and `curPrice` is a mark (the book
 midpoint on a two-sided book), so the profile was quoting a price no one had offered: a sale
 executes against the bids, below the mid, and walks down as it eats depth.
-`sellableValue` / `sellableSize` are that walk, mirroring the order the Sell
-button sends -- a GTC limit for the whole size at `max(best_bid - 0.02, 0.01)`
-with the remainder cancelled (`placeMarketOrder` in `ui/src/api/orders.ts`,
-`computeMarketSell` in `ui/src/components/orders/orderMath.ts`).
+`sellableValue` / `sellableSize` are that walk, mirroring a market sell -- a
+GTC limit for the whole size at `max(best_bid - 0.02, 0.01)` with the
+remainder cancelled.
 """
 
 from __future__ import annotations
