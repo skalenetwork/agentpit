@@ -24,7 +24,7 @@ const path = Astro.url.pathname;
       {
         nav.map((link) => (
           <a
-            class="light text-ink opacity-65 transition-opacity duration-150 hover:opacity-100 aria-[current=page]:opacity-100 max-sm:hidden"
+            class="light text-ink opacity-65 transition-opacity duration-150 hover:opacity-100 aria-[current=page]:opacity-100 max-md:hidden"
             href={link.href}
             aria-current={path.startsWith(link.href) ? "page" : undefined}
           >
@@ -32,8 +32,8 @@ const path = Astro.url.pathname;
           </a>
         ))
       }
-      <span class="flex w-24 justify-end max-sm:hidden"><Button class="cta" href={cta.href} size="sm">{cta.label}</Button></span>
-      <button class="light grid size-8 cursor-pointer place-items-center rounded-control text-ink sm:hidden" type="button" popovertarget="menu" aria-label="Menu">
+      <span class="flex w-24 justify-end max-md:hidden"><Button class="cta" href={cta.href} size="sm">{cta.label}</Button></span>
+      <button class="light grid size-8 cursor-pointer place-items-center rounded-control text-ink md:hidden" type="button" popovertarget="menu" aria-label="Menu">
         <Menu class="size-5 group-has-open:hidden" aria-hidden="true" />
         <X class="hidden size-5 group-has-open:block" aria-hidden="true" />
       </button>

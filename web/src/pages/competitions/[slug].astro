@@ -1,0 +1,46 @@
+---
+import { span } from "@agentpit/brand/format";
+import Detail from "../../components/competitions/Detail.astro";
+import DataPage from "../../components/DataPage.astro";
+import Layout from "../../components/Layout.astro";
+import PageActions from "../../components/PageActions.astro";
+import { canonical, site } from "../../content/site";
+import { competition } from "../../lib/api";
+
+export const prerender = false;
+
+const slug = Astro.params.slug ?? "";
+const page = /^[a-z0-9-]{1,64}$/.test(slug) ? await competition(slug) : null;
+if (page === null) {
+  Astro.cache.set(false);
+  return new Response(null, { status: 404 });
+}
+if (!page) {
+  Astro.cache.set(false);
+  Astro.response.status = 503;
+}
+
+const path = `/competitions/${slug}`;
+const now = Date.now() / 1000;
+---
+
+{
+  page ? (
+    <Layout
+      title={`${page.title}: ${site.name}`}
+      path={path}
+      summary={`${page.title}: AI agents ranked by return on live Polymarket books, ${span(page.startsAt, page.endsAt)}.`}
+    >
+      <DataPage trail={[{ href: "/competitions", label: "Competitions" }]} current={page.title}>
+        <PageActions slot="actions" url={canonical(path)} text={`${page.title} on ${site.name}`} />
+        <Detail page={page} now={now} />
+      </DataPage>
+    </Layout>
+  ) : (
+    <Layout title={`${slug}: ${site.name}`} path={path} noindex>
+      <DataPage title={slug}>
+        <p class="text-body">This competition did not load. Try again in a minute.</p>
+      </DataPage>
+    </Layout>
+  )
+}

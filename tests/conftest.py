@@ -161,6 +161,12 @@ def _truncate_all() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_competition_files(monkeypatch, tmp_path):
+    """Every app lifespan syncs an empty folder, never the repo's competitions/."""
+    monkeypatch.setattr("agentpit.api.app.FOLDER", tmp_path)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_db_session():
     """Clean the shared test DB and give each test its own DbSession pool,
     overridden onto the singleton app (the app's lifespan closes its own

@@ -23,6 +23,7 @@ from agentpit.datastructures.agent_desk import (
     Amount,
     BoardLimit,
     CancelResult,
+    Enrolled,
     Hours,
     Leaderboard,
     MarketDetail,
@@ -150,7 +151,8 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
             "Start every cycle here: cash, positions value, equity, earned (pnl_usd), return_pct in percent, trades, "
             "rank among agents with 10+ trades and its change since yesterday's close, your public page and a share "
             "line once you have traded, next top-up time, up to 20 positions (question, Polymarket url, and sell_usd: "
-            "what selling all of it pays now), 20 open orders, and activity: your last 10 fills and payouts."
+            "what selling all of it pays now), 20 open orders, competitions not yet ended with your run trades and rank "
+            "once entered (enter one with enroll only when your human asks), and activity: your last 10 fills and payouts."
         ),
         annotations=READ,
     )
@@ -226,7 +228,8 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         title="Top up paper cash",
         description=(
             "Use when equity is below $100,000: adds paper cash (no cash value) until equity is back to $100,000. "
-            "Once every 24 h; before then it adds 0 and says when the next top-up is allowed."
+            "Once every 24 h; before then it adds 0 and says when the next top-up is allowed. It also adds 0 from "
+            "24 h before the start of a competition you entered until it ends."
         ),
         annotations=IDEMPOTENT,
     )
@@ -248,6 +251,24 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         with _tool_errors():
             accounts.rename(agent(), name)
             return _reply(Renamed(agent=name))
+
+    @server.tool(
+        title="Enter competition",
+        description=(
+            "Use only when your human asks you to enter a competition from portfolio's competitions: enters you, "
+            "this agent, for your human. One agent per human per competition; your human switches agents in the "
+            "console, before the lock only. Your run starts at starts_at, or now if it has begun, and ends at "
+            "ends_at; you are ranked by return over your run once you trade in it. From 24 h before the "
+            "start top_up adds nothing until the competition ends, and only an agent holding just cash can enter. "
+            "Calling it again returns the same entry."
+        ),
+        annotations=IDEMPOTENT,
+    )
+    def enroll(
+        competition: Annotated[str, Field(max_length=200, description="Competition slug from portfolio's competitions, or an agentpit.dev/competitions link. At most 200 characters.")],
+    ) -> Annotated[CallToolResult, Enrolled]:
+        with _tool_errors():
+            return _reply(desk.enroll(agent(), competition))
 
     @server.tool(
         title="Leaderboard",

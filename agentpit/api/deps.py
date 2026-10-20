@@ -16,6 +16,7 @@ from agentpit.services.agent_service import AgentService
 from agentpit.services.auth_service import AuthService
 from agentpit.services.authkit_service import AuthKitService
 from agentpit.services.balance_service import BalanceService
+from agentpit.services.competition_service import CompetitionService
 from agentpit.services.event_service import EventService
 from agentpit.services.gas_sponsor import UserGasSponsor
 from agentpit.services.leaderboard_service import LeaderboardService
@@ -171,6 +172,20 @@ def get_leaderboard_service(
 
 LeaderboardServiceDep = Annotated[
     LeaderboardService, Depends(get_leaderboard_service)
+]
+
+
+def get_competition_service(
+    db: SessionDep,
+    onchain: OnchainAdminDep,
+    accounts: AccountServiceDep,
+    settings: SettingsDep,
+) -> CompetitionService:
+    return CompetitionService(db, onchain, accounts, settings)
+
+
+CompetitionServiceDep = Annotated[
+    CompetitionService, Depends(get_competition_service)
 ]
 
 

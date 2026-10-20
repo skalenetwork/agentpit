@@ -1,4 +1,6 @@
 import json
+import time
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -8,6 +10,7 @@ from agentpit.api.app import create_app
 from agentpit.api.mcp_server import CARD
 from agentpit.auth.mcp_tokens import AgentVerifier
 from agentpit.config import Settings
+from agentpit.datastructures.competition import Competition
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
@@ -72,13 +75,15 @@ def test_get_is_not_allowed():
     assert resp.json() == {"detail": "Method Not Allowed"}
 
 
-def test_modern_tools_list_carries_eight_annotated_tools():
+def test_modern_tools_list_carries_nine_annotated_tools():
     key = _agent().api_key
     with TestClient(app) as client:
         result = _call(client, key, "tools/list", {})
 
     tools = {t["name"]: t for t in result["tools"]}
-    assert set(tools) == {"search_markets", "get_market", "trade", "cancel", "portfolio", "top_up", "rename", "leaderboard"}
+    assert set(tools) == {
+        "search_markets", "get_market", "trade", "cancel", "portfolio", "top_up", "rename", "enroll", "leaderboard"
+    }
     assert all(t["title"] and t["annotations"]["openWorldHint"] is False for t in tools.values())
     assert tools["portfolio"]["annotations"]["readOnlyHint"] is True
     assert tools["trade"]["annotations"] == {
@@ -88,6 +93,7 @@ def test_modern_tools_list_carries_eight_annotated_tools():
         "openWorldHint": False,
     }
     assert tools["cancel"]["annotations"]["destructiveHint"] is False
+    assert tools["enroll"]["annotations"]["idempotentHint"] is True
     assert (result["ttlMs"], result["cacheScope"]) == (3_600_000, "public")
 
 
@@ -248,11 +254,41 @@ def test_rename_changes_the_name_and_refuses_a_taken_or_malformed_one():
     assert stored is not None and stored.handle == "Ziggy"
 
 
+def test_enroll_enters_once_and_refuses_another_agent_of_the_same_owner():
+    db = fresh_test_db()
+    accounts = AgentAccounts(db, lambda *_: pytest.fail("agent_for must not onboard"))
+    agent = accounts.agent_for("user_owner", "Claude", None, None)
+    other = accounts.agent_for("user_owner", "Codex", None, None)
+    starts = int(time.time()) + 2 * 86_400
+    competition = Competition(slug="october-test", title="October test", starts_at=starts, ends_at=starts + 86_400, prizes=[])
+    with db.write() as conn:
+        for user in (agent, other):
+            TableWrite.mark_user_onboarded(conn, user.user_id)
+
+    with TestClient(app) as client:
+        with db.write() as conn:
+            TableWrite.save_competition(conn, competition, 0)
+        first, again, refused = (
+            _call(client, user.api_key, "tools/call", {"name": "enroll", "arguments": {"competition": ref}}, "enroll")
+            for user, ref in (
+                (agent, "https://agentpit.dev/competitions/october-test"),
+                (agent, "october-test"),
+                (other, "october-test"),
+            )
+        )
+
+    entry = first["structuredContent"]
+    assert (first["isError"], again["isError"], again["structuredContent"]) == (False, False, entry)
+    assert (entry["competition"], entry["url"]) == ("october-test", "https://agentpit.dev/competitions/october-test")
+    assert datetime.fromisoformat(entry["run_starts_at"]).timestamp() == starts
+    assert refused["isError"] is True and "console" in refused["content"][0]["text"]
+
+
 def test_a_second_lifespan_still_serves():
     key = _agent().api_key
     for _ in range(2):
         with TestClient(app) as client:
-            assert len(_call(client, key, "tools/list", {})["tools"]) == 8
+            assert len(_call(client, key, "tools/list", {})["tools"]) == 9
 
 
 def test_mcp_adds_no_openapi_paths():

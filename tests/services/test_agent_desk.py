@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 import pytest
 
 from agentpit.config import Settings
+from agentpit.datastructures.agent_desk import CompetitionCard
+from agentpit.datastructures.competition import PLACE_FLOOR, Competition, Prize
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
@@ -482,7 +484,7 @@ def test_portfolio_matches_the_leaderboard(house_book):
         ("buy", slug, "YES", 50, 0.4, 20)
     ]
     assert [(o.market, o.side, o.price, o.shares) for o in warming.open_orders] == [(slug, "buy", 0.1, 10)]
-    assert warming.next_top_up_at is None
+    assert (warming.next_top_up_at, warming.competitions) == (None, [])
     assert desk.leaderboard().agents == []
 
     for _ in range(RANK_FLOOR - 1):
@@ -498,6 +500,49 @@ def test_portfolio_matches_the_leaderboard(house_book):
     assert mine.ranked_agents == board.total == 1
     assert mine.share == (
         f"{mine.agent} is #{mine.rank} of 1 on AgentPit with a {pct(standing.return_pct)} return on paper money: {dated}"
+    )
+
+
+DAY = 86_400
+PRIZES = [Prize(usd=700, skl=100), Prize(usd=0, skl=100)]
+
+
+def _competition(conn, slug: str, starts: int, ends: int) -> None:
+    competition = Competition(slug=slug, title=slug.title(), starts_at=starts, ends_at=ends, prizes=PRIZES)
+    TableWrite.save_competition(conn, competition, 0)
+
+
+def test_portfolio_lists_competitions_not_yet_ended_with_this_agents_run():
+    now = int(time.time())
+    with fresh_test_db().write() as conn:
+        user_id, _, key = TableWrite.create_user(conn, None, None, owner_workos_id="user_o")
+        for slug, starts in (("past", now - 3 * DAY), ("live", now - DAY), ("next", now + 2 * DAY)):
+            _competition(conn, slug, starts, starts + 2 * DAY)
+        for slug in ("past", "live"):
+            TableWrite.enter_competition(conn, slug, "user_o", user_id, now - 4 * DAY, False)
+        TableWrite.capture_entry(conn, "live", user_id, "START", 100_000_000_000)
+        for k in range(PLACE_FLOOR):
+            conn.execute(
+                "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) VALUES (%s, %s, %s, 'CONFIRMED')",
+                (f"t{k}", key, now - 60),
+            )
+
+    upcoming, live = _desk().portfolio(_user(key)).competitions
+
+    assert (upcoming.competition, upcoming.phase, upcoming.entered, upcoming.trades, upcoming.rank) == (
+        "next", "upcoming", False, None, None
+    )
+    assert live == CompetitionCard(
+        competition="live",
+        title="Live",
+        phase="live",
+        starts_at=datetime.fromtimestamp(now - DAY, UTC),
+        ends_at=datetime.fromtimestamp(now + DAY, UTC),
+        prizes=PRIZES,
+        entered=True,
+        trades=PLACE_FLOOR,
+        rank=1,
+        url="https://agentpit.dev/competitions/live",
     )
 
 
@@ -550,6 +595,18 @@ def test_top_up_during_cooldown_adds_nothing():
 
     assert result.added_usd == 0
     assert result.next_top_up_at is not None
+
+
+def test_top_up_adds_nothing_while_an_entered_competition_pauses_it():
+    now = int(time.time())
+    with fresh_test_db().write() as conn:
+        user_id, _, key = TableWrite.create_user(conn, None, None, owner_workos_id="user_o")
+        _competition(conn, "locked", now + 3_600, now + DAY)
+        TableWrite.enter_competition(conn, "locked", "user_o", user_id, now - 60, False)
+
+    result = _desk().top_up(_user(key))
+
+    assert (result.added_usd, result.next_top_up_at) == (0, datetime.fromtimestamp(now + DAY, UTC))
 
 
 def test_leaderboard_carries_the_agent_app():

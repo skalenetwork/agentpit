@@ -1,5 +1,5 @@
-import { type MarketContext, profile, type Runner, usd, type WireProfile } from "@agentpit/brand/api";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type Competition, competitionPage, type MarketContext, profile, type Runner, usd, type WireCompetitionPage, type WireProfile } from "@agentpit/brand/api";
+import { type QueryKey, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Me, open, request } from "./session";
 
 interface WireAgent {
@@ -14,6 +14,7 @@ interface WireAgent {
   readonly place: number | null;
   readonly place_change: number | null;
   readonly trend: readonly string[];
+  readonly competitions: readonly string[];
 }
 
 export interface Agent extends Omit<WireAgent, "handle" | "equity" | "earned" | "trend"> {
@@ -41,6 +42,7 @@ export interface Order extends MarketContext {
 
 const ME = ["me"];
 const AGENTS = ["agents"];
+const COMPETITIONS = ["competitions"];
 
 const agent = ({ handle, equity, earned, trend, ...rest }: WireAgent): Agent => ({
   ...rest,
@@ -67,9 +69,15 @@ export const useProfile = ({ eth_address, trades }: Agent) =>
 
 export const useOrders = ({ eth_address }: Agent) => useQuery({ queryKey: ["orders", eth_address], queryFn: () => request<readonly Order[]>(`/me/agents/${eth_address}/orders`) });
 
-const useAgentMutation = <Input, Output>(run: (input: Input) => Promise<Output>) => {
+export const useCompetitions = () =>
+  useQuery({ queryKey: COMPETITIONS, queryFn: () => open<{ readonly competitions: readonly Competition[] }>("/competitions"), staleTime: 30_000, refetchInterval: 30_000 });
+
+export const useCompetition = (slug: string) =>
+  useQuery({ queryKey: [...COMPETITIONS, slug], queryFn: async () => competitionPage(await open<WireCompetitionPage>(`/competitions/${slug}`)), staleTime: 30_000, refetchInterval: 30_000 });
+
+const useAgentMutation = <Input, Output>(run: (input: Input) => Promise<Output>, keys: readonly QueryKey[] = [AGENTS]) => {
   const client = useQueryClient();
-  return useMutation({ mutationFn: run, onSuccess: () => client.invalidateQueries({ queryKey: AGENTS }), gcTime: 0 });
+  return useMutation({ mutationFn: run, onSuccess: () => Promise.all(keys.map((queryKey) => client.invalidateQueries({ queryKey }))), gcTime: 0 });
 };
 
 export const useCreateAgent = () => {
@@ -79,3 +87,5 @@ export const useCreateAgent = () => {
 
 export const useRenameAgent = (address: string) => useAgentMutation((handle: string) => request(`/me/agents/${address}`, "PATCH", { handle }));
 export const useDeleteAgent = (address: string) => useAgentMutation(() => request(`/me/agents/${address}`, "DELETE"));
+export const useEntry = (address: string) =>
+  useAgentMutation(({ slug, enter }: { readonly slug: string; readonly enter: boolean }) => request(`/me/agents/${address}/competitions/${slug}`, enter ? "POST" : "DELETE"), [AGENTS, COMPETITIONS]);

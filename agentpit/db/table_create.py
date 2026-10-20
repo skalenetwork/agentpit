@@ -2,7 +2,6 @@
 # own connection from the pool, so the methods below may run concurrently
 # across threads — every one of them operates only on the connection it is
 # given.
-import json
 
 import psycopg
 from eth_utils.crypto import keccak
@@ -666,6 +665,45 @@ class TableCreate:
         )
 
     @staticmethod
+    def create_competitions_table(conn: psycopg.Connection) -> None:
+        """PRIZES is a JSON list of `Prize`, item `i` being place `i + 1`."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS competitions (
+                SLUG      TEXT PRIMARY KEY,
+                TITLE     TEXT NOT NULL,
+                STARTS_AT BIGINT NOT NULL,
+                ENDS_AT   BIGINT NOT NULL,
+                PRIZES    TEXT NOT NULL,
+                CHECK (ENDS_AT > STARTS_AT)
+            )
+            """
+        )
+
+    @staticmethod
+    def create_competition_entries_table(conn: psycopg.Connection) -> None:
+        """One agent per owner per competition. START_RAW and END_RAW are the
+        account's value at its run start and at the end, NULL until captured."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS competition_entries (
+                SLUG            TEXT NOT NULL,
+                OWNER           TEXT NOT NULL,
+                USER_ID         TEXT NOT NULL,
+                ENROLLED_AT     BIGINT NOT NULL,
+                START_RAW       BIGINT,
+                END_RAW         BIGINT,
+                DISQUALIFIED_AT BIGINT,
+                PRIMARY KEY (SLUG, OWNER)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_competition_entries_user_id "
+            "ON competition_entries(USER_ID)"
+        )
+
+    @staticmethod
     def create_all_tables(conn: psycopg.Connection) -> None:
         # errors propagate; no exception handling here
         TableCreate.create_orders_table(conn)
@@ -685,3 +723,5 @@ class TableCreate:
         TableCreate.create_auth_code_attempts_table(conn)
         TableCreate.create_sponsored_gas_table(conn)
         TableCreate.create_pending_user_txs_table(conn)
+        TableCreate.create_competitions_table(conn)
+        TableCreate.create_competition_entries_table(conn)

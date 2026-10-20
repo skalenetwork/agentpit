@@ -231,6 +231,62 @@ export const ownerPage = ({ money, agents, ...rest }: WireOwnerPage): OwnerPage 
   agents: agents.map(entry),
 });
 
+export interface Prize {
+  readonly usd: number;
+  readonly skl: number;
+}
+
+export interface Competition {
+  readonly slug: string;
+  readonly title: string;
+  readonly startsAt: number;
+  readonly locksAt: number;
+  readonly endsAt: number;
+  readonly phase: "upcoming" | "locked" | "live" | "ended";
+  readonly prizes: readonly Prize[];
+  readonly entrants: number;
+}
+
+export interface WireStanding {
+  readonly rank: number | null;
+  readonly name: string;
+  readonly address: string;
+  readonly runner: Runner;
+  readonly listed: boolean;
+  readonly runStartsAt: number;
+  readonly earned: string;
+  readonly returnPct: number;
+  readonly trades: number;
+  readonly disqualified: boolean;
+}
+
+export interface Standing extends Omit<WireStanding, "earned"> {
+  readonly pnl: number;
+}
+
+export interface CompetitionPage extends Competition {
+  readonly final: boolean;
+  readonly standings: readonly Standing[];
+}
+
+export interface WireCompetitionPage extends Omit<CompetitionPage, "standings"> {
+  readonly standings: readonly WireStanding[];
+}
+
+export const competitionPage = ({ standings, ...rest }: WireCompetitionPage): CompetitionPage => ({
+  ...rest,
+  standings: standings.map(({ earned, ...standing }) => ({ ...standing, pnl: usd(earned) })),
+});
+
+export const stageText = ({ phase, locksAt, startsAt, endsAt }: Competition, now: number) =>
+  phase === "upcoming"
+    ? `Closes in ${until(Math.max(0, locksAt - now))}`
+    : phase === "locked"
+      ? `Starts in ${until(Math.max(0, startsAt - now))}`
+      : phase === "live"
+        ? `Ends in ${until(Math.max(0, endsAt - now))}`
+        : "Ended";
+
 export const EXPLORER = "https://skale-base-explorer.skalenodes.com";
 export const explorerTx = (hash: string) => `${EXPLORER}/tx/${hash}`;
 export const explorerAddress = (address: string) => `${EXPLORER}/address/${address}?tab=token_transfers`;

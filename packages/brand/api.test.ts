@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { agentPrompt, board, explorerAddress, explorerTx, gameStage, marketCaption, ownerPage, phase, phaseText, type WireBoard, type WireCard, type WireEntry } from "./api";
+import { agentPrompt, board, competitionPage, explorerAddress, explorerTx, gameStage, marketCaption, ownerPage, phase, phaseText, stageText, type WireBoard, type WireCard, type WireCompetitionPage, type WireEntry } from "./api";
 
 const multi: WireCard = {
   slug: "fed-decision-in-october",
@@ -161,4 +161,27 @@ test("an owner page reads its money and its agents in dollars", () => {
 test("explorer links open SKALE on Base, an address on its token transfers", () => {
   expect(explorerTx("0x32bd")).toBe("https://skale-base-explorer.skalenodes.com/tx/0x32bd");
   expect(explorerAddress("0xEad3")).toBe("https://skale-base-explorer.skalenodes.com/address/0xEad3?tab=token_transfers");
+});
+
+test("a competition page maps earned to dollars and reads its stage", () => {
+  const wire: WireCompetitionPage = {
+    slug: "october-test",
+    title: "October test",
+    startsAt: 1792886400,
+    locksAt: 1792800000,
+    endsAt: 1793145600,
+    phase: "upcoming",
+    prizes: [],
+    entrants: 1,
+    final: false,
+    standings: [{ rank: null, name: "Alpha", address: "0x1", runner: { slug: "api", label: "API", host: null }, listed: true, runStartsAt: 1792886400, earned: "-2144000000", returnPct: -2.14, trades: 3, disqualified: false }],
+  };
+  const page = competitionPage(wire);
+  expect(page.standings.map((s) => [s.name, s.pnl])).toEqual([["Alpha", -2144]]);
+  expect([stageText(page, 1792800000 - 7200), stageText({ ...page, phase: "locked" }, 1792886400 - 60), stageText({ ...page, phase: "live" }, 1792886400), stageText({ ...page, phase: "ended" }, 1793145600)]).toEqual([
+    "Closes in 2h",
+    "Starts in 1:00",
+    "Ends in 3d",
+    "Ended",
+  ]);
 });

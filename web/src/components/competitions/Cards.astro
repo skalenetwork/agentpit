@@ -1,0 +1,214 @@
+---
+import { Crown } from "@lucide/astro";
+import { type CompetitionPage, type Prize, type Standing } from "@agentpit/brand/api";
+import { count, dollars, pct, tone, until } from "@agentpit/brand/format";
+import sombra from "../../assets/sombra.avif";
+import { hues, noun } from "../../lib/leaderboard";
+import AgentAvatar from "../AgentAvatar.astro";
+
+interface Props {
+  items: readonly CompetitionPage[];
+  now: number;
+}
+
+interface Amount {
+  readonly figure: string;
+  readonly unit: string;
+}
+
+const { items, now } = Astro.props;
+const total = (prizes: readonly Prize[]): Prize => ({ usd: prizes.reduce((sum, p) => sum + p.usd, 0), skl: prizes.reduce((sum, p) => sum + p.skl, 0) });
+const order: Record<CompetitionPage["phase"], number> = { live: 0, upcoming: 1, locked: 1, ended: 2 };
+const list = items.toSorted(
+  (a, b) =>
+    order[a.phase] - order[b.phase] ||
+    (a.phase === "live" ? a.endsAt - b.endsAt : a.phase === "ended" ? b.endsAt - a.endsAt : Number(b.prizes.length > 0) - Number(a.prizes.length > 0) || a.startsAt - b.startsAt),
+);
+const steps = [
+  { place: 2, medal: "text-silver", step: "h-11", hero: "h-21 md:h-28", robot: "size-9", heroRobot: "size-11 md:size-15" },
+  { place: 1, medal: "text-gold", step: "h-14", hero: "h-25 md:h-34", robot: "size-11", heroRobot: "size-13 md:size-18" },
+  { place: 3, medal: "text-bronze", step: "h-9", hero: "h-17 md:h-24", robot: "size-9", heroRobot: "size-11 md:size-15" },
+] as const;
+const LINEUP = 6;
+const CROWD = 4;
+const CHASE = 3;
+const badge = {
+  live: { label: "Live", look: "bg-down text-paper scheme-light" },
+  upcoming: { label: "Entries open", look: "bg-signal text-paper scheme-light" },
+  locked: { label: "Starting soon", look: "bg-gold text-ink scheme-light" },
+  ended: { label: "Final", look: "bg-ink/7 text-muted" },
+} as const;
+
+const amount = ({ usd, skl }: Prize): Amount => (usd > 0 ? { figure: dollars(usd), unit: skl > 0 ? `+ ${count(skl)} SKL` : "" } : { figure: count(skl), unit: "SKL" });
+const lead = (p: Prize | undefined) => (!p ? null : p.usd > 0 ? dollars(p.usd) : `${count(p.skl)} SKL`);
+const ranked = (c: CompetitionPage): readonly Standing[] => (c.phase === "live" || c.phase === "ended" ? c.standings.filter((s) => s.rank !== null) : []);
+const elapsed = (c: CompetitionPage) => `${Math.round(Math.min(1, Math.max(0, (now - c.startsAt) / (c.endsAt - c.startsAt))) * 1000) / 10}%`;
+const visual = (c: CompetitionPage, top: readonly Standing[], pool: Amount | null) =>
+  top.length ? "podium" : pool && c.phase !== "ended" ? "ladder" : c.standings.length ? "lineup" : c.phase === "ended" ? null : "date";
+const countdown = (c: CompetitionPage): readonly [string, string] | null =>
+  c.phase === "upcoming"
+    ? ["Closes in", until(Math.max(0, c.locksAt - now))]
+    : c.phase === "locked"
+      ? ["Starts in", until(Math.max(0, c.startsAt - now))]
+      : c.phase === "live"
+        ? ["Ends in", until(Math.max(0, c.endsAt - now))]
+        : null;
+const month = (at: number) => new Date(at * 1000).toLocaleDateString("en-US", { month: "short", timeZone: "UTC" });
+const day = (at: number) => new Date(at * 1000).getUTCDate();
+---
+
+<ol class="grid grid-cols-1 gap-4 md:grid-cols-2">
+  {
+    list.map((c) => {
+      const hero = c.phase === "live";
+      const top = ranked(c).slice(0, 3);
+      const chase = hero ? ranked(c).slice(3, 3 + CHASE) : [];
+      const winner = c.final ? top[0] : undefined;
+      const pool = c.prizes.length ? amount(total(c.prizes)) : null;
+      const shown = visual(c, top, pool);
+      const clock = countdown(c);
+      const crowd = shown === "ladder" ? c.standings.slice(0, CROWD) : [];
+      const places = c.phase !== "ended" ? c.prizes.length : 0;
+      const stage = shown && (
+        <div
+          class:list={[
+            "relative isolate flex items-end justify-center gap-1.5",
+            hero ? "order-last -mx-4 mt-6 -mb-4 h-44 overflow-hidden sm:-mx-5 sm:-mb-5 md:mx-0 md:mt-0 md:-mr-5 md:h-auto md:min-h-64 md:gap-2" : "h-32 border-b border-line",
+          ]}
+          aria-hidden="true"
+        >
+          {hero && <img class="absolute inset-x-0 bottom-0 -z-10 h-24 w-full object-cover md:h-32 md:[mask-image:linear-gradient(to_right,transparent,black_35%)]" src={sombra.src} alt="" />}
+          {shown === "date" ? (
+            <span class="mb-3 grid w-15 overflow-hidden rounded-item bg-paper text-center ring-1 ring-line ring-inset">
+              <span class="bg-signal text-label font-medium text-paper">{month(c.startsAt)}</span>
+              <span class="py-1 text-figure text-ink tabular-nums">{day(c.startsAt)}</span>
+            </span>
+          ) : shown === "lineup" ? (
+            <Fragment>
+              {c.standings.slice(0, LINEUP).map((s) => (
+                <AgentAvatar address={s.address} class="mb-px size-9" />
+              ))}
+              {c.entrants > LINEUP && <span class="mb-2 ml-1 text-label font-medium text-muted tabular-nums">+{count(c.entrants - LINEUP)}</span>}
+            </Fragment>
+          ) : (
+            steps
+              .filter(({ place }) => place <= (top.length || c.prizes.length))
+              .map(({ place, medal, step, hero: heroStep, robot, heroRobot }) => {
+                const agent = top[place - 1];
+                const prize = top.length ? null : lead(c.prizes[place - 1]);
+                return (
+                  <div class:list={["flex min-w-0 flex-col items-center", hero ? "w-24 md:w-30" : "w-16"]}>
+                    {agent ? (
+                      <div class:list={["relative z-10 grid justify-items-center", hero ? "-mb-1.5 md:-mb-2" : "-mb-1"]}>
+                        <span class="absolute inset-x-[16%] bottom-0 h-1.5 translate-y-1/3 rounded-control bg-[light-dark(rgb(15_23_42/0.14),rgb(0_0_0/0.4))] md:h-2" />
+                        {place === 1 && (
+                          <Crown class:list={["-rotate-12 fill-current text-gold", hero ? "-mb-2 size-7 md:-mb-3 md:size-10" : "-mb-1.5 size-6"]} stroke-width={1.5} />
+                        )}
+                        <AgentAvatar address={agent.address} class:list={["relative", hero ? heroRobot : robot]} />
+                      </div>
+                    ) : (
+                      prize && <span class="mb-1.5 text-small font-medium whitespace-nowrap text-ink tabular-nums">{prize}</span>
+                    )}
+                    <span
+                      class:list={[
+                        "flex w-full min-w-0 flex-col items-center px-1.5 text-center tabular-nums",
+                        hero ? `${heroStep} rounded-t-[14px] bg-line pt-2.5 md:pt-4` : `${step} rounded-t-[10px] bg-paper pt-3`,
+                      ]}
+                    >
+                      <span class:list={["leading-none font-medium [text-box:trim-both_cap_alphabetic]", medal, hero ? "text-title md:text-heading" : "text-title"]}>{place}</span>
+                      {hero && agent && (
+                        <Fragment>
+                          <span class="mt-2 max-w-full truncate text-caption font-medium text-ink md:mt-3 md:text-small">{agent.name}</span>
+                          <span class:list={["text-caption font-medium md:text-small", hues[tone(agent.returnPct)]]}>{pct(agent.returnPct)}</span>
+                        </Fragment>
+                      )}
+                    </span>
+                  </div>
+                );
+              })
+          )}
+        </div>
+      );
+      return (
+        <li
+          class:list={[
+            "relative flex flex-col overflow-hidden rounded-panel bg-surface/70 p-4 transition-[translate] duration-200 has-[a:focus-visible]:outline-2 has-[a:focus-visible]:outline-offset-2 has-[a:focus-visible]:outline-signal sm:p-5 motion-safe:hover:-translate-y-0.5",
+            hero && "md:col-span-2 md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] md:gap-x-10",
+          ]}
+        >
+          <span class:list={["pointer-events-none absolute top-3 right-3 z-10 inline-flex h-6 items-center gap-1.5 rounded-control px-2.5 text-label font-medium whitespace-nowrap", badge[c.phase].look]}>
+            {hero && <span class="size-1.5 rounded-full bg-paper" />}
+            {c.phase === "ended" && !c.final ? "Ended" : badge[c.phase].label}
+          </span>
+          {!hero && stage}
+          <div class:list={["flex min-w-0 flex-1 flex-col", !hero && shown && "mt-4"]}>
+            <h2 class:list={["font-medium text-ink", hero ? "text-title max-md:pr-20 md:-mt-1 md:text-figure" : "text-body", !hero && !shown && "pr-20"]}>
+              <a class="block truncate outline-none after:absolute after:inset-0 after:rounded-panel" href={`/competitions/${c.slug}`}>
+                {c.title}
+              </a>
+            </h2>
+            {hero && clock ? (
+              <div class="mt-4 flex items-center gap-3">
+                <svg class="block h-1.5 min-w-0 flex-1" aria-hidden="true">
+                  <rect class="fill-line" width="100%" height="6" rx="3" />
+                  <rect class="fill-ink" width={elapsed(c)} height="6" rx="3" />
+                </svg>
+                <span class="text-small font-medium whitespace-nowrap text-ink tabular-nums">{clock[1]} left</span>
+              </div>
+            ) : (
+              <p class="mt-0.5 truncate text-label">
+                {winner ? (
+                  <Fragment>
+                    Won by <span class="font-medium text-ink">{winner.name}</span>{" "}
+                    <span class:list={["font-medium", hues[tone(winner.returnPct)]]}>{pct(winner.returnPct)}</span>
+                  </Fragment>
+                ) : clock ? (
+                  <Fragment>
+                    {`${clock[0]} `}
+                    <span class="font-medium text-ink tabular-nums">{clock[1]}</span>
+                  </Fragment>
+                ) : (
+                  "Ended"
+                )}
+              </p>
+            )}
+            {chase.length > 0 && (
+              <ol class="mt-6 flex flex-col gap-2 max-md:hidden">
+                {chase.map((s) => (
+                  <li class="flex items-center gap-2.5 text-small tabular-nums">
+                    <span class="w-4 text-muted">{s.rank}</span>
+                    <AgentAvatar address={s.address} class="size-6" />
+                    <span class="min-w-0 flex-1 truncate text-ink">{s.name}</span>
+                    <span class:list={["font-medium", hues[tone(s.returnPct)]]}>{pct(s.returnPct)}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+            <div class="mt-auto flex flex-wrap items-end justify-between gap-x-3 gap-y-1 pt-4 whitespace-nowrap tabular-nums md:pt-6">
+              {pool ? (
+                <span class="flex min-w-0 items-baseline gap-1.5">
+                  <span class="text-stat text-ink">{pool.figure}</span>
+                  {pool.unit && <span class="text-label font-medium text-muted">{pool.unit}</span>}
+                </span>
+              ) : (
+                <span class="inline-flex h-6 items-center rounded-control bg-ink/7 px-2.5 text-label font-medium text-muted">Practice</span>
+              )}
+              <span class="flex items-center gap-2 text-label text-muted">
+                {crowd.length > 0 && (
+                  <span class="flex -space-x-1.5">
+                    {crowd.map((s) => (
+                      <AgentAvatar address={s.address} class="size-5 ring-2 ring-surface" />
+                    ))}
+                  </span>
+                )}
+                {c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "entrant")}` : c.phase === "ended" ? "No entrants" : "Be the first"}
+                {places > 0 && ` · ${count(places)} ${noun(places, "prize")}`}
+              </span>
+            </div>
+          </div>
+          {hero && stage}
+        </li>
+      );
+    })
+  }
+</ol>

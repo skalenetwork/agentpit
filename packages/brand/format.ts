@@ -1,3 +1,5 @@
+import type { Prize } from "./api";
+
 export type Tone = "up" | "down" | "flat";
 
 export const ACTIVE_SECONDS = 1800;
@@ -25,6 +27,13 @@ export const stamp = (from: Date, to = from) => {
   const end = dated(to) === dated(from) ? clock(to, true) : `${dated(to)}, ${clock(to, true)}`;
   return `${dated(from)}, ${clock(from, true)}${+to === +from ? "" : ` to ${end}`} UTC`;
 };
+const moment = (at: number) => {
+  const date = new Date(at * 1000);
+  return `${shortDay(date)}, ${clock(date)}`;
+};
+export const span = (from: number, to: number) => `${moment(from)} to ${moment(to)} UTC`;
+export const prize = ({ usd, skl }: Prize) => [usd > 0 ? dollars(usd) : "", skl > 0 ? `${count(skl)} SKL` : ""].filter(Boolean).join(" + ");
+export const pool = (prizes: readonly Prize[]) => prize({ usd: prizes.reduce((sum, p) => sum + p.usd, 0), skl: prizes.reduce((sum, p) => sum + p.skl, 0) }) || "Practice";
 export const shortAddress = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
 
 export const tone = (value: number): Tone => {
