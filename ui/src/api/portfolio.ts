@@ -24,8 +24,9 @@ export interface Position {
   redeemable: boolean;
   /** What the live bids actually return for the whole position, and how many
    *  shares they can absorb — short of `size` on a thin book, 0 with no bids.
-   *  `currentValue` is `curPrice x size` off the book midpoint, which is above
-   *  what a sell executes at, so these are the numbers to show beside a Sell. */
+   *  `currentValue` is `curPrice x size` off the mark (the book midpoint when
+   *  the book is two-sided), which is above what a sell executes at, so these
+   *  are the numbers to show beside a Sell. */
   sellableValue: number;
   sellableSize: number;
   /** The market resolved. A loser is never redeemed and so never leaves
