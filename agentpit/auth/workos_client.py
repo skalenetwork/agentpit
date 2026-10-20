@@ -86,6 +86,9 @@ class WorkOsClient(Protocol):
         """The OAuth client's name, and the host of its default redirect URI."""
         ...
 
+    def delete_user(self, workos_user_id: str) -> None:
+        ...
+
 
 class WorkOsError(RuntimeError):
     """Anything the WorkOS API refused or failed to answer.
@@ -232,7 +235,7 @@ class RealWorkOsClient:
                 f"WorkOS {method} {path} returned {response.status_code}: "
                 f"{_redact(response.text, secrets)[:500]}"
             )
-        return response.json()
+        return response.json() if response.content else {}
 
     @staticmethod
     def _to_user(payload: dict) -> WorkOsUser:
@@ -321,6 +324,9 @@ class RealWorkOsClient:
         app = self._request("GET", f"/connect/applications/{quote(client_id, safe='')}")
         uris = sorted(app.get("redirect_uris", []), key=lambda r: not r.get("default"))
         return ConnectApp(name=app["name"], host=urlsplit(uris[0]["uri"]).hostname if uris else None)
+
+    def delete_user(self, workos_user_id: str) -> None:
+        self._request("DELETE", f"/user_management/users/{quote(workos_user_id, safe='')}")
 
 
 class FakeWorkOsClient:
@@ -427,6 +433,9 @@ class FakeWorkOsClient:
 
     def application(self, client_id: str) -> ConnectApp:
         return self.applications[client_id]
+
+    def delete_user(self, workos_user_id: str) -> None:
+        self._by_email = {k: u for k, u in self._by_email.items() if u.workos_user_id != workos_user_id}
 
 
 def build_workos_client(

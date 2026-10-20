@@ -275,6 +275,28 @@ def test_a_deleted_agent_leaves_the_list_and_its_key_stops_working(sign_in):
     assert me.status_code == 401
 
 
+def test_a_deleted_account_loses_its_email_owner_agents_and_sign_in(sign_in, workos):
+    accounts = _accounts()
+    with TestClient(app) as client:
+        headers, owner = _owner(client, sign_in, "owner@example.com")
+        agent = accounts.agent_for(owner, "Claude", None, None)
+        assert agent is not None
+
+        deleted = client.delete("/me", headers=headers)
+        me = client.get("/me", headers=headers)
+        key = client.get("/me", headers={"X-API-Key": agent.api_key})
+
+    conn = fresh_test_conn()
+    assert deleted.status_code == 204
+    assert me.status_code == 401
+    assert key.status_code == 401
+    assert accounts.agent_for(owner, "Claude", None, None) is None
+    assert workos.find_user_by_email("owner@example.com") is None
+    assert TableRead.get_owner(conn, owner) is None
+    assert conn.execute("SELECT 1 FROM users WHERE EMAIL = 'owner@example.com'").fetchone() is None
+    assert conn.execute("SELECT 1 FROM auth_code_attempts WHERE BUCKET LIKE 'email:%'").fetchone() is None
+
+
 def test_me_names_the_owner_its_agents_show_and_the_switch_hides_it(sign_in):
     accounts = _accounts()
     with TestClient(app) as client:

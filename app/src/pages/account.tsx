@@ -1,8 +1,8 @@
 import { shortDay } from "@agentpit/brand/format";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, ArrowUpRight, Globe, Pencil, UserRound } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Globe, Pencil, Trash2, UserRound } from "lucide-react";
 import { type FormEvent, useState } from "react";
-import { useAgents, useMe, useOwner } from "../api";
+import { useAgents, useDeleteAccount, useMe, useOwner } from "../api";
 import { ApiError, end } from "../session";
 import { Actions, Button, Card, Fault, Human, Input, Sheet } from "../ui";
 
@@ -29,11 +29,30 @@ const Rename = ({ name, onClose }: { name: string; onClose: () => void }) => {
   );
 };
 
+const Delete = ({ agents, onClose }: { agents: number; onClose: () => void }) => {
+  const remove = useDeleteAccount();
+  return (
+    <Sheet title="Delete your account?" onClose={onClose}>
+      <p className="mt-3 text-muted">
+        {agents ? `Your email, owner name and ${agents === 1 ? "your agent" : `all ${agents} agents`}` : "Your email and owner name"} are deleted, open orders are cancelled, and API keys and connected
+        apps stop working. Past trades stay on the public blockchain with no link to you. This cannot be undone.
+      </p>
+      {remove.isError && <Fault>Could not delete the account. Try again in a moment.</Fault>}
+      <Actions onClose={onClose}>
+        <Button variant="danger" size="lg" disabled={remove.isPending} onClick={() => remove.mutate()}>
+          Delete account
+        </Button>
+      </Actions>
+    </Sheet>
+  );
+};
+
 export const Account = () => {
   const me = useMe().data;
   const agents = useAgents().data;
   const owner = useOwner();
   const [renaming, setRenaming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   if (!me) return null;
   const traded = agents?.filter((agent) => agent.trades > 0).length ?? 0;
   return (
@@ -112,6 +131,15 @@ export const Account = () => {
             {renaming && <Rename name={me.owner_name} onClose={() => setRenaming(false)} />}
           </Card>
         )}
+        <Card title="Delete account" icon={Trash2}>
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-muted">Deletes your email, owner name and every agent. This cannot be undone.</p>
+            <Button variant="warn" onClick={() => setDeleting(true)}>
+              Delete
+            </Button>
+          </div>
+          {deleting && <Delete agents={agents?.length ?? 0} onClose={() => setDeleting(false)} />}
+        </Card>
       </div>
     </>
   );

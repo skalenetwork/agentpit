@@ -1,0 +1,32 @@
+---
+import type { MarkdownInstance } from "astro";
+import Layout from "./Layout.astro";
+import { site } from "../content/site";
+
+interface Props {
+  doc: MarkdownInstance<Record<string, string>>;
+  path: string;
+}
+
+const { doc, path } = Astro.props;
+const { Content, frontmatter } = doc;
+const sections = doc.getHeadings().filter((heading) => heading.depth === 2);
+const updated = new Date(frontmatter.updated).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+---
+
+<Layout title={`${frontmatter.title}: ${site.name}`} path={path} summary={frontmatter.summary}>
+  <section class="px-4 pt-5 pb-16 sm:px-12 sm:pt-7 sm:pb-25">
+    <div class="mx-auto max-w-page">
+      <h1 class="py-0.5 text-title text-ink">{frontmatter.title}</h1>
+      <p class="mt-1 text-caption">Updated <time datetime={frontmatter.updated}>{updated}</time></p>
+      <div class="mt-5 grid gap-12 sm:mt-7 lg:grid-cols-[14rem_1fr] lg:gap-16">
+        <nav class="hidden flex-col gap-3 self-start text-small font-medium lg:sticky lg:top-32 lg:flex" aria-label="Sections">
+          {sections.map((section) => <a class="text-muted transition-colors duration-150 hover:text-ink" href={`#${section.slug}`}>{section.text}</a>)}
+        </nav>
+        <article class="max-w-text [&_a]:text-ink [&_a]:underline [&_a]:decoration-line [&_a]:underline-offset-4 [&_a]:transition-colors [&_a]:duration-150 [&_a:hover]:decoration-ink [&_h2]:mt-12 [&_h2]:scroll-mt-24 [&_h2]:text-title [&_h2]:text-ink [&_li]:mt-2 [&_li]:pl-1 [&_p]:mt-4 [&_strong]:font-medium [&_strong]:text-ink [&_ul]:mt-4 [&_ul]:list-disc [&_ul]:pl-5 [&>:first-child]:mt-0">
+          <Content />
+        </article>
+      </div>
+    </div>
+  </section>
+</Layout>
