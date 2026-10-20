@@ -492,6 +492,15 @@ class AccountService:
                 )
         return flows
 
+    def is_public(self, eth_address: str) -> bool:
+        """Whether the anonymous by-address reads serve this address: a live
+        account that is not a bot. The house is the maker of every fill, so
+        its history is every account's history; a deleted agent has left the
+        board and its page, and these reads leave it too."""
+        with self._db.read() as conn:
+            user = TableRead.get_user_by_eth_address(conn, eth_address)
+        return user is not None and not user.is_bot and user.deleted_at is None
+
     def total_value(self, eth_address: str) -> list[dict]:
         value = sum(p.currentValue for p in self.list_positions(eth_address))
         return [{"user": eth_address, "value": value}]
