@@ -20,11 +20,12 @@ import { closing, features, hero, questions, steps } from "../content/home";
 import { activeMarkets as snapshot, book } from "../content/measurements";
 import { site } from "../content/site";
 import { sentence } from "../content/start";
-import { activeMarkets, competitions, marketBoard, stats } from "../lib/api";
+import { competitions, marketBoard, stats } from "../lib/api";
 
 export const prerender = false;
 
-const [active, board, days, list] = await Promise.all([activeMarkets(), marketBoard({ tab: "trending", q: null, page: 1 }), stats(), competitions()]);
+const [board, days, list] = await Promise.all([marketBoard({ tab: "trending", q: null, page: 1 }), stats(), competitions()]);
+const active = board?.liveMarkets || undefined;
 if (!board?.cards.length || !days || !list || active === undefined) Astro.cache.set(false);
 const featured = list
   ?.filter((c) => c.phase !== "ended")

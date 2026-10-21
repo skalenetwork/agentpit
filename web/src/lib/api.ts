@@ -20,7 +20,7 @@ interface WireDay extends Omit<StatsDay, "volume"> {
 
 const request = async <T>(path: string): Promise<T | null | undefined> => {
   try {
-    const response = await fetch(`${site.api}${path}`, { signal: AbortSignal.timeout(2000) });
+    const response = await fetch(`${site.api}${path}`, { signal: AbortSignal.timeout(5000) });
     return response.ok ? ((await response.json()) as T) : response.status === 404 ? null : undefined;
   } catch {
     return undefined;
@@ -28,11 +28,6 @@ const request = async <T>(path: string): Promise<T | null | undefined> => {
 };
 
 const get = async <T>(path: string): Promise<T | undefined> => (await request<T>(path)) ?? undefined;
-
-export const activeMarkets = async (): Promise<number | undefined> => {
-  const active = (await get<{ active?: unknown }>("/markets/stats"))?.active;
-  return typeof active === "number" && active > 0 ? active : undefined;
-};
 
 export const leaderboard = async (): Promise<readonly Agent[] | undefined> => (await get<{ entries: readonly WireEntry[] }>("/leaderboard"))?.entries.map(entry);
 
