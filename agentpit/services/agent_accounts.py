@@ -34,7 +34,7 @@ class AgentAccounts:
         with self._db.read() as conn:
             agent = TableRead.get_agent(conn, owner_workos_id, app, client)
             person = None if agent else TableRead.get_user_by_workos_id(conn, owner_workos_id)
-        if person is not None and person.deleted_at is not None:
+        if person is not None and (person.deleted_at is not None or person.is_bot):
             return None
         if agent is None and client is not None:
             agent = self._adopt(owner_workos_id, app, client)
