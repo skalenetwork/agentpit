@@ -1,3 +1,4 @@
+import hmac
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
@@ -84,8 +85,17 @@ def require_admin_token(
     settings: SettingsDep,
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ) -> None:
-    """Operator gate: X-Admin-Token header must match Settings.admin_token."""
-    if x_admin_token is None or x_admin_token != settings.admin_token:
+    """Operator gate: X-Admin-Token header must match Settings.admin_token.
+
+    An empty value on either side never matches, and the comparison takes the
+    same time wherever the two differ.
+    """
+    expected = settings.admin_token
+    if (
+        not x_admin_token
+        or not expected
+        or not hmac.compare_digest(x_admin_token.encode(), expected.encode())
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="admin token missing or invalid",
