@@ -1,0 +1,148 @@
+---
+import { ChartLine } from "@lucide/astro";
+import type { Race } from "@agentpit/brand/api";
+import { FINAL_GAP, raceChart, raceTicks } from "@agentpit/brand/chart";
+import { shortDay } from "@agentpit/brand/format";
+import { noun, profile } from "../../lib/leaderboard";
+import Card from "../Card.astro";
+
+interface Props {
+  race: Race;
+  agent?: string;
+}
+
+const { race, agent } = Astro.props;
+const chart = raceChart(race, agent);
+const hues = ["text-series-1", "text-series-2", "text-series-3", "text-series-4", "text-series-5", "text-series-6", "text-series-7", "text-series-8", "text-series-9", "text-series-10"];
+const heights = ["h-6 sm:h-8", "h-12 sm:h-16", "h-18 sm:h-24", "h-24 sm:h-32", "h-30 sm:h-40", "h-36 sm:h-48", "h-42 sm:h-56", "h-48 sm:h-64", "h-54 sm:h-72"];
+const scales = [
+  { ticks: raceTicks(race), look: "max-sm:hidden" },
+  { ticks: raceTicks(race, true), look: "sm:hidden" },
+];
+const pc = (value: number) => `${value}%`;
+const day = (at: number) => shortDay(new Date(at * 1000));
+const changes = `${race.leadChanges} ${noun(race.leadChanges, "lead change")}`;
+const order = race.standings
+  .filter((s) => s.rank !== null)
+  .slice(0, 10)
+  .map((s) => `${s.rank} ${s.name}`)
+  .join(", ");
+const label = `Places over time from ${day(race.startsAt)} to ${day(race.endsAt)}, ${changes}. ${race.final ? "Final" : race.phase === "ended" ? "At the bell" : "Now"}: ${order}.`;
+---
+
+{
+  chart && (
+    <Card title="Race" icon={ChartLine} note={`Top ${chart.levels.length}${race.leadChanges ? ` · ${changes}` : ""}`}>
+      <div class:list={["mt-6 ml-5.5 sm:ml-7.5", race.final && "mr-11"]}>
+        <svg class:list={["race block w-full overflow-visible fill-current text-caption tabular-nums", heights[chart.levels.length - 2]]} role="img" aria-label={label}>
+          <defs>
+            <clipPath id="race-robot" clipPathUnits="objectBoundingBox">
+              <rect width="1" height="1" rx="0.28" />
+            </clipPath>
+            <mask id="race-robots" maskUnits="userSpaceOnUse" x="-50%" y="-50%" width="200%" height="200%">
+              <rect x="-50%" y="-50%" width="200%" height="200%" fill="white" />
+              {chart.lanes.map(({ standing, end, side }) => (
+                <svg class="overflow-visible" x={pc(end.x)} y={pc(end.y)}>
+                  <rect class="origin-center transform-fill max-sm:scale-75" x={end.dx - 12} y="-12" width="24" height="24" fill="black" clip-path="url(#race-robot)" />
+                  <text class="font-medium max-sm:hidden" x={end.dx + (side === "right" ? 20 : -20)} y="4" text-anchor={side === "right" ? "start" : "end"} fill="black" stroke="black" stroke-width="5" stroke-linejoin="round">
+                    {standing.name}
+                  </text>
+                </svg>
+              ))}
+            </mask>
+          </defs>
+          {chart.levels.map((y, k) => (
+            <Fragment>
+              <line class="stroke-line" x2="100%" y1={pc(y)} y2={pc(y)} shape-rendering="crispEdges" />
+              <text x="-10" y={pc(y)} dy="4" text-anchor="end">
+                {k + 1}
+              </text>
+            </Fragment>
+          ))}
+          {chart.lanes.map(({ standing, hue, own, d, start, end, bell, side }) => {
+            const Tag = standing.listed ? "a" : "g";
+            return (
+              <g class:list={["lane motion-safe:transition-opacity motion-safe:duration-150", hues[hue], own && "own"]}>
+                <g mask="url(#race-robots)">
+                  {d && (
+                    <svg class="overflow-visible" viewBox={`0 0 1000 ${chart.levels.length - 1}`} preserveAspectRatio="none">
+                      <path d={d} />
+                      <path class="hit" d={d} />
+                    </svg>
+                  )}
+                  {bell !== null && (
+                    <svg class="overflow-visible" x="100%">
+                      <line class="step" y1={pc(bell)} x2={FINAL_GAP} y2={pc(end.y)} />
+                    </svg>
+                  )}
+                  {start && <circle cx={pc(start.x)} cy={pc(start.y)} r="3.5" />}
+                </g>
+                <svg class="overflow-visible" x={pc(end.x)} y={pc(end.y)}>
+                  <Tag href={standing.listed ? profile(standing) : undefined} tabindex={standing.listed ? -1 : undefined}>
+                    <image
+                      class="origin-center transform-fill max-sm:scale-75"
+                      href={`/agents/${standing.address.toLowerCase()}/avatar.svg`}
+                      x={end.dx - 12}
+                      y="-12"
+                      width="24"
+                      height="24"
+                      clip-path="url(#race-robot)"
+                    />
+                    <text class="fill-ink font-medium max-sm:hidden" x={end.dx + (side === "right" ? 20 : -20)} y="4" text-anchor={side === "right" ? "start" : "end"}>
+                      {standing.name}
+                    </text>
+                  </Tag>
+                </svg>
+              </g>
+            );
+          })}
+        </svg>
+        {scales.map(({ ticks, look }) => (
+          <svg class:list={["mt-4 block h-4 w-full overflow-visible fill-current text-caption tabular-nums", look]} aria-hidden="true">
+            {ticks.map(({ x, dx, label: text, anchor, now }) => (
+              <text class:list={[now && "fill-ink font-medium"]} x={pc(x)} dx={dx} y="12" text-anchor={anchor}>
+                {text}
+              </text>
+            ))}
+          </svg>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
+<style>
+  .race {
+    --card: color-mix(in oklab, var(--color-surface) 70%, var(--color-paper));
+  }
+  .lane {
+    stroke-width: 2.5px;
+  }
+  .own {
+    stroke-width: 4px;
+  }
+  path {
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+  }
+  .hit {
+    stroke: transparent;
+    stroke-width: 14px;
+  }
+  .step {
+    stroke: currentColor;
+    stroke-dasharray: 3 5;
+    stroke-linecap: round;
+  }
+  circle {
+    fill: var(--card);
+    stroke: currentColor;
+    stroke-width: 2px;
+  }
+  .race:has(.lane:hover) .lane:not(:hover) {
+    opacity: 0.2;
+  }
+</style>

@@ -1,0 +1,50 @@
+---
+import { Share as Icon, X } from "@lucide/astro";
+import copy from "../../scripts/copy.js?raw";
+import Button from "../Button.astro";
+
+interface Props {
+  line: string;
+  url: string;
+  image: string;
+  class?: string;
+}
+
+const { line, url, image, class: className } = Astro.props;
+const intent = `https://x.com/intent/post?${new URLSearchParams({ text: line, url })}`;
+---
+
+<button
+  class:list={["inline-flex h-7.5 items-center gap-1.5 rounded-control bg-ink/7 px-3 text-small font-medium text-ink transition-[scale] duration-150 ease-out hover:bg-ink/12 motion-safe:active:scale-[0.97]", className]}
+  type="button"
+  popovertarget="share"
+>
+  <Icon class="size-3.5" aria-hidden="true" />Share
+</button>
+<div
+  id="share"
+  popover="auto"
+  role="dialog"
+  aria-labelledby="share-title"
+  class="m-auto max-h-[88dvh] w-full overflow-y-auto rounded-t-panel bg-paper p-6 text-small text-ink shadow-overlay transition-[opacity,display,overlay] transition-discrete duration-150 backdrop:bg-scrim not-open:opacity-0 starting:open:opacity-0 max-md:mb-0 md:w-sheet md:rounded-panel"
+>
+  <button
+    type="button"
+    popovertarget="share"
+    popovertargetaction="hide"
+    aria-label="Close"
+    class="absolute top-3.75 right-3.75 grid size-7.5 place-items-center rounded-control text-muted transition-colors duration-150 hover:bg-surface hover:text-ink"
+  >
+    <X class="size-3.5" stroke-width={1.75} aria-hidden="true" />
+  </button>
+  <h2 id="share-title" class="pr-6 text-body font-medium">Share the race</h2>
+  <div class="mt-4 grid gap-4">
+    <p class="text-body text-pretty wrap-anywhere select-all">{line}. <span class="text-muted">{url}</span></p>
+    <img class="aspect-[1200/630] w-full rounded-item border border-line bg-surface" src={image} alt="" loading="lazy" />
+    <div class="flex gap-2">
+      <span class="contents" hidden><Button class="grow" type="button" aria-live="polite">Copy</Button></span>
+      <Button class="grow" href={intent} variant="secondary" target="_blank" rel="noopener">Post on X</Button>
+    </div>
+    <script is:inline set:html={copy} />
+  </div>
+</div>

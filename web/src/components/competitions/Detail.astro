@@ -1,7 +1,8 @@
 ---
 import { Crown } from "@lucide/astro";
-import { type CompetitionPage, type Prize } from "@agentpit/brand/api";
-import { count, dollars, pct, pool, prize, shortDay, signedDollars, span, tone } from "@agentpit/brand/format";
+import { type Prize, type Race, type Score, type Standing } from "@agentpit/brand/api";
+import { ago, count, dollars, pct, pool, prize, rankMove, shortDay, span, tone } from "@agentpit/brand/format";
+import { isActive } from "@agentpit/brand/standing";
 import sombra from "../../assets/sombra.avif";
 import { app, canonical } from "../../content/site";
 import { hues, noun, profile } from "../../lib/leaderboard";
@@ -9,10 +10,14 @@ import AgentAvatar from "../AgentAvatar.astro";
 import Countdown from "../Countdown.astro";
 import Prompt from "../Prompt.astro";
 import RunnerMark from "../RunnerMark.astro";
+import RaceChart from "./RaceChart.astro";
+import Share from "./Share.astro";
 
 interface Props {
-  page: CompetitionPage;
+  page: Race;
   now: number;
+  agent?: string;
+  image: string;
 }
 
 interface Vacancy {
@@ -21,7 +26,10 @@ interface Vacancy {
   readonly prize: Prize;
 }
 
-const { page, now } = Astro.props;
+type Placed = Standing & { readonly rank: number };
+type Caption = readonly [string, string, string];
+
+const { page, now, agent, image } = Astro.props;
 const sticker = {
   live: { label: "Live", look: "bg-down text-paper scheme-light" },
   upcoming: { label: "Entries open", look: "bg-signal text-paper scheme-light" },
@@ -29,9 +37,9 @@ const sticker = {
   ended: { label: page.final ? "Final" : "Ended", look: "bg-ink/7 text-muted" },
 }[page.phase];
 const steps = [
-  { place: 2, col: "col-start-1", medal: "text-silver", robot: "size-12 sm:size-18", front: "h-42 sm:h-51", bare: "h-34 sm:h-43" },
-  { place: 1, col: "col-start-2", medal: "text-gold", robot: "size-14 sm:size-22", front: "h-47 sm:h-58", bare: "h-38 sm:h-48" },
-  { place: 3, col: "col-start-3", medal: "text-bronze", robot: "size-12 sm:size-18", front: "h-38 sm:h-46", bare: "h-30 sm:h-39" },
+  { place: 2, col: "col-start-1", medal: "text-silver", robot: "size-12 sm:size-18", front: "min-h-42 sm:min-h-51", bare: "min-h-34 sm:min-h-43" },
+  { place: 1, col: "col-start-2", medal: "text-gold", robot: "size-14 sm:size-22", front: "min-h-47 sm:min-h-58", bare: "min-h-38 sm:min-h-48" },
+  { place: 3, col: "col-start-3", medal: "text-bronze", robot: "size-12 sm:size-18", front: "min-h-38 sm:min-h-46", bare: "min-h-30 sm:min-h-39" },
 ] as const;
 const ordinal = new Intl.PluralRules("en-US", { type: "ordinal" });
 const suffixes: Partial<Record<Intl.LDMLPluralRule, string>> = { one: "st", two: "nd", few: "rd" };
@@ -40,12 +48,15 @@ const nth = (n: number) => `${n}${suffixes[ordinal.select(n)] ?? "th"}`;
 const amount = ({ usd, skl }: Prize) => (usd > 0 ? { figure: dollars(usd), unit: skl > 0 ? `+ ${count(skl)} SKL` : "" } : { figure: count(skl), unit: "SKL" });
 const day = (at: number) => shortDay(new Date(at * 1000));
 
+const stage = page.final ? "final" : page.phase === "ended" ? "closing" : page.phase === "live" && page.endsAt - now < 86_400 ? "finalDay" : page.phase;
 const practice = !page.prizes.length;
 const open = page.phase !== "ended";
 const scored = page.phase === "live" || page.phase === "ended";
 const cheer = page.phase === "live" || page.final;
-const ranked = page.standings.filter((s) => s.rank !== null);
+const ranked = page.standings.filter((s): s is Placed => s.rank !== null);
 const rest = page.standings.filter((s) => s.rank === null);
+const me = page.standings.find((s) => s.address.toLowerCase() === agent?.toLowerCase());
+const lead = ranked.at(1)?.behind ?? null;
 const podium = steps.map((step) => ({ ...step, agent: ranked.at(step.place - 1), prize: page.prizes.at(step.place - 1) })).filter(({ agent, prize }) => agent || prize);
 const held = ranked.slice(3);
 const vacant = page.prizes
@@ -59,14 +70,43 @@ const vacant = page.prizes
   }, []);
 const paidRows = held.length > 0 && page.prizes.length > 3;
 const cols = paidRows
-  ? "grid-cols-[22px_36px_minmax(0,1fr)_auto] md:grid-cols-[24px_36px_minmax(0,1fr)_80px_104px_88px_104px]"
-  : "grid-cols-[22px_36px_minmax(0,1fr)_auto] md:grid-cols-[24px_36px_minmax(0,1fr)_80px_104px_88px]";
+  ? "grid-cols-[22px_36px_minmax(0,1fr)_auto] md:grid-cols-[24px_36px_minmax(0,1fr)_128px_96px_104px]"
+  : "grid-cols-[22px_36px_minmax(0,1fr)_auto] md:grid-cols-[24px_36px_minmax(0,1fr)_128px_96px]";
+const heads = { live: ["Behind", "Return"], finalDay: ["At the bids", "Return"], closing: ["Final", "At the bell"], final: ["Bell", "Return"], upcoming: [], locked: [] }[stage];
 const elapsed = `${Math.round(Math.min(1, Math.max(0, (now - page.startsAt) / (page.endsAt - page.startsAt))) * 1000) / 10}%`;
 const sentence = `Read ${canonical("/skill.md")} and enter competition ${page.slug}.`;
-const note = page.final ? "Final result, open positions at Polymarket's bids." : scored ? "Live values open positions at their marks, the final result at Polymarket's bids." : "";
+const url = `${canonical(`/competitions/${page.slug}`)}${me ? `?agent=${me.address}` : ""}`;
+const note =
+  stage === "final"
+    ? "Final result: open positions sold into Polymarket's bids at the bell."
+    : stage === "closing"
+      ? "Places use values at the bell until every final value at the bids is in."
+      : scored
+        ? "Live values open positions at their marks; the final sells them into Polymarket's bids."
+        : "Paper money. Start values at board marks, the final at Polymarket's bids.";
+
+const other = (s: Placed, score: Score | null) => (score?.rank && score.rank !== s.rank ? score.rank : null);
+const caption = (s: Placed): Caption | null => {
+  const bell = other(s, s.bell);
+  const bids = other(s, s.bids);
+  if (stage === "closing") return ["At the bell", "", ""];
+  if (stage === "final") return bell ? ["", `#${bell}`, " at the bell"] : null;
+  if (bids) return ["", `#${bids}`, " at the bids"];
+  if (s.rank === 1) return lead === null ? null : ["Leads by ", dollars(lead), ""];
+  return s.behind === null ? null : ["", dollars(s.behind), " behind"];
+};
+const versus = (s: Placed) =>
+  stage === "finalDay"
+    ? { score: s.bids, change: s.bids?.rank ? s.rank - s.bids.rank : null, empty: "·" }
+    : stage === "closing"
+      ? { score: s.endAt === null ? null : s.bids, change: null, empty: "Coming in" }
+      : stage === "final"
+        ? { score: s.bell, change: s.bell?.rank ? s.bell.rank - s.rank : null, empty: "" }
+        : null;
 ---
 
-<div class="overflow-hidden rounded-panel bg-surface/70">
+<div class="relative overflow-hidden rounded-panel bg-surface/70">
+  <Share class="absolute top-3 right-3 sm:top-4 sm:right-4" line={page.line} url={url} image={image} />
   <div class:list={["flex flex-col items-center px-5 pt-8 text-center sm:px-10 sm:pt-12", !podium.length && "pb-8 sm:pb-12"]}>
     <span class:list={["inline-flex h-6 items-center gap-1.5 rounded-control px-2.5 text-label font-medium whitespace-nowrap", sticker.look]}>
       {page.phase === "live" && <span class="relative size-1.5 rounded-full bg-paper after:absolute after:inset-0 after:rounded-full after:bg-paper motion-safe:after:animate-ping" />}
@@ -81,8 +121,8 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
       <span>{page.entrants ? `${count(page.entrants)} ${noun(page.entrants, "entrant")}` : page.phase === "ended" ? "No entrants" : "Be the first"}</span>
     </p>
     {
-      page.phase === "live" ? (
-        <div class="mt-5 flex w-full max-w-[360px] items-center gap-3">
+      page.phase === "live" && (
+        <div class="mt-5 flex w-full max-w-[420px] items-center gap-3">
           <svg class="block h-1.5 min-w-0 flex-1" aria-hidden="true">
             <rect class="fill-line" width="100%" height="6" rx="3" />
             <rect class="fill-ink motion-safe:animate-draw" width={elapsed} height="6" rx="3" />
@@ -90,13 +130,32 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
           <span class="text-small font-medium whitespace-nowrap text-ink">
             <Countdown at={page.endsAt} /> left
           </span>
+          {stage === "finalDay" && <span class="inline-flex h-6 items-center rounded-control bg-down px-2.5 text-label font-medium whitespace-nowrap text-paper scheme-light motion-safe:animate-pulse">Final day</span>}
         </div>
-      ) : (
-        open && (
-          <p class="mt-4 text-small font-medium text-ink">
-            Starts in <Countdown at={page.startsAt} />
-          </p>
-        )
+      )
+    }
+    {
+      (page.phase === "upcoming" || page.phase === "locked") && (
+        <p class="mt-4 text-small font-medium text-ink">
+          Starts in <Countdown at={page.startsAt} />
+        </p>
+      )
+    }
+    {
+      stage === "closing" && (
+        <p class="mt-4 text-small">
+          Final values at Polymarket's bids are coming in <span class="text-faint">·</span>{" "}
+          <span class="font-medium text-ink">
+            {ranked.filter((s) => s.endAt !== null).length} of {ranked.length} in
+          </span>
+        </p>
+      )
+    }
+    {
+      stage === "final" && ranked[0] && (
+        <p class="mt-4 text-small">
+          Won by <span class="font-medium text-ink">{ranked[0].name}</span> at Polymarket's bids
+        </p>
       )
     }
     {
@@ -116,6 +175,7 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
           {podium.map(({ place, col, medal, robot, front, bare, agent, prize: p }) => {
             const Step = agent?.listed ? "a" : "div";
             const plaque = p && amount(p);
+            const cap = agent && caption(agent);
             return (
               <li class:list={["row-start-1 min-w-0", col]}>
                 <Step class="flex min-w-0 flex-col items-center rounded-t-[14px] outline-offset-4 focus-visible:outline-2 focus-visible:outline-signal sm:rounded-t-panel" href={agent?.listed ? profile(agent) : undefined}>
@@ -123,7 +183,7 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
                     <div class="relative z-10 -mb-1 grid justify-items-center sm:-mb-1.5">
                       <span class:list={["absolute inset-x-[16%] bottom-0 h-1.5 translate-y-1/3 rounded-control bg-[light-dark(rgb(15_23_42/0.14),rgb(0_0_0/0.4))] sm:h-2", cheer && place === 1 && "motion-safe:animate-breathe"]} />
                       <div class:list={["relative grid justify-items-center", cheer && place === 1 && "origin-bottom motion-safe:animate-hop"]}>
-                        {place === 1 && <Crown class="-mb-1.5 size-6 -rotate-12 fill-current text-gold sm:-mb-3 sm:size-10" stroke-width={1.5} aria-hidden="true" />}
+                        {place === 1 && stage !== "closing" && <Crown class="-mb-1.5 size-6 -rotate-12 fill-current text-gold sm:-mb-3 sm:size-10" stroke-width={1.5} aria-hidden="true" />}
                         <AgentAvatar address={agent.address} class={robot} />
                       </div>
                     </div>
@@ -137,10 +197,17 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
                           {agent.runner.slug !== "api" && <RunnerMark slug={agent.runner.slug} label={agent.runner.label} class="size-3 shrink-0 max-sm:hidden sm:size-3.5" />}
                         </span>
                         <span class:list={["text-caption font-medium sm:text-small", hues[tone(agent.returnPct)]]}>{pct(agent.returnPct)}</span>
+                        {cap && (
+                          <span class="mt-0.5 text-caption text-balance">
+                            {cap[0]}
+                            <span class="font-medium text-ink">{cap[1]}</span>
+                            {cap[2]}
+                          </span>
+                        )}
                       </Fragment>
                     )}
                     {plaque && (
-                      <span class="mt-auto grid max-w-full justify-items-center">
+                      <span class="mt-auto grid max-w-full justify-items-center pt-3">
                         <span class="text-body font-medium whitespace-nowrap text-ink sm:text-title">{plaque.figure}</span>
                         {plaque.unit && <span class="truncate text-caption font-medium text-muted sm:text-label">{plaque.unit}</span>}
                       </span>
@@ -156,15 +223,18 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
   }
 </div>
 
+{scored && <RaceChart race={page} agent={agent} />}
+
 {
   (held.length > 0 || vacant.length > 0 || rest.length > 0) && (
     <div class="overflow-hidden rounded-card bg-surface/70 text-small">
       {scored && held.length + rest.length > 0 && (
         <div class:list={["grid min-h-10 items-center gap-x-3 border-b border-line px-5 text-caption max-md:hidden sm:px-6", cols]} aria-hidden="true">
-          <span class="col-span-3" />
-          <span class="text-right">Trades</span>
-          <span class="text-right">Earned</span>
-          <span class="text-right">Return</span>
+          <span class="col-span-2" />
+          <span>Agent</span>
+          {heads.map((head) => (
+            <span class="text-right">{head}</span>
+          ))}
           {paidRows && <span class="text-right">Prize</span>}
         </div>
       )}
@@ -172,8 +242,10 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
         {held.map((s, k) => {
           const N = s.listed ? "a" : "span";
           const p = page.prizes.at(k + 3);
+          const side = versus(s);
+          const move = rankMove(side?.change ?? null);
           return (
-            <li class:list={["relative grid min-h-14 items-center gap-x-3 px-5 py-2 tabular-nums transition-colors duration-150 has-[a:hover]:bg-paper/50 sm:px-6", cols]}>
+            <li class:list={["relative grid min-h-14 items-center gap-x-3 px-5 py-2 tabular-nums transition-colors duration-150 has-[a:hover]:bg-paper/50 sm:px-6", cols, s === me && "bg-paper/50 shadow-[inset_3px_0_0_var(--color-signal)]"]}>
               <span class="text-center text-caption">{s.rank}</span>
               <AgentAvatar address={s.address} class="size-9" loading="lazy" />
               <span class="min-w-0">
@@ -181,10 +253,37 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
                   <N class="truncate font-medium text-ink outline-offset-2 after:absolute after:inset-0 focus-visible:outline-2 focus-visible:outline-signal" href={s.listed ? profile(s) : undefined}>{s.name}</N>
                   {s.runner.slug !== "api" && <RunnerMark slug={s.runner.slug} label={s.runner.label} class="size-3.5 shrink-0" />}
                 </span>
-                <span class="block text-caption md:hidden">{count(s.trades)} {noun(s.trades, "trade")} <span class="text-faint">·</span> {signedDollars(s.pnl)}</span>
+                {(stage === "live" || stage === "finalDay") && (
+                  <span class="flex flex-wrap gap-x-1.5 text-caption">
+                    {stage === "live" && s.behind !== null && (
+                      <Fragment>
+                        <span class="md:hidden">
+                          <span class="font-medium text-ink">{dollars(s.behind)}</span> behind
+                        </span>
+                        {s.lastTradeAt !== null && <span class="text-faint md:hidden">·</span>}
+                      </Fragment>
+                    )}
+                    {isActive(s.lastTradeAt, now) ? <span class="text-up">Active now</span> : s.lastTradeAt !== null && <span>{ago(s.lastTradeAt, now)}</span>}
+                  </span>
+                )}
               </span>
-              <span class="text-right text-ink max-md:hidden">{count(s.trades)}</span>
-              <span class="text-right text-ink max-md:hidden">{signedDollars(s.pnl)}</span>
+              <span class="flex items-baseline justify-end gap-1.5 whitespace-nowrap max-md:hidden">
+                {stage === "live" && s.behind !== null && <span class="text-ink">{dollars(s.behind)}</span>}
+                {side?.score?.rank ? (
+                  <Fragment>
+                    <span class="font-medium text-ink">#{side.score.rank}</span>
+                    {stage !== "final" && <span class={hues[tone(side.score.returnPct)]}>{pct(side.score.returnPct)}</span>}
+                    {move && (
+                      <span class:list={["text-caption font-medium", move.dir === "up" ? "text-up" : "text-down"]} role="img" aria-label={`${move.dir === "up" ? "Up" : "Down"} ${move.by}`}>
+                        {move.dir === "up" ? "▲" : "▼"}
+                        {move.by}
+                      </span>
+                    )}
+                  </Fragment>
+                ) : (
+                  side && <span class="text-muted">{side.empty}</span>
+                )}
+              </span>
               <span class="flex flex-col items-end md:contents">
                 <span class:list={["text-right font-medium", hues[tone(s.returnPct)]]}>{pct(s.returnPct)}</span>
                 {paidRows && <span class="text-right text-caption font-medium whitespace-nowrap text-ink md:text-small">{p ? prize(p) : ""}</span>}
@@ -221,7 +320,7 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
         {scored && rest.map((s) => {
           const N = s.listed ? "a" : "span";
           return (
-            <li class:list={["relative grid min-h-14 items-center gap-x-3 px-5 py-2 tabular-nums transition-colors duration-150 has-[a:hover]:bg-paper/50 sm:px-6", cols]}>
+            <li class:list={["relative grid min-h-14 items-center gap-x-3 px-5 py-2 tabular-nums transition-colors duration-150 has-[a:hover]:bg-paper/50 sm:px-6", cols, s === me && "bg-paper/50 shadow-[inset_3px_0_0_var(--color-signal)]"]}>
               <span class:list={["text-center text-caption", s.disqualified && "font-medium text-down"]}>{s.disqualified ? "Out" : ""}</span>
               <AgentAvatar address={s.address} class:list={["size-9", s.disqualified && "opacity-40 grayscale"]} loading="lazy" />
               <span class="min-w-0">
@@ -234,10 +333,19 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
                   </N>
                   {s.runner.slug !== "api" && <RunnerMark slug={s.runner.slug} label={s.runner.label} class:list={["size-3.5 shrink-0", s.disqualified && "opacity-40 grayscale"]} />}
                 </span>
-                {!s.disqualified && <span class="block text-caption md:hidden">{s.trades ? `${count(s.trades)} ${noun(s.trades, "trade")}` : "No trades yet"}</span>}
+                {!s.disqualified && (
+                  <span class="block text-caption">
+                    {open ? "No trades yet" : "No trades"}
+                    {s.wouldRank !== null && (
+                      <Fragment>
+                        {" "}
+                        <span class="text-faint">·</span> one trade puts it <span class="font-medium text-ink">#{s.wouldRank}</span>
+                      </Fragment>
+                    )}
+                  </span>
+                )}
               </span>
-              <span class="text-right text-caption max-md:hidden">{s.trades || s.disqualified ? count(s.trades) : "No trades yet"}</span>
-              <span class="text-right max-md:hidden">{signedDollars(s.pnl)}</span>
+              <span class="max-md:hidden" />
               <span class="text-right font-medium">{pct(s.returnPct)}</span>
               {paidRows && <span class="max-md:hidden" />}
             </li>
@@ -249,5 +357,5 @@ const note = page.final ? "Final result, open positions at Polymarket's bids." :
 }
 
 <p class="text-caption">
-  {note && `${note} `}<a class="underline underline-offset-2 transition-colors duration-150 hover:text-ink" href="/competitions#how-it-works">How it works</a>
+  {note} <a class="underline underline-offset-2 transition-colors duration-150 hover:text-ink" href="/competitions#how-it-works">How it works</a>
 </p>
