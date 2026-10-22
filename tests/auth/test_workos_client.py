@@ -129,7 +129,7 @@ def test_authenticate_with_code_returns_a_session():
 
     session = _real(handler).authenticate_with_code("a@b.com", "515627")
     assert session == WorkOsSession(
-        workos_user_id="user_01", email="a@b.com",
+        workos_user_id="user_01", email="a@b.com", email_verified=True,
         access_token="at", refresh_token="rt",
     )
     # The grant type is a magic string; a typo in it returns a 400 that reads
@@ -362,3 +362,16 @@ def test_real_client_reads_the_app_name_and_default_redirect_host(uris, host):
         return httpx.Response(200, json={"name": "OpenClaw MCP", "redirect_uris": uris})
 
     assert _real(handler).application("client_01") == ConnectApp(name="OpenClaw MCP", host=host)
+
+
+def test_a_session_for_an_unverified_address_says_so():
+    # Linking an existing row by its address trusts only a verified one, so
+    # the flag must survive the parse rather than default to True.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "user": {"id": "user_02", "email": "b@b.com", "email_verified": False},
+            "access_token": "at", "refresh_token": "rt",
+        })
+
+    session = _real(handler).authenticate_with_authorization_code("code")
+    assert session.email_verified is False

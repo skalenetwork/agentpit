@@ -35,6 +35,9 @@ class ConnectApp:
 class WorkOsSession:
     workos_user_id: str
     email: str
+    #: Whether WorkOS has proven the address belongs to this identity. Only
+    #: linking an existing row by its address depends on it.
+    email_verified: bool
     access_token: str
     refresh_token: str
 
@@ -235,6 +238,7 @@ class RealWorkOsClient:
         return WorkOsSession(
             workos_user_id=payload["user"]["id"],
             email=payload["user"]["email"],
+            email_verified=bool(payload["user"].get("email_verified")),
             access_token=payload["access_token"],
             refresh_token=payload["refresh_token"],
         )
@@ -281,7 +285,9 @@ class FakeWorkOsClient:
         self.authenticate_calls = 0
         self.applications: dict[str, ConnectApp] = {}
 
-    def create_user(self, *, email: str, password_hash: str | None) -> WorkOsUser:
+    def create_user(
+        self, *, email: str, password_hash: str | None, email_verified: bool = True
+    ) -> WorkOsUser:
         """Test-only: the identity a first code or provider redirect creates."""
         existing = self.find_user_by_email(email)
         if existing is not None:
@@ -289,7 +295,7 @@ class FakeWorkOsClient:
         user = WorkOsUser(
             workos_user_id=f"user_fake_{self._next}",
             email=email,
-            email_verified=True,
+            email_verified=email_verified,
         )
         self._next += 1
         self._by_email[email.lower()] = user
@@ -322,6 +328,7 @@ class FakeWorkOsClient:
         return WorkOsSession(
             workos_user_id=user.workos_user_id,
             email=user.email,
+            email_verified=user.email_verified,
             access_token=f"at-{user.workos_user_id}",
             refresh_token=f"rt-{user.workos_user_id}",
         )
@@ -346,6 +353,7 @@ class FakeWorkOsClient:
                 return WorkOsSession(
                     workos_user_id=user.workos_user_id,
                     email=user.email,
+                    email_verified=user.email_verified,
                     access_token=f"at-{workos_user_id}",
                     refresh_token=f"rt-{workos_user_id}",
                 )
@@ -359,6 +367,7 @@ class FakeWorkOsClient:
             if user.workos_user_id == workos_user_id:
                 return WorkOsSession(
                     workos_user_id=user.workos_user_id, email=user.email,
+                    email_verified=user.email_verified,
                     access_token=f"at-{workos_user_id}",
                     # Measured against the real API: the refresh token does not
                     # rotate, so the caller's existing value stays valid.
