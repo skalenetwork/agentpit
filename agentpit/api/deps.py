@@ -236,7 +236,7 @@ def get_owner(
     user: CurrentUserDep,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> str:
-    if x_api_key is not None or user.workos_user_id is None:
+    if x_api_key is not None or user.workos_user_id is None or user.is_bot:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="sign in to the AgentPit dashboard to manage agents",

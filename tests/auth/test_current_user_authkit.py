@@ -251,3 +251,31 @@ def test_the_app_factory_passes_a_verifier_into_the_dependency():
     # the issuer and the JWKS URL are both derived from it, so a verifier
     # built without one could only reject everything.
     assert _wired(create_app(Settings(workos_client_id=""))) is None
+
+
+def test_an_authkit_token_linked_to_a_bot_row_is_401(db, accounts, current_user):
+    # A bot row never signs in, whatever identity it carries: the house is the
+    # counterparty to every fill.
+    user_id, api_key = _make_user(db, email="bot@example.com", workos_user_id="user_bot_1")
+    with db.write() as conn:
+        TableWrite.mark_user_as_bot(conn, api_key)
+
+    with pytest.raises(HTTPException) as raised:
+        current_user(None, _bearer(_authkit_token(sub="user_bot_1")), db, accounts)
+
+    assert raised.value.status_code == 401
+
+
+def test_a_bot_row_is_no_owner(db):
+    from agentpit.api.deps import get_owner
+    from agentpit.db.table_read import TableRead
+
+    user_id, api_key = _make_user(db, email="bot@example.com", workos_user_id="user_bot_2")
+    with db.write() as conn:
+        TableWrite.mark_user_as_bot(conn, api_key)
+        bot = TableRead.get_user_by_userid(conn, user_id)
+
+    with pytest.raises(HTTPException) as raised:
+        get_owner(bot, None)
+
+    assert raised.value.status_code == 403

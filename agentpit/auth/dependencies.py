@@ -45,7 +45,8 @@ def _authkit_user(db: DbSession, authkit: AuthKitVerifier, token: str) -> User:
 
     with db.read() as conn:
         user = TableRead.get_user_by_workos_id(conn, workos_user_id)
-    if user is None or user.deleted_at is not None:
+    # A bot row never signs in, whatever identity it carries.
+    if user is None or user.deleted_at is not None or user.is_bot:
         raise _unauth("unknown session")
     return user
 
