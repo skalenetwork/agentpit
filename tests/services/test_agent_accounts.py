@@ -237,3 +237,20 @@ def test_an_owner_at_the_limit_is_refused_without_waiting_on_the_owner_lock():
         pool.shutdown()
 
     assert outcome == "refused"
+
+
+def test_an_identity_a_bot_row_holds_gets_no_agent():
+    # Bots never sign in, MCP included: the identity gets nothing and no agent
+    # row is made for it.
+    accounts, onboard, db = _accounts()
+    with db.write() as conn:
+        user_id, _acct, api_key = TableWrite.create_user(
+            conn, email="bot-mcp@example.com", password_hash=None, handle=None
+        )
+        TableWrite.set_workos_user_id(conn, user_id, "user_bot_mcp")
+        TableWrite.mark_user_as_bot(conn, api_key)
+
+    assert accounts.agent_for("user_bot_mcp", "Claude", None, None) is None
+    with db.read() as conn:
+        assert TableRead.get_agent(conn, "user_bot_mcp", "Claude", None) is None
+    assert onboard.calls == []

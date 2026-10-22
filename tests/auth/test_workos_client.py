@@ -46,9 +46,8 @@ def test_fake_creates_and_finds_users():
 
 
 def test_fake_create_is_idempotent_on_email():
-    # The migration script runs this against every existing row and may be
-    # re-run; a second create for the same address must return the first user
-    # rather than a duplicate identity.
+    # As WorkOS does: a second create for the same address returns the first
+    # user rather than a duplicate identity.
     fake = FakeWorkOsClient()
     first = fake.create_user(email="a@b.com", password_hash=None)
     second = fake.create_user(email="a@b.com", password_hash=None)
@@ -69,104 +68,12 @@ def _real(handler):
     )
 
 
-def test_real_client_creates_a_user_with_the_bcrypt_hash():
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        seen["method"] = request.method
-        seen["auth"] = request.headers.get("authorization")
-        seen["body"] = request.read()
-        return httpx.Response(
-            201,
-            json={"id": "user_01", "email": "a@b.com", "email_verified": True},
-        )
-
-    client = _real(handler)
-    user = client.create_user(email="a@b.com", password_hash="$2b$12$abc")
-
-    assert user == WorkOsUser(
-        workos_user_id="user_01", email="a@b.com", email_verified=True
-    )
-    assert seen["method"] == "POST"
-    assert seen["url"].endswith("/user_management/users")
-    assert seen["auth"] == "Bearer sk_test_123"
-    body = seen["body"].decode()
-    # The hash travels as an imported foreign hash, which is the entire point:
-    # get this pair wrong and every migrated account is locked out of its own
-    # password with no error anywhere.
-    assert '"password_hash": "$2b$12$abc"' in body.replace("\n", "")
-    assert '"password_hash_type": "bcrypt"' in body.replace("\n", "")
-
-
-def test_real_client_omits_the_password_fields_when_there_is_no_hash():
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["body"] = request.read().decode()
-        return httpx.Response(
-            201, json={"id": "user_02", "email": "g@b.com", "email_verified": True}
-        )
-
-    _real(handler).create_user(email="g@b.com", password_hash=None)
-
-    # A Google-sourced account has no password. Sending `password_hash: null`
-    # is not the same request as omitting it, and the API is entitled to
-    # reject it.
-    assert "password_hash" not in seen["body"]
-
-
-def test_real_client_finds_an_existing_user_by_email():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.method == "GET"
-        assert "email=a%40b.com" in str(request.url)
-        return httpx.Response(
-            200,
-            json={
-                "data": [
-                    {"id": "user_03", "email": "a@b.com", "email_verified": True}
-                ]
-            },
-        )
-
-    found = _real(handler).find_user_by_email("a@b.com")
-    assert found is not None and found.workos_user_id == "user_03"
-
-
-def test_real_client_returns_none_for_an_unknown_email():
-    found = _real(lambda _r: httpx.Response(200, json={"data": []})).find_user_by_email(
-        "nobody@b.com"
-    )
-    assert found is None
-
-
-def test_real_client_create_is_idempotent_on_email():
-    # Same contract the fake promises, proven against the real code path: the
-    # migration script re-runs, and a second call must not mint a second
-    # identity for one person.
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET":
-            return httpx.Response(
-                200,
-                json={
-                    "data": [
-                        {"id": "user_04", "email": "a@b.com", "email_verified": True}
-                    ]
-                },
-            )
-        raise AssertionError("must not POST when the user already exists")
-
-    user = _real(handler).create_user(email="a@b.com", password_hash="$2b$12$x")
-    assert user.workos_user_id == "user_04"
-
-
 def test_an_api_error_becomes_a_workos_error():
-    # The migration script catches per account and continues; it can only do
-    # that if failures arrive as one predictable type rather than as whatever
-    # httpx felt like raising.
+    # Failures arrive as one predictable type rather than as whatever httpx
+    # felt like raising, so a caller has one thing to catch.
     client = _real(lambda _r: httpx.Response(422, json={"message": "bad"}))
     with pytest.raises(WorkOsError):
-        client.create_user(email="a@b.com", password_hash=None)
+        client.send_magic_auth_code("a@b.com")
 
 
 def test_the_api_key_never_appears_in_the_error():
@@ -174,7 +81,7 @@ def test_the_api_key_never_appears_in_the_error():
     # ride along in it.
     client = _real(lambda _r: httpx.Response(500, text="boom"))
     with pytest.raises(WorkOsError) as exc:
-        client.find_user_by_email("a@b.com")
+        client.send_magic_auth_code("a@b.com")
     assert "sk_test_123" not in str(exc.value)
 
 
@@ -221,7 +128,7 @@ def test_authenticate_with_code_returns_a_session():
 
     session = _real(handler).authenticate_with_code("a@b.com", "515627")
     assert session == WorkOsSession(
-        workos_user_id="user_01", email="a@b.com",
+        workos_user_id="user_01", email="a@b.com", email_verified=True,
         access_token="at", refresh_token="rt",
     )
     # The grant type is a magic string; a typo in it returns a 400 that reads
@@ -350,8 +257,7 @@ def test_a_refusal_is_not_an_unavailable_error():
 
 
 def test_unavailable_is_still_caught_as_a_workos_error():
-    # The migration script catches `WorkOsError` per account and carries on;
-    # the new subclass must not fall out of that net.
+    # Every `except WorkOsError` must keep catching the subclass.
     assert issubclass(WorkOsUnavailableError, WorkOsError)
 
 
@@ -379,9 +285,8 @@ def test_a_429_is_its_own_error_type():
 
 
 def test_a_rate_limit_is_still_a_workos_error():
-    # The migration script catches `WorkOsError` per account and carries on.
-    # A subclass keeps that working unchanged, exactly as
-    # `WorkOsUnavailableError` does.
+    # A subclass, so every `except WorkOsError` keeps catching it, exactly as
+    # with `WorkOsUnavailableError`.
     client = _real(lambda _r: httpx.Response(429, json={"code": "rate_limit"}))
     with pytest.raises(WorkOsError):
         client.send_magic_auth_code("a@b.com")
@@ -454,3 +359,28 @@ def test_real_client_reads_the_app_name_and_default_redirect_host(uris, host):
         return httpx.Response(200, json={"name": "OpenClaw MCP", "redirect_uris": uris})
 
     assert _real(handler).application("client_01") == ConnectApp(name="OpenClaw MCP", host=host)
+
+
+def test_a_session_for_an_unverified_address_says_so():
+    # Linking an existing row by its address trusts only a verified one, so
+    # the flag must survive the parse rather than default to True.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "user": {"id": "user_02", "email": "b@b.com", "email_verified": False},
+            "access_token": "at", "refresh_token": "rt",
+        })
+
+    session = _real(handler).authenticate_with_authorization_code("code")
+    assert session.email_verified is False
+
+
+def test_a_session_without_the_flag_counts_as_unverified():
+    # Fail closed: a response that leaves the flag out proves nothing.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "user": {"id": "user_03", "email": "c@b.com"},
+            "access_token": "at", "refresh_token": "rt",
+        })
+
+    session = _real(handler).authenticate_with_authorization_code("code")
+    assert session.email_verified is False

@@ -309,11 +309,9 @@ class TableWrite:
     ) -> bool:
         """Link this account to its WorkOS identity. False when no row matched.
 
-        Leaves PASSWORD_HASH alone: this is the writer the migration script
-        uses to backfill ids for accounts nobody has signed into yet, and
-        those accounts must keep logging in with their password until plan 3
-        removes that door. `link_workos_identity` below is the one to use when
-        somebody has just proved they own the address.
+        Stamps a row sign-in has just created, and leaves PASSWORD_HASH alone.
+        `link_workos_identity` below is the one that hands an existing account
+        to an identity.
         """
         cur = db.execute(
             "UPDATE users SET WORKOS_USER_ID = %s WHERE USER_ID = %s",
@@ -325,7 +323,8 @@ class TableWrite:
     def link_workos_identity(
         db: psycopg.Connection, user_id: str, workos_user_id: str
     ) -> bool:
-        """Hand an existing account to a WorkOS identity. False when no row matched.
+        """Hand an existing account to a WorkOS identity. False when the row is gone
+        or no longer free to take: held by an identity, a bot, or an agent app.
 
         **The password is deliberately left alone**, and this is not the same
         call as `link_google_identity` above, which clears it.
@@ -348,8 +347,12 @@ class TableWrite:
         drops the column, and until then the row keeps its password, which is
         exactly the situation before this feature existed.
         """
+        # The same rule `AuthKitService` checked on the row it read, applied
+        # again in the write: of two identities linking one row at once, only
+        # the first gets it.
         cur = db.execute(
-            "UPDATE users SET WORKOS_USER_ID = %s WHERE USER_ID = %s",
+            "UPDATE users SET WORKOS_USER_ID = %s WHERE USER_ID = %s "
+            "AND WORKOS_USER_ID IS NULL AND IS_BOT = 0 AND AGENT_APP IS NULL",
             (workos_user_id, user_id),
         )
         return cur.rowcount > 0
@@ -501,6 +504,14 @@ class TableWrite:
     def mark_user_as_bot(db: psycopg.Connection, api_key: str) -> bool:
         cur = db.execute("UPDATE users SET IS_BOT = 1 WHERE API_KEY = %s", (api_key,))
         return cur.rowcount > 0
+
+    @staticmethod
+    def clear_sign_in(db: psycopg.Connection, user_id: str) -> None:
+        """Take away every way to sign in as this row: its password and identity."""
+        db.execute(
+            "UPDATE users SET PASSWORD_HASH = NULL, WORKOS_USER_ID = NULL WHERE USER_ID = %s",
+            (user_id,),
+        )
 
     @staticmethod
     def mark_user_as_bot_by_eth_address(

@@ -29,6 +29,23 @@ from agentpit.auth.workos_client import WorkOsClient, WorkOsSession
 log = logging.getLogger(__name__)
 
 
+def _adoptable(user: User, session: WorkOsSession) -> bool:
+    """Whether a sign-in may take this row by its address alone.
+
+    Only a person's row that no identity holds yet, and only for an address
+    WorkOS verified. A bot row never signs in -- the house is the counterparty
+    to every fill -- and a row another identity holds is theirs. Agent rows
+    have no address, so they never match; the `agent_app` check covers any
+    that ever does.
+    """
+    return (
+        session.email_verified
+        and not user.is_bot
+        and user.agent_app is None
+        and user.workos_user_id is None
+    )
+
+
 @dataclass(frozen=True)
 class AuthKitSession:
     user: User
@@ -162,6 +179,10 @@ class AuthKitService:
         with self._db.read() as conn:
             user = TableRead.get_user_by_workos_id(conn, session.workos_user_id)
         if user is not None:
+            if user.is_bot:
+                # Whatever identity a bot row carries, it never signs in.
+                log.warning("refused a session for bot user %s", user.user_id)
+                raise InvalidCredentialsError("invalid session")
             return self._repair(user) if repair else user
         if not create:
             raise InvalidCredentialsError("invalid session")
@@ -197,16 +218,26 @@ class AuthKitService:
         """Adopt an account that predates this address's WORKOS_USER_ID.
 
         None when there is no such row. Otherwise the row, with the identity
-        stamped on it -- an account the migration missed, or one made by
-        `/register` before this shipped. Linking beats creating: a second row
-        is a second wallet and a person whose positions have disappeared.
-        Case-insensitive for the same reason `get_user_by_email_ci` exists:
-        WorkOS reports a normalised address, ours was stored as typed.
+        stamped on it -- one made by `/register` before WorkOS. Linking beats
+        creating: a second row is a second wallet and a person whose positions
+        have disappeared. Case-insensitive for the same reason
+        `get_user_by_email_ci` exists: WorkOS reports a normalised address, ours
+        was stored as typed.
+
+        Raises `InvalidCredentialsError` when the row with this address is not
+        one a sign-in may take (see `_adoptable`).
         """
         with self._db.write() as conn:
             existing = TableRead.get_user_by_email_ci(conn, session.email)
             if existing is None:
                 return None
+            if not _adoptable(existing, session):
+                log.warning(
+                    "refused to link workos user %s to user %s by email",
+                    session.workos_user_id,
+                    existing.user_id,
+                )
+                raise InvalidCredentialsError("invalid session")
             # The password on that row goes with the link -- see
             # `TableWrite.link_workos_identity` for why. Nobody ever verified
             # that whoever set it owns this address; the code we just mailed is
@@ -215,10 +246,10 @@ class AuthKitService:
             if not TableWrite.link_workos_identity(
                 conn, existing.user_id, session.workos_user_id
             ):
-                # The row went away between the read above and this write.
-                # Issuing a session for it would hand back credentials for an
-                # account that no longer exists.
-                log.warning("workos link found no row for user %s", existing.user_id)
+                # Between the read above and this write the row went away, or
+                # another identity took it. A session now would hand back
+                # credentials for an account that is gone or someone else's.
+                log.warning("workos link found no free row for user %s", existing.user_id)
                 raise InvalidCredentialsError("invalid session")
         # `existing` was read before the stamp, so reflect it locally rather
         # than re-reading the row. Only the identity changed: the password is
@@ -258,7 +289,9 @@ class AuthKitService:
             # Another first sign-in for this same address committed between
             # `_link_existing_account`'s lookup and this insert. `EMAIL` and
             # `WORKOS_USER_ID` are both unique, so either can be the one that
-            # fired; read back by identity first and fall back to the address.
+            # fired. Read back by identity only: a row that holds the address
+            # but not this identity appeared after the link lookup, and the
+            # lookup's checks never saw it.
             #
             # The loser gets the winner's account, which is the right answer:
             # one person, one wallet. The row may still have ONBOARDED_AT null
@@ -268,12 +301,25 @@ class AuthKitService:
             with self._db.read() as conn:
                 winner = TableRead.get_user_by_workos_id(
                     conn, session.workos_user_id
-                ) or TableRead.get_user_by_email_ci(conn, session.email)
+                )
+                taken = winner is None and TableRead.get_user_by_email_ci(
+                    conn, session.email
+                ) is not None
+            if taken:
+                # Another account took this address after the lookup.
+                log.warning(
+                    "workos user %s lost its address to another account",
+                    session.workos_user_id,
+                )
+                raise InvalidCredentialsError("invalid session")
             if winner is None:
                 # The violation was something else entirely -- a handle
                 # collision, say. Re-raising keeps a real bug visible instead
                 # of turning it into a confusing None.
                 raise
+            if winner.is_bot:
+                log.warning("refused a session for bot user %s", winner.user_id)
+                raise InvalidCredentialsError("invalid session")
             # Logged only now. The read-back above is what establishes it was a
             # race at all: announcing one before it is confirmed puts a calm
             # INFO line immediately in front of the traceback from the `raise`

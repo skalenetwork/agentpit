@@ -109,7 +109,7 @@ def test_a_returning_address_lands_on_the_same_row_without_a_second_wallet():
 
 
 def test_an_account_migrated_by_workos_user_id_is_found_not_recreated():
-    # Plan 1's migration script populated WORKOS_USER_ID for the existing
+    # The WorkOS migration populated WORKOS_USER_ID for the existing
     # accounts. Those people must sign in to their own rows.
     workos, onboarder = FakeWorkOsClient(), _Onboarder()
     svc, db = _service(workos, onboarder)
@@ -445,3 +445,100 @@ def test_a_google_account_that_already_exists_here_is_adopted_not_duplicated():
 
     assert session.user.user_id == user_id
     assert onboarder.calls == []
+
+
+# --- what a sign-in may take by its address alone ---------------------------
+# Linking by email exists for a person's own row that predates their WorkOS
+# identity. A bot row (the house is the counterparty to every fill), a row
+# another identity holds, or an address WorkOS never verified is not that.
+
+def _bot_row(db, email: str) -> str:
+    with db.write() as conn:
+        user_id, _acct, api_key = TableWrite.create_user(
+            conn, email=email, password_hash=None, handle=None
+        )
+        TableWrite.mark_user_onboarded(conn, user_id)
+        TableWrite.mark_user_as_bot(conn, api_key)
+    return user_id
+
+
+def _workos_id_of(db, user_id: str) -> str | None:
+    with db.read() as conn:
+        return TableRead.get_user_by_userid(conn, user_id).workos_user_id
+
+
+@pytest.mark.parametrize(
+    "address", ["house-bot-0@agentpit.local", "HOUSE-bot-0@AgentPit.LOCAL"]
+)
+def test_a_sign_in_never_adopts_a_bot_row_by_email(address):
+    workos = FakeWorkOsClient()
+    svc, db = _service(workos)
+    house = _bot_row(db, "house-bot-0@agentpit.local")
+
+    with pytest.raises(InvalidCredentialsError):
+        svc.sign_in_with_authorization_code(workos.issue_authorization_code(address))
+
+    assert _workos_id_of(db, house) is None
+
+
+def test_a_row_another_identity_holds_is_not_handed_to_this_one():
+    workos = FakeWorkOsClient()
+    svc, db = _service(workos)
+    user_id = _legacy_password_row(db, "carol@corp.com")
+    with db.write() as conn:
+        TableWrite.set_workos_user_id(conn, user_id, "user_someone_else")
+
+    with pytest.raises(InvalidCredentialsError):
+        svc.sign_in_with_authorization_code(
+            workos.issue_authorization_code("carol@corp.com")
+        )
+
+    assert _workos_id_of(db, user_id) == "user_someone_else"
+
+
+def test_an_unverified_address_does_not_adopt_a_row():
+    workos = FakeWorkOsClient()
+    svc, db = _service(workos)
+    user_id = _legacy_password_row(db, "dave@corp.com")
+    workos.create_user(email="dave@corp.com", password_hash=None, email_verified=False)
+
+    with pytest.raises(InvalidCredentialsError):
+        svc.sign_in_with_authorization_code(
+            workos.issue_authorization_code("dave@corp.com")
+        )
+
+    assert _workos_id_of(db, user_id) is None
+
+
+def test_a_bot_row_that_carries_the_identity_still_does_not_sign_in():
+    workos = FakeWorkOsClient()
+    svc, db = _service(workos)
+    bot = _bot_row(db, "bot@example.com")
+    code = workos.issue_authorization_code("bot@example.com")
+    identity = workos.find_user_by_email("bot@example.com").workos_user_id
+    with db.write() as conn:
+        TableWrite.set_workos_user_id(conn, bot, identity)
+
+    with pytest.raises(InvalidCredentialsError):
+        svc.sign_in_with_authorization_code(code)
+    with pytest.raises(InvalidCredentialsError):
+        svc.refresh(f"rt-{identity}")
+
+
+def test_a_create_race_lost_to_a_bot_row_hands_back_nothing(monkeypatch):
+    # A bot row with this address appears after the link lookup, so the
+    # insert collides on EMAIL. The read-back must not return it by address.
+    workos = FakeWorkOsClient()
+    svc, db = _service(workos)
+    code = workos.issue_authorization_code("bot@example.com")
+    bot = {}
+
+    def _bot_appears(session):
+        bot["user_id"] = _bot_row(db, session.email)
+        return None
+
+    monkeypatch.setattr(svc, "_link_existing_account", _bot_appears)
+
+    with pytest.raises(InvalidCredentialsError):
+        svc.sign_in_with_authorization_code(code)
+    assert _workos_id_of(db, bot["user_id"]) is None

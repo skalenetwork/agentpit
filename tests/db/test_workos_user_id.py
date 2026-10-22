@@ -25,10 +25,9 @@ def test_set_on_a_missing_row_reports_false():
         assert TableWrite.set_workos_user_id(conn, "nope", "user_02") is False
 
 
-def test_the_migration_writer_leaves_the_password_alone():
-    # The migration backfills ids for accounts nobody has signed into yet, and
-    # those accounts must keep logging in with their password until plan 3
-    # takes that door away.
+def test_the_stamping_writer_leaves_the_password_alone():
+    # `set_workos_user_id` stamps the identity on a row and touches nothing
+    # else.
     db = DbSession(Settings().database_url)
     with db.write() as conn:
         user_id, _acct, _api_key = TableWrite.create_user(
@@ -41,8 +40,8 @@ def test_the_migration_writer_leaves_the_password_alone():
 
 
 def test_linking_stamps_the_identity_and_keeps_the_password():
-    # The sign-in writer, unlike the migration one above. It stamps the
-    # identity and LEAVES THE PASSWORD ALONE.
+    # The writer that hands an existing account to an identity, unlike the one
+    # above. It stamps the identity and LEAVES THE PASSWORD ALONE.
     #
     # Clearing it is the eventual intent -- registration took any address on
     # trust while a mailed code proves it -- but the hash is still a credential
@@ -87,6 +86,28 @@ def test_adoption_leaves_the_password_flag_true():
         user = TableRead.get_user_by_workos_id(conn, "user_export")
         assert user is not None
         assert user.has_password is True
+
+
+def test_linking_takes_only_a_row_still_free():
+    # The rule the sign-in checked on the row it read, held again in the
+    # write: of two identities linking one row at once, only the first gets it.
+    db = DbSession(Settings().database_url)
+    with db.write() as conn:
+        held, _acct, _key = TableWrite.create_user(
+            conn, email="held@example.com", password_hash=None, handle=None
+        )
+        TableWrite.set_workos_user_id(conn, held, "user_first")
+        bot, _acct, bot_key = TableWrite.create_user(
+            conn, email="botlink@example.com", password_hash=None, handle=None
+        )
+        TableWrite.mark_user_as_bot(conn, bot_key)
+
+        assert TableWrite.link_workos_identity(conn, held, "user_second") is False
+        assert TableWrite.link_workos_identity(conn, bot, "user_third") is False
+
+    with db.read() as conn:
+        assert TableRead.get_user_by_workos_id(conn, "user_first").user_id == held
+        assert TableRead.get_user_by_workos_id(conn, "user_third") is None
 
 
 def test_linking_a_missing_row_reports_false():

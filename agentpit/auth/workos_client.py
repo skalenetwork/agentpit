@@ -5,8 +5,8 @@ this repo runs offline, and a service that reaches out to api.workos.com from
 a unit test is a test that fails on a train. `FakeWorkOsClient` is the double
 every test uses; `RealWorkOsClient` is the only place the SDK is touched.
 
-The surface is deliberately narrow. Plan 2 widens it; this plan needs exactly
-what the migration script needs.
+The surface is deliberately narrow: what sign-in, MCP and account deletion
+need, and nothing more.
 """
 import re
 from dataclasses import dataclass
@@ -35,27 +35,14 @@ class ConnectApp:
 class WorkOsSession:
     workos_user_id: str
     email: str
+    #: Whether WorkOS has proven the address belongs to this identity. Only
+    #: linking an existing row by its address depends on it.
+    email_verified: bool
     access_token: str
     refresh_token: str
 
 
 class WorkOsClient(Protocol):
-    def create_user(
-        self, *, email: str, password_hash: str | None
-    ) -> WorkOsUser:
-        """Create the user, or return the existing one for this address.
-
-        `password_hash` is a bcrypt hash lifted straight out of our `users`
-        table -- WorkOS accepts foreign hashes on create, so an imported
-        account signs in with the password it already had and nobody is asked
-        to reset anything. `None` is the Google-sourced account that never had
-        one.
-        """
-        ...
-
-    def find_user_by_email(self, email: str) -> WorkOsUser | None:
-        ...
-
     def send_magic_auth_code(self, email: str) -> None:
         """Mail a six-digit code to this address, creating the user if new.
 
@@ -93,11 +80,10 @@ class WorkOsClient(Protocol):
 class WorkOsError(RuntimeError):
     """Anything the WorkOS API refused or failed to answer.
 
-    One type for every failure, deliberately: the migration script catches per
-    account and carries on, and it can only do that if it knows what to catch.
-    The message never carries the request we sent, and the response body it
-    does carry is run through `_redact` first — a traceback from here reaches
-    a log, and plan 3 turns this string into a user-visible 401 `detail`.
+    One type for every failure, deliberately, so a caller that only needs to
+    know the call did not work has one thing to catch. The message never
+    carries the request we sent, and the response body it does carry is run
+    through `_redact` first — a traceback from here reaches a log.
     """
 
 
@@ -105,10 +91,10 @@ class WorkOsUnavailableError(WorkOsError):
     """We never reached WorkOS at all — a timeout, a DNS failure, a refused TCP
     connection.
 
-    A subclass rather than a sibling so every `except WorkOsError` (the
-    migration script, anything that just wants "the call didn't work") keeps
-    catching it unchanged. It exists for one caller: the API, which answers a
-    refusal 401 ("your code was wrong") and this 503 ("come back in a moment").
+    A subclass rather than a sibling so every `except WorkOsError` (anything
+    that just wants "the call didn't work") keeps catching it unchanged. It
+    exists for one caller: the API, which answers a refusal 401 ("your code
+    was wrong") and this 503 ("come back in a moment").
     Collapsing the two made a total sign-in outage look like a wave of typos —
     4xx, so no status-code monitor fires — and told a caller who was never
     mailed anything to request a new code, which loops.
@@ -119,9 +105,9 @@ class WorkOsRateLimitedError(WorkOsError):
     """WorkOS refused because we asked too often.
 
     A subclass rather than a sibling for the same reason
-    `WorkOsUnavailableError` is one: `migrate_users` catches `WorkOsError` per
-    account and must keep catching this unchanged. It exists for the API, which
-    otherwise answers 401 "request a new code" -- instructing a rate-limited
+    `WorkOsUnavailableError` is one: every `except WorkOsError` keeps catching
+    it unchanged. It exists for the API, which otherwise answers 401 "request
+    a new code" -- instructing a rate-limited
     caller to perform the action that rate limited them, in a loop the UI's own
     resend cooldown cannot break because the cooldown is per dialog, not per
     address.
@@ -130,13 +116,9 @@ class WorkOsRateLimitedError(WorkOsError):
 
 API_BASE = "https://api.workos.com"
 
-#: bcrypt output: $2a/$2b/$2y, a cost, and the salt+digest. Matched wherever it
-#: appears, not anchored, because it is being hunted inside a JSON body.
-_BCRYPT_RE = re.compile(r"\$2[aby]?\$\d{2}\$[./A-Za-z0-9]{0,53}")
-
-#: A WorkOS API key: `sk_test_…` / `sk_live_…`. Also matched unanchored, and
-#: for the same reason — it is being hunted inside a JSON body, possibly one
-#: that has JSON-escaped a quoted copy of our own request.
+#: A WorkOS API key: `sk_test_…` / `sk_live_…`. Matched unanchored, because it
+#: is being hunted inside a JSON body, possibly one that has JSON-escaped a
+#: quoted copy of our own request.
 _API_KEY_RE = re.compile(r"sk_[A-Za-z0-9_]+")
 
 
@@ -144,20 +126,15 @@ def _redact(text: str, secrets: tuple[str | None, ...] = ()) -> str:
     """Strip anything secret-shaped out of an error body before it is stored.
 
     The body is kept because it names the field WorkOS objected to, which is
-    what makes a failed import diagnosable. But an error response is entitled
-    to quote the values it rejected, and we send two kinds of secret:
+    what makes a failed call diagnosable. But an error response is entitled
+    to quote the values it rejected, and the API key itself is one of them:
+    `/user_management/authenticate` wants it in the request BODY as
+    `client_secret`. Measured 2026-08-11, WorkOS answers a bad code with
+    `{"code": "invalid_code"}` and echoes nothing — but a gateway or WAF in
+    front of it is under no such obligation, and that path is reached by an
+    unauthenticated caller who supplies the code.
 
-    - a bcrypt hash lifted from `users.PASSWORD_HASH` on `create_user`.
-      `migrate_users` catches per account and calls `log.exception`, so without
-      this a rejected import writes a live password hash to stdout next to the
-      address it belongs to, during a hand-run production migration.
-    - the API key itself, which `/user_management/authenticate` wants in the
-      request BODY as `client_secret`. Measured 2026-08-11, WorkOS answers a
-      bad code with `{"code": "invalid_code"}` and echoes nothing — but a
-      gateway or WAF in front of it is under no such obligation, and that path
-      is reached by an unauthenticated caller who supplies the code.
-
-    The two patterns catch those by shape. `secrets` catches the third kind,
+    The pattern catches the key by shape. `secrets` catches the other kind,
     which has no shape to match: the refresh token, an opaque string no regex
     can recognise. It is the longest-lived credential we handle — measured
     2026-08-11, WorkOS does NOT rotate it, so one leaked into a log at WARNING
@@ -169,7 +146,7 @@ def _redact(text: str, secrets: tuple[str | None, ...] = ()) -> str:
         # into inserting "[redacted]" between every character.
         if secret:
             text = text.replace(secret, "[redacted]")
-    return _API_KEY_RE.sub("[redacted]", _BCRYPT_RE.sub("[redacted]", text))
+    return _API_KEY_RE.sub("[redacted]", text)
 
 
 class RealWorkOsClient:
@@ -228,53 +205,14 @@ class RealWorkOsClient:
             )
         if response.status_code >= 400:
             # The body may name the field WorkOS objected to, which is what
-            # makes a failed migration diagnosable. The request is not
-            # included: it carries the hash and the key. `_redact` covers the
-            # remaining case, a response that quotes the request back at us.
+            # makes a failed call diagnosable. The request is not included: it
+            # carries the key. `_redact` covers the remaining case, a response
+            # that quotes the request back at us.
             raise WorkOsError(
                 f"WorkOS {method} {path} returned {response.status_code}: "
                 f"{_redact(response.text, secrets)[:500]}"
             )
         return response.json() if response.content else {}
-
-    @staticmethod
-    def _to_user(payload: dict) -> WorkOsUser:
-        return WorkOsUser(
-            workos_user_id=payload["id"],
-            email=payload["email"],
-            email_verified=bool(payload.get("email_verified")),
-        )
-
-    def create_user(self, *, email: str, password_hash: str | None) -> WorkOsUser:
-        existing = self.find_user_by_email(email)
-        if existing is not None:
-            # Idempotent by construction: the migration script is re-runnable
-            # and a second call for the same address must not mint a second
-            # identity for one person.
-            return existing
-        body: dict[str, object] = {"email": email, "email_verified": True}
-        if password_hash:
-            # Omitted entirely rather than sent as null when absent: a
-            # Google-sourced account never had a password, and `null` is a
-            # different request from silence.
-            body["password_hash"] = password_hash
-            body["password_hash_type"] = "bcrypt"
-        return self._to_user(
-            self._request(
-                "POST",
-                "/user_management/users",
-                json=body,
-                secrets=(password_hash,),
-            )
-        )
-
-    def find_user_by_email(self, email: str) -> WorkOsUser | None:
-        page = self._request(
-            "GET", "/user_management/users", params={"email": email, "limit": 1}
-        )
-        for user in page.get("data") or []:
-            return self._to_user(user)
-        return None
 
     def send_magic_auth_code(self, email: str) -> None:
         # The response body carries the code. It is deliberately discarded.
@@ -301,6 +239,7 @@ class RealWorkOsClient:
         return WorkOsSession(
             workos_user_id=payload["user"]["id"],
             email=payload["user"]["email"],
+            email_verified=bool(payload["user"].get("email_verified")),
             access_token=payload["access_token"],
             refresh_token=payload["refresh_token"],
         )
@@ -330,7 +269,7 @@ class RealWorkOsClient:
 
 
 class FakeWorkOsClient:
-    """In-memory double with the same contract, including the idempotency."""
+    """In-memory double with the same contract, plus test-only helpers."""
 
     def __init__(self) -> None:
         self._by_email: dict[str, WorkOsUser] = {}
@@ -347,14 +286,17 @@ class FakeWorkOsClient:
         self.authenticate_calls = 0
         self.applications: dict[str, ConnectApp] = {}
 
-    def create_user(self, *, email: str, password_hash: str | None) -> WorkOsUser:
+    def create_user(
+        self, *, email: str, password_hash: str | None, email_verified: bool = True
+    ) -> WorkOsUser:
+        """Test-only: the identity a first code or provider redirect creates."""
         existing = self.find_user_by_email(email)
         if existing is not None:
             return existing
         user = WorkOsUser(
             workos_user_id=f"user_fake_{self._next}",
             email=email,
-            email_verified=True,
+            email_verified=email_verified,
         )
         self._next += 1
         self._by_email[email.lower()] = user
@@ -387,6 +329,7 @@ class FakeWorkOsClient:
         return WorkOsSession(
             workos_user_id=user.workos_user_id,
             email=user.email,
+            email_verified=user.email_verified,
             access_token=f"at-{user.workos_user_id}",
             refresh_token=f"rt-{user.workos_user_id}",
         )
@@ -411,6 +354,7 @@ class FakeWorkOsClient:
                 return WorkOsSession(
                     workos_user_id=user.workos_user_id,
                     email=user.email,
+                    email_verified=user.email_verified,
                     access_token=f"at-{workos_user_id}",
                     refresh_token=f"rt-{workos_user_id}",
                 )
@@ -424,6 +368,7 @@ class FakeWorkOsClient:
             if user.workos_user_id == workos_user_id:
                 return WorkOsSession(
                     workos_user_id=user.workos_user_id, email=user.email,
+                    email_verified=user.email_verified,
                     access_token=f"at-{workos_user_id}",
                     # Measured against the real API: the refresh token does not
                     # rotate, so the caller's existing value stays valid.

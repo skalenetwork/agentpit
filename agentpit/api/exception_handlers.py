@@ -207,8 +207,8 @@ def register_exception_handlers(app: FastAPI) -> None:
         all, is `WorkOsUnavailableError` above.
 
         Handled here rather than by making `WorkOsError` a subclass of
-        `InvalidCredentialsError`: the migration script catches it outside the
-        API entirely, and its message must not become the response `detail`.
+        `InvalidCredentialsError`: its message must not become the response
+        `detail`.
         That message names the WorkOS endpoint and quotes the (redacted)
         response body -- diagnostics for us, noise for whoever fat-fingered a
         digit -- so it is logged instead.
