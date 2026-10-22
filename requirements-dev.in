@@ -1,0 +1,6 @@
+# The runtime packages at the exact versions requirements.txt locks, plus the
+# test tooling. requirements-dev.txt is the lock compiled from this file.
+-r requirements.in
+-c requirements.txt
+pytest
+pytest-asyncio
