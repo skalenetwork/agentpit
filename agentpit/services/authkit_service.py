@@ -29,6 +29,21 @@ from agentpit.auth.workos_client import WorkOsClient, WorkOsSession
 log = logging.getLogger(__name__)
 
 
+def _adoptable(user: User, session: WorkOsSession) -> bool:
+    """Whether a sign-in may take this row by its address alone.
+
+    Only a person's row that no identity holds yet, and only for an address
+    WorkOS verified. A bot or agent row never signs in -- the house is the
+    counterparty to every fill -- and a row another identity holds is theirs.
+    """
+    return (
+        session.email_verified
+        and not user.is_bot
+        and user.agent_app is None
+        and user.workos_user_id is None
+    )
+
+
 @dataclass(frozen=True)
 class AuthKitSession:
     user: User
@@ -162,6 +177,10 @@ class AuthKitService:
         with self._db.read() as conn:
             user = TableRead.get_user_by_workos_id(conn, session.workos_user_id)
         if user is not None:
+            if user.is_bot:
+                # Whatever identity a bot row carries, it never signs in.
+                log.warning("refused a session for bot user %s", user.user_id)
+                raise InvalidCredentialsError("invalid session")
             return self._repair(user) if repair else user
         if not create:
             raise InvalidCredentialsError("invalid session")
@@ -207,6 +226,13 @@ class AuthKitService:
             existing = TableRead.get_user_by_email_ci(conn, session.email)
             if existing is None:
                 return None
+            if not _adoptable(existing, session):
+                log.warning(
+                    "refused to link workos user %s to user %s by email",
+                    session.workos_user_id,
+                    existing.user_id,
+                )
+                raise InvalidCredentialsError("invalid session")
             # The password on that row goes with the link -- see
             # `TableWrite.link_workos_identity` for why. Nobody ever verified
             # that whoever set it owns this address; the code we just mailed is
@@ -258,7 +284,9 @@ class AuthKitService:
             # Another first sign-in for this same address committed between
             # `_link_existing_account`'s lookup and this insert. `EMAIL` and
             # `WORKOS_USER_ID` are both unique, so either can be the one that
-            # fired; read back by identity first and fall back to the address.
+            # fired. Read back by identity only: a row that holds the address
+            # but not this identity is someone else's, the same row
+            # `_link_existing_account` refuses to hand over.
             #
             # The loser gets the winner's account, which is the right answer:
             # one person, one wallet. The row may still have ONBOARDED_AT null
@@ -268,7 +296,7 @@ class AuthKitService:
             with self._db.read() as conn:
                 winner = TableRead.get_user_by_workos_id(
                     conn, session.workos_user_id
-                ) or TableRead.get_user_by_email_ci(conn, session.email)
+                )
             if winner is None:
                 # The violation was something else entirely -- a handle
                 # collision, say. Re-raising keeps a real bug visible instead
