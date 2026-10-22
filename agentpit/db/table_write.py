@@ -325,7 +325,8 @@ class TableWrite:
     def link_workos_identity(
         db: psycopg.Connection, user_id: str, workos_user_id: str
     ) -> bool:
-        """Hand an existing account to a WorkOS identity. False when no row matched.
+        """Hand an existing account to a WorkOS identity. False when the row is gone
+        or no longer free to take: held by an identity, a bot, or an agent app.
 
         **The password is deliberately left alone**, and this is not the same
         call as `link_google_identity` above, which clears it.
@@ -348,8 +349,12 @@ class TableWrite:
         drops the column, and until then the row keeps its password, which is
         exactly the situation before this feature existed.
         """
+        # The same rule `AuthKitService` checked on the row it read, applied
+        # again in the write: of two identities linking one row at once, only
+        # the first gets it.
         cur = db.execute(
-            "UPDATE users SET WORKOS_USER_ID = %s WHERE USER_ID = %s",
+            "UPDATE users SET WORKOS_USER_ID = %s WHERE USER_ID = %s "
+            "AND WORKOS_USER_ID IS NULL AND IS_BOT = 0 AND AGENT_APP IS NULL",
             (workos_user_id, user_id),
         )
         return cur.rowcount > 0

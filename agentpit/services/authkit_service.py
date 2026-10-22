@@ -241,10 +241,10 @@ class AuthKitService:
             if not TableWrite.link_workos_identity(
                 conn, existing.user_id, session.workos_user_id
             ):
-                # The row went away between the read above and this write.
-                # Issuing a session for it would hand back credentials for an
-                # account that no longer exists.
-                log.warning("workos link found no row for user %s", existing.user_id)
+                # Between the read above and this write the row went away, or
+                # another identity took it. A session now would hand back
+                # credentials for an account that is gone or someone else's.
+                log.warning("workos link found no free row for user %s", existing.user_id)
                 raise InvalidCredentialsError("invalid session")
         # `existing` was read before the stamp, so reflect it locally rather
         # than re-reading the row. Only the identity changed: the password is
