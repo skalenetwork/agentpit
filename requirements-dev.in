@@ -4,3 +4,6 @@
 -c requirements.txt
 pytest
 pytest-asyncio
+# Compiles both locks. Pinned so CI recompiles them with the same uv the
+# committed locks came from.
+uv==0.13.1
