@@ -503,8 +503,12 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
-    def clear_password_hash(db: psycopg.Connection, user_id: str) -> None:
-        db.execute("UPDATE users SET PASSWORD_HASH = NULL WHERE USER_ID = %s", (user_id,))
+    def clear_sign_in(db: psycopg.Connection, user_id: str) -> None:
+        """Take away every way to sign in as this row: its password and identity."""
+        db.execute(
+            "UPDATE users SET PASSWORD_HASH = NULL, WORKOS_USER_ID = NULL WHERE USER_ID = %s",
+            (user_id,),
+        )
 
     @staticmethod
     def mark_user_as_bot_by_eth_address(

@@ -29,18 +29,26 @@ class HouseAccountProvisioner:
             user = self._create_and_onboard()
         else:
             self._maybe_reonboard(user)
-        if user.has_password:
-            # The house never signs in, so it has no password. Rows provisioned
-            # before that still carry one, and it goes on the next start.
+        if user.has_password or user.workos_user_id is not None:
+            # The house never signs in, so it has no password and holds no
+            # identity. Rows provisioned before that may carry either, and both
+            # go on the next start.
             with self._db.write() as conn:
-                TableWrite.clear_password_hash(conn, user.user_id)
-            user = user.model_copy(update={"has_password": False})
+                TableWrite.clear_sign_in(conn, user.user_id)
+            user = user.model_copy(update={"has_password": False, "workos_user_id": None})
         return user
 
     def _create_and_onboard(self) -> User:
         with self._db.write() as conn:
             prior = TableRead.get_user_by_email(conn, _EMAIL)
             if prior is not None:  # partial-create recovery
+                if prior.workos_user_id is not None or prior.agent_app is not None:
+                    # Only a row this provisioner started can become the house.
+                    # One that an identity or an app holds is somebody's
+                    # account whose API key is already out.
+                    raise RuntimeError(
+                        f"{_EMAIL} belongs to another account; not making it the house"
+                    )
                 user_id, acct, api_key = prior.user_id, prior.eth_key, prior.api_key
             else:
                 user_id, acct, api_key = TableWrite.create_user(

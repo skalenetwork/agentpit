@@ -159,3 +159,42 @@ def test_a_house_account_created_with_a_password_loses_it_on_start():
     assert prov.ensure_provisioned().user_id == user_id
     with db.read() as conn:
         assert TableRead.get_password_hash_by_userid(conn, user_id) is None
+
+
+def test_a_house_account_linked_to_an_identity_loses_it_on_start():
+    from agentpit.db.table_read import TableRead
+    from agentpit.db.table_write import TableWrite
+    from agentpit.liquidity.house_accounts import _EMAIL
+    prov, db = _db_provisioner()
+    with db.write() as conn:
+        user_id, _acct, api_key = TableWrite.create_user(
+            conn, email=_EMAIL, password_hash=None, handle=None
+        )
+        TableWrite.set_workos_user_id(conn, user_id, "user_imported_house")
+        TableWrite.mark_user_onboarded(conn, user_id)
+        TableWrite.mark_user_as_bot(conn, api_key)
+
+    assert prov.ensure_provisioned().workos_user_id is None
+    with db.read() as conn:
+        assert TableRead.get_user_by_userid(conn, user_id).workos_user_id is None
+
+
+def test_an_account_an_identity_holds_is_never_made_the_house():
+    # A person's row on the house address (a sign-in that got there first) has
+    # an API key already out. Making it the house would hand that key the
+    # counterparty to every fill.
+    import pytest
+    from agentpit.db.table_read import TableRead
+    from agentpit.db.table_write import TableWrite
+    from agentpit.liquidity.house_accounts import _EMAIL
+    prov, db = _db_provisioner()
+    with db.write() as conn:
+        user_id, _acct, _key = TableWrite.create_user(
+            conn, email=_EMAIL, password_hash=None, handle=None
+        )
+        TableWrite.set_workos_user_id(conn, user_id, "user_a_person")
+
+    with pytest.raises(RuntimeError):
+        prov.ensure_provisioned()
+    with db.read() as conn:
+        assert TableRead.get_user_by_userid(conn, user_id).is_bot is False
