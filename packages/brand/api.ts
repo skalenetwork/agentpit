@@ -445,8 +445,9 @@ const card = (wire: WireCard): Card => {
 
 export const gameStage = (title: string, sport: string): string | null => {
   if (sport === "esports") {
-    const found = /\((BO\d)\) - (.+)$/.exec(title);
-    return found ? `${found[1]} · ${found[2]}` : null;
+    const found = /\((BO\d)\) - /.exec(title);
+    const rest = found ? title.slice(found.index + found[0].length) : "";
+    return found && rest ? `${found[1]} · ${rest}` : null;
   }
   return (sport === "tennis" || sport === "cricket") && title.includes(":") ? title.slice(0, title.indexOf(":")) : null;
 };

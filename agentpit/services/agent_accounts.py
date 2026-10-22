@@ -131,7 +131,7 @@ class AgentAccounts:
     def _refuse_at_cap(conn: psycopg.Connection, owner_workos_id: str, since: int) -> None:
         if TableRead.count_owner_agents(conn, owner_workos_id, since) >= MAX_AGENTS_PER_OWNER:
             raise AgentLimitError(
-                f"at most {MAX_AGENTS_PER_OWNER} agents per account, and each counts for 24 hours after it was "
-                "created even once deleted: delete one created more than a day ago at app.agentpit.dev/settings, "
-                "or try again later"
+                f"You can have at most {MAX_AGENTS_PER_OWNER} agents, and each one counts for 24 hours after it "
+                "was created, even once deleted. Delete one created more than a day ago at app.agentpit.dev, "
+                "or try again later."
             )

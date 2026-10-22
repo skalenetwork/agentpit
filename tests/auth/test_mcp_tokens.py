@@ -165,4 +165,4 @@ def test_an_owner_at_the_agent_limit_signs_in_with_the_reason_instead_of_an_agen
 
     assert token is not None
     assert token.user is None
-    assert (token.refusal or "").startswith("at most 10 agents per account")
+    assert (token.refusal or "").startswith("You can have at most 10 agents")

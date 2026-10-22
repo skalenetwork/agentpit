@@ -391,5 +391,5 @@ def test_an_owner_at_the_agent_limit_gets_a_400_with_the_reason_and_nothing_is_s
         refused = client.post("/me/agents", headers=headers)
 
     assert refused.status_code == 400
-    assert refused.json()["detail"].startswith("at most 10 agents per account")
+    assert refused.json()["detail"].startswith("You can have at most 10 agents")
     assert onboarded == []
