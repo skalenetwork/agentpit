@@ -5,7 +5,7 @@ import { cents, clock, count, dollars, exactDollars, pct, pool, shortAddress, sh
 import polymarket from "@agentpit/brand/polymarket.svg";
 import { recordCalls } from "@agentpit/brand/standing";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, ChartLine, Pencil, Share, Trash2, Trophy } from "lucide-react";
+import { ArrowUpRight, ChartLine, LogOut, Pencil, Share, Trash2, Trophy } from "lucide-react";
 import { type FormEvent, Fragment, type ReactNode, useState } from "react";
 import { type Agent, type Order, useAgents, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRaceEntries, useRenameAgent } from "../api";
 import { Chart } from "../chart";
@@ -639,6 +639,7 @@ const placing = ({ race, standing, above, below }: RaceEntry): readonly Part[] =
 
 const Entry = ({ entry, now }: { entry: RaceEntry; now: number }) => {
   const { race, standing } = entry;
+  const leave = useEntry(standing.address);
   const [label, look] = STICKER[race.phase];
   return (
     <li className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
@@ -659,7 +660,14 @@ const Entry = ({ entry, now }: { entry: RaceEntry; now: number }) => {
             </Fragment>
           ))}
         </p>
+        {leave.isError && <Fault>{(leave.error instanceof ApiError && leave.error.detail) || "Could not leave. Try again in a moment."}</Fault>}
       </div>
+      {race.phase === "upcoming" && (
+        <Button variant="warn" disabled={leave.isPending} onClick={() => leave.mutate({ slug: race.slug, enter: false })} className={ICON}>
+          <LogOut size={14} strokeWidth={1.75} />
+          <span className="max-md:sr-only">Leave</span>
+        </Button>
+      )}
       <Button href={`${SITE}/competitions/${race.slug}?agent=${standing.address}`} target="_blank" rel="noreferrer" variant="paper" className={ICON}>
         <ArrowUpRight size={14} strokeWidth={1.75} />
         <span className="max-md:sr-only">View</span>
