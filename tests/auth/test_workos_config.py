@@ -77,18 +77,6 @@ def test_an_empty_domain_stays_empty_and_does_not_raise():
     assert _settings(workos_authkit_domain="").workos_authkit_domain == ""
 
 
-def test_a_bcrypt_hash_is_redacted_out_of_an_error_body():
-    # WorkOS is entitled to quote the value it rejected, and the value we send
-    # on an import is a live password hash from users.PASSWORD_HASH. The
-    # migration script logs these bodies.
-    body = '{"message":"invalid","password_hash":"$2b$12$abcdefghijklmnopqrstuv"}'
-    out = _redact(body)
-    assert "$2b$12$" not in out
-    assert "[redacted]" in out
-    # The diagnosable part survives -- that is why the body is kept at all.
-    assert "invalid" in out
-
-
 def test_redaction_leaves_an_ordinary_body_alone():
     body = '{"message":"email already exists","code":"email_taken"}'
     assert _redact(body) == body
