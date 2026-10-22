@@ -122,3 +122,40 @@ def test_a_new_house_account_gets_exactly_the_gas_of_its_three_approvals():
     assert [c for c in onchain.funded if c[0] == "gas"] == [
         ("gas", _Key.address, APPROVALS_NEED)
     ]
+
+
+# --- the house never signs in -----------------------------------------------
+# A password on the house row is a credential for the counterparty to every
+# fill, and the house has no use for one.
+
+def _db_provisioner():
+    from agentpit.config import Settings
+    from agentpit.liquidity.house_accounts import HouseAccountProvisioner
+    from tests.db_helpers import fresh_test_db
+    db = fresh_test_db()
+    return HouseAccountProvisioner(db, _FakeOnchain(nonce=3), Settings()), db
+
+
+def test_a_new_house_account_has_no_password():
+    from agentpit.db.table_read import TableRead
+    prov, db = _db_provisioner()
+    house = prov.ensure_provisioned()
+    with db.read() as conn:
+        assert TableRead.get_password_hash_by_userid(conn, house.user_id) is None
+
+
+def test_a_house_account_created_with_a_password_loses_it_on_start():
+    from agentpit.db.table_read import TableRead
+    from agentpit.db.table_write import TableWrite
+    from agentpit.liquidity.house_accounts import _EMAIL
+    prov, db = _db_provisioner()
+    with db.write() as conn:
+        user_id, _acct, api_key = TableWrite.create_user(
+            conn, email=_EMAIL, password_hash="$2b$12$x", handle=None
+        )
+        TableWrite.mark_user_onboarded(conn, user_id)
+        TableWrite.mark_user_as_bot(conn, api_key)
+
+    assert prov.ensure_provisioned().user_id == user_id
+    with db.read() as conn:
+        assert TableRead.get_password_hash_by_userid(conn, user_id) is None

@@ -2,7 +2,6 @@
 
 import logging
 
-from agentpit.auth.passwords import hash_password
 from agentpit.config import Settings
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
@@ -15,7 +14,6 @@ from agentpit.onchain.user_wallet import GAS_BUFFER_PCT
 log = logging.getLogger(__name__)
 
 _EMAIL = "house-bot-0@agentpit.local"
-_PASSWORD = "house-bot-fixed-secret-pw"  # house accounts never log in via HTTP
 
 
 class HouseAccountProvisioner:
@@ -28,8 +26,15 @@ class HouseAccountProvisioner:
         with self._db.read() as conn:
             user = TableRead.get_user_by_email(conn, _EMAIL)
         if user is None or not user.is_bot:
-            return self._create_and_onboard()
-        self._maybe_reonboard(user)
+            user = self._create_and_onboard()
+        else:
+            self._maybe_reonboard(user)
+        if user.has_password:
+            # The house never signs in, so it has no password. Rows provisioned
+            # before that still carry one, and it goes on the next start.
+            with self._db.write() as conn:
+                TableWrite.clear_password_hash(conn, user.user_id)
+            user = user.model_copy(update={"has_password": False})
         return user
 
     def _create_and_onboard(self) -> User:
@@ -41,7 +46,7 @@ class HouseAccountProvisioner:
                 user_id, acct, api_key = TableWrite.create_user(
                     conn,
                     email=_EMAIL,
-                    password_hash=hash_password(_PASSWORD),
+                    password_hash=None,
                     handle=None,
                 )
         self._fund(acct)
