@@ -30,7 +30,7 @@ G = 100_000_000_000
 
 
 class _NoChain:
-    def usd_balance(self, address: str) -> int:
+    def balances(self, address: str, token_ids: list[int]) -> tuple[int, int, list[int]]:
         raise AssertionError("the board must not read the chain")
 
 

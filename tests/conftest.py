@@ -184,20 +184,31 @@ def _isolated_db_session():
 
     _tags_route._tags_cache = None
     # And the share cards: a card drawn for a previous test's row would be
-    # served for the next test's agent at the same address.
-    from agentpit.api.routes import agents as _agents_route
+    # served for the next test's agent at the same address or race.
+    from agentpit.api import og_card as _og_card
 
-    _agents_route._cards.clear()
+    _og_card._cards.clear()
     # And /stats: its 30 s slot would serve a previous test's days.
     from agentpit.api.routes import leaderboard as _leaderboard_route
 
     _leaderboard_route._stats_cache = None
-    # Same reason as the events cache above: holdings and touched accounts
-    # left by a previous test would leak into the next one.
+    # Same reason as the events cache above: holdings, touched accounts, book
+    # waits and the peer cursor left by a previous test would leak into the
+    # next one.
     from agentpit.services import leaderboard_service as _leaderboard_service
 
     _leaderboard_service._holdings.clear()
     _leaderboard_service._dirty.clear()
+    _leaderboard_service._refused_since.clear()
+    _leaderboard_service._peer_next_block = 0
+    from agentpit.services import competition_service as _competition_service
+
+    _competition_service._cursor.clear()
+    _competition_service._bells.clear()
+    _competition_service._overdue.clear()
+    _competition_service._series.clear()
+    _competition_service._archived.clear()
+    _competition_service._races = None
     # Same reason again: a claim backoff left by a previous test would make
     # the next test's auto-redeem pass skip a holder it should claim for.
     from agentpit.services import market_service as _market_service

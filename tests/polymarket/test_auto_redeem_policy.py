@@ -23,7 +23,7 @@ from agentpit.domain import exceptions as errors
 from agentpit.services import gas_sponsor, market_service
 from agentpit.services.market_service import redeem_resolved_markets
 from agentpit.services.position_service import PositionService
-from tests.db_helpers import fresh_test_db
+from tests.db_helpers import enter_ended, fresh_test_db, take_end
 
 _LOGGER = "agentpit.services.market_service"
 _ONE_USD = 1_000_000  # micro-apUSD, well above the $0.01 minimum
@@ -571,6 +571,22 @@ def test_a_holder_with_a_transaction_in_flight_is_skipped_and_not_counted(world)
     assert (busy.user_id, first.id) not in _BACKOFF
     assert world.flagged(first) is False
     assert world.flagged(second) is True
+
+
+def test_a_halted_entrant_is_claimed_for_only_once_its_end_value_is_taken(world):
+    market = world.market()
+    user = world.holder(market)
+    enter_ended(world.db, user.user_id)
+
+    assert world.run() == 0
+    assert world.calls == []
+    assert world.flagged(market) is False
+
+    take_end(world.db, user.user_id)
+
+    assert world.run() == 1
+    assert world.claimed_users == [user.user_id]
+    assert world.flagged(market) is True
 
 
 def test_a_split_in_flight_holds_the_market_open_for_a_holder_with_no_trades(world):

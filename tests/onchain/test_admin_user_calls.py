@@ -11,7 +11,7 @@ import pytest
 from eth_account import Account
 from web3.exceptions import Web3RPCError
 
-from agentpit.onchain.admin import _MAX_UINT256, OnchainAdmin
+from agentpit.onchain.admin import _BALANCE_BATCH, _MAX_UINT256, OnchainAdmin
 from agentpit.onchain.chain_rpc import is_balance_low
 from agentpit.onchain.ctf_ids import binary_market_ids
 from agentpit.onchain.tx_sender import PendingTx
@@ -255,6 +255,18 @@ def test_user_split_position_still_splits_for_a_self_funded_wallet(admin):
 
     assert receipt["status"] == 1
     assert admin.ctf_balances(house.address, tokens) == [7_000_000, 7_000_000]
+
+
+def test_one_batch_reads_the_block_the_cash_and_every_balance(admin):
+    _question_id, condition_id, tokens = _condition(admin)
+    house = _self_funded_house(admin, dripped=True)
+    admin.user_split_position(house, condition_id, 7_000_000)
+    unheld = list(range(1, 2 * _BALANCE_BATCH))
+
+    block, cash, balances = admin.balances(house.address, [*tokens, *unheld])
+
+    assert (block, cash) == (admin._client.web3.eth.block_number, admin.usd_balance(house.address))
+    assert balances == [7_000_000, 7_000_000, *[0] * len(unheld)]
 
 
 def test_the_hash_is_handed_over_after_signing_and_before_the_broadcast(admin):

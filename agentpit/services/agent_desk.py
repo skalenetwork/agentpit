@@ -33,6 +33,7 @@ from agentpit.datastructures.agent_desk import (
     TopUp,
     TradeResult,
 )
+from agentpit.datastructures.competition import RECAP
 from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.match_leg import MICRO, legs_for_user
@@ -139,7 +140,7 @@ class AgentDesk:
         self._orders = OrderService(db, onchain, settings)
         self._balance = BalanceService(db, onchain, settings, self._accounts)
         self._board = LeaderboardService(db, onchain, self._accounts, settings)
-        self._competitions = CompetitionService(db, onchain, self._accounts, settings)
+        self._competitions = CompetitionService(db, self._accounts, settings)
 
     def search_markets(
         self,
@@ -326,10 +327,10 @@ class AgentDesk:
         return CancelResult(cancelled=len(done.canceled))
 
     def portfolio(self, user: User) -> Portfolio:
-        cash = self._onchain.usd_balance(user.eth_address)
-        held = sorted(self._accounts.list_positions(user.eth_address), key=lambda p: -p.currentValue)
+        wallet = self._accounts.wallet(user.eth_address)
+        held = sorted(wallet.positions, key=lambda p: -p.currentValue)
         value = round(sum(p.currentValue for p in held) * MICRO)
-        equity = cash + value
+        equity = wallet.cash_raw + value
         with self._db.read() as conn:
             deposited = TableRead.get_total_deposited(conn, user.user_id, self._settings.paper_balance_target_raw)
         board = self._board.build_board()
@@ -346,13 +347,17 @@ class AgentDesk:
                 found = TableRead.list_markets_filtered(conn, condition_ids=list({o.market for o in shown}), limit=TOP)
             slugs = {m.condition_id.value: m.slug for m in found}
         now = int(time.time())
-        pages = [self._competitions.page(c.competition.slug, now) for c in self._competitions.listing(now) if c.phase != "ended"]
-        entries = [(p, next((s for s in p.standings if s.address == user.eth_address), None)) for p in pages]
+        races = [(build.race, build.entries.get(user.eth_address.lower())) for build in self._competitions.races(now).values()]
+        entries = [
+            (race, entry)
+            for race, entry in races
+            if race.phase != "ended" or entry is not None and race.endsAt > now - RECAP
+        ]
         return Portfolio(
             agent=display_name(user.handle, user.eth_address),
             address=user.eth_address,
             app=user.agent_app,
-            cash_usd=_usd(cash),
+            cash_usd=_usd(wallet.cash_raw),
             positions_value_usd=_usd(value),
             equity_usd=_usd(equity),
             pnl_usd=_usd(equity - deposited),
@@ -396,20 +401,24 @@ class AgentDesk:
             activity=self._activity(user.api_key),
             competitions=[
                 CompetitionCard(
-                    competition=p.competition.slug,
-                    title=p.competition.title,
-                    phase=p.phase,
-                    starts_at=datetime.fromtimestamp(p.competition.starts_at, UTC),
-                    ends_at=datetime.fromtimestamp(p.competition.ends_at, UTC),
-                    prizes=p.competition.prizes,
-                    entered=s is not None,
-                    trades=None if s is None else s.trades,
-                    rank=None if s is None else s.rank,
-                    url=f"{self._settings.landing_url}/competitions/{p.competition.slug}",
+                    competition=race.slug,
+                    title=race.title,
+                    phase=race.phase,
+                    final=race.final,
+                    starts_at=datetime.fromtimestamp(race.startsAt, UTC),
+                    ends_at=datetime.fromtimestamp(race.endsAt, UTC),
+                    prizes=race.prizes,
+                    entered=entry is not None,
+                    trades=None if entry is None else entry.standing.trades,
+                    rank=None if entry is None else entry.standing.rank,
+                    ranked=race.ranked,
+                    line=None if entry is None else entry.line,
+                    url=f"{self._settings.landing_url}/competitions/{race.slug}"
+                    + ("" if entry is None else f"?agent={user.eth_address}"),
                 )
-                for p, s in entries
+                for race, entry in entries
             ],
-            competitions_hint=ENTER_HINT if any(s is None for _, s in entries) else None,
+            competitions_hint=ENTER_HINT if any(entry is None for _, entry in entries) else None,
         )
 
     def top_up(self, user: User) -> TopUp:
@@ -423,12 +432,14 @@ class AgentDesk:
 
     def enroll(self, user: User, competition: str) -> Enrolled:
         slug = urlsplit(competition).path.rstrip("/").rsplit("/", 1)[-1]
-        entry = self._competitions.enroll(user.user_id, slug, int(time.time()), switch=False)
+        now = int(time.time())
+        entry = self._competitions.enroll(user.user_id, slug, now, switch=False)
         return Enrolled(
             competition=entry.slug,
             run_starts_at=datetime.fromtimestamp(entry.run_starts_at, UTC),
             ends_at=datetime.fromtimestamp(entry.ends_at, UTC),
             url=f"{self._settings.landing_url}/competitions/{entry.slug}",
+            line=entry.line(display_name(user.handle, user.eth_address), now),
         )
 
     def leaderboard(self, limit: BoardLimit = 10) -> Leaderboard:
@@ -467,7 +478,7 @@ class AgentDesk:
 
     def _activity(self, api_key: str) -> list[Activity]:
         with self._db.read() as conn:
-            rows = TableRead.recent_activity(conn, api_key, ACTIVITY)
+            rows = TableRead.recent_activity(conn, [(api_key, 0, 2**62)], ACTIVITY)
         entries: list[Activity] = []
         for row, m in rows:
             at = datetime.fromtimestamp(row["MATCH_TIME"], UTC)

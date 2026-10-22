@@ -684,9 +684,10 @@ def redeem_resolved_markets(
         for api_key in sorted(api_keys):
             with db.read() as conn:
                 user = TableRead.get_user_by_api_key(conn, api_key)
-            if user is None or user.is_bot:
-                continue
-            if (api_key, market.market_id) in in_flight:
+                if user is None or user.is_bot:
+                    continue
+                halted = TableRead.halted(conn, user.user_id, int(time.time()))
+            if halted is not None or (api_key, market.market_id) in in_flight:
                 still_owed = True
                 continue
             try:

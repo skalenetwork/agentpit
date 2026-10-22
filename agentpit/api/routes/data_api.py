@@ -24,7 +24,7 @@ def get_positions(
 ) -> list[PositionWire]:
     if not service.is_public(user):
         return []
-    return service.list_positions(user, _csv(market))
+    return service.wallet(user, _csv(market)).positions
 
 
 @router.get("/closed-positions", response_model=list[PositionWire])

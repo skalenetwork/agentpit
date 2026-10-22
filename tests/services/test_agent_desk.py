@@ -462,7 +462,7 @@ def test_portfolio_matches_the_leaderboard(house_book):
     desk.trade(agent, slug, "YES", "buy", usd=30)
     _drain(book, "0.4")
     desk.trade(agent, slug, "YES", "buy", shares=10, limit_price=0.1)
-    desk._board.take_snapshot(int(time.time()), drain())
+    desk._board.take_snapshot(drain())
     page = f"https://agentpit.dev/agents/{agent.eth_address}"
     dated = f"{page}?d={datetime.now(UTC).date()}"
 
@@ -489,7 +489,7 @@ def test_portfolio_matches_the_leaderboard(house_book):
 
     for _ in range(RANK_FLOOR - 1):
         desk.trade(agent, slug, "YES", "buy", shares=1)
-    desk._board.take_snapshot(int(time.time()), drain())
+    desk._board.take_snapshot(drain())
 
     mine = desk.portfolio(agent)
     board = desk.leaderboard()
@@ -504,6 +504,7 @@ def test_portfolio_matches_the_leaderboard(house_book):
 
 
 DAY = 86_400
+G = 100_000_000_000
 PRIZES = [Prize(usd=700, skl=100), Prize(usd=0, skl=100)]
 
 
@@ -512,40 +513,48 @@ def _competition(conn, slug: str, starts: int, ends: int) -> None:
     TableWrite.save_competition(conn, competition, 0)
 
 
-def test_portfolio_lists_competitions_not_yet_ended_with_this_agents_run():
+def test_portfolio_lists_competitions_not_yet_ended_and_entered_ones_a_week_past_their_end():
     now = int(time.time())
     with fresh_test_db().write() as conn:
-        user_id, _, key = TableWrite.create_user(conn, None, None, owner_workos_id="user_o")
-        for slug, starts in (("past", now - 3 * DAY), ("live", now - DAY), ("next", now + 2 * DAY)):
+        user_id, account, key = TableWrite.create_user(conn, None, None, owner_workos_id="user_o")
+        for slug, starts in (("old", now - 10 * DAY), ("recent", now - 8 * DAY), ("gone", now - 4 * DAY), ("live", now - DAY + 1_800), ("next", now + 2 * DAY)):
             _competition(conn, slug, starts, starts + 2 * DAY)
-        for slug in ("past", "live"):
-            TableWrite.enter_competition(conn, slug, "user_o", user_id, now - 4 * DAY, False)
-        TableWrite.capture_entry(conn, "live", user_id, "START", 100_000_000_000)
-        for k in range(PLACE_FLOOR):
+        for slug in ("old", "recent", "live"):
+            TableWrite.enter_competition(conn, slug, "user_o", user_id, now - 11 * DAY, False)
+        TableWrite.capture_entry(conn, "recent", user_id, "START", G, now - 8 * DAY, None)
+        TableWrite.capture_entry(conn, "recent", user_id, "END", G + G // 10, now - 6 * DAY + 50, 1)
+        conn.execute("UPDATE competitions SET FINAL_AT = %s WHERE SLUG = 'recent'", (now - 6 * DAY + 60,))
+        TableWrite.capture_entry(conn, "live", user_id, "START", G, now - DAY + 1_800, None)
+        for k, at in enumerate([now - 7 * DAY, *[now - 60] * PLACE_FLOOR]):
             conn.execute(
                 "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) VALUES (%s, %s, %s, 'CONFIRMED')",
-                (f"t{k}", key, now - 60),
+                (f"t{k}", key, at),
             )
 
     portfolio = _desk().portfolio(_user(key))
-    upcoming, live = portfolio.competitions
+    upcoming, live, recent = portfolio.competitions
 
     assert portfolio.competitions_hint == ENTER_HINT
-
-    assert (upcoming.competition, upcoming.phase, upcoming.entered, upcoming.trades, upcoming.rank) == (
-        "next", "upcoming", False, None, None
+    assert (upcoming.competition, upcoming.phase, upcoming.entered, upcoming.trades, upcoming.rank, upcoming.line, upcoming.url) == (
+        "next", "upcoming", False, None, None, None, "https://agentpit.dev/competitions/next"
     )
     assert live == CompetitionCard(
         competition="live",
         title="Live",
         phase="live",
-        starts_at=datetime.fromtimestamp(now - DAY, UTC),
-        ends_at=datetime.fromtimestamp(now + DAY, UTC),
+        final=False,
+        starts_at=datetime.fromtimestamp(now - DAY + 1_800, UTC),
+        ends_at=datetime.fromtimestamp(now + DAY + 1_800, UTC),
         prizes=PRIZES,
         entered=True,
         trades=PLACE_FLOOR,
         rank=1,
-        url="https://agentpit.dev/competitions/live",
+        ranked=1,
+        line=f"{portfolio.agent} leads Live at 0.00%, 1d 0h left",
+        url=f"https://agentpit.dev/competitions/live?agent={account.address}",
+    )
+    assert (recent.competition, recent.phase, recent.final, recent.rank, recent.ranked, recent.line) == (
+        "recent", "ended", True, 1, 1, f"{portfolio.agent} finished #1 of 1 in Recent with +10.00%"
     )
 
 
@@ -566,15 +575,15 @@ def test_activity_lists_fills_and_payouts_newest_first():
             ),
             is_polygon_market=False,
         )
-        for trade_id, at, kind, maker_asset, taker, maker, price, size in (
-            ("t1", 100, "NORMAL", None, key, "house", 400_000, 20_000_000),
-            ("t2", 200, "MINT", "snow-n", "house", key, 300_000, 10_000_000),
+        for trade_id, at, kind, asset, maker_asset, price, size in (
+            ("t1", 100, "NORMAL", "snow-y", None, 400_000, 20_000_000),
+            ("t2", 200, "MINT", "snow-n", "snow-y", 700_000, 10_000_000),
         ):
             conn.execute(
                 "INSERT INTO trades (TRADE_ID, MARKET, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, SIDE, PRICE, TRADE_SIZE, "
                 "MATCH_TIME, STATUS, TAKER_API_KEY, MAKER_API_KEY) "
-                "VALUES (%s, %s, 'snow-y', %s, %s, 'BUY', %s, %s, %s, 'CONFIRMED', %s, %s)",
-                (trade_id, market.condition_id.value, maker_asset, kind, price, size, at, taker, maker),
+                "VALUES (%s, %s, %s, %s, %s, 'BUY', %s, %s, %s, 'CONFIRMED', %s, 'house')",
+                (trade_id, market.condition_id.value, asset, maker_asset, kind, price, size, at, key),
             )
         TableWrite.set_market_state(conn, market.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0))
         TableWrite.log_transaction(conn, key, "REDEEM", market.market_id, {"collateral_amount": 30_000_000})

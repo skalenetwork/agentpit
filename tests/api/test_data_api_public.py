@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from agentpit.api.main import app
 from agentpit.db.table_write import TableWrite
-from agentpit.services.account_service import AccountService
+from agentpit.services.account_service import AccountService, Wallet
 from tests.db_helpers import fresh_test_conn
 
 
@@ -31,8 +31,13 @@ def served(monkeypatch) -> list[str]:
         asked.append(address)
         return [{"user": address, "value": 0}]
 
-    for method in ("list_positions", "list_closed_positions", "list_activity"):
+    def read(self, address, *args):
+        asked.append(address)
+        return Wallet(0, 0, [])
+
+    for method in ("list_closed_positions", "list_activity"):
         monkeypatch.setattr(AccountService, method, listed)
+    monkeypatch.setattr(AccountService, "wallet", read)
     monkeypatch.setattr(AccountService, "total_value", valued)
     return asked
 

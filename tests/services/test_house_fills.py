@@ -18,6 +18,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AdminGasPausedError,
+    BusinessRuleError,
     GasBudgetExceededError,
     OrderNotFilledError,
 )
@@ -25,7 +26,7 @@ from agentpit.liquidity import feed
 from agentpit.liquidity.replica import BookReplica, Used
 from agentpit.onchain.deployment import Deployment
 from agentpit.services.order_service import OrderService
-from tests.db_helpers import fresh_test_db
+from tests.db_helpers import enter_ended, fresh_test_db, take_end
 from tests.fake_skaled import FakeFn, FakeSkaled, make_sender
 
 _ADDR = "0x00000000000000000000000000000000000000a1"
@@ -385,3 +386,51 @@ def test_a_breaker_that_trips_mid_pass_stops_the_rest_of_that_pass(house_book):
         ("live", 2_000_000),
         ("matched", 0),
     ]
+
+
+def test_a_started_entrant_trades_again_only_once_its_end_value_is_taken(house_book):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    house_book("101", asks=(("0.6", "20"),))
+    svc = _service(db)
+    resting = _place(svc, agent, "101", "BUY", "0.5", "4", kind="GTC")
+    enter_ended(db, agent.user_id)
+
+    with pytest.raises(
+        BusinessRuleError, match="^Trading is paused from the end of Bell test until its final value is taken.$"
+    ):
+        _place(svc, agent, "101", "BUY", "0.6", "2")
+    assert svc.cancel_orders(agent, [resting.orderID]).canceled == [resting.orderID]
+    assert _counts(db) == (1, 0)
+
+    take_end(db, agent.user_id)
+
+    assert _place(svc, agent, "101", "BUY", "0.6", "2").success
+
+
+def test_an_entrant_with_no_start_value_trades_after_the_end(house_book):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    house_book("101", asks=(("0.6", "20"),))
+    enter_ended(db, agent.user_id, started=False)
+
+    assert _place(_service(db), agent, "101", "BUY", "0.6", "2").success
+
+
+def test_the_sweeper_leaves_a_halted_entrants_order_resting_until_its_end_value(house_book):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    book = house_book("101", asks=(("0.6", "5"),))
+    svc = _service(db)
+    order = _place(svc, agent, "101", "BUY", "0.55", "4", kind="GTC")
+    enter_ended(db, agent.user_id)
+    _ask(book, "0.55", "5")
+
+    svc.sweep()
+
+    assert (_row(db, order.orderID), book.used) == (("live", 4_000_000), {})
+
+    take_end(db, agent.user_id)
+    svc.sweep()
+
+    assert _row(db, order.orderID) == ("matched", 0)

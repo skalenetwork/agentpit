@@ -19,6 +19,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     SPONSORED_GAS_REFUSALS,
+    BusinessRuleError,
     InsufficientBalanceError,
     MarketNotFoundError,
     MarketStateError,
@@ -231,17 +232,25 @@ class PositionService:
 
     @contextmanager
     def _locked(self, user: User, market_id: int) -> Iterator[None]:
-        """The sponsor's per-user lock, refused with a 409 while an earlier
-        split, merge or claim by `user` on this market has an unknown outcome
-        (a pending row younger than the TTL): repeating it could split twice,
-        or top a wallet up for a claim already paid."""
+        """The sponsor's per-user lock, refused with a 400 from the end of a
+        competition `user` started in until its end value is taken (the bell
+        halt), and with a 409 while an earlier split, merge or claim by `user`
+        on this market has an unknown outcome (a pending row younger than the
+        TTL): repeating it could split twice, or top a wallet up for a claim
+        already paid."""
         with self._sponsor.locked(user):
+            now = int(time.time())
             with self._db.read() as conn:
+                title = TableRead.halted(conn, user.user_id, now)
                 pending = TableRead.has_pending_user_tx(
                     conn,
                     user.api_key,
                     market_id,
-                    since=in_flight_since(int(time.time())),
+                    since=in_flight_since(now),
+                )
+            if title is not None:
+                raise BusinessRuleError(
+                    f"Trading is paused from the end of {title} until its final value is taken."
                 )
             if pending:
                 raise TransactionInProgressError(

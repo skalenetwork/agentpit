@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from collections import deque
 from dataclasses import dataclass
 
@@ -28,6 +29,8 @@ PING_SECONDS = 10.0
 SNAPSHOT_SECONDS = 30.0
 RECONNECT_MIN_SECONDS = 1.0
 RECONNECT_MAX_SECONDS = 60.0
+BOOK_GRACE = 600
+_STARTED = time.monotonic()
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,24 @@ def book(token: str) -> BookSnapshot | None:
         return None
     snap = q[2].snapshot()
     return snap if snap is None or q[1] else snap.flipped()
+
+
+def booked(token: str) -> bool:
+    """Whether a valuation can price `token` on a live book: it is not
+    mirrored, or its book is in."""
+    return quote(token) is None or book(token) is not None
+
+
+def ready(engine_enabled: bool) -> bool:
+    """Whether valuations can start: the engine is off, the mirror has its
+    targets, or BOOK_GRACE has passed since the process started, so a mirror
+    that never loads cannot stop them."""
+    house = HOUSE
+    return (
+        not engine_enabled
+        or (house is not None and bool(house.state.by_asset))
+        or time.monotonic() - _STARTED >= BOOK_GRACE
+    )
 
 
 def tops(tokens: list[str]) -> dict[str, tuple[int | None, int | None]]:

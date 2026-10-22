@@ -177,11 +177,10 @@ LeaderboardServiceDep = Annotated[
 
 def get_competition_service(
     db: SessionDep,
-    onchain: OnchainAdminDep,
     accounts: AccountServiceDep,
     settings: SettingsDep,
 ) -> CompetitionService:
-    return CompetitionService(db, onchain, accounts, settings)
+    return CompetitionService(db, accounts, settings)
 
 
 CompetitionServiceDep = Annotated[

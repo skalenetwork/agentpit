@@ -38,15 +38,15 @@ from agentpit.datastructures.split_position_request import (
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
-    AdminGasPausedError, GasPriceMovedError, GasTopUpTimeoutError, InsufficientBalanceError,
-    InsufficientGasError, MarketStateError, NothingToClaimError, TransactionInProgressError,
-    TransactionPendingError, TransactionRevertedError,
+    AdminGasPausedError, BusinessRuleError, GasPriceMovedError, GasTopUpTimeoutError,
+    InsufficientBalanceError, InsufficientGasError, MarketStateError, NothingToClaimError,
+    TransactionInProgressError, TransactionPendingError, TransactionRevertedError,
 )
 from agentpit.onchain.tx_sender import TxDropped
 from agentpit.services.gas_sponsor import UserGasSponsor
 from agentpit.services.pending_user_txs import _PENDING_TTL_SECONDS
 from agentpit.services.position_service import PositionService
-from tests.db_helpers import fresh_test_db
+from tests.db_helpers import enter_ended, fresh_test_db, take_end
 
 _LOGGER = "agentpit.services.position_service"
 _CONDITION = "0x" + "ab" * 32
@@ -607,6 +607,22 @@ def test_a_pending_transaction_on_the_market_refuses_another_before_any_read(act
 
     assert chain.reads == []
     assert sponsor.sent == []
+
+
+@pytest.mark.parametrize("action", _ACTIONS)
+def test_a_halted_entrant_is_refused_before_any_read_until_its_end_value_is_taken(action):
+    db, user, mid, chain = _ready(action)
+    enter_ended(db, user.user_id)
+    sponsor = _FakeSponsor(payout=100_000_000)
+
+    with pytest.raises(BusinessRuleError, match="from the end of Bell test until its final value"):
+        _act(_service(db, chain, sponsor), action, user, mid)
+    assert (chain.reads, sponsor.sent) == ([], [])
+
+    take_end(db, user.user_id)
+    _act(_service(db, chain, sponsor), action, user, mid)
+
+    assert _rows(db, user) == [_INTENT[action][0]]
 
 
 @pytest.mark.parametrize("action", _ACTIONS)

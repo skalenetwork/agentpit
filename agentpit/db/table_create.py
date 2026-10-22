@@ -89,18 +89,25 @@ class TableCreate:
         )
         # A token's last print, newest first: one probe per token and side
         # (`TableRead.last_trade_prices_for_tokens`) instead of reading and
-        # sorting the token's whole tape. On a database that already holds a
+        # sorting the token's whole tape; and an agent's fills by time, agents
+        # being the taker on every fill. On a database that already holds a
         # long tape, build them before deploying, so the tape keeps writing
-        # while they build and these two lines find them:
+        # while they build and the lines below find them:
         #   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trades_mirrored_asset_time
         #     ON trades(ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED';
         #   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trades_mirrored_maker_asset_time
         #     ON trades(MAKER_ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED';
+        #   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_trades_fills_taker_time
+        #     ON trades(TAKER_API_KEY, MATCH_TIME) WHERE STATUS IN ('PENDING', 'CONFIRMED');
         # one statement at a time, from a session that survives a dropped
         # connection. A cancelled build leaves the index INVALID, which IF NOT
         # EXISTS would keep, and the query without these indexes walks the
         # whole tape per token: an invalid one is dropped here and rebuilt.
-        for name in ("idx_trades_mirrored_asset_time", "idx_trades_mirrored_maker_asset_time"):
+        for name in (
+            "idx_trades_mirrored_asset_time",
+            "idx_trades_mirrored_maker_asset_time",
+            "idx_trades_fills_taker_time",
+        ):
             invalid = conn.execute(
                 "SELECT 1 FROM pg_index WHERE indexrelid = to_regclass(%s) AND NOT indisvalid", (name,)
             ).fetchone()
@@ -113,6 +120,10 @@ class TableCreate:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trades_mirrored_maker_asset_time "
             "ON trades(MAKER_ASSET_ID, MATCH_TIME DESC) WHERE STATUS = 'MIRRORED'"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_fills_taker_time "
+            "ON trades(TAKER_API_KEY, MATCH_TIME) WHERE STATUS IN ('PENDING', 'CONFIRMED')"
         )
         conn.execute(
             "UPDATE trades SET STATUS = 'CONFIRMED' "
@@ -511,6 +522,10 @@ class TableCreate:
             )
             """
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transactions_redeems "
+            "ON transactions(API_KEY, TIMESTAMP) WHERE TRANSACTION_TYPE = 'REDEEM'"
+        )
 
     @staticmethod
     def create_agents_table(conn: psycopg.Connection) -> None:
@@ -666,7 +681,9 @@ class TableCreate:
 
     @staticmethod
     def create_competitions_table(conn: psycopg.Connection) -> None:
-        """PRIZES is a JSON list of `Prize`, item `i` being place `i + 1`."""
+        """PRIZES is a JSON list of `Prize`, item `i` being place `i + 1`.
+        FINAL_AT is when the standings turned final, written once and never
+        by the file sync."""
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS competitions (
@@ -679,11 +696,17 @@ class TableCreate:
             )
             """
         )
+        conn.execute("ALTER TABLE competitions ADD COLUMN IF NOT EXISTS FINAL_AT BIGINT")
 
     @staticmethod
     def create_competition_entries_table(conn: psycopg.Connection) -> None:
         """One agent per owner per competition. START_RAW and END_RAW are the
-        account's value at its run start and at the end, NULL until captured."""
+        account's value at its run start and at the end, NULL until captured,
+        START_AT and END_AT when the wallet read behind each returned, and
+        END_BLOCK the block of the end read. Entries captured before these
+        columns existed get the run start and the end as their times, and no
+        block. A started entry whose competition is gone cannot be dated, so
+        it is deleted."""
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS competition_entries (
@@ -701,6 +724,51 @@ class TableCreate:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_competition_entries_user_id "
             "ON competition_entries(USER_ID)"
+        )
+        conn.execute(
+            "ALTER TABLE competition_entries ADD COLUMN IF NOT EXISTS START_AT BIGINT, "
+            "ADD COLUMN IF NOT EXISTS END_AT BIGINT, ADD COLUMN IF NOT EXISTS END_BLOCK BIGINT"
+        )
+        conn.execute(
+            "DELETE FROM competition_entries e WHERE e.START_RAW IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM competitions c WHERE c.SLUG = e.SLUG)"
+        )
+        conn.execute(
+            "UPDATE competition_entries e SET START_AT = GREATEST(c.STARTS_AT, e.ENROLLED_AT) "
+            "FROM competitions c WHERE c.SLUG = e.SLUG AND e.START_RAW IS NOT NULL AND e.START_AT IS NULL"
+        )
+        conn.execute(
+            "UPDATE competition_entries e SET END_AT = c.ENDS_AT "
+            "FROM competitions c WHERE c.SLUG = e.SLUG AND e.END_RAW IS NOT NULL AND e.END_AT IS NULL"
+        )
+        conn.execute("ALTER TABLE competition_entries DROP CONSTRAINT IF EXISTS competition_entries_captured")
+        conn.execute(
+            """
+            ALTER TABLE competition_entries ADD CONSTRAINT competition_entries_captured CHECK (
+                (START_RAW IS NULL) = (START_AT IS NULL)
+                AND (END_RAW IS NULL) = (END_AT IS NULL)
+                AND (END_BLOCK IS NULL OR END_RAW IS NOT NULL)
+                AND (END_RAW IS NULL OR START_RAW IS NOT NULL)
+            )
+            """
+        )
+
+    @staticmethod
+    def create_competition_points_table(conn: psycopg.Connection) -> None:
+        """Each entrant's value in micro apUSD at every whole UTC hour T inside
+        its competition's window and at ENDS_AT: its newest account_snapshots
+        CAPITAL_RAW taken from START_AT and before T, else START_RAW. A row
+        exists only when START_AT < T, and rows are only ever inserted."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS competition_points (
+                SLUG      TEXT   NOT NULL,
+                T         BIGINT NOT NULL,
+                USER_ID   TEXT   NOT NULL,
+                VALUE_RAW BIGINT NOT NULL,
+                PRIMARY KEY (SLUG, T, USER_ID)
+            )
+            """
         )
 
     @staticmethod
@@ -725,3 +793,4 @@ class TableCreate:
         TableCreate.create_pending_user_txs_table(conn)
         TableCreate.create_competitions_table(conn)
         TableCreate.create_competition_entries_table(conn)
+        TableCreate.create_competition_points_table(conn)

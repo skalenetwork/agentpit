@@ -5,6 +5,7 @@ from datetime import date
 from typing import NamedTuple
 
 import psycopg
+from psycopg.rows import tuple_row
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from pydantic import BaseModel
@@ -12,7 +13,7 @@ from pydantic import BaseModel
 from agentpit.utils.parse import parse_32b_hex_private_key
 from agentpit.datastructures.agent_desk import Sort
 from agentpit.datastructures.board import WireTeam
-from agentpit.datastructures.competition import LOCK, Competition
+from agentpit.datastructures.competition import LOCK, Competition, Entry
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.event_sort import EventSort
 from agentpit.datastructures.market import Market
@@ -69,28 +70,16 @@ class Seat(BaseModel):
 
 
 class PendingCapture(BaseModel):
+    """An entry whose start or end value is due; `settling` while a fill of
+    the account is still PENDING."""
+
     slug: str
     user_id: str
     eth_address: str
     run_starts_at: int
     ends_at: int
     start_raw: int | None
-
-
-class Entrant(BaseModel):
-    """One non-deleted entry with the figures its standing is built from."""
-
-    eth_address: str
-    handle: str | None
-    app: str | None
-    host: str | None
-    run_starts_at: int
-    start_raw: int | None
-    end_raw: int | None
-    earned_raw: int
-    trades: int
-    listed: bool
-    disqualified: bool
+    settling: bool
 
 
 class MarketFields(NamedTuple):
@@ -304,11 +293,21 @@ class TableRead:
     )
 
     #: An account's competition entries that pause its top-ups: past their
-    #: lock and still without an end value. Takes TWO parameters, the user id
-    #: and `now`. Prefix your own `SELECT ...`.
+    #: lock, still without an end value, and started or not yet ended. Takes
+    #: THREE parameters, the user id and `now` twice. Prefix your own `SELECT ...`.
     PAUSING_ENTRIES = (
         "FROM competition_entries e JOIN competitions c ON c.SLUG = e.SLUG "
-        f"WHERE e.USER_ID = %s AND e.END_RAW IS NULL AND c.STARTS_AT <= %s + {LOCK}"
+        f"WHERE e.USER_ID = %s AND e.END_RAW IS NULL AND c.STARTS_AT <= %s + {LOCK} "
+        "AND (e.START_RAW IS NOT NULL OR c.ENDS_AT > %s)"
+    )
+
+    #: Competition entries that halt their account's trading: started, past
+    #: their end and still without an end value. Takes ONE parameter, `now`.
+    #: Prefix your own `SELECT ...` (the account is `u`) and append any filter.
+    HALTED_ENTRIES = (
+        "FROM competition_entries e JOIN competitions c ON c.SLUG = e.SLUG "
+        "JOIN users u ON u.USER_ID = e.USER_ID "
+        "WHERE e.START_RAW IS NOT NULL AND e.END_RAW IS NULL AND c.ENDS_AT <= %s"
     )
 
     #: One price print per Polymarket print and token: "this token traded at
@@ -926,30 +925,33 @@ class TableRead:
     def topup_paused_until(db: psycopg.Connection, user_id: str, now: int) -> int | None:
         """The latest end among the entries pausing the account's top-ups; None when none do."""
         row = db.execute(
-            f"SELECT MAX(c.ENDS_AT) AS UNTIL {TableRead.PAUSING_ENTRIES}", (user_id, now)
+            f"SELECT MAX(c.ENDS_AT) AS UNTIL {TableRead.PAUSING_ENTRIES}", (user_id, now, now)
         ).fetchone()
         return row["UNTIL"]
 
     @staticmethod
+    def halted(db: psycopg.Connection, user_id: str, now: int) -> str | None:
+        """The title of the earliest ended competition still owed the account's
+        end value, which halts its trading; None when it may trade."""
+        row = db.execute(
+            f"SELECT c.TITLE {TableRead.HALTED_ENTRIES} AND e.USER_ID = %s ORDER BY c.ENDS_AT LIMIT 1",
+            (now, user_id),
+        ).fetchone()
+        return row["TITLE"] if row else None
+
+    @staticmethod
     def competitions(
         db: psycopg.Connection, slug: str | None = None
-    ) -> "list[tuple[Competition, int]]":
+    ) -> "list[tuple[Competition, int | None]]":
         """Every competition, or the one called `slug`, latest start first, each
-        with its number of entries by accounts not deleted."""
+        with when it turned final."""
         rows = db.execute(
-            """
-            SELECT c.SLUG, c.TITLE, c.STARTS_AT, c.ENDS_AT, c.PRIZES,
-                   (SELECT COUNT(*) FROM competition_entries e
-                    JOIN users u ON u.USER_ID = e.USER_ID
-                    WHERE e.SLUG = c.SLUG AND u.DELETED_AT IS NULL) AS ENTRANTS
-            FROM competitions c
-            WHERE %(slug)s::text IS NULL OR c.SLUG = %(slug)s
-            ORDER BY c.STARTS_AT DESC, c.SLUG
-            """,
+            "SELECT SLUG, TITLE, STARTS_AT, ENDS_AT, PRIZES, FINAL_AT FROM competitions "
+            "WHERE %(slug)s::text IS NULL OR SLUG = %(slug)s ORDER BY STARTS_AT DESC, SLUG",
             {"slug": slug},
         ).fetchall()
         return [
-            (Competition.model_validate({**r, "prizes": json.loads(r["PRIZES"])}), r["ENTRANTS"])
+            (Competition.model_validate({**r, "prizes": json.loads(r["PRIZES"])}), r["FINAL_AT"])
             for r in rows
         ]
 
@@ -974,91 +976,131 @@ class TableRead:
         return Seat.model_validate(row) if row else None
 
     @staticmethod
-    def entered_by_owner(db: psycopg.Connection, owner: str, now: int) -> "dict[str, list[str]]":
-        """user_id -> the competitions not yet ended its owner entered it in."""
+    def entered_by_owner(db: psycopg.Connection, owner: str, since: int) -> "dict[str, list[str]]":
+        """user_id -> the competitions ending after `since` its owner entered it in."""
         entered: dict[str, list[str]] = {}
         for r in db.execute(
             "SELECT e.USER_ID, e.SLUG FROM competition_entries e "
             "JOIN competitions c ON c.SLUG = e.SLUG "
             "WHERE e.OWNER = %s AND c.ENDS_AT > %s ORDER BY c.STARTS_AT, e.SLUG",
-            (owner, now),
+            (owner, since),
         ):
             entered.setdefault(r["USER_ID"], []).append(r["SLUG"])
         return entered
 
     @staticmethod
     def pending_captures(db: psycopg.Connection, now: int, topped_up_before: int) -> "list[PendingCapture]":
-        """Entries of accounts not deleted whose start value is due, or whose
-        end value is due and no fill from before the end is still PENDING.
-        A start waits for onboarding and for a top-up after `topped_up_before`
-        to land."""
+        """Entries still missing an end value from their end on, then entries
+        whose start value is due before their end. A start needs an account
+        not deleted, onboarded and with no top-up after `topped_up_before`
+        still to land; an end is also taken for an account deleted at or
+        after the end."""
         rows = db.execute(
             """
             SELECT e.SLUG, e.USER_ID, u.ETH_ADDRESS,
-                   GREATEST(c.STARTS_AT, e.ENROLLED_AT) AS RUN_STARTS_AT, c.ENDS_AT, e.START_RAW
+                   GREATEST(c.STARTS_AT, e.ENROLLED_AT) AS RUN_STARTS_AT, c.ENDS_AT, e.START_RAW,
+                   EXISTS (SELECT 1 FROM trades t WHERE t.TAKER_API_KEY = u.API_KEY
+                           AND t.STATUS = 'PENDING') AS SETTLING
             FROM competition_entries e
             JOIN competitions c ON c.SLUG = e.SLUG
             JOIN users u ON u.USER_ID = e.USER_ID
-            WHERE u.DELETED_AT IS NULL AND (
-                (e.START_RAW IS NULL AND %(now)s >= GREATEST(c.STARTS_AT, e.ENROLLED_AT)
-                 AND u.ONBOARDED_AT IS NOT NULL
-                 AND (u.LAST_TOPUP_AT IS NULL OR u.LAST_TOPUP_AT <= %(topped)s))
-                OR (e.START_RAW IS NOT NULL AND e.END_RAW IS NULL AND %(now)s >= c.ENDS_AT
-                    AND NOT EXISTS (
-                        SELECT 1 FROM trades t WHERE t.TAKER_API_KEY = u.API_KEY
-                        AND t.STATUS = 'PENDING' AND t.MATCH_TIME < c.ENDS_AT)
-                    AND NOT EXISTS (
-                        SELECT 1 FROM trades t WHERE t.MAKER_API_KEY = u.API_KEY
-                        AND t.STATUS = 'PENDING' AND t.MATCH_TIME < c.ENDS_AT))
-            )
+            WHERE (e.START_RAW IS NULL AND u.DELETED_AT IS NULL
+                   AND %(now)s >= GREATEST(c.STARTS_AT, e.ENROLLED_AT) AND %(now)s < c.ENDS_AT
+                   AND u.ONBOARDED_AT IS NOT NULL
+                   AND (u.LAST_TOPUP_AT IS NULL OR u.LAST_TOPUP_AT <= %(topped)s))
+               OR (e.START_RAW IS NOT NULL AND e.END_RAW IS NULL AND %(now)s >= c.ENDS_AT
+                   AND (u.DELETED_AT IS NULL OR u.DELETED_AT >= c.ENDS_AT))
+            ORDER BY e.START_RAW IS NULL, c.ENDS_AT, e.SLUG, e.USER_ID
             """,
             {"now": now, "topped": topped_up_before},
         ).fetchall()
         return [PendingCapture.model_validate(r) for r in rows]
 
     @staticmethod
-    def entrants(db: psycopg.Connection, slug: str) -> "list[Entrant]":
-        """Each entry by an account not deleted. Earned is capital less the
-        start value, capital being the end value, else the latest valuation
-        since the run start, else the start value; 0 before the start value.
-        Run trades are the non-failed fills, either side, from the run start
-        to the end; listed means the account is on the public board."""
+    def last_point(db: psycopg.Connection, slug: str) -> int:
+        """The latest boundary the competition has points at; 0 when none."""
+        row = db.execute(
+            "SELECT COALESCE(MAX(T), 0) AS T FROM competition_points WHERE SLUG = %s", (slug,)
+        ).fetchone()
+        return row["T"]
+
+    @staticmethod
+    def bell_value(db: psycopg.Connection, slug: str, user_id: str) -> int:
+        """The entry's value at its end, as its bell point holds it: the newest
+        account_snapshots CAPITAL_RAW taken from START_AT and before the end,
+        else START_RAW."""
+        row = db.execute(
+            """
+            SELECT COALESCE(s.CAPITAL_RAW, e.START_RAW) AS VALUE_RAW
+            FROM competition_entries e
+            JOIN competitions c ON c.SLUG = e.SLUG
+            LEFT JOIN LATERAL (
+                SELECT CAPITAL_RAW FROM account_snapshots
+                WHERE USER_ID = e.USER_ID AND T >= e.START_AT AND T < c.ENDS_AT
+                ORDER BY T DESC, SNAPSHOT_ID DESC LIMIT 1
+            ) s ON true
+            WHERE e.SLUG = %s AND e.USER_ID = %s
+            """,
+            (slug, user_id),
+        ).fetchone()
+        return row["VALUE_RAW"]
+
+    @staticmethod
+    def entries(db: psycopg.Connection, slugs: "list[str]") -> "list[Entry]":
+        """The entries of the competitions called `slugs` still in their race:
+        by accounts not deleted before the end, and a deleted one without its
+        handle, app or host. The value is the newest valuation from START_AT
+        and before the end. Run trades are the account's PENDING or CONFIRMED
+        fills from its run start to the end, agents being the taker on every
+        fill. A peer transfer disqualifies only up to the end value's block."""
         rows = db.execute(
             """
-            SELECT u.ETH_ADDRESS, u.HANDLE, u.AGENT_APP AS APP, u.AGENT_HOST AS HOST,
+            SELECT e.SLUG, e.USER_ID, u.API_KEY, u.ETH_ADDRESS AS ADDRESS,
+                   CASE WHEN u.DELETED_AT IS NULL THEN u.HANDLE END AS HANDLE,
+                   CASE WHEN u.DELETED_AT IS NULL THEN u.AGENT_APP END AS APP,
+                   CASE WHEN u.DELETED_AT IS NULL THEN u.AGENT_HOST END AS HOST,
                    GREATEST(c.STARTS_AT, e.ENROLLED_AT) AS RUN_STARTS_AT,
-                   e.START_RAW, e.END_RAW,
-                   COALESCE(COALESCE(e.END_RAW, s.CAPITAL_RAW) - e.START_RAW, 0) AS EARNED_RAW,
-                   x.TRADES,
-                   x.TRADED > 0 AND u.PEER_TRANSFER_BLOCK IS NULL AS LISTED,
-                   e.DISQUALIFIED_AT IS NOT NULL OR u.PEER_TRANSFER_BLOCK IS NOT NULL AS DISQUALIFIED
+                   CASE WHEN e.START_RAW IS NOT NULL
+                        THEN json_build_object('raw', e.START_RAW, 'at', e.START_AT) END AS START,
+                   CASE WHEN e.END_RAW IS NOT NULL
+                        THEN json_build_object('raw', e.END_RAW, 'at', e.END_AT) END AS "end",
+                   e.END_BLOCK, s.CAPITAL_RAW AS VALUE_RAW,
+                   x.TRADES, x.FIRST_TRADE_AT, x.LAST_TRADE_AT,
+                   u.DELETED_AT IS NULL AND u.PEER_TRANSFER_BLOCK IS NULL AND EXISTS (
+                       SELECT 1 FROM trades t
+                       WHERE t.TAKER_API_KEY = u.API_KEY AND t.STATUS IN ('PENDING', 'CONFIRMED')
+                   ) AS LISTED,
+                   e.DISQUALIFIED_AT IS NOT NULL
+                       OR COALESCE(u.PEER_TRANSFER_BLOCK <= COALESCE(e.END_BLOCK, 9223372036854775807), false)
+                       AS DISQUALIFIED
             FROM competition_entries e
             JOIN competitions c ON c.SLUG = e.SLUG
             JOIN users u ON u.USER_ID = e.USER_ID
             LEFT JOIN LATERAL (
                 SELECT CAPITAL_RAW FROM account_snapshots
-                WHERE USER_ID = e.USER_ID AND T >= GREATEST(c.STARTS_AT, e.ENROLLED_AT)
+                WHERE USER_ID = e.USER_ID AND T >= e.START_AT AND T < c.ENDS_AT
                 ORDER BY T DESC, SNAPSHOT_ID DESC LIMIT 1
             ) s ON true
             CROSS JOIN LATERAL (
-                SELECT COUNT(DISTINCT f.TRADE_ID) AS TRADED,
-                       COUNT(DISTINCT f.TRADE_ID) FILTER (
-                           WHERE f.MATCH_TIME >= GREATEST(c.STARTS_AT, e.ENROLLED_AT)
-                             AND f.MATCH_TIME < c.ENDS_AT
-                       ) AS TRADES
-                FROM (
-                    SELECT TRADE_ID, MATCH_TIME FROM trades
-                    WHERE TAKER_API_KEY = u.API_KEY AND STATUS != 'FAILED'
-                    UNION ALL
-                    SELECT TRADE_ID, MATCH_TIME FROM trades
-                    WHERE MAKER_API_KEY = u.API_KEY AND STATUS != 'FAILED'
-                ) f
+                SELECT COUNT(*) AS TRADES, MIN(MATCH_TIME) AS FIRST_TRADE_AT, MAX(MATCH_TIME) AS LAST_TRADE_AT
+                FROM trades
+                WHERE TAKER_API_KEY = u.API_KEY AND STATUS IN ('PENDING', 'CONFIRMED')
+                  AND MATCH_TIME >= GREATEST(c.STARTS_AT, e.ENROLLED_AT) AND MATCH_TIME < c.ENDS_AT
             ) x
-            WHERE e.SLUG = %s AND u.DELETED_AT IS NULL
+            WHERE e.SLUG = ANY(%s) AND (u.DELETED_AT IS NULL OR u.DELETED_AT >= c.ENDS_AT)
             """,
-            (slug,),
+            (slugs,),
         ).fetchall()
-        return [Entrant.model_validate(r) for r in rows]
+        return [Entry.model_validate(r) for r in rows]
+
+    @staticmethod
+    def points(db: psycopg.Connection, slug: str, after: int) -> "list[tuple[int, str, int]]":
+        """The competition's points after `after`, oldest first, as (T, USER_ID, VALUE_RAW)."""
+        with db.cursor(row_factory=tuple_row) as cur:
+            return cur.execute(
+                "SELECT T, USER_ID, VALUE_RAW FROM competition_points WHERE SLUG = %s AND T > %s ORDER BY T",
+                (slug, after),
+            ).fetchall()
 
     @staticmethod
     def read_market(db: psycopg.Connection, market_id: int) -> "Market | None":
@@ -1091,18 +1133,34 @@ class TableRead:
         return Hit(_row_to_market(row), row["VOLUME_24HR"], row["CATEGORY"], row["KICKOFF"], row["EVENT_SLUG"], None)
 
     @staticmethod
-    def recent_activity(db: psycopg.Connection, api_key: str, limit: int) -> "list[tuple[dict, Market]]":
+    def recent_activity(
+        db: psycopg.Connection, windows: "list[tuple[str, int, int]]", limit: int
+    ) -> "list[tuple[dict, Market]]":
+        """The newest `limit` fills and payouts across `windows`, each an api
+        key with the times it covers from and until, newest first with their
+        market; each row carries its window's API_KEY. Agents are the taker on
+        every fill."""
         rows = db.execute(
             f"SELECT a.*, {_MARKET_COLS} FROM ("
-            "SELECT MARKET AS CONDITION_ID, MATCH_TIME, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, SIDE, PRICE, "
+            "SELECT f.* FROM unnest(%(keys)s::text[], %(since)s::bigint[], %(until)s::bigint[]) AS w(API_KEY, SINCE, UNTIL) "
+            "CROSS JOIN LATERAL ("
+            "(SELECT w.API_KEY, MARKET AS CONDITION_ID, MATCH_TIME, ASSET_ID, MAKER_ASSET_ID, MATCH_KIND, SIDE, PRICE, "
             "TRADE_SIZE, TAKER_API_KEY, MAKER_API_KEY, NULL::BIGINT AS PAID FROM trades "
-            "WHERE (TAKER_API_KEY = %(key)s OR MAKER_API_KEY = %(key)s) AND STATUS != 'FAILED' "
-            "UNION ALL SELECT m.CONDITION_ID, EXTRACT(EPOCH FROM x.TIMESTAMP)::BIGINT, "
+            "WHERE TAKER_API_KEY = w.API_KEY AND STATUS IN ('PENDING', 'CONFIRMED') "
+            "AND MATCH_TIME >= w.SINCE AND MATCH_TIME < w.UNTIL ORDER BY MATCH_TIME DESC LIMIT %(limit)s) "
+            "UNION ALL (SELECT w.API_KEY, m.CONDITION_ID, EXTRACT(EPOCH FROM x.TIMESTAMP)::BIGINT, "
             "NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, (x.DETAILS::jsonb ->> 'collateral_amount')::BIGINT "
             "FROM transactions x JOIN markets m USING (MARKET_ID) "
-            "WHERE x.API_KEY = %(key)s AND x.TRANSACTION_TYPE = 'REDEEM' "
-            "ORDER BY MATCH_TIME DESC LIMIT %(limit)s) a JOIN markets USING (CONDITION_ID) ORDER BY MATCH_TIME DESC",
-            {"key": api_key, "limit": limit},
+            "WHERE x.API_KEY = w.API_KEY AND x.TRANSACTION_TYPE = 'REDEEM' "
+            "AND EXTRACT(EPOCH FROM x.TIMESTAMP) >= w.SINCE AND EXTRACT(EPOCH FROM x.TIMESTAMP) < w.UNTIL "
+            "ORDER BY x.TIMESTAMP DESC LIMIT %(limit)s)) f "
+            "ORDER BY f.MATCH_TIME DESC LIMIT %(limit)s) a JOIN markets USING (CONDITION_ID) ORDER BY MATCH_TIME DESC",
+            {
+                "keys": [key for key, _, _ in windows],
+                "since": [since for _, since, _ in windows],
+                "until": [until for _, _, until in windows],
+                "limit": limit,
+            },
         ).fetchall()
         return [(r, _row_to_market(r)) for r in rows]
 
@@ -1155,7 +1213,7 @@ class TableRead:
     ) -> "list[Market]":
         """Markets where `api_key` has any trade or split/merge transaction —
         the only markets where the user can hold a CTF balance (you only acquire
-        outcome tokens via a fill or a split). Lets list_positions scan just
+        outcome tokens via a fill or a split). Lets `AccountService.wallet` scan just
         these (usually a handful) on-chain instead of every market, which is
         O(market count) sequential on-chain reads."""
         cur = db.execute(
@@ -2118,21 +2176,26 @@ class TableRead:
     @staticmethod
     def pending_settlements(
         db: psycopg.Connection, before: int
-    ) -> list[tuple[str, int, list[str]]]:
+    ) -> list[tuple[str, int, list[str], list[str]]]:
+        """(hash, first match time, trade ids, taker addresses) per sent settlement still PENDING."""
         rows = db.execute(
-            "SELECT TRANSACTION_HASH, MIN(MATCH_TIME) AS MATCH_TIME, "
-            "ARRAY_AGG(TRADE_ID) AS TRADE_IDS FROM trades "
-            "WHERE STATUS = 'PENDING' AND TRANSACTION_HASH <> '' AND MATCH_TIME < %s "
-            "GROUP BY TRANSACTION_HASH",
+            "SELECT t.TRANSACTION_HASH, MIN(t.MATCH_TIME) AS MATCH_TIME, "
+            "ARRAY_AGG(t.TRADE_ID) AS TRADE_IDS, "
+            "ARRAY_REMOVE(ARRAY_AGG(u.ETH_ADDRESS), NULL) AS ADDRESSES FROM trades t "
+            "LEFT JOIN users u ON u.API_KEY = t.TAKER_API_KEY "
+            "WHERE t.STATUS = 'PENDING' AND t.TRANSACTION_HASH <> '' AND t.MATCH_TIME < %s "
+            "GROUP BY t.TRANSACTION_HASH",
             (before,),
         ).fetchall()
-        return [(r["TRANSACTION_HASH"], r["MATCH_TIME"], r["TRADE_IDS"]) for r in rows]
+        return [(r["TRANSACTION_HASH"], r["MATCH_TIME"], r["TRADE_IDS"], r["ADDRESSES"]) for r in rows]
 
     @staticmethod
     def unsent_settlements(db: psycopg.Connection, before: int) -> list[dict]:
         return db.execute(
-            "SELECT t.TRADE_ID, o.ORDER_JSON FROM trades t "
+            "SELECT t.TRADE_ID, o.ORDER_JSON, "
+            "ARRAY_REMOVE(ARRAY[u.ETH_ADDRESS], NULL) AS ADDRESSES FROM trades t "
             "JOIN orders o ON o.ORDER_ID = (t.MAKER_ORDERS::jsonb -> 0 ->> 'order_id') "
+            "LEFT JOIN users u ON u.API_KEY = t.TAKER_API_KEY "
             "WHERE t.STATUS = 'PENDING' AND t.TRANSACTION_HASH IS NULL AND t.MATCH_TIME < %s",
             (before,),
         ).fetchall()

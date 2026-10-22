@@ -118,12 +118,15 @@ class CompetitionCard(BaseModel):
     competition: str
     title: str
     phase: Phase
+    final: bool
     starts_at: datetime
     ends_at: datetime
     prizes: list[Prize]
     entered: bool
     trades: int | None
     rank: int | None
+    ranked: int
+    line: str | None
     url: str
 
 
@@ -168,6 +171,7 @@ class Enrolled(BaseModel):
     run_starts_at: datetime
     ends_at: datetime
     url: str
+    line: str
 
 
 class Standing(BaseModel):

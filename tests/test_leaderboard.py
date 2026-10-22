@@ -1,4 +1,5 @@
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,8 +8,10 @@ from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.table_read import DailyClose, TableRead, TradeTally
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.runner import Runner, runner_for
+from agentpit.liquidity import feed
 from agentpit.services import leaderboard_service
-from agentpit.services.leaderboard_service import LeaderboardService, daily_trend
+from agentpit.services.account_service import Wallet
+from agentpit.services.leaderboard_service import LeaderboardService, daily_trend, drain
 from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 
@@ -156,39 +159,31 @@ def test_thinning_breaks_a_tied_close_by_insertion_order():
 # ----- LeaderboardService: orchestration and the money arithmetic ----------
 
 
-class _FakeOnchainBalance:
-    """usd_balance keyed by address; unknown addresses read as `default`.
-    `deployment_id` mirrors OnchainAdmin's property -- the valuation pass reads
+class _FakeChain:
+    """`deployment_id` mirrors OnchainAdmin's property -- the valuation pass reads
     it once per account to decide whether the chain was replaced."""
 
-    def __init__(
-        self,
-        balances: dict[str, int] | None = None,
-        default: int = 0,
-        deployment_id: str = "test-deployment",
-    ):
-        self._balances = balances or {}
-        self._default = default
+    def __init__(self, deployment_id: str = "test-deployment"):
         self.deployment_id = deployment_id
-
-    def usd_balance(self, address: str) -> int:
-        return self._balances.get(address, self._default)
 
 
 class _FakeAccounts:
-    """Open and closed positions keyed by address; an address never given any
-    holds nothing, like the real AccountService for an account that never traded."""
+    """Cash, open and closed positions keyed by address; an address never given
+    any holds nothing, like the real AccountService for an account that never
+    traded."""
 
     def __init__(
         self,
+        cash: dict[str, int] | None = None,
         positions: dict[str, list[PositionWire]] | None = None,
         closed: dict[str, list[PositionWire]] | None = None,
     ):
+        self._cash = cash or {}
         self._positions = positions or {}
         self._closed = closed or {}
 
-    def list_positions(self, address: str) -> list[PositionWire]:
-        return self._positions.get(address, [])
+    def wallet(self, address: str) -> Wallet:
+        return Wallet(7, self._cash.get(address, 0), self._positions.get(address, []))
 
     def list_closed_positions(self, address: str) -> list[PositionWire]:
         return self._closed.get(address, [])
@@ -228,21 +223,22 @@ def test_the_transfer_scan_reads_on_from_where_it_stopped():
     service.exclude_peer_transfers()
     service.exclude_peer_transfers()
 
-    assert onchain.asked == [0, 51]
+    assert (onchain.asked, leaderboard_service.peer_next_block()) == ([0, 51], 60)
     with db.read() as check:
         assert user_id not in {r.user_id for r in TableRead.list_traded_accounts(check)}
     db.close()
 
 
-def test_valuing_an_account_keeps_what_it_holds_for_the_profile():
+def test_valuing_an_account_keeps_what_it_holds_for_the_profile(monkeypatch):
     closed = [PositionWire(cashPnl=12.5)]
     service = LeaderboardService(
         db=None,
-        onchain=_FakeOnchainBalance({"0xabc": 30_000_000_000}),
-        accounts=_FakeAccounts({"0xabc": _worth(70_000.0, 50_000.0)}, {"0xabc": closed}),
+        onchain=_FakeChain(),
+        accounts=_FakeAccounts({"0xabc": 30_000_000_000}, {"0xabc": _worth(70_000.0, 50_000.0)}, {"0xabc": closed}),
         settings=Settings(),
     )
-    held = service.value_account("0xabc", 1_700_000_000)
+    monkeypatch.setattr(leaderboard_service, "time", SimpleNamespace(time=lambda: 1_700_000_000.9))
+    held = service.value_account("0xabc")
     assert (held.valued_at, held.cash_raw + held.value_raw, held.cost_raw) == (
         1_700_000_000,
         100_000_000_000,
@@ -266,8 +262,8 @@ def test_the_board_is_assembled_once_per_ttl(monkeypatch):
 def test_holdings_the_pass_has_not_reached_are_valued_once_on_demand():
     service = LeaderboardService(
         db=None,
-        onchain=_FakeOnchainBalance({"0xabc": 42_000_000}),
-        accounts=_FakeAccounts(),
+        onchain=_FakeChain(),
+        accounts=_FakeAccounts({"0xabc": 42_000_000}),
         settings=Settings(),
     )
     held = service.holdings("0xabc")
@@ -298,11 +294,10 @@ def test_take_snapshot_writes_one_row_per_traded_account_with_deposited():
     conn.close()
 
     db = fresh_test_db()
-    onchain = _FakeOnchainBalance({acct.address: 30_000_000_000})
-    accounts = _FakeAccounts({acct.address: _worth(70_000.0)})
-    service = LeaderboardService(db, onchain, accounts, Settings())
+    accounts = _FakeAccounts({acct.address: 30_000_000_000}, {acct.address: _worth(70_000.0)})
+    service = LeaderboardService(db, _FakeChain(), accounts, Settings())
 
-    written = service.take_snapshot(1_700_001_000)
+    written = service.take_snapshot()
     assert written == 1
 
     check = fresh_test_conn()
@@ -325,10 +320,10 @@ def test_one_account_write_failure_does_not_cost_the_rest(monkeypatch):
     traded accounts and confirm the other still gets its row -- and that
     take_snapshot reports 1 rather than raising out of the whole pass."""
     conn = fresh_test_conn()
-    bad_id, bad_acct, bad_key = TableWrite.create_user(
+    bad_id, _bad_acct, bad_key = TableWrite.create_user(
         conn, email="bad@example.com", password_hash="x", handle=None
     )
-    good_id, good_acct, good_key = TableWrite.create_user(
+    good_id, _good_acct, good_key = TableWrite.create_user(
         conn, email="good@example.com", password_hash="x", handle=None
     )
     conn.execute(
@@ -357,11 +352,9 @@ def test_one_account_write_failure_does_not_cost_the_rest(monkeypatch):
     monkeypatch.setattr(TableWrite, "insert_account_snapshot", flaky_insert)
 
     db = fresh_test_db()
-    onchain = _FakeOnchainBalance({bad_acct.address: 0, good_acct.address: 0})
-    accounts = _FakeAccounts()
-    service = LeaderboardService(db, onchain, accounts, Settings())
+    service = LeaderboardService(db, _FakeChain(), _FakeAccounts(), Settings())
 
-    written = service.take_snapshot(1_700_002_000)
+    written = service.take_snapshot()
     assert written == 1
 
     check = fresh_test_conn()
@@ -497,10 +490,9 @@ def test_the_pass_resets_a_wiped_account_the_bots_never_top_up():
         "wiped@example.com", deployed="old-deployment", deposited=900_000_000_000
     )
     db = fresh_test_db()
-    onchain = _FakeOnchainBalance({acct.address: 0}, deployment_id="new-deployment")
-    service = LeaderboardService(db, onchain, _FakeAccounts(), Settings())
+    service = LeaderboardService(db, _FakeChain("new-deployment"), _FakeAccounts(), Settings())
 
-    service.take_snapshot(1_700_003_000)
+    service.take_snapshot()
 
     assert _deposited(user_id) == 0
     db.close()
@@ -516,14 +508,13 @@ def test_a_second_pass_leaves_the_reset_figure_alone():
         "twice@example.com", deployed="old-deployment", deposited=900_000_000_000
     )
     db = fresh_test_db()
-    onchain = _FakeOnchainBalance({acct.address: 0}, deployment_id="new-deployment")
-    service = LeaderboardService(db, onchain, _FakeAccounts(), Settings())
+    service = LeaderboardService(db, _FakeChain("new-deployment"), _FakeAccounts(), Settings())
 
-    service.take_snapshot(1_700_003_000)
+    service.take_snapshot()
     conn = fresh_test_conn()
     TableWrite.set_total_deposited(conn, user_id, 100_000_000_000)
     conn.close()
-    service.take_snapshot(1_700_003_300)
+    service.take_snapshot()
 
     assert _deposited(user_id) == 100_000_000_000
     db.close()
@@ -534,10 +525,9 @@ def test_an_unchanged_deployment_accumulates_untouched():
         "same@example.com", deployed="same-deployment", deposited=140_000_000_000
     )
     db = fresh_test_db()
-    onchain = _FakeOnchainBalance({acct.address: 0}, deployment_id="same-deployment")
-    service = LeaderboardService(db, onchain, _FakeAccounts(), Settings())
+    service = LeaderboardService(db, _FakeChain("same-deployment"), _FakeAccounts(), Settings())
 
-    service.take_snapshot(1_700_003_000)
+    service.take_snapshot()
 
     assert _deposited(user_id) == 140_000_000_000
     db.close()
@@ -550,10 +540,9 @@ def test_an_absent_identity_is_recorded_without_a_reset():
         "absent@example.com", deployed=None, deposited=140_000_000_000
     )
     db = fresh_test_db()
-    onchain = _FakeOnchainBalance({acct.address: 0}, deployment_id="first-seen")
-    service = LeaderboardService(db, onchain, _FakeAccounts(), Settings())
+    service = LeaderboardService(db, _FakeChain("first-seen"), _FakeAccounts(), Settings())
 
-    service.take_snapshot(1_700_003_000)
+    service.take_snapshot()
 
     assert _deposited(user_id) == 140_000_000_000
     conn = fresh_test_conn()
@@ -571,16 +560,107 @@ def test_the_snapshot_records_the_reset_figure_not_the_stale_one():
         "ordering@example.com", deployed="old", deposited=900_000_000_000
     )
     db = fresh_test_db()
-    onchain = _FakeOnchainBalance({acct.address: 0}, deployment_id="new")
-    service = LeaderboardService(db, onchain, _FakeAccounts(), Settings())
+    service = LeaderboardService(db, _FakeChain("new"), _FakeAccounts(), Settings())
 
-    service.take_snapshot(1_700_004_000)
+    service.take_snapshot()
 
     conn = fresh_test_conn()
     latest = TableRead.latest_account_snapshots(conn)
     conn.close()
     assert latest[user_id] == (0, 0, 0, 0)
     db.close()
+
+
+class _Clocked(_FakeAccounts):
+    """Each wallet read takes 100 s of `clock` and is logged in `read`; the
+    first one touches `touched`."""
+
+    def __init__(self, clock: list[int], touched: str = "", **kwargs):
+        super().__init__(**kwargs)
+        self.clock, self.touched, self.read = clock, touched, []
+
+    def wallet(self, address: str) -> Wallet:
+        if not self.read and self.touched:
+            leaderboard_service.touch(self.touched)
+        self.clock[0] += 100
+        self.read.append(address)
+        return super().wallet(address)
+
+
+def _snapshot_times() -> dict[str, list[int]]:
+    conn = fresh_test_conn()
+    rows = conn.execute("SELECT USER_ID, T FROM account_snapshots ORDER BY T").fetchall()
+    conn.close()
+    out: dict[str, list[int]] = {}
+    for r in rows:
+        out.setdefault(r["USER_ID"], []).append(r["T"])
+    return out
+
+
+def test_each_snapshot_is_dated_when_its_wallet_read_returned(monkeypatch):
+    clock = [1_700_000_000]
+    monkeypatch.setattr(leaderboard_service, "time", SimpleNamespace(time=lambda: clock[0]))
+    ids = [_seed_traded_user(f"dated{k}@example.com", deployed=None, deposited=0)[0] for k in range(2)]
+    drain()
+
+    LeaderboardService(fresh_test_db(), _FakeChain(), _Clocked(clock), Settings()).take_snapshot()
+
+    assert sorted(t for user_id in ids for t in _snapshot_times()[user_id]) == [1_700_000_100, 1_700_000_200]
+
+
+def test_a_full_pass_values_an_account_touched_meanwhile_before_the_next_one(monkeypatch):
+    clock = [1_700_000_000]
+    monkeypatch.setattr(leaderboard_service, "time", SimpleNamespace(time=lambda: clock[0]))
+    addresses = [_seed_traded_user(f"pass{k}@example.com", deployed=None, deposited=0)[1].address for k in range(3)]
+    drain()
+    accounts = _Clocked(clock, touched=addresses[2].lower())
+
+    written = LeaderboardService(fresh_test_db(), _FakeChain(), accounts, Settings()).take_snapshot()
+
+    assert (written, len(accounts.read), accounts.read[1]) == (4, 4, addresses[2])
+
+
+def test_a_position_without_a_book_holds_the_row_until_the_grace_then_takes_marks(monkeypatch, caplog):
+    clock = [1_700_000_000]
+    monkeypatch.setattr(leaderboard_service, "time", SimpleNamespace(time=lambda: clock[0]))
+    books: set[str] = set()
+    monkeypatch.setattr(feed, "booked", lambda token: token in books)
+    user_id, acct = _seed_traded_user("bookless@example.com", deployed=None, deposited=0)
+    held = [PositionWire(asset="rain", currentValue=5.0), PositionWire(asset="dry", currentValue=1.0, settled=True)]
+    service = LeaderboardService(fresh_test_db(), _FakeChain(), _FakeAccounts(positions={acct.address: held}), Settings())
+    drain()
+
+    def snapshot(at: int) -> int:
+        clock[0] = 1_700_000_000 + at
+        return service.take_snapshot()
+
+    waited = [snapshot(0), snapshot(feed.BOOK_GRACE - 1)]
+    kept = leaderboard_service._holdings[acct.address].valued_at
+    with caplog.at_level("WARNING", logger=leaderboard_service.log.name):
+        late = snapshot(feed.BOOK_GRACE)
+    books.add("rain")
+    booked = snapshot(feed.BOOK_GRACE + 1)
+    books.clear()
+    again = snapshot(2 * feed.BOOK_GRACE)
+
+    assert (waited, kept, late, booked, again) == ([0, 0], 1_700_000_000 + feed.BOOK_GRACE - 1, 1, 1, 0)
+    assert [r.getMessage() for r in caplog.records if "rain" in r.getMessage()] == [
+        f"Snapshot of {acct.address} taken at marks: no book for rain for {feed.BOOK_GRACE}s"
+    ]
+    assert _snapshot_times()[user_id] == [1_700_000_000 + feed.BOOK_GRACE, 1_700_000_000 + feed.BOOK_GRACE + 1]
+
+
+def test_without_the_engine_or_a_position_every_valuation_is_written(monkeypatch):
+    monkeypatch.setattr(feed, "HOUSE", None)
+    _user_id, acct = _seed_traded_user("unmirrored@example.com", deployed=None, deposited=0)
+    held = {acct.address: [PositionWire(asset="rain", currentValue=5.0)]}
+    drain()
+
+    unmirrored = LeaderboardService(fresh_test_db(), _FakeChain(), _FakeAccounts(positions=held), Settings()).take_snapshot()
+    monkeypatch.setattr(feed, "booked", lambda token: False)
+    cash_only = LeaderboardService(fresh_test_db(), _FakeChain(), _FakeAccounts(), Settings()).take_snapshot()
+
+    assert (unmirrored, cash_only) == (1, 1)
 
 
 def test_thin_snapshots_leaves_the_last_48_hours_dense():
@@ -736,13 +816,13 @@ def test_the_snapshot_records_what_the_account_put_to_work():
     db = fresh_test_db()
     service = LeaderboardService(
         db=db,
-        onchain=_FakeOnchainBalance({acct.address: 30_000_000}),
+        onchain=_FakeChain(),
         # Positions worth $70 that cost $50: capital is cash + value, and
         # invested is the cost -- they must not be confused for each other.
-        accounts=_FakeAccounts({acct.address: _worth(70.0, 50.0)}),
+        accounts=_FakeAccounts({acct.address: 30_000_000}, {acct.address: _worth(70.0, 50.0)}),
         settings=Settings(),
     )
-    assert service.take_snapshot(1_700_001_000) == 1
+    assert service.take_snapshot() == 1
 
     check = fresh_test_conn()
     latest = TableRead.latest_account_snapshots(check)
@@ -771,7 +851,7 @@ def test_the_board_carries_invested_through_to_its_rows():
 
     db = fresh_test_db()
     service = LeaderboardService(
-        db=db, onchain=_FakeOnchainBalance({}), accounts=_FakeAccounts(),
+        db=db, onchain=_FakeChain(), accounts=_FakeAccounts(),
         settings=Settings(),
     )
     row = next(r for r in service.build_board() if r.address == acct.address)

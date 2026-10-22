@@ -1,6 +1,6 @@
 """A resolved market you have won is not a live position.
 
-`list_positions` filters on balance alone, so a winning token still held
+`wallet` filters on balance alone, so a winning token still held
 appears among OPEN positions priced by `_cur_price`. A resolved market has no
 live book — the mirror cancels its orders when the market leaves the active
 set — so that falls through to the last trade print. A share worth exactly $1
@@ -49,18 +49,13 @@ def _insert_trade(
 
 
 class _StubOnchain:
-    """Fixed CTF balance per token id -- all `list_positions` reads from it."""
+    """Fixed CTF balance per token id -- all `wallet` reads from it."""
 
     def __init__(self, balances: dict[str, int]):
         self._balances = balances
-        self.batch_calls = 0
 
-    def ctf_balance(self, _eth_address: str, token_id: int) -> int:
-        return self._balances.get(str(token_id), 0)
-
-    def ctf_balances(self, _eth_address: str, token_ids: list[int]) -> list[int]:
-        self.batch_calls += 1
-        return [self._balances.get(str(t), 0) for t in token_ids]
+    def balances(self, _eth_address: str, token_ids: list[int]) -> tuple[int, int, list[int]]:
+        return 0, 0, [self._balances.get(str(t), 0) for t in token_ids]
 
 
 def _make_position(
@@ -76,11 +71,11 @@ def _make_position(
     that is either left ACTIVE or resolved to `resolved_outcome`, and who still
     holds `balance` micro-shares of it on chain.
 
-    Returns the single `PositionWire` `list_positions` produces for it, read by
+    Returns the single `PositionWire` `wallet` produces for it, read by
     a service whose claim minimum is `min_claim_micro`.
     """
     db = fresh_test_db()
-    # `list_positions` does `int(token_id)`, so these must parse as ints --
+    # `wallet` does `int(token_id)`, so these must parse as ints --
     # unlike the string ids `test_closed_positions.py` uses, which never hits
     # that path.
     base = int.from_bytes(seed.encode(), "big")
@@ -122,7 +117,7 @@ def _make_position(
     onchain = _StubOnchain({held_tok: balance})
     out = AccountService(
         db, onchain=onchain, min_claim_micro=min_claim_micro  # type: ignore[arg-type]
-    ).list_positions(acct.address)
+    ).wallet(acct.address).positions
     assert len(out) == 1
     return out[0]
 

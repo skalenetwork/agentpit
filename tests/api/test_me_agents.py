@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from agentpit.api.deps import get_agent_accounts
 from agentpit.api.main import app
+from agentpit.datastructures.competition import Competition
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
@@ -23,6 +24,7 @@ from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 G = 100_000_000_000
 NOW = int(time.time())
+DAY = 86_400
 CRYPTO = "0x" + "ab" * 32
 
 
@@ -118,6 +120,22 @@ def test_me_agents_carries_each_agent_s_board_figures(sign_in):
 def _owner(client: TestClient, sign_in, email: str) -> tuple[dict[str, str], str]:
     token = sign_in(client, email)["access_token"]
     return {"Authorization": f"Bearer {token}"}, token.removeprefix("at-")
+
+
+def test_me_agents_keeps_a_competition_a_week_past_its_end(sign_in):
+    accounts = _accounts()
+    with TestClient(app) as client:
+        headers, owner = _owner(client, sign_in, "owner@example.com")
+        agent = accounts.agent_for(owner, "Claude", None, None)
+        assert agent is not None
+        with fresh_test_db().write() as conn:
+            for slug, ends in (("old", NOW - 8 * DAY), ("recent", NOW - 6 * DAY), ("live", NOW + DAY)):
+                TableWrite.save_competition(conn, Competition(slug=slug, title=slug, starts_at=ends - DAY, ends_at=ends, prizes=[]), NOW)
+                TableWrite.enter_competition(conn, slug, owner, agent.user_id, NOW - 9 * DAY, False)
+
+        listed = client.get("/me/agents", headers=headers).json()
+
+    assert listed[0]["competitions"] == ["recent", "live"]
 
 
 def test_a_new_api_agent_shows_its_key_once_and_trades_by_it(sign_in):
@@ -281,6 +299,8 @@ def test_a_deleted_account_loses_its_email_owner_agents_and_sign_in(sign_in, wor
         headers, owner = _owner(client, sign_in, "owner@example.com")
         agent = accounts.agent_for(owner, "Claude", None, None)
         assert agent is not None
+        with fresh_test_db().write() as conn:
+            TableWrite.enter_competition(conn, "monthly", owner, agent.user_id, NOW, False)
 
         deleted = client.delete("/me", headers=headers)
         me = client.get("/me", headers=headers)
@@ -295,6 +315,7 @@ def test_a_deleted_account_loses_its_email_owner_agents_and_sign_in(sign_in, wor
     assert TableRead.get_owner(conn, owner) is None
     assert conn.execute("SELECT 1 FROM users WHERE EMAIL = 'owner@example.com'").fetchone() is None
     assert conn.execute("SELECT 1 FROM auth_code_attempts WHERE BUCKET LIKE 'email:%'").fetchone() is None
+    assert conn.execute("SELECT OWNER FROM competition_entries").fetchone()["OWNER"] == f"deleted:{agent.user_id}"
 
 
 def test_me_names_the_owner_its_agents_show_and_the_switch_hides_it(sign_in):

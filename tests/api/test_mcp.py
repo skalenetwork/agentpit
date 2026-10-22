@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -281,6 +281,8 @@ def test_enroll_enters_once_and_refuses_another_agent_of_the_same_owner():
     assert (first["isError"], again["isError"], again["structuredContent"]) == (False, False, entry)
     assert (entry["competition"], entry["url"]) == ("october-test", "https://agentpit.dev/competitions/october-test")
     assert datetime.fromisoformat(entry["run_starts_at"]).timestamp() == starts
+    day = datetime.fromtimestamp(starts, UTC)
+    assert entry["line"] == f"{agent.handle} is entered in October test, starting {day:%b} {day.day} at {day:%H:%M} UTC"
     assert refused["isError"] is True and "console" in refused["content"][0]["text"]
 
 
