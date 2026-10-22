@@ -1,5 +1,5 @@
 import { type Burst, bursts } from "@agentpit/brand/activity";
-import { type Competition, explorerAddress, explorerTx, type Fill, type MarketContext, marketCaption, type Profile, stageText } from "@agentpit/brand/api";
+import { explorerAddress, explorerTx, type Fill, type MarketContext, marketCaption, type Profile, type RaceEntry, type RaceHead, stageText } from "@agentpit/brand/api";
 import { closeLabel, recordBars } from "@agentpit/brand/chart";
 import { cents, clock, count, dollars, exactDollars, pct, pool, shortAddress, shortDay, signedDollars, span, stamp, tone, utcTime } from "@agentpit/brand/format";
 import polymarket from "@agentpit/brand/polymarket.svg";
@@ -7,7 +7,7 @@ import { recordCalls } from "@agentpit/brand/standing";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, ChartLine, Pencil, Share, Trash2, Trophy } from "lucide-react";
 import { type FormEvent, Fragment, type ReactNode, useState } from "react";
-import { type Agent, type Order, useAgents, useCompetition, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRenameAgent } from "../api";
+import { type Agent, type Order, useAgents, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRaceEntries, useRenameAgent } from "../api";
 import { Chart } from "../chart";
 import { LastTrade, Sep, TONE } from "../labels";
 import { ApiError } from "../session";
@@ -31,11 +31,13 @@ const STICKER = {
   upcoming: ["Entries open", "bg-signal text-paper scheme-light"],
   locked: ["Starting soon", "bg-gold text-ink scheme-light"],
   ended: ["Ended", "bg-ink/7 text-muted"],
-} as const satisfies Record<Competition["phase"], readonly [string, string]>;
+} as const satisfies Record<RaceHead["phase"], readonly [string, string]>;
 
 const route = getRouteApi("/console/agents/$address");
 
 type Market = Pick<Fill, "title" | "icon" | "category" | "url"> & MarketContext;
+
+type Part = readonly [text: string, tint?: string];
 
 interface Tab {
   readonly label: string;
@@ -569,7 +571,7 @@ const Delete = ({ agent, onClose }: { agent: Agent; onClose: () => void }) => {
   );
 };
 
-const Contest = ({ agent, competition, other, now }: { agent: Agent; competition: Competition; other: Agent | undefined; now: number }) => {
+const Contest = ({ agent, competition, other, now }: { agent: Agent; competition: RaceHead; other: Agent | undefined; now: number }) => {
   const entry = useEntry(agent.eth_address);
   const entered = agent.competitions.includes(competition.slug);
   const upcoming = competition.phase === "upcoming";
@@ -598,7 +600,7 @@ const Contest = ({ agent, competition, other, now }: { agent: Agent; competition
   );
 };
 
-const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competitions: readonly Competition[]; now: number; onClose: () => void }) => {
+const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competitions: readonly RaceHead[]; now: number; onClose: () => void }) => {
   const agents = useAgents().data ?? [];
   return (
     <Sheet title="Compete" onClose={onClose}>
@@ -623,44 +625,42 @@ const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competit
   );
 };
 
-const Entry = ({ slug, address, now }: { slug: string; address: string; now: number }) => {
-  const page = useCompetition(slug).data;
-  if (!page) return null;
-  const [label, look] = STICKER[page.phase];
-  const standing = (page.phase === "live" || page.phase === "ended") && page.standings.find((entrant) => entrant.address.toLowerCase() === address.toLowerCase());
+const placing = ({ race, standing, above, below }: RaceEntry): readonly Part[] => {
+  const { rank, returnPct, behind, wouldRank, bids } = standing;
+  if (race.phase === "upcoming" || race.phase === "locked") return [];
+  if (standing.disqualified) return [["Out", "font-medium text-down"]];
+  if (rank === null) return race.phase === "ended" ? [["Did not place"]] : wouldRank ? [["No trades yet"], [`one trade puts it #${wouldRank}`]] : [["No trades yet"]];
+  const result: Part = [pct(returnPct), `font-medium ${TONE[tone(returnPct)]}`];
+  if (race.phase === "ended") return race.final ? [[`Finished #${rank} of ${race.ranked}`], result] : [[`#${rank} at the bell`], ["final coming in"]];
+  const gap = rank === 1 ? below && `${dollars(below.behind ?? 0)} ahead of ${below.name}` : above && `${dollars(behind ?? 0)} behind ${above.name}`;
+  const shift = bids?.rank && bids.rank !== rank ? `#${bids.rank} at the bids` : null;
+  return [[`#${rank} of ${race.ranked}`], result, ...[gap, shift].flatMap((text): Part[] => (text ? [[text]] : []))];
+};
+
+const Entry = ({ entry, now }: { entry: RaceEntry; now: number }) => {
+  const { race, standing } = entry;
+  const [label, look] = STICKER[race.phase];
   return (
     <li className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
       <div className="grid min-w-0 flex-1 gap-0.5">
         <p className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-medium">{page.title}</span>
+          <span className="truncate font-medium">{race.title}</span>
           <span className={`inline-flex h-6 shrink-0 items-center gap-1.5 rounded-control px-2.5 text-label font-medium ${look}`}>
-            {page.phase === "live" && <span className="size-1.5 rounded-full bg-paper" />}
-            {page.phase === "ended" && page.final ? "Final" : label}
+            {race.phase === "live" && <span className="size-1.5 rounded-full bg-paper" />}
+            {race.phase === "ended" && race.final ? "Final" : label}
           </span>
         </p>
         <p className="flex flex-wrap items-center gap-x-1.5 text-caption text-muted tabular-nums *:whitespace-nowrap">
-          <span>{stageText(page, now)}</span>
-          {standing && (
-            <>
+          <span>{stageText(race, now)}</span>
+          {placing(entry).map(([text, tint]) => (
+            <Fragment key={text}>
               <Sep />
-              {standing.disqualified ? (
-                <span className="font-medium text-down">Out</span>
-              ) : standing.rank === null ? (
-                <span>{standing.trades ? `${count(standing.trades)} ${standing.trades === 1 ? "trade" : "trades"}` : "No trades yet"}</span>
-              ) : (
-                <>
-                  <span>
-                    #{standing.rank} of {page.standings.filter(({ rank }) => rank !== null).length}
-                  </span>
-                  <Sep />
-                  <span className={`font-medium ${TONE[tone(standing.returnPct)]}`}>{pct(standing.returnPct)}</span>
-                </>
-              )}
-            </>
-          )}
+              <span className={tint}>{text}</span>
+            </Fragment>
+          ))}
         </p>
       </div>
-      <Button href={`${SITE}/competitions/${slug}`} target="_blank" rel="noreferrer" variant="paper" className={ICON}>
+      <Button href={`${SITE}/competitions/${race.slug}?agent=${standing.address}`} target="_blank" rel="noreferrer" variant="paper" className={ICON}>
         <ArrowUpRight size={14} strokeWidth={1.75} />
         <span className="max-md:sr-only">View</span>
       </Button>
@@ -671,6 +671,7 @@ const Entry = ({ slug, address, now }: { slug: string; address: string; now: num
 const View = ({ agent, now }: { agent: Agent; now: number }) => {
   const [sheet, setSheet] = useState<"compete" | "rename" | "delete">();
   const competitions = useCompetitions().data?.competitions.filter(({ phase }) => phase !== "ended") ?? [];
+  const entries = useRaceEntries(agent.eth_address).data ?? [];
   const { data: profile, isError } = useProfile(agent);
   const orders = useOrders(agent).data;
   const page = `${SITE}/agents/${agent.eth_address}`;
@@ -717,11 +718,11 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
       </Crumbs>
       <Header agent={agent} profile={profile} now={now} />
       <div className="mt-5 grid gap-5 sm:mt-7">
-        {agent.competitions.length > 0 && (
+        {entries.length > 0 && (
           <Card title="Competitions" icon={Trophy}>
             <ul className="divide-y divide-line">
-              {agent.competitions.map((slug) => (
-                <Entry key={slug} slug={slug} address={agent.eth_address} now={now} />
+              {entries.map((entry) => (
+                <Entry key={entry.race.slug} entry={entry} now={now} />
               ))}
             </ul>
           </Card>
