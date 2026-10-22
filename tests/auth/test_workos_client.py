@@ -46,9 +46,8 @@ def test_fake_creates_and_finds_users():
 
 
 def test_fake_create_is_idempotent_on_email():
-    # The migration script runs this against every existing row and may be
-    # re-run; a second create for the same address must return the first user
-    # rather than a duplicate identity.
+    # As WorkOS does: a second create for the same address returns the first
+    # user rather than a duplicate identity.
     fake = FakeWorkOsClient()
     first = fake.create_user(email="a@b.com", password_hash=None)
     second = fake.create_user(email="a@b.com", password_hash=None)
@@ -258,8 +257,7 @@ def test_a_refusal_is_not_an_unavailable_error():
 
 
 def test_unavailable_is_still_caught_as_a_workos_error():
-    # The migration script catches `WorkOsError` per account and carries on;
-    # the new subclass must not fall out of that net.
+    # Every `except WorkOsError` must keep catching the subclass.
     assert issubclass(WorkOsUnavailableError, WorkOsError)
 
 
@@ -287,9 +285,8 @@ def test_a_429_is_its_own_error_type():
 
 
 def test_a_rate_limit_is_still_a_workos_error():
-    # The migration script catches `WorkOsError` per account and carries on.
-    # A subclass keeps that working unchanged, exactly as
-    # `WorkOsUnavailableError` does.
+    # A subclass, so every `except WorkOsError` keeps catching it, exactly as
+    # with `WorkOsUnavailableError`.
     client = _real(lambda _r: httpx.Response(429, json={"code": "rate_limit"}))
     with pytest.raises(WorkOsError):
         client.send_magic_auth_code("a@b.com")
@@ -370,6 +367,18 @@ def test_a_session_for_an_unverified_address_says_so():
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
             "user": {"id": "user_02", "email": "b@b.com", "email_verified": False},
+            "access_token": "at", "refresh_token": "rt",
+        })
+
+    session = _real(handler).authenticate_with_authorization_code("code")
+    assert session.email_verified is False
+
+
+def test_a_session_without_the_flag_counts_as_unverified():
+    # Fail closed: a response that leaves the flag out proves nothing.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "user": {"id": "user_03", "email": "c@b.com"},
             "access_token": "at", "refresh_token": "rt",
         })
 

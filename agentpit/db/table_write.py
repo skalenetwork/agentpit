@@ -309,11 +309,9 @@ class TableWrite:
     ) -> bool:
         """Link this account to its WorkOS identity. False when no row matched.
 
-        Leaves PASSWORD_HASH alone: this is the writer the migration script
-        uses to backfill ids for accounts nobody has signed into yet, and
-        those accounts must keep logging in with their password until plan 3
-        removes that door. `link_workos_identity` below is the one to use when
-        somebody has just proved they own the address.
+        Stamps a row sign-in has just created, and leaves PASSWORD_HASH alone.
+        `link_workos_identity` below is the one that hands an existing account
+        to an identity.
         """
         cur = db.execute(
             "UPDATE users SET WORKOS_USER_ID = %s WHERE USER_ID = %s",

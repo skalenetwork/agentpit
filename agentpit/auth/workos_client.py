@@ -5,8 +5,8 @@ this repo runs offline, and a service that reaches out to api.workos.com from
 a unit test is a test that fails on a train. `FakeWorkOsClient` is the double
 every test uses; `RealWorkOsClient` is the only place the SDK is touched.
 
-The surface is deliberately narrow. Plan 2 widens it; this plan needs exactly
-what the migration script needs.
+The surface is deliberately narrow: what sign-in, MCP and account deletion
+need, and nothing more.
 """
 import re
 from dataclasses import dataclass
@@ -81,9 +81,9 @@ class WorkOsError(RuntimeError):
     """Anything the WorkOS API refused or failed to answer.
 
     One type for every failure, deliberately, so a caller that only needs to
-    know the call did not work has one thing to catch. The message never carries the request we sent, and the response body it
-    does carry is run through `_redact` first — a traceback from here reaches
-    a log, and plan 3 turns this string into a user-visible 401 `detail`.
+    know the call did not work has one thing to catch. The message never
+    carries the request we sent, and the response body it does carry is run
+    through `_redact` first — a traceback from here reaches a log.
     """
 
 
@@ -92,8 +92,9 @@ class WorkOsUnavailableError(WorkOsError):
     connection.
 
     A subclass rather than a sibling so every `except WorkOsError` (anything
-    that just wants "the call didn't work") keeps catching it unchanged. It exists for one caller: the API, which answers a
-    refusal 401 ("your code was wrong") and this 503 ("come back in a moment").
+    that just wants "the call didn't work") keeps catching it unchanged. It
+    exists for one caller: the API, which answers a refusal 401 ("your code
+    was wrong") and this 503 ("come back in a moment").
     Collapsing the two made a total sign-in outage look like a wave of typos —
     4xx, so no status-code monitor fires — and told a caller who was never
     mailed anything to request a new code, which loops.
@@ -105,8 +106,8 @@ class WorkOsRateLimitedError(WorkOsError):
 
     A subclass rather than a sibling for the same reason
     `WorkOsUnavailableError` is one: every `except WorkOsError` keeps catching
-    it unchanged. It exists for the API, which
-    otherwise answers 401 "request a new code" -- instructing a rate-limited
+    it unchanged. It exists for the API, which otherwise answers 401 "request
+    a new code" -- instructing a rate-limited
     caller to perform the action that rate limited them, in a loop the UI's own
     resend cooldown cannot break because the cooldown is per dialog, not per
     address.
@@ -115,9 +116,9 @@ class WorkOsRateLimitedError(WorkOsError):
 
 API_BASE = "https://api.workos.com"
 
-#: A WorkOS API key: `sk_test_…` / `sk_live_…`. Also matched unanchored, and
-#: for the same reason — it is being hunted inside a JSON body, possibly one
-#: that has JSON-escaped a quoted copy of our own request.
+#: A WorkOS API key: `sk_test_…` / `sk_live_…`. Matched unanchored, because it
+#: is being hunted inside a JSON body, possibly one that has JSON-escaped a
+#: quoted copy of our own request.
 _API_KEY_RE = re.compile(r"sk_[A-Za-z0-9_]+")
 
 
@@ -204,9 +205,9 @@ class RealWorkOsClient:
             )
         if response.status_code >= 400:
             # The body may name the field WorkOS objected to, which is what
-            # makes a failed migration diagnosable. The request is not
-            # included: it carries the hash and the key. `_redact` covers the
-            # remaining case, a response that quotes the request back at us.
+            # makes a failed call diagnosable. The request is not included: it
+            # carries the key. `_redact` covers the remaining case, a response
+            # that quotes the request back at us.
             raise WorkOsError(
                 f"WorkOS {method} {path} returned {response.status_code}: "
                 f"{_redact(response.text, secrets)[:500]}"
@@ -268,7 +269,7 @@ class RealWorkOsClient:
 
 
 class FakeWorkOsClient:
-    """In-memory double with the same contract, including the idempotency."""
+    """In-memory double with the same contract, plus test-only helpers."""
 
     def __init__(self) -> None:
         self._by_email: dict[str, WorkOsUser] = {}

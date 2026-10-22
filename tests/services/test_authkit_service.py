@@ -109,7 +109,7 @@ def test_a_returning_address_lands_on_the_same_row_without_a_second_wallet():
 
 
 def test_an_account_migrated_by_workos_user_id_is_found_not_recreated():
-    # Plan 1's migration script populated WORKOS_USER_ID for the existing
+    # The WorkOS migration populated WORKOS_USER_ID for the existing
     # accounts. Those people must sign in to their own rows.
     workos, onboarder = FakeWorkOsClient(), _Onboarder()
     svc, db = _service(workos, onboarder)
