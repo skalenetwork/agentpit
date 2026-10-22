@@ -322,7 +322,7 @@ Four processes: Postgres, a local chain, the API, and (optionally) the console.
 ```bash
 git clone --recurse-submodules https://github.com/kladkostan/agentpit.git
 cd agentpit
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env          # then fill in PK, ADMIN, and the WORKOS_* keys
 ```
 
@@ -359,6 +359,27 @@ For the console:
 ```bash
 bun install && cd app && bun run dev   # http://localhost:5173
 ```
+
+### Dependencies
+
+`requirements.in` lists what the API image needs, and `requirements-dev.in`
+adds the test tooling. [uv](https://docs.astral.sh/uv/) compiles each into a
+lock that pins every package, transitive ones included, to one version and its
+hashes. `requirements.txt` goes into the image; `requirements-dev.txt`, which
+holds the same runtime versions plus pytest and uv itself, goes into CI and
+`.venv`. Edit only the `.in` files, then recompile both, runtime first:
+
+```bash
+.venv/bin/uv pip compile requirements.in --universal --python-version 3.13 --generate-hashes -o requirements.txt
+.venv/bin/uv pip compile requirements-dev.in --universal --python-version 3.13 --generate-hashes -o requirements-dev.txt
+```
+
+CI recompiles both and fails when a lock pins different versions from what
+its `.in` file now asks for.
+
+A recompile keeps every version already locked. To move one package, add
+`--upgrade-package <name>` to the first command, or to the second for pytest and
+the other test-only packages; to move them all, add `--upgrade` to both.
 
 ---
 

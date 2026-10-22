@@ -84,9 +84,21 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements-dev.txt
 
-      - run: pip install -r requirements.txt
+      # The runtime lock plus pytest, at the versions the API image runs.
+      - run: pip install --require-hashes -r requirements-dev.txt
+
+      # A .in edited without recompiling its lock fails here. Only the pinned
+      # versions are compared: a project that adds a wheel to a release that is
+      # already locked changes the hashes, not what gets installed.
+      - name: Locks match their .in files
+        run: |
+          for lock in requirements requirements-dev; do
+            cp "$lock.txt" "$RUNNER_TEMP/$lock.txt"
+            uv pip compile "$lock.in" --universal --python-version 3.13 --generate-hashes --quiet -o "$RUNNER_TEMP/$lock.txt"
+            diff <(grep -E '^[A-Za-z0-9]' "$lock.txt") <(grep -E '^[A-Za-z0-9]' "$RUNNER_TEMP/$lock.txt")
+          done
 
       - uses: foundry-rs/foundry-toolchain@v1
 

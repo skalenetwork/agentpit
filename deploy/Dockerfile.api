@@ -4,8 +4,11 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# The lock pins every package to a version and its hashes, so the image gets
+# exactly what CI tested, and a file that differs from the one locked fails the
+# install. Test tooling lives in requirements-dev.txt and stays out of here.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 COPY agentpit/ agentpit/
 COPY competitions/ competitions/
