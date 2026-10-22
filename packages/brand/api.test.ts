@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { agentPrompt, board, competitionPage, explorerAddress, explorerTx, gameStage, marketCaption, ownerPage, phase, phaseText, stageText, type WireBoard, type WireCard, type WireCompetitionPage, type WireEntry } from "./api";
+import { agentPrompt, board, explorerAddress, explorerTx, gameStage, marketCaption, ownerPage, phase, phaseText, race, raceEntries, raceSummary, stageText, type WireBoard, type WireCard, type WireEntry, type WireRace, type WireStanding } from "./api";
 
 const multi: WireCard = {
   slug: "fed-decision-in-october",
@@ -163,22 +163,79 @@ test("explorer links open SKALE on Base, an address on its token transfers", () 
   expect(explorerAddress("0xEad3")).toBe("https://skale-base-explorer.skalenodes.com/address/0xEad3?tab=token_transfers");
 });
 
-test("a competition page maps earned to dollars and reads its stage", () => {
-  const wire: WireCompetitionPage = {
-    slug: "october-test",
-    title: "October test",
-    startsAt: 1792886400,
-    locksAt: 1792800000,
-    endsAt: 1793145600,
-    phase: "upcoming",
-    prizes: [],
-    entrants: 1,
-    final: false,
-    standings: [{ rank: null, name: "Alpha", address: "0x1", runner: { slug: "api", label: "API", host: null }, listed: true, runStartsAt: 1792886400, earned: "-2144000000", returnPct: -2.14, trades: 3, disqualified: false }],
-  };
-  const page = competitionPage(wire);
-  expect(page.standings.map((s) => [s.name, s.pnl])).toEqual([["Alpha", -2144]]);
-  expect([stageText(page, 1792800000 - 7200), stageText({ ...page, phase: "locked" }, 1792886400 - 60), stageText({ ...page, phase: "live" }, 1792886400), stageText({ ...page, phase: "ended" }, 1793145600)]).toEqual([
+const standing: WireStanding = {
+  address: "0x1",
+  name: "Alpha",
+  runner: { slug: "api", label: "API", host: null },
+  listed: true,
+  runStartsAt: 1792886400,
+  endAt: null,
+  trades: 3,
+  lastTradeAt: 1792890000,
+  disqualified: false,
+  rank: 2,
+  earned: "-2144000000",
+  returnPct: -2.14,
+  rankChange: 1,
+  behind: "41000000",
+  wouldRank: null,
+  hoursLed: 0,
+  bids: { rank: 3, earned: "-3000000000", returnPct: -3 },
+  bell: null,
+};
+
+const wireRace: WireRace = {
+  slug: "october-test",
+  title: "October test",
+  startsAt: 1792886400,
+  endsAt: 1793145600,
+  phase: "live",
+  final: false,
+  prizes: [],
+  entrants: 2,
+  ranked: 2,
+  line: "Beta leads October test at +0.10%, $41 ahead of Alpha, 2d 23h left",
+  builtAt: 1792890000,
+  leadChanges: 1,
+  standings: [{ ...standing, name: "Beta", address: "0x2", rank: 1, earned: "100000000", behind: null, bids: null, bell: { rank: 1, earned: "5000000", returnPct: 0.01 } }, standing],
+  series: { at: [1792890000], lines: [{ address: "0x1", ranks: [1, 2] }] },
+  fixtures: [
+    {
+      eventTitle: null,
+      endDate: 1792900000,
+      resolvedAt: null,
+      winner: null,
+      kickoff: null,
+      trading: null,
+      market: "will-it-snow",
+      question: "Will it snow?",
+      url: null,
+      outcomes: ["Yes", "No"],
+      stakes: [{ address: "0x1", name: "Alpha", outcome: 0, shares: 10, value: "4500000", places: [1, 2] }],
+    },
+  ],
+  tape: [{ at: 1792889000, address: "0x1", name: "Alpha", kind: "buy", market: "will-it-snow", question: "Will it snow?", outcome: "Yes", price: 0.45, usd: "4500000", fills: 2 }],
+};
+
+test("a race reads every amount in dollars and keeps the rest", () => {
+  const read = race(wireRace);
+  expect(read.standings.map((s) => [s.name, s.pnl, s.behind, s.bids, s.bell])).toEqual([
+    ["Beta", 100, null, null, { rank: 1, pnl: 5, returnPct: 0.01 }],
+    ["Alpha", -2144, 41, { rank: 3, pnl: -3000, returnPct: -3 }, null],
+  ]);
+  expect([read.fixtures[0].stakes[0].value, read.tape[0].usd, read.tape[0].fills]).toEqual([4.5, 4.5, 2]);
+  expect([read.series, read.line, read.leadChanges]).toEqual([wireRace.series, wireRace.line, 1]);
+  expect(raceSummary(wireRace).standings).toEqual(read.standings);
+});
+
+test("an agent's entries read their standings and neighbours in dollars", () => {
+  const [entry] = raceEntries({ entries: [{ race: wireRace, standing, above: wireRace.standings[0], below: null, line: "Alpha is #2 of 2" }] });
+  expect([entry.race, entry.standing.pnl, entry.standing.bids?.pnl, entry.above?.pnl, entry.below, entry.line]).toEqual([wireRace, -2144, -3000, 100, null, "Alpha is #2 of 2"]);
+});
+
+test("a race's stage counts down to its start, then its end", () => {
+  const head = { ...wireRace, phase: "upcoming" as const };
+  expect([stageText(head, 1792800000 - 7200), stageText({ ...head, phase: "locked" }, 1792886400 - 60), stageText({ ...head, phase: "live" }, 1792886400), stageText({ ...head, phase: "ended" }, 1793145600)]).toEqual([
     "Starts in 1d 2h",
     "Starts in 1:00",
     "Ends in 3d",

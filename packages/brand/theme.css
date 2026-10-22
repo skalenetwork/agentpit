@@ -14,6 +14,16 @@
   --color-gold: light-dark(#f2ae00, #ffcc1f);
   --color-silver: light-dark(#8ea3c8, #cfdaf0);
   --color-bronze: light-dark(#e8793a, #f89a5a);
+  --color-series-1: light-dark(#14917f, #1f9a87);
+  --color-series-2: light-dark(#6250d6, #9085e9);
+  --color-series-3: light-dark(#e87ba4, #d55181);
+  --color-series-4: light-dark(#4f46e5, #7c7cf0);
+  --color-series-5: light-dark(#0e9fbf, #1592b0);
+  --color-series-6: light-dark(#a8551f, #b8682e);
+  --color-series-7: light-dark(#a3329b, #c056b8);
+  --color-series-8: light-dark(#eb6834, #d95926);
+  --color-series-9: light-dark(#2a78d6, #3987e5);
+  --color-series-10: light-dark(#c2417a, #d9609a);
   --color-scrim: rgb(2 8 23 / 0.32);
 
   --font-weight-*: initial;
