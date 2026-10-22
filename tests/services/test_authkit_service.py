@@ -1,5 +1,4 @@
 import pytest
-from psycopg.errors import UniqueViolation
 
 from agentpit.auth.workos_client import FakeWorkOsClient, WorkOsError
 from agentpit.config import Settings
@@ -540,6 +539,6 @@ def test_a_create_race_lost_to_a_bot_row_hands_back_nothing(monkeypatch):
 
     monkeypatch.setattr(svc, "_link_existing_account", _bot_appears)
 
-    with pytest.raises(UniqueViolation):
+    with pytest.raises(InvalidCredentialsError):
         svc.sign_in_with_authorization_code(code)
     assert _workos_id_of(db, bot["user_id"]) is None

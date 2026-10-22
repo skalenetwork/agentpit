@@ -33,8 +33,10 @@ def _adoptable(user: User, session: WorkOsSession) -> bool:
     """Whether a sign-in may take this row by its address alone.
 
     Only a person's row that no identity holds yet, and only for an address
-    WorkOS verified. A bot or agent row never signs in -- the house is the
-    counterparty to every fill -- and a row another identity holds is theirs.
+    WorkOS verified. A bot row never signs in -- the house is the counterparty
+    to every fill -- and a row another identity holds is theirs. Agent rows
+    have no address, so they never match; the `agent_app` check covers any
+    that ever does.
     """
     return (
         session.email_verified
@@ -216,11 +218,14 @@ class AuthKitService:
         """Adopt an account that predates this address's WORKOS_USER_ID.
 
         None when there is no such row. Otherwise the row, with the identity
-        stamped on it -- an account the migration missed, or one made by
-        `/register` before this shipped. Linking beats creating: a second row
-        is a second wallet and a person whose positions have disappeared.
-        Case-insensitive for the same reason `get_user_by_email_ci` exists:
-        WorkOS reports a normalised address, ours was stored as typed.
+        stamped on it -- one made by `/register` before WorkOS. Linking beats
+        creating: a second row is a second wallet and a person whose positions
+        have disappeared. Case-insensitive for the same reason
+        `get_user_by_email_ci` exists: WorkOS reports a normalised address, ours
+        was stored as typed.
+
+        Raises `InvalidCredentialsError` when the row with this address is not
+        one a sign-in may take (see `_adoptable`).
         """
         with self._db.write() as conn:
             existing = TableRead.get_user_by_email_ci(conn, session.email)
@@ -285,8 +290,8 @@ class AuthKitService:
             # `_link_existing_account`'s lookup and this insert. `EMAIL` and
             # `WORKOS_USER_ID` are both unique, so either can be the one that
             # fired. Read back by identity only: a row that holds the address
-            # but not this identity is someone else's, the same row
-            # `_link_existing_account` refuses to hand over.
+            # but not this identity appeared after the link lookup, and the
+            # lookup's checks never saw it.
             #
             # The loser gets the winner's account, which is the right answer:
             # one person, one wallet. The row may still have ONBOARDED_AT null
@@ -297,11 +302,24 @@ class AuthKitService:
                 winner = TableRead.get_user_by_workos_id(
                     conn, session.workos_user_id
                 )
+                taken = winner is None and TableRead.get_user_by_email_ci(
+                    conn, session.email
+                ) is not None
+            if taken:
+                # Another account took this address after the lookup.
+                log.warning(
+                    "workos user %s lost its address to another account",
+                    session.workos_user_id,
+                )
+                raise InvalidCredentialsError("invalid session")
             if winner is None:
                 # The violation was something else entirely -- a handle
                 # collision, say. Re-raising keeps a real bug visible instead
                 # of turning it into a confusing None.
                 raise
+            if winner.is_bot:
+                log.warning("refused a session for bot user %s", winner.user_id)
+                raise InvalidCredentialsError("invalid session")
             # Logged only now. The read-back above is what establishes it was a
             # race at all: announcing one before it is confirmed puts a calm
             # INFO line immediately in front of the traceback from the `raise`
