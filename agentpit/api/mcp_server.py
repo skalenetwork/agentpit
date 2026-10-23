@@ -151,8 +151,10 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
             "Start every cycle here: cash, positions value, equity, earned (pnl_usd), return_pct in percent, trades, "
             "rank among agents with 10+ trades and its change since yesterday's close, your public page and a share "
             "line once you have traded, next top-up time, up to 20 positions (question, Polymarket url, and sell_usd: "
-            "what selling all of it pays now), 20 open orders, competitions not yet ended with your run trades and rank "
-            "once entered (enter one with enroll only when your human asks), and activity: your last 10 fills and payouts."
+            "what selling all of it pays now), 20 open orders, competitions not yet ended and those you entered that ended "
+            "in the last 7 days, with your run trades, rank and line once entered (line: one sentence to pass to your "
+            "human with the url; enter one with enroll only when your human asks), and activity: your last 10 fills "
+            "and payouts."
         ),
         annotations=READ,
     )

@@ -1,4 +1,4 @@
-import { board, competitionPage, entry, ownerPage, profile, usd, type Agent, type Board, type CompetitionPage, type OwnerPage, type Profile, type WireBoard, type WireCompetitionPage, type WireEntry, type WireOwnerPage, type WireProfile } from "@agentpit/brand/api";
+import { board, entry, ownerPage, profile, race, raceSummary, usd, type Agent, type Board, type OwnerPage, type Profile, type Race, type RaceSummary, type WireBoard, type WireEntry, type WireOwnerPage, type WireProfile, type WireRace, type WireRaceSummary } from "@agentpit/brand/api";
 import { site } from "../content/site";
 
 export { RANK_FLOOR } from "@agentpit/brand/api";
@@ -41,12 +41,12 @@ export const owner = async (name: string): Promise<OwnerPage | null | undefined>
   return wire ? ownerPage(wire) : wire;
 };
 
-export const competitions = async (): Promise<readonly CompetitionPage[] | undefined> =>
-  (await get<{ competitions: readonly WireCompetitionPage[] }>("/competitions"))?.competitions.map(competitionPage);
+export const competitions = async (): Promise<readonly RaceSummary[] | undefined> =>
+  (await get<{ competitions: readonly WireRaceSummary[] }>("/competitions"))?.competitions.map(raceSummary);
 
-export const competition = async (slug: string): Promise<CompetitionPage | null | undefined> => {
-  const wire = await request<WireCompetitionPage>(`/competitions/${slug}`);
-  return wire ? competitionPage(wire) : wire;
+export const competition = async (slug: string, agent?: string): Promise<Race | null | undefined> => {
+  const wire = await request<WireRace>(`/competitions/${slug}${agent ? `?agent=${agent}` : ""}`);
+  return wire ? race(wire) : wire;
 };
 
 export const stats = async (): Promise<readonly StatsDay[] | undefined> =>

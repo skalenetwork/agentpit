@@ -108,18 +108,18 @@ def _hex32(seed: str) -> str:
 
 
 class _StubOnchain:
-    """Fixed CTF balance per token id -- all `list_positions` reads from it."""
+    """Fixed CTF balance per token id -- all `wallet` reads from it."""
 
     def __init__(self, balances: dict[str, int]):
         self._balances = balances
 
-    def ctf_balances(self, _eth_address: str, token_ids: list[int]) -> list[int]:
-        return [self._balances.get(str(t), 0) for t in token_ids]
+    def balances(self, _eth_address: str, token_ids: list[int]) -> tuple[int, int, list[int]]:
+        return 0, 0, [self._balances.get(str(t), 0) for t in token_ids]
 
 
 def _insert_trade(conn, *, market: str, asset: str, taker_api_key: str) -> None:
     """One CONFIRMED fill, which is also what puts the market in scope:
-    `list_positions` only scans markets the account has traded."""
+    `wallet` only scans markets the account has traded."""
     conn.execute(
         "INSERT INTO trades (TRADE_ID, MARKET, ASSET_ID, SIDE, PRICE, TRADE_SIZE, "
         "STATUS, TAKER_API_KEY, MAKER_ORDERS, MATCH_TIME) "
@@ -145,7 +145,7 @@ def _position(
     """The single `PositionWire` for an account holding 100 shares of the YES
     token, with `bids` on its Polymarket book."""
     db = fresh_test_db()
-    # `list_positions` does `int(token_id)`, so these have to parse as ints.
+    # `wallet` does `int(token_id)`, so these have to parse as ints.
     base = int.from_bytes(seed.encode(), "big")
     yes_tok, no_tok = str(base * 10 + 1), str(base * 10 + 2)
     with db.write() as conn:
@@ -173,7 +173,7 @@ def _position(
 
     onchain = _StubOnchain({yes_tok: 100_000_000})
     service = AccountService(db, onchain=onchain)  # type: ignore[arg-type]
-    out = service.list_positions(acct.address)
+    out = service.wallet(acct.address).positions
     assert len(out) == 1
     return out[0]
 

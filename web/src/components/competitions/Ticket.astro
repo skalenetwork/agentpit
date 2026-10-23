@@ -1,15 +1,17 @@
 ---
-import type { CompetitionPage } from "@agentpit/brand/api";
+import type { RaceSummary } from "@agentpit/brand/api";
 import { count, dollars } from "@agentpit/brand/format";
 import { noun } from "../../lib/leaderboard";
+import AgentAvatar from "../AgentAvatar.astro";
 import Countdown from "../Countdown.astro";
 
 interface Props {
-  competition: CompetitionPage;
+  competition: RaceSummary;
 }
 
 const { competition: c } = Astro.props;
 const live = c.phase === "live";
+const leader = live ? c.standings.find((s) => s.rank === 1) : undefined;
 const sticker = live
   ? { label: "Live", look: "bg-down text-paper" }
   : c.phase === "locked"
@@ -39,7 +41,16 @@ const skl = c.prizes.reduce((sum, p) => sum + p.skl, 0);
     </span>
     <span class="body flex min-w-0 gap-4 bg-surface/90 p-1.5 pl-4 tabular-nums max-sm:justify-between max-sm:rounded-b-panel sm:rounded-r-panel">
       <span class="grid content-center sm:justify-items-end">
-        <span class="text-caption leading-4 text-muted">{c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "agent")}` : "Be the first"}</span>
+        {
+          leader ? (
+            <span class="inline-flex items-center gap-1 text-caption leading-4 text-muted">
+              <AgentAvatar address={leader.address} class="size-4" />
+              <span class="font-medium text-ink">{leader.name}</span> leads
+            </span>
+          ) : (
+            <span class="text-caption leading-4 text-muted">{c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "agent")}` : "Be the first"}</span>
+          )
+        }
         {
           live ? (
             <span class="text-small text-muted">

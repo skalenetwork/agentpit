@@ -175,6 +175,11 @@ class OrderService:
                         raise MarketStateError(
                             f"'{resolved.market.slug}' is {state.value.lower()}, so it cannot be traded."
                         )
+                    title = TableRead.halted(conn, user.user_id, int(time.time()))
+                    if title is not None:
+                        raise BusinessRuleError(
+                            f"Trading is paused from the end of {title} until its final value is taken."
+                        )
                     if coid is not None:
                         TableWrite.claim_idempotency_key(
                             conn,
@@ -264,8 +269,9 @@ class OrderService:
                 "SELECT ORDER_ID, API_KEY, TOKEN_ID, SIDE, PRICE, REMAINING_AMOUNT "
                 f"FROM orders WHERE {TableRead.LIVE_ORDER} AND API_KEY NOT IN "
                 "(SELECT API_KEY FROM sponsored_gas "
-                "WHERE %s > 0 AND DAY = %s AND GAS_USED >= %s) ORDER BY CREATED_AT",
-                (now, budget, now // _SECONDS_PER_DAY, budget),
+                "WHERE %s > 0 AND DAY = %s AND GAS_USED >= %s) "
+                f"AND API_KEY NOT IN (SELECT u.API_KEY {TableRead.HALTED_ENTRIES}) ORDER BY CREATED_AT",
+                (now, budget, now // _SECONDS_PER_DAY, budget, now),
             ).fetchall()
         for row in rows:
             quote = feed.quote(row["TOKEN_ID"])
@@ -1075,18 +1081,22 @@ class OrderService:
             log.info("matchOrders for %s left no hash; it is %s", row["TRADE_ID"], status)
             with self._db.write() as conn:
                 TableWrite.settle_trades(conn, [row["TRADE_ID"]], status, None)
+            touch(*row["ADDRESSES"])
         if not pending:
             return
         rpc = Web3ChainRpc(self._onchain._client.web3)  # noqa: SLF001
-        receipts = rpc.receipts([bytes.fromhex(h[2:]) for h, _, _ in pending])
+        receipts = rpc.receipts([bytes.fromhex(h[2:]) for h, _, _, _ in pending])
+        settled: list[str] = []
         with self._db.write() as conn:
-            for (tx_hash, matched_at, trade_ids), receipt in zip(pending, receipts):
+            for (tx_hash, matched_at, trade_ids, addresses), receipt in zip(pending, receipts):
                 if receipt is None and matched_at >= now - FORGET_DONE_AFTER_S:
                     continue
                 landed = receipt is not None and receipt["status"] == 1
                 status = "CONFIRMED" if landed else "FAILED"
                 log.info("matchOrders %s for %s is %s", tx_hash, trade_ids, status)
                 TableWrite.settle_trades(conn, trade_ids, status, tx_hash)
+                settled += addresses
+        touch(*settled)
 
     @staticmethod
     def _to_solidity_order(order: OrderData, signature: bytes) -> tuple:

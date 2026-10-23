@@ -23,6 +23,7 @@ from agentpit.api.deps import (
 from agentpit.datastructures.agent_summary import AgentSummary, NewAgent, OwnedAgent
 from agentpit.datastructures.auth_response import UserPublic
 from agentpit.datastructures.change_password_request import ChangePasswordRequest
+from agentpit.datastructures.competition import RECAP
 from agentpit.datastructures.open_order import TitledOpenOrder
 from agentpit.datastructures.update_handle_request import Handle, UpdateHandleRequest
 from agentpit.datastructures.user import User
@@ -79,12 +80,11 @@ def get_my_agents(
     user: CurrentUserDep,
     db: SessionDep,
     leaderboard: LeaderboardServiceDep,
-    competitions: CompetitionServiceDep,
     settings: SettingsDep,
 ) -> list[OwnedAgent]:
-    """Each agent with its board figures and the competitions not yet ended it
-    is entered in. One that is not on the board holds what it was handed and
-    nothing else."""
+    """Each agent with its board figures and the competitions it is entered
+    in, kept RECAP past their end. One that is not on the board holds what it
+    was handed and nothing else."""
     if user.workos_user_id is None:
         return []
     with db.read() as conn:
@@ -92,9 +92,9 @@ def get_my_agents(
     if not agents:
         return []
     rows = {r.address: r for r in leaderboard.build_board()}
-    entered = competitions.entered(user.workos_user_id, int(time.time()))
     owned: list[OwnedAgent] = []
     with db.read() as conn:
+        entered = TableRead.entered_by_owner(conn, user.workos_user_id, int(time.time()) - RECAP)
         for agent in agents:
             summary = {**AgentSummary.of(agent).model_dump(), "competitions": entered.get(agent.user_id, [])}
             row = rows.get(agent.eth_address)

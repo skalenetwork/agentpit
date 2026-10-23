@@ -10,7 +10,7 @@ from eth_account.signers.local import LocalAccount
 
 from agentpit.common import check_state
 from agentpit.datastructures.board import WireTeam
-from agentpit.datastructures.competition import Competition
+from agentpit.datastructures.competition import LOCK, Competition
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.market import Market, Payouts
@@ -96,6 +96,9 @@ class TableWrite:
             (deleted_at, workos_id, workos_id),
         )
         db.execute("DELETE FROM owners WHERE WORKOS_ID = %s", (workos_id,))
+        db.execute(
+            "UPDATE competition_entries SET OWNER = 'deleted:' || USER_ID WHERE OWNER = %s", (workos_id,)
+        )
         if email is not None:
             db.execute("DELETE FROM auth_code_attempts WHERE BUCKET = %s", (f"email:1h:{email.strip().lower()}",))
 
@@ -393,7 +396,7 @@ class TableWrite:
             "WHERE USER_ID = %s "
             "AND (LAST_TOPUP_AT IS NULL OR LAST_TOPUP_AT <= %s) "
             f"AND NOT EXISTS (SELECT 1 {TableRead.PAUSING_ENTRIES})",
-            (at, default_raw, deposit_raw, user_id, not_before, user_id, at),
+            (at, default_raw, deposit_raw, user_id, not_before, user_id, at, at),
         )
         return cur.rowcount == 1
 
@@ -541,8 +544,9 @@ class TableWrite:
 
     @staticmethod
     def save_competition(db: psycopg.Connection, competition: Competition, now: int) -> bool:
-        """Create the competition or update it; its window only while it has
-        not started. False when the window was refused."""
+        """Create the competition or update it: its title always, its prizes
+        until the lock, its window until the start. False, with nothing
+        changed, when the update would change what is already fixed."""
         row = db.execute(
             """
             INSERT INTO competitions AS c (SLUG, TITLE, STARTS_AT, ENDS_AT, PRIZES)
@@ -550,22 +554,31 @@ class TableWrite:
             ON CONFLICT (SLUG) DO UPDATE SET
                 TITLE = EXCLUDED.TITLE, STARTS_AT = EXCLUDED.STARTS_AT, ENDS_AT = EXCLUDED.ENDS_AT,
                 PRIZES = EXCLUDED.PRIZES
-            WHERE c.STARTS_AT > %(now)s
-               OR (c.STARTS_AT = EXCLUDED.STARTS_AT AND c.ENDS_AT = EXCLUDED.ENDS_AT)
+            WHERE (c.STARTS_AT > %(now)s
+                   OR (c.STARTS_AT = EXCLUDED.STARTS_AT AND c.ENDS_AT = EXCLUDED.ENDS_AT))
+              AND (c.STARTS_AT - %(lock)s > %(now)s OR c.PRIZES = EXCLUDED.PRIZES)
             RETURNING SLUG
             """,
             {
                 **competition.model_dump(),
                 "prizes": json.dumps([p.model_dump() for p in competition.prizes]),
                 "now": now,
+                "lock": LOCK,
             },
         ).fetchone()
         return row is not None
 
     @staticmethod
-    def delete_competitions(db: psycopg.Connection, keep: list[str]) -> None:
-        """Delete every competition whose slug is not in `keep`; entries stay."""
-        db.execute("DELETE FROM competitions WHERE SLUG <> ALL(%s::text[])", (keep,))
+    def delete_competitions(db: psycopg.Connection, keep: list[str], now: int) -> list[str]:
+        """Delete every competition whose slug is not in `keep`, unless it has
+        started or has entries. Returns the slugs not in `keep` that stay."""
+        db.execute(
+            "DELETE FROM competitions c WHERE c.SLUG <> ALL(%s::text[]) AND c.STARTS_AT > %s "
+            "AND NOT EXISTS (SELECT 1 FROM competition_entries e WHERE e.SLUG = c.SLUG)",
+            (keep, now),
+        )
+        rows = db.execute("SELECT SLUG FROM competitions WHERE SLUG <> ALL(%s::text[]) ORDER BY SLUG", (keep,))
+        return [r["SLUG"] for r in rows]
 
     @staticmethod
     def enter_competition(
@@ -594,15 +607,72 @@ class TableWrite:
 
     @staticmethod
     def capture_entry(
-        db: psycopg.Connection, slug: str, user_id: str, edge: Literal["START", "END"], value_raw: int
+        db: psycopg.Connection,
+        slug: str,
+        user_id: str,
+        edge: Literal["START", "END"],
+        value_raw: int,
+        at: int,
+        block: int | None,
     ) -> bool:
-        """Record the entry's start or end value once. False when it was already taken."""
+        """Record the entry's start or end value once, with the time its wallet
+        read returned and, for the end, that read's block. False when it was
+        already taken."""
         cur = db.execute(
-            f"UPDATE competition_entries SET {edge}_RAW = %s "
+            f"UPDATE competition_entries SET {edge}_RAW = %s, {edge}_AT = %s, END_BLOCK = %s "
             f"WHERE SLUG = %s AND USER_ID = %s AND {edge}_RAW IS NULL",
-            (value_raw, slug, user_id),
+            (value_raw, at, block, slug, user_id),
         )
         return cur.rowcount == 1
+
+    @staticmethod
+    def write_points(db: psycopg.Connection, slug: str, ts: list[int]) -> int:
+        """Each entry's point at every boundary in `ts` after its START_AT and
+        up to the end, for accounts not deleted before the end: the newest
+        account_snapshots CAPITAL_RAW taken from START_AT and before the
+        boundary, else START_RAW. A point already written stays. Returns the
+        rows inserted."""
+        cur = db.execute(
+            """
+            INSERT INTO competition_points (SLUG, T, USER_ID, VALUE_RAW)
+            SELECT e.SLUG, b.T, e.USER_ID, COALESCE(s.CAPITAL_RAW, e.START_RAW)
+            FROM competition_entries e
+            JOIN competitions c ON c.SLUG = e.SLUG
+            JOIN users u ON u.USER_ID = e.USER_ID
+            CROSS JOIN unnest(%(ts)s::bigint[]) AS b(T)
+            LEFT JOIN LATERAL (
+                SELECT CAPITAL_RAW FROM account_snapshots
+                WHERE USER_ID = e.USER_ID AND T >= e.START_AT AND T < b.T
+                ORDER BY T DESC, SNAPSHOT_ID DESC LIMIT 1
+            ) s ON true
+            WHERE e.SLUG = %(slug)s AND e.START_AT IS NOT NULL AND b.T > e.START_AT AND b.T <= c.ENDS_AT
+              AND (u.DELETED_AT IS NULL OR u.DELETED_AT >= c.ENDS_AT)
+            ON CONFLICT DO NOTHING
+            """,
+            {"slug": slug, "ts": ts},
+        )
+        return cur.rowcount
+
+    @staticmethod
+    def stamp_final(db: psycopg.Connection, now: int, scanned: int) -> list[str]:
+        """Stamp FINAL_AT once on every ended competition whose started entries
+        still in it all have an end value, each read at a block below
+        `scanned`. Returns the slugs stamped."""
+        rows = db.execute(
+            """
+            UPDATE competitions c SET FINAL_AT = %(now)s
+            WHERE c.FINAL_AT IS NULL AND c.ENDS_AT <= %(now)s
+              AND NOT EXISTS (
+                  SELECT 1 FROM competition_entries e JOIN users u ON u.USER_ID = e.USER_ID
+                  WHERE e.SLUG = c.SLUG AND e.START_RAW IS NOT NULL AND e.END_RAW IS NULL
+                    AND (u.DELETED_AT IS NULL OR u.DELETED_AT >= c.ENDS_AT))
+              AND NOT EXISTS (
+                  SELECT 1 FROM competition_entries e WHERE e.SLUG = c.SLUG AND e.END_BLOCK >= %(scanned)s)
+            RETURNING c.SLUG
+            """,
+            {"now": now, "scanned": scanned},
+        )
+        return [r["SLUG"] for r in rows]
 
     @staticmethod
     def create_personality(

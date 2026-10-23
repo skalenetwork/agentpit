@@ -68,15 +68,15 @@ class _FakeOnchain:
     """Records nothing -- just raises, so the test can prove GET /leaderboard
     never reaches it. The chain work happens in take_snapshot, off the request."""
 
-    def usd_balance(self, address: str) -> int:
+    def balances(self, address: str, token_ids: list[int]) -> tuple[int, int, list[int]]:
         raise AssertionError("GET /leaderboard must not call the chain at all")
 
 
 class _FakeAccounts:
-    """total_value also raises on purpose, alongside _FakeOnchain.usd_balance,
+    """wallet also raises on purpose, alongside _FakeOnchain.balances,
     so the endpoint is proven to reach neither collaborator."""
 
-    def total_value(self, address: str) -> list[dict]:
+    def wallet(self, address: str) -> None:
         raise AssertionError("GET /leaderboard must not walk positions on chain")
 
 

@@ -2,8 +2,11 @@
 import psycopg
 import pytest
 from eth_utils.crypto import keccak
+from psycopg.rows import tuple_row
 
+from agentpit.db.row_factory import ci_dict_row
 from agentpit.db.table_create import TableCreate
+from agentpit.db.table_read import TableRead
 from agentpit.onchain.ctf_ids import condition_id
 from tests.db_helpers import TEST_DSN
 
@@ -32,7 +35,7 @@ def test_creates_all_tables(conn):
         "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
     ).fetchall()
     names = {r[0] for r in rows}
-    for t in ("users", "markets", "orders", "trades", "events", "transactions"):
+    for t in ("users", "markets", "orders", "trades", "events", "transactions", "competition_points"):
         assert t in names
 
 
@@ -65,6 +68,39 @@ def test_legacy_pending_trades_become_confirmed(conn):
     TableCreate.create_all_tables(conn)
     rows = dict(conn.execute("SELECT TRADE_ID, STATUS FROM trades").fetchall())
     assert rows == {"legacy": "CONFIRMED", "unsent": "PENDING", "unknown": "PENDING"}
+
+
+def test_entries_captured_before_their_times_existed_are_dated_and_undatable_ones_go(conn):
+    TableCreate.create_all_tables(conn)
+    conn.execute("ALTER TABLE competition_entries DROP CONSTRAINT competition_entries_captured")
+    conn.execute("INSERT INTO competitions (SLUG, TITLE, STARTS_AT, ENDS_AT, PRIZES) VALUES ('c', 'C', 100, 200, '[]')")
+    conn.execute(
+        "INSERT INTO competition_entries (SLUG, OWNER, USER_ID, ENROLLED_AT, START_RAW, END_RAW) VALUES "
+        "('c', 'o1', 'a', 50, 1, 2), ('c', 'o2', 'b', 150, 1, NULL), ('c', 'o3', 'c', 50, NULL, NULL), "
+        "('gone', 'o4', 'd', 50, 1, NULL), ('gone', 'o5', 'e', 50, NULL, NULL)"
+    )
+
+    TableCreate.create_all_tables(conn)
+
+    assert conn.execute(
+        "SELECT USER_ID, START_AT, END_AT, END_BLOCK FROM competition_entries ORDER BY USER_ID"
+    ).fetchall() == [("a", 100, 200, None), ("b", 150, None, None), ("c", None, None, None), ("e", None, None, None)]
+
+
+@pytest.mark.parametrize(
+    "captured",
+    [(1, None, None, None, None), (None, None, 1, 2, None), (1, 2, 1, None, None), (1, 2, None, None, 3)],
+    ids=["start without its time", "end without a start", "end without its time", "block without an end"],
+)
+def test_an_entry_holds_a_capture_only_with_its_time_and_an_end_only_after_a_start(conn, captured):
+    TableCreate.create_all_tables(conn)
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(
+            "INSERT INTO competition_entries (SLUG, OWNER, USER_ID, ENROLLED_AT, START_RAW, START_AT, END_RAW, "
+            "END_AT, END_BLOCK) VALUES ('c', 'o', 'u', 0, %s, %s, %s, %s, %s)",
+            captured,
+        )
 
 
 def _legacy_markets(conn, *rows: tuple[str, str, int | None]) -> None:
@@ -109,3 +145,42 @@ def test_the_market_migration_backfills_question_ids_and_payouts(conn):
         "No?": ("0x" + keccak(text="No?").hex(), [0, 1]),
         "Open?": ("0x" + keccak(text="Open?").hex(), None),
     }
+
+
+class _Explained:
+    """A connection that records the plan of each query it runs."""
+
+    def __init__(self, conn: psycopg.Connection, target=None, plans: list[str] | None = None):
+        self._conn, self._target, self.plans = conn, target or conn, [] if plans is None else plans
+
+    def execute(self, query, params=None):
+        with self._conn.cursor(row_factory=tuple_row) as cur:
+            self.plans.append(" ".join(row[0] for row in cur.execute(f"EXPLAIN {query}", params)))
+        return self._target.execute(query, params)
+
+    def cursor(self, **kwargs):
+        return _Explained(self._conn, self._conn.cursor(**kwargs), self.plans)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._target.close()
+
+
+def test_the_race_reads_probe_the_fill_redeem_snapshot_and_point_indexes(conn):
+    TableCreate.create_all_tables(conn)
+    db = psycopg.connect(TEST_DSN, autocommit=True, row_factory=ci_dict_row)
+    db.execute("SET enable_seqscan = off")
+    explained = _Explained(db)
+
+    TableRead.entries(explained, ["october-test"])
+    TableRead.points(explained, "october-test", 0)
+    TableRead.recent_activity(explained, [("key", 0, 2**62)], 20)
+    db.close()
+
+    entries, points, tape = explained.plans
+    assert "idx_trades_fills_taker_time" in entries and "idx_account_snapshots_user_t" in entries
+    assert "competition_points_pkey" in points
+    assert "idx_trades_fills_taker_time" in tape and "idx_transactions_redeems" in tape
+    assert not any("Seq Scan on trades" in plan or "Seq Scan on transactions" in plan for plan in explained.plans)

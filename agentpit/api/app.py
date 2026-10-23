@@ -200,24 +200,25 @@ async def _order_cleanup_loop(db: DbSession, settings: Settings) -> None:
         await asyncio.sleep(settings.order_cleanup_interval_seconds)
 
 
-def _run_leaderboard_tick(service) -> tuple[int, int]:
-    now = int(time.time())
-    written = service.take_snapshot(now)
-    deleted = service.thin_snapshots(now)
+def _run_leaderboard_tick(service, engine_enabled: bool) -> tuple[int, int]:
+    written = service.take_snapshot() if feed.ready(engine_enabled) else 0
+    deleted = service.thin_snapshots(int(time.time()))
     service.exclude_peer_transfers()
     return written, deleted
 
 
-async def _leaderboard_loop(service: LeaderboardService, interval_seconds: int) -> None:
+async def _leaderboard_loop(service: LeaderboardService, settings: Settings) -> None:
     next_pass = 0.0
     while True:
         try:
             touched = drain()
             if touched:
-                await asyncio.to_thread(service.take_snapshot, int(time.time()), touched)
+                await asyncio.to_thread(service.take_snapshot, touched)
             if time.monotonic() >= next_pass:
-                next_pass = time.monotonic() + interval_seconds
-                written, deleted = await asyncio.to_thread(_run_leaderboard_tick, service)
+                next_pass = time.monotonic() + settings.leaderboard_interval_seconds
+                written, deleted = await asyncio.to_thread(
+                    _run_leaderboard_tick, service, settings.liquidity_engine_enabled
+                )
                 log.info(
                     "Leaderboard tick: %d accounts valued, %d snapshots thinned",
                     written,
@@ -230,9 +231,9 @@ async def _leaderboard_loop(service: LeaderboardService, interval_seconds: int) 
         await asyncio.sleep(_LEADERBOARD_TICK_SECONDS)
 
 
-async def _capture_loop(service: CompetitionService) -> None:
+async def _competition_loop(service: CompetitionService) -> None:
     while True:
-        await asyncio.to_thread(service.capture, int(time.time()))
+        await asyncio.to_thread(service.tick, int(time.time()))
         await asyncio.sleep(_LEADERBOARD_TICK_SECONDS)
 
 
@@ -447,17 +448,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 db_session, onchain_admin, account_service, settings
             )
             competition_service = CompetitionService(
-                db_session, onchain_admin, account_service, settings
+                db_session, account_service, settings
             )
             leaderboard_tasks = [
                 asyncio.create_task(
-                    _leaderboard_loop(
-                        leaderboard_service,
-                        settings.leaderboard_interval_seconds,
-                    )
+                    _leaderboard_loop(leaderboard_service, settings)
                 ),
                 asyncio.create_task(
-                    supervise("captures", lambda: _capture_loop(competition_service))
+                    supervise("competitions", lambda: _competition_loop(competition_service))
                 ),
             ]
         else:

@@ -1,7 +1,7 @@
 """High-level on-chain operations executed with the admin/operator key."""
 
 from collections.abc import Callable
-from typing import cast
+from typing import Any, cast
 
 from eth_account.signers.local import LocalAccount
 from eth_typing import HexStr
@@ -461,6 +461,24 @@ class OnchainAdmin:
                 ).call()
             )
         return out
+
+    def balances(self, address: str, token_ids: list[int]) -> tuple[int, int, list[int]]:
+        """(block, apUSD balance, CTF balance of each of `token_ids` in order)
+        for one holder in one JSON-RPC batch, so all three come from one node
+        at one block in practice. The block number goes last: a transfer
+        racing the read is dated no earlier than it landed. The balances are
+        chunked as in `ctf_balances`."""
+        owner = Web3.to_checksum_address(address)
+        web3 = self._client.web3
+        ctf = self._contracts.ctf.functions
+        with web3.batch_requests() as batch:
+            batch.add(self._contracts.usd.functions.balanceOf(owner))
+            for start in range(0, len(token_ids), _BALANCE_BATCH):
+                chunk = token_ids[start : start + _BALANCE_BATCH]
+                batch.add(ctf.balanceOfBatch([owner] * len(chunk), chunk))
+            batch.add(web3.eth.get_block_number())
+            cash, *chunks, block = cast(list[Any], batch.execute())
+        return int(block), int(cash), [int(b) for chunk in chunks for b in chunk]
 
     def redeemed_payout(self, receipt: TxReceipt, redeemer: str) -> int:
         """What the claim in `receipt` paid `redeemer`, in raw apUSD: the sum of

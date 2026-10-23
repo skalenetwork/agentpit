@@ -502,6 +502,9 @@ docker compose -f deploy/docker-compose.prod.yml --env-file .env build api caddy
 docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --no-deps api caddy
 ```
 
+Never deploy the API in the 15 minutes after a competition ends: the books its
+end values sell into are kept in memory until they are all taken.
+
 Fresh box only (the volumes are external, so compose never creates them):
 
 ```bash

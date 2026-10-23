@@ -12,6 +12,7 @@ from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import DailyClose, TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.liquidity import feed
 from agentpit.onchain.admin import OnchainAdmin
 from agentpit.services.account_service import AccountService
 from agentpit.services.deployment_reset import reconcile_deployment
@@ -73,6 +74,8 @@ class Holdings:
 
 
 _holdings: dict[str, Holdings] = {}
+_refused_since: dict[str, int] = {}
+_peer_next_block = 0
 _board_lock = threading.Lock()
 _board: "tuple[float, list[LeaderboardRow]] | None" = None
 _dirty: set[str] = set()
@@ -99,6 +102,28 @@ def drain() -> set[str]:
         batch = set(_dirty)
         _dirty.clear()
     return batch
+
+
+def peer_next_block() -> int:
+    """The first block the peer-transfer scan has not read; 0 until its first scan since the start."""
+    return _peer_next_block
+
+
+def _priced(address: str, held: Holdings) -> bool:
+    """Whether a valuation may enter history: every unsettled mirrored
+    position has a book, or one has gone without for BOOK_GRACE and the
+    marks are taken with a warning. A mark without a book is a last print,
+    which is what a restart or a reconnect values at until the books are in;
+    the grace keeps a dead replica from freezing the account."""
+    missing = next((p.asset for p in held.positions if not p.settled and not feed.booked(p.asset)), None)
+    if missing is None:
+        _refused_since.pop(address, None)
+        return True
+    since = _refused_since.setdefault(address, held.valued_at)
+    if held.valued_at < since + feed.BOOK_GRACE:
+        return False
+    log.warning("Snapshot of %s taken at marks: no book for %s for %ds", address, missing, held.valued_at - since)
+    return True
 
 
 class LeaderboardRow(BaseModel):
@@ -214,14 +239,14 @@ class LeaderboardService:
         self._onchain = onchain
         self._accounts = accounts
         self._settings = settings
-        self._next_block = 0
 
     def exclude_peer_transfers(self) -> None:
         """Take both wallets of every apUSD transfer read since the last call
         off the board, unless it was a mint or went through the exchange or
         the CTF. Gifted capital ranks as earned otherwise. The first call reads
         the chain from its first block."""
-        found, self._next_block = self._onchain.peer_transfers(self._next_block)
+        global _peer_next_block
+        found, _peer_next_block = self._onchain.peer_transfers(_peer_next_block)
         if not found:
             return
         with self._db.write() as conn:
@@ -229,11 +254,13 @@ class LeaderboardService:
         if flagged:
             log.warning("Off the board for moving apUSD wallet to wallet: %s", ", ".join(flagged))
 
-    def value_account(self, address: str, now: int) -> Holdings:
+    def value_account(self, address: str) -> Holdings:
+        """The account read from the chain, valued at the time the read returned."""
+        wallet = self._accounts.wallet(address)
         held = Holdings(
-            valued_at=now,
-            cash_raw=self._onchain.usd_balance(address),
-            positions=self._accounts.list_positions(address),
+            valued_at=int(time.time()),
+            cash_raw=wallet.cash_raw,
+            positions=wallet.positions,
             closed=self._accounts.list_closed_positions(address),
         )
         _holdings[address] = held
@@ -243,11 +270,14 @@ class LeaderboardService:
         """The latest valuation of the account, or one read of the chain when
         none has run since the process started."""
         held = _holdings.get(address)
-        return held if held is not None else self.value_account(address, int(time.time()))
+        return held if held is not None else self.value_account(address)
 
-    def take_snapshot(self, now: int, only: set[str] | None = None) -> int:
+    def take_snapshot(self, only: set[str] | None = None) -> int:
         """Value every trading account, or those of them whose lowercase
-        address is in `only`. Returns the number of rows written.
+        address is in `only`, and write a row for each valuation priced on
+        live books. A full pass values the accounts touched meanwhile between
+        two accounts, so a fill waits seconds, not the pass. Returns the
+        number of rows written.
 
         One account failing must not lose the whole pass -- a single unreadable
         position would otherwise cost every other account its data point.
@@ -259,8 +289,12 @@ class LeaderboardService:
 
         written = 0
         for account in accounts:
+            if only is None and (touched := drain()):
+                written += self.take_snapshot(touched)
             try:
-                held = self.value_account(account.eth_address, now)
+                held = self.value_account(account.eth_address)
+                if not _priced(account.eth_address, held):
+                    continue
                 with self._db.write() as conn:
                     # Before the deposit is read, not after: the row written
                     # this tick must carry the corrected figure. See
@@ -275,7 +309,7 @@ class LeaderboardService:
                     TableWrite.insert_account_snapshot(
                         conn,
                         account.user_id,
-                        now,
+                        held.valued_at,
                         held.cash_raw + held.value_raw,
                         deposited,
                         held.cost_raw,

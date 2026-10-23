@@ -1,5 +1,5 @@
 """TableRead.list_markets_with_user_activity scopes the position scan to only
-the markets a user has touched — the fix for list_positions doing an O(market
+the markets a user has touched — the fix for the position scan doing an O(market
 count) on-chain balance scan (every market) that ran ~24s at 1000 markets."""
 import uuid
 

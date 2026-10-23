@@ -3,13 +3,34 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, PlainValidator, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeInt,
+    PlainSerializer,
+    PlainValidator,
+    StringConstraints,
+    model_validator,
+)
+
+from agentpit.datastructures.market_context import MarketContext
+from agentpit.domain.runner import Runner
 
 LOCK = 86_400
 PLACE_FLOOR = 1
 MAX_POOL_USD = 5_000
+HOUR = 3_600
+POINT_LAG = 10
+RECAP = 604_800
+FINAL_DAY = 86_400
+LEADERS = 6
+LINES = 10
+FIXTURES = 12
+TAPE = 20
 
 Phase = Literal["upcoming", "locked", "live", "ended"]
+Raw = Annotated[int, PlainSerializer(str, return_type=str, when_used="json")]
 Slug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9-]{1,64}$")]
 Title = Annotated[str, StringConstraints(max_length=64, pattern=r"^\S(.*\S)?$")]
 Places = Annotated[str, StringConstraints(pattern=r"^[1-9][0-9]{0,2}(-[1-9][0-9]{0,2})?$")]
@@ -109,3 +130,167 @@ class CompetitionFile(BaseModel):
 def load_competition(path: Path) -> Competition:
     """The competition a file defines; every fault is a ValueError."""
     return CompetitionFile.model_validate(tomllib.loads(path.read_text(encoding="utf-8")), strict=True).competition(path.stem)
+
+
+def score(earned: int, base: int) -> int:
+    """`earned` as a return on `base` in basis points, rounded half away from
+    zero: the only rounding of a return in a race, whatever the scenario."""
+    bp = (abs(earned) * 20_000 + base) // (2 * base)
+    return bp if earned >= 0 else -bp
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+
+class Score(_Strict):
+    """A place and return in one scenario; no rank when it does not place there."""
+
+    rank: int | None
+    earned: Raw
+    returnPct: float
+
+
+class Standing(_Strict):
+    """One entrant on the official basis, named by its handle or its short
+    address, never its owner."""
+
+    address: str
+    name: str
+    runner: Runner
+    listed: bool
+    runStartsAt: int
+    endAt: int | None
+    trades: int
+    lastTradeAt: int | None
+    disqualified: bool
+    rank: int | None
+    earned: Raw
+    returnPct: float
+    rankChange: int | None
+    behind: Raw | None
+    wouldRank: int | None
+    hoursLed: int
+    bids: Score | None
+    bell: Score | None
+
+
+class Line(_Strict):
+    """An entrant's place at every column, then its place now."""
+
+    address: str
+    ranks: list[int | None]
+
+
+class Series(_Strict):
+    at: list[int]
+    lines: list[Line]
+
+
+class Stake(_Strict):
+    """A position in a fixture, with its holder's place if outcome `i` wins."""
+
+    address: str
+    name: str
+    outcome: int
+    shares: float
+    value: Raw
+    places: list[int | None]
+
+
+class Fixture(MarketContext):
+    """A market still to settle before the end where an outcome moves a place."""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    market: str
+    question: str
+    url: str | None
+    outcomes: list[str]
+    stakes: list[Stake]
+
+
+class TapeFill(_Strict):
+    """A run fill, or consecutive ones by one agent on one market, side and
+    outcome within an hour, or a payout."""
+
+    at: int
+    address: str
+    name: str
+    kind: Literal["buy", "sell", "payout"]
+    market: str
+    question: str
+    outcome: str | None
+    price: float | None
+    usd: Raw
+    fills: int
+
+
+class RaceHead(_Strict):
+    slug: str
+    title: str
+    startsAt: int
+    endsAt: int
+    phase: Phase
+    final: bool
+    prizes: list[Prize]
+    entrants: int
+    ranked: int
+    line: str
+
+
+class RaceSummary(RaceHead):
+    standings: list[Standing]
+
+
+class Race(RaceHead):
+    builtAt: int
+    leadChanges: int
+    standings: list[Standing]
+    series: Series
+    fixtures: list[Fixture]
+    tape: list[TapeFill]
+
+
+class RaceEntry(_Strict):
+    race: RaceHead
+    standing: Standing
+    above: Standing | None
+    below: Standing | None
+    line: str
+
+
+class Races(_Strict):
+    competitions: list[RaceSummary]
+
+
+class RaceEntries(_Strict):
+    entries: list[RaceEntry]
+
+
+class Capture(_Strict):
+    raw: int
+    at: int
+
+
+class Entry(_Strict):
+    """An entry still in its race with what its standing is built from. The
+    api key never leaves the service."""
+
+    slug: str
+    user_id: str
+    api_key: str
+    address: str
+    handle: str | None
+    app: str | None
+    host: str | None
+    run_starts_at: int
+    start: Capture | None
+    end: Capture | None
+    end_block: int | None
+    value_raw: int | None
+    trades: int
+    first_trade_at: int | None
+    last_trade_at: int | None
+    listed: bool
+    disqualified: bool

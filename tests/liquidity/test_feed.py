@@ -90,6 +90,28 @@ def test_state_queues_only_known_asset_trades():
     assert len(st.trades) == 1
 
 
+def test_a_token_is_booked_unless_it_is_mirrored_and_has_no_book(monkeypatch):
+    st = MirrorState([_ref()])
+    monkeypatch.setattr(feed, "HOUSE", feed.House(None, st))  # type: ignore[arg-type]
+    waiting = (feed.booked("y1"), feed.booked("n1"), feed.booked("local"))
+    st.handle_event({"event_type": "book", "asset_id": "PM-YES", "bids": [], "asks": []})
+    assert waiting == (False, False, True)
+    assert (feed.booked("y1"), feed.booked("n1")) == (True, True)
+
+
+def test_valuations_wait_for_the_mirror_targets_until_the_grace(monkeypatch):
+    monkeypatch.setattr(feed, "HOUSE", None)
+    monkeypatch.setattr(feed, "_STARTED", feed.time.monotonic())
+    loading = (feed.ready(True), feed.ready(False))
+    monkeypatch.setattr(feed, "HOUSE", feed.House(None, MirrorState([])))  # type: ignore[arg-type]
+    empty = feed.ready(True)
+    monkeypatch.setattr(feed, "HOUSE", feed.House(None, MirrorState([_ref()])))  # type: ignore[arg-type]
+    loaded = feed.ready(True)
+    monkeypatch.setattr(feed, "HOUSE", None)
+    monkeypatch.setattr(feed, "_STARTED", feed.time.monotonic() - feed.BOOK_GRACE)
+    assert (loading, empty, loaded, feed.ready(True)) == ((False, True), False, True, True)
+
+
 class FakeWs:
     """Scripted websocket: yields queued frames, then times out forever."""
     def __init__(self, frames=()):

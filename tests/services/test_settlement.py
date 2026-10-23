@@ -5,8 +5,10 @@ from types import SimpleNamespace
 
 from agentpit.datastructures.match import Match
 from agentpit.db.session import DbSession
+from agentpit.db.table_write import TableWrite
 from agentpit.onchain.order_signer import OrderData
 from agentpit.services import order_service
+from agentpit.services.leaderboard_service import drain
 from agentpit.services.order_service import OrderService
 from tests.db_helpers import fresh_test_db
 from tests.fake_skaled import FakeFn, FakeSkaled, make_sender
@@ -54,6 +56,17 @@ def _match(db: DbSession, trade_id: str) -> Match:
         house_signature=_SIG,
         trade_id=trade_id,
     )
+
+
+def _takers(db: DbSession, *trade_ids: str) -> dict[str, str]:
+    """A fresh agent as the taker of each trade: trade id -> its lowercase address."""
+    out: dict[str, str] = {}
+    with db.write() as conn:
+        for trade_id in trade_ids:
+            _user_id, acct, key = TableWrite.create_user(conn, None, None)
+            conn.execute("UPDATE trades SET TAKER_API_KEY = %s WHERE TRADE_ID = %s", (key, trade_id))
+            out[trade_id] = acct.address.lower()
+    return out
 
 
 def _trades(db: DbSession) -> dict[str, tuple[str, str | None]]:
@@ -114,6 +127,8 @@ def test_an_unknown_outcome_stays_pending_until_the_cleanup_reads_it(monkeypatch
     _trade(db, "t-lost", tx_hash="0x" + "ab" * 32)
     _trade(db, "t-recent", matched_at=now - 120, tx_hash="0x" + "cd" * 32)
     monkeypatch.setattr(order_service, "Web3ChainRpc", lambda _web3: chain)
+    takers = _takers(db, "t-landed", "t-lost", "t-recent")
+    drain()
     svc.settle_pending(now)
 
     assert {k: v[0] for k, v in _trades(db).items()} == {
@@ -121,6 +136,7 @@ def test_an_unknown_outcome_stays_pending_until_the_cleanup_reads_it(monkeypatch
         "t-lost": "FAILED",
         "t-recent": "PENDING",
     }
+    assert drain() == {takers["t-landed"], takers["t-lost"]}
 
 
 def test_a_fill_that_left_no_hash_settles_by_its_house_order():
@@ -150,6 +166,8 @@ def test_a_fill_that_left_no_hash_settles_by_its_house_order():
                 (trade_id, matched_at, json.dumps([{"order_id": f"house-{trade_id}"}])),
             )
 
+    takers = _takers(db, "t-landed", "t-lost", "t-recent")
+    drain()
     svc.settle_pending(now)
 
     assert _trades(db) == {
@@ -157,3 +175,4 @@ def test_a_fill_that_left_no_hash_settles_by_its_house_order():
         "t-lost": ("FAILED", None),
         "t-recent": ("PENDING", None),
     }
+    assert drain() == {takers["t-landed"], takers["t-lost"]}

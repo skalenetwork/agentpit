@@ -133,6 +133,15 @@ class _LivePricing:
     sellable: Sellable
 
 
+@dataclass(frozen=True)
+class Wallet:
+    """One read of an account on chain: its apUSD and its positions at `block`."""
+
+    block: int
+    cash_raw: int
+    positions: list[PositionWire]
+
+
 class AccountService:
     """Public-by-address account reads (positions / value / activity)."""
 
@@ -147,17 +156,15 @@ class AccountService:
         self._onchain = onchain
         self._min_claim_micro = min_claim_micro
 
-    def list_positions(
-        self, eth_address: str, market: list[str] | None = None
-    ) -> list[PositionWire]:
+    def wallet(self, eth_address: str, market: list[str] | None = None) -> Wallet:
+        """The account's cash and its positions, of `market` (condition ids)
+        only if given, from one read of the chain."""
         with self._db.read() as conn:
             user = TableRead.get_user_by_eth_address(conn, eth_address)
-            if user is None:
-                return []
             # Only markets the user has traded or split can hold a CTF balance.
             # Scanning every market on-chain is O(market count) reads (~24s at
             # 1000 markets); scope to the handful the user actually touched.
-            markets = TableRead.list_markets_with_user_activity(conn, user.api_key)
+            markets = [] if user is None else TableRead.list_markets_with_user_activity(conn, user.api_key)
             event_slugs = TableRead.event_slugs_by_id(
                 conn, [m.event_id for m in markets if m.event_id is not None]
             )
@@ -171,13 +178,13 @@ class AccountService:
             if not market or mkt.condition_id.value in market
             for idx, (token_id, label) in enumerate(mkt.erc1155_tokens)
         ]
-        balances = self._onchain.ctf_balances(
+        block, cash_raw, balances = self._onchain.balances(
             eth_address, [int(t[2]) for t in scanned]
         )
 
         held = [t[2] for t, bal in zip(scanned, balances) if bal > 0]
-        if not held:
-            return []
+        if user is None or not held:
+            return Wallet(block, cash_raw, [])
         out: list[PositionWire] = []
         # One connection for the whole build, not one per token: the pricing
         # reads below are small, and acquiring a pooled connection per token
@@ -255,7 +262,7 @@ class AccountService:
                         endDate=str(mkt.end_date) if mkt.end_date else "",
                     )
                 )
-        return out
+        return Wallet(block, cash_raw, out)
 
     def list_closed_positions(self, eth_address: str) -> list[PositionWire]:
         """Won positions on resolved markets, reconstructed from REDEEM payouts
@@ -516,7 +523,7 @@ class AccountService:
         return user is not None and not user.is_bot and user.deleted_at is None
 
     def total_value(self, eth_address: str) -> list[dict]:
-        value = sum(p.currentValue for p in self.list_positions(eth_address))
+        value = sum(p.currentValue for p in self.wallet(eth_address).positions)
         return [{"user": eth_address, "value": value}]
 
     def list_activity(

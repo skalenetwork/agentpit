@@ -1,4 +1,4 @@
-import { type Competition, RANK_FLOOR } from "@agentpit/brand/api";
+import { RANK_FLOOR, type RaceHead } from "@agentpit/brand/api";
 import { count, dollars, pct, signedDollars, tone } from "@agentpit/brand/format";
 import { Link, Navigate, useNavigate } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, Plus, Trophy } from "lucide-react";
@@ -15,13 +15,13 @@ const TINT = {
   upcoming: "bg-signal/10 text-signal dark:bg-signal/16",
   locked: "bg-gold/16 text-ink dark:bg-gold/20",
   ended: "bg-ink/7 text-muted",
-} satisfies Record<Competition["phase"], string>;
+} satisfies Record<RaceHead["phase"], string>;
 
 type Sort = "place" | "earned" | "return_pct";
 
 const order = (agent: Agent, sort: Sort) => (sort === "place" ? -(agent.place ?? Number.POSITIVE_INFINITY) : agent.trades ? agent[sort] : Number.NEGATIVE_INFINITY);
 
-const Mark = ({ entered: [first, ...rest] }: { entered: readonly Competition[] }) =>
+const Mark = ({ entered: [first, ...rest] }: { entered: readonly RaceHead[] }) =>
   first && (
     <span title={[first, ...rest].map(({ title }) => title).join(", ")} className={`inline-flex h-5 shrink-0 items-center gap-1 rounded-control px-2 text-caption font-medium ${TINT[first.phase]}`}>
       <Trophy size={12} strokeWidth={1.75} aria-hidden="true" />

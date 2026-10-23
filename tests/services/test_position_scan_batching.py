@@ -1,6 +1,6 @@
 """The position scan asks the chain once, not once per token.
 
-`list_positions` looks at two tokens for every market the account has ever
+`wallet` looks at two tokens for every market the account has ever
 touched. Reading those one at a time is invisible on a local node and brutal
 on a remote one: measured against production, an account with 504 trades took
 23.6 seconds to render fourteen rows, and the cost tracked the number of
@@ -36,12 +36,12 @@ class _CountingOnchain:
         self.tokens_asked: list[list[int]] = []
 
     def ctf_balance(self, _eth_address: str, _token_id: int) -> int:
-        raise AssertionError("list_positions must not read balances one at a time")
+        raise AssertionError("wallet must not read balances one at a time")
 
-    def ctf_balances(self, _eth_address: str, token_ids: list[int]) -> list[int]:
+    def balances(self, _eth_address: str, token_ids: list[int]) -> tuple[int, int, list[int]]:
         self.batch_calls += 1
         self.tokens_asked.append(list(token_ids))
-        return [self._balances.get(str(t), 0) for t in token_ids]
+        return 7, 42_000_000, [self._balances.get(str(t), 0) for t in token_ids]
 
 
 def _account_across_markets(count: int, tag: str = "a"):
@@ -92,12 +92,12 @@ def test_reads_every_balance_in_one_chain_call():
     db, address, tokens, _cids = _account_across_markets(6)
     onchain = _CountingOnchain({tokens[0][0]: 100_000_000})
 
-    out = AccountService(db, onchain=onchain).list_positions(address)  # type: ignore[arg-type]
+    wallet = AccountService(db, onchain=onchain).wallet(address)  # type: ignore[arg-type]
 
     assert onchain.batch_calls == 1, "one call for the whole scan, not one per token"
     # It still had to consider both tokens of all six markets.
     assert len(onchain.tokens_asked[0]) == 12
-    assert len(out) == 1
+    assert (wallet.block, wallet.cash_raw, len(wallet.positions)) == (7, 42_000_000, 1)
 
 
 def test_cost_does_not_grow_with_the_number_of_markets():
@@ -105,11 +105,11 @@ def test_cost_does_not_grow_with_the_number_of_markets():
     round trips."""
     small_db, small_addr, small_toks, _ = _account_across_markets(2, tag="s")
     small = _CountingOnchain({small_toks[0][0]: 1_000_000})
-    AccountService(small_db, onchain=small).list_positions(small_addr)  # type: ignore[arg-type]
+    AccountService(small_db, onchain=small).wallet(small_addr)  # type: ignore[arg-type]
 
     big_db, big_addr, big_toks, _ = _account_across_markets(20, tag="b")
     big = _CountingOnchain({big_toks[0][0]: 1_000_000})
-    AccountService(big_db, onchain=big).list_positions(big_addr)  # type: ignore[arg-type]
+    AccountService(big_db, onchain=big).wallet(big_addr)  # type: ignore[arg-type]
 
     assert small.batch_calls == big.batch_calls == 1
 
@@ -121,7 +121,7 @@ def test_each_balance_lands_on_its_own_token():
     held_no = tokens[0][1]           # first market's NO
     onchain = _CountingOnchain({held_yes: 7_000_000, held_no: 3_000_000})
 
-    out = AccountService(db, onchain=onchain).list_positions(address)  # type: ignore[arg-type]
+    out = AccountService(db, onchain=onchain).wallet(address).positions  # type: ignore[arg-type]
 
     by_asset = {p.asset: p for p in out}
     assert set(by_asset) == {held_yes, held_no}
@@ -137,15 +137,15 @@ def test_a_market_filter_narrows_what_the_chain_is_asked_for():
     db, address, tokens, cids = _account_across_markets(5)
     onchain = _CountingOnchain({tokens[1][0]: 5_000_000})
 
-    out = AccountService(db, onchain=onchain).list_positions(  # type: ignore[arg-type]
+    out = AccountService(db, onchain=onchain).wallet(  # type: ignore[arg-type]
         address, [cids[1]]
-    )
+    ).positions
 
     assert onchain.tokens_asked[0] == [int(tokens[1][0]), int(tokens[1][1])]
     assert [p.asset for p in out] == [tokens[1][0]]
 
 
-def test_an_account_with_no_markets_does_not_call_the_chain_at_all():
+def test_an_account_with_no_markets_reads_only_its_cash_and_the_block():
     db = fresh_test_db()
     with db.write() as conn:
         _uid, acct, _key = TableWrite.create_user(
@@ -156,8 +156,7 @@ def test_an_account_with_no_markets_does_not_call_the_chain_at_all():
         )
     onchain = _CountingOnchain({})
 
-    out = AccountService(db, onchain=onchain).list_positions(acct.address)  # type: ignore[arg-type]
+    wallet = AccountService(db, onchain=onchain).wallet(acct.address)  # type: ignore[arg-type]
 
-    assert out == []
-    # An empty list still costs a round trip if it is sent; it must not be.
-    assert onchain.tokens_asked in ([], [[]])
+    assert (wallet.block, wallet.cash_raw, wallet.positions) == (7, 42_000_000, [])
+    assert onchain.tokens_asked == [[]]

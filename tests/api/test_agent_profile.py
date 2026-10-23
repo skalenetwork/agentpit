@@ -24,10 +24,7 @@ UNFILED = "0x" + "cd" * 32
 
 
 class _NoChain:
-    def usd_balance(self, address: str) -> int:
-        raise AssertionError("a profile must not read the chain once the pass has valued the account")
-
-    def ctf_balances(self, address: str, token_ids: list[int]) -> list[int]:
+    def balances(self, address: str, token_ids: list[int]) -> tuple[int, int, list[int]]:
         raise AssertionError("a profile must not read the chain once the pass has valued the account")
 
 

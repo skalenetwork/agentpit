@@ -236,49 +236,154 @@ export interface Prize {
   readonly skl: number;
 }
 
-export interface Competition {
+export interface RaceHead {
   readonly slug: string;
   readonly title: string;
   readonly startsAt: number;
-  readonly locksAt: number;
   readonly endsAt: number;
   readonly phase: "upcoming" | "locked" | "live" | "ended";
+  readonly final: boolean;
   readonly prizes: readonly Prize[];
   readonly entrants: number;
+  readonly ranked: number;
+  readonly line: string;
 }
 
-export interface WireStanding {
+export interface WireScore {
   readonly rank: number | null;
-  readonly name: string;
-  readonly address: string;
-  readonly runner: Runner;
-  readonly listed: boolean;
-  readonly runStartsAt: number;
   readonly earned: string;
   readonly returnPct: number;
-  readonly trades: number;
-  readonly disqualified: boolean;
 }
 
-export interface Standing extends Omit<WireStanding, "earned"> {
+export interface Score extends Omit<WireScore, "earned"> {
   readonly pnl: number;
 }
 
-export interface CompetitionPage extends Competition {
-  readonly final: boolean;
-  readonly standings: readonly Standing[];
+export interface WireStanding {
+  readonly address: string;
+  readonly name: string;
+  readonly runner: Runner;
+  readonly listed: boolean;
+  readonly runStartsAt: number;
+  readonly endAt: number | null;
+  readonly trades: number;
+  readonly lastTradeAt: number | null;
+  readonly disqualified: boolean;
+  readonly rank: number | null;
+  readonly earned: string;
+  readonly returnPct: number;
+  readonly rankChange: number | null;
+  readonly behind: string | null;
+  readonly wouldRank: number | null;
+  readonly hoursLed: number;
+  readonly bids: WireScore | null;
+  readonly bell: WireScore | null;
 }
 
-export interface WireCompetitionPage extends Omit<CompetitionPage, "standings"> {
-  readonly standings: readonly WireStanding[];
+export interface Standing extends Omit<WireStanding, "earned" | "behind" | "bids" | "bell"> {
+  readonly pnl: number;
+  readonly behind: number | null;
+  readonly bids: Score | null;
+  readonly bell: Score | null;
 }
 
-export const competitionPage = ({ standings, ...rest }: WireCompetitionPage): CompetitionPage => ({
+export interface Series {
+  readonly at: readonly number[];
+  readonly lines: readonly { readonly address: string; readonly ranks: readonly (number | null)[] }[];
+}
+
+export interface WireStake {
+  readonly address: string;
+  readonly name: string;
+  readonly outcome: number;
+  readonly shares: number;
+  readonly value: string;
+  readonly places: readonly (number | null)[];
+}
+
+export interface Stake extends Omit<WireStake, "value"> {
+  readonly value: number;
+}
+
+export interface WireFixture extends MarketContext {
+  readonly market: string;
+  readonly question: string;
+  readonly url: string | null;
+  readonly outcomes: readonly string[];
+  readonly stakes: readonly WireStake[];
+}
+
+export interface Fixture extends Omit<WireFixture, "stakes"> {
+  readonly stakes: readonly Stake[];
+}
+
+export interface WireTapeFill {
+  readonly at: number;
+  readonly address: string;
+  readonly name: string;
+  readonly kind: "buy" | "sell" | "payout";
+  readonly market: string;
+  readonly question: string;
+  readonly outcome: string | null;
+  readonly price: number | null;
+  readonly usd: string;
+  readonly fills: number;
+}
+
+export interface TapeFill extends Omit<WireTapeFill, "usd"> {
+  readonly usd: number;
+}
+
+interface SummaryOf<S> extends RaceHead {
+  readonly standings: readonly S[];
+}
+
+interface RaceOf<S, F, T> extends SummaryOf<S> {
+  readonly builtAt: number;
+  readonly leadChanges: number;
+  readonly series: Series;
+  readonly fixtures: readonly F[];
+  readonly tape: readonly T[];
+}
+
+interface EntryOf<S> {
+  readonly race: RaceHead;
+  readonly standing: S;
+  readonly above: S | null;
+  readonly below: S | null;
+  readonly line: string;
+}
+
+export type WireRaceSummary = SummaryOf<WireStanding>;
+export type RaceSummary = SummaryOf<Standing>;
+export type WireRace = RaceOf<WireStanding, WireFixture, WireTapeFill>;
+export type Race = RaceOf<Standing, Fixture, TapeFill>;
+export type WireRaceEntry = EntryOf<WireStanding>;
+export type RaceEntry = EntryOf<Standing>;
+
+const score = ({ earned, ...rest }: WireScore): Score => ({ ...rest, pnl: usd(earned) });
+
+const standing = ({ earned, behind, bids, bell, ...rest }: WireStanding): Standing => ({
   ...rest,
-  standings: standings.map(({ earned, ...standing }) => ({ ...standing, pnl: usd(earned) })),
+  pnl: usd(earned),
+  behind: behind === null ? null : usd(behind),
+  bids: bids && score(bids),
+  bell: bell && score(bell),
 });
 
-export const stageText = ({ phase, startsAt, endsAt }: Competition, now: number) =>
+export const raceSummary = ({ standings, ...rest }: WireRaceSummary): RaceSummary => ({ ...rest, standings: standings.map(standing) });
+
+export const race = ({ standings, fixtures, tape, ...rest }: WireRace): Race => ({
+  ...rest,
+  standings: standings.map(standing),
+  fixtures: fixtures.map(({ stakes, ...fixture }) => ({ ...fixture, stakes: stakes.map(({ value, ...stake }) => ({ ...stake, value: usd(value) })) })),
+  tape: tape.map((fill) => ({ ...fill, usd: usd(fill.usd) })),
+});
+
+export const raceEntries = ({ entries }: { readonly entries: readonly WireRaceEntry[] }): readonly RaceEntry[] =>
+  entries.map(({ standing: own, above, below, ...rest }) => ({ ...rest, standing: standing(own), above: above && standing(above), below: below && standing(below) }));
+
+export const stageText = ({ phase, startsAt, endsAt }: RaceHead, now: number) =>
   phase === "upcoming" || phase === "locked"
     ? `Starts in ${until(Math.max(0, startsAt - now))}`
     : phase === "live"
