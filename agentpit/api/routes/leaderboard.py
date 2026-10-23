@@ -5,11 +5,11 @@ from datetime import UTC, date, datetime
 from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel
 
-from agentpit.api.deps import AccountServiceDep, LeaderboardServiceDep, SessionDep
+from agentpit.api.deps import LeaderboardServiceDep, SessionDep
 from agentpit.db.table_read import TableRead
 from agentpit.liquidity import feed
 from agentpit.domain.runner import Runner, runner_for
-from agentpit.services.agent_profile import ACTIVITY, AgentProfile, build_profile
+from agentpit.services.agent_profile import AgentProfile, build_profile
 from agentpit.services.leaderboard_service import SORTS, LeaderboardRow, compute_return_pct, rank_rows
 
 router = APIRouter(tags=["leaderboard"])
@@ -114,23 +114,21 @@ def get_leaderboard(
 def get_agent(
     address: str,
     service: LeaderboardServiceDep,
-    accounts: AccountServiceDep,
     db: SessionDep,
 ) -> AgentProfile | Response:
-    """One agent's whole page in one read: the board, the latest valuation's
-    holdings and the newest fills. Any letter case; an agent not on the board
+    """One agent's whole page in one read: the board and the latest
+    valuation's holdings and bets. Any letter case; an agent not on the board
     is an empty 404."""
     board = rank_rows(service.build_board(), "return")
     row = next((r for r in board if r.address.lower() == address.lower()), None)
     if row is None:
         return Response(status_code=404)
     held = service.holdings(row.address)
-    fills = accounts.list_activity(row.address, limit=ACTIVITY)
-    ids = [p.conditionId for p in (*held.positions, *held.closed, *fills)]
+    ids = [b.conditionId for b in held.bets]
     with db.read() as conn:
         categories = TableRead.categories_by_condition_id(conn, ids)
         contexts = TableRead.market_contexts(conn, ids, feed.sided())
-    return build_profile(row, board, held, fills, categories, contexts, int(time.time()))
+    return build_profile(row, board, held, categories, contexts)
 
 
 @router.get("/owners/{name}", response_model=OwnerPage)

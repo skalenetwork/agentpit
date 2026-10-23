@@ -1993,6 +1993,49 @@ class TableRead:
         return {r["TOKEN_ID"]: (int(r["PRICE"]), int(r["MATCH_TIME"] or 0)) for r in rows}
 
     @staticmethod
+    def hourly_prices(
+        db: psycopg.Connection, windows: "list[tuple[str, int, int]]"
+    ) -> "dict[str, list[tuple[int, int]]]":
+        """token -> [(time, price)] oldest first per (token, start, end): the last
+        print before `start` stamped at `start`, then each UTC hour's last print."""
+        if not windows:
+            return {}
+        rows = db.execute(
+            """
+            SELECT w.TOKEN_ID, p.T, p.PRICE
+            FROM unnest(%s::text[], %s::bigint[], %s::bigint[]) AS w(TOKEN_ID, START_AT, END_AT)
+            CROSS JOIN LATERAL (
+                (SELECT w.START_AT AS T, PRICE, 0 AS K FROM (
+                    (SELECT PRICE, MATCH_TIME FROM trades
+                     WHERE STATUS = 'MIRRORED' AND ASSET_ID = w.TOKEN_ID AND MATCH_TIME < w.START_AT
+                     ORDER BY MATCH_TIME DESC LIMIT 1)
+                    UNION ALL
+                    (SELECT 1000000 - PRICE, MATCH_TIME FROM trades
+                     WHERE STATUS = 'MIRRORED' AND MAKER_ASSET_ID = w.TOKEN_ID
+                       AND MAKER_ASSET_ID <> ASSET_ID AND MATCH_TIME < w.START_AT
+                     ORDER BY MATCH_TIME DESC LIMIT 1)
+                ) opening ORDER BY MATCH_TIME DESC LIMIT 1)
+                UNION ALL
+                (SELECT DISTINCT ON (MATCH_TIME / 3600) MATCH_TIME, PRICE, 1 FROM (
+                    SELECT MATCH_TIME, PRICE FROM trades
+                    WHERE STATUS = 'MIRRORED' AND ASSET_ID = w.TOKEN_ID
+                      AND MATCH_TIME BETWEEN w.START_AT AND w.END_AT
+                    UNION ALL
+                    SELECT MATCH_TIME, 1000000 - PRICE FROM trades
+                    WHERE STATUS = 'MIRRORED' AND MAKER_ASSET_ID = w.TOKEN_ID AND MAKER_ASSET_ID <> ASSET_ID
+                      AND MATCH_TIME BETWEEN w.START_AT AND w.END_AT
+                ) hourly ORDER BY MATCH_TIME / 3600, MATCH_TIME DESC)
+            ) p
+            ORDER BY w.TOKEN_ID, p.T, p.K
+            """,
+            ([t for t, _, _ in windows], [s for _, s, _ in windows], [e for _, _, e in windows]),
+        ).fetchall()
+        lines: dict[str, list[tuple[int, int]]] = {}
+        for r in rows:
+            lines.setdefault(r["TOKEN_ID"], []).append((int(r["T"]), int(r["PRICE"])))
+        return lines
+
+    @staticmethod
     def list_resolved_unredeemed_markets(db: psycopg.Connection) -> "list[Market]":
         """Auto-redeem candidates: RESOLVED and not yet fully redeemed."""
         rows = db.execute(

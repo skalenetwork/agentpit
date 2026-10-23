@@ -8,14 +8,16 @@ from fastapi.testclient import TestClient
 
 from agentpit.api.deps import get_onchain_admin
 from agentpit.api.main import app
+from agentpit.datastructures.bet import Bet, BetStatus
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
+from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
-from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
+from agentpit.services.account_service import AccountService
 from agentpit.services.leaderboard_service import Holdings, _holdings
-from tests.db_helpers import fresh_test_conn
+from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 G = 100_000_000_000
 NOW = int(time.time())
@@ -36,9 +38,9 @@ def _no_chain():
     app.dependency_overrides[get_onchain_admin] = previous
 
 
-def _market(conn, polymarket_id: int | None = None) -> None:
+def _market(conn, polymarket_id: int | None = None) -> Market:
     event = TableWrite.upsert_event(conn, slug="btc", title="Bitcoin", category="Crypto")
-    TableWrite.create_market(
+    return TableWrite.create_market(
         conn,
         CreateMarketRequest(
             question="Will Bitcoin dip?",
@@ -55,24 +57,45 @@ def _market(conn, polymarket_id: int | None = None) -> None:
 
 
 def _agent(
-    conn, handle: str, return_pct: float, trades: int, *, invested: int = 0, unrealized: int = 0, owner: str | None = None
+    conn, handle: str, return_pct: float, trades: int, *, owner: str | None = None
 ) -> str:
     """A snapshotted agent with `trades` fills of 4 Yes at 25¢, the newest at `NOW - 60`,
     whose holdings the pass has already kept."""
-    user_id, acct, key = TableWrite.create_user(
+    user_id, acct, _key = TableWrite.create_user(
         conn, email=f"{handle}@example.com", password_hash="x", handle=handle, owner_workos_id=owner
     )
     for k in range(trades):
-        conn.execute(
-            "INSERT INTO trades (TRADE_ID, MARKET, ASSET_ID, SIDE, PRICE, TRADE_SIZE, MATCH_KIND, STATUS, "
-            "TAKER_API_KEY, MATCH_TIME) VALUES (%s, %s, 'btc-y', 'BUY', 250000, 4000000, 'NORMAL', 'CONFIRMED', %s, %s)",
-            (uuid.uuid4().hex, CRYPTO, key, NOW - 60 - k),
-        )
+        _buy(conn, acct.address, CRYPTO, "btc-y", NOW - 60 - k)
     TableWrite.insert_account_snapshot(
-        conn, user_id, NOW - 30, G + round(return_pct * G / 100), G, invested, unrealized
+        conn, user_id, NOW - 30, G + round(return_pct * G / 100), G, 0, 0
     )
     _holdings[acct.address] = Holdings(valued_at=NOW - 30, cash_raw=0, positions=[], closed=[])
     return acct.address
+
+
+def _buy(conn, address: str, condition_id: str, asset: str, at: int) -> None:
+    """4 shares of `asset` at 25¢."""
+    user = TableRead.get_user_by_eth_address(conn, address)
+    assert user is not None
+    conn.execute(
+        "INSERT INTO trades (TRADE_ID, MARKET, ASSET_ID, SIDE, PRICE, TRADE_SIZE, MATCH_KIND, STATUS, "
+        "TAKER_API_KEY, MATCH_TIME) VALUES (%s, %s, %s, 'BUY', 250000, 4000000, 'NORMAL', 'CONFIRMED', %s, %s)",
+        (uuid.uuid4().hex, condition_id, asset, user.api_key, at),
+    )
+
+
+def _value(address: str) -> None:
+    """Holdings as the pass keeps them, with the bets read from the agent's fills."""
+    bets = AccountService(fresh_test_db(), onchain=None).list_bets(address, [], NOW, [], 0)
+    _holdings[address] = Holdings(valued_at=NOW - 30, cash_raw=0, positions=[], closed=[], bets=bets)
+
+
+def _bet(n: int, status: BetStatus, pnl: int) -> Bet:
+    return Bet(
+        id=str(n), conditionId=CRYPTO, title="Will Bitcoin dip?", icon=None, url=None, outcome="Yes", status=status,
+        openedAt=NOW - n, closedAt=None if status == "open" else NOW - n, buys=1, sells=0, entry=0.25, exit=None,
+        shares=4.0, sold=0.0, held=0.0, cost="1000000", back="0", value="0", sellsFor="0", pnl=str(pnl), fills=[], prices=None,
+    )
 
 
 def _profile(client: TestClient, address: str) -> dict:
@@ -91,53 +114,6 @@ def test_a_lowercase_address_answers_with_the_checksummed_one():
     assert body["address"] == address
     assert (body["name"], body["trades"], body["valuedAt"]) == ("Solo", 1, NOW - 30)
     assert body["runner"] == {"slug": "api", "label": "API", "host": None}
-    assert body["positions"] == {"count": 0, "mark": "0", "sellsFor": "0", "top": [], "open": []}
-    assert body["book"] is None and body["record"] is None
-    assert body["activity"] == [
-        {
-            "at": NOW - 60,
-            "type": "TRADE",
-            "side": "BUY",
-            "outcome": "Yes",
-            "shares": 4.0,
-            "dollars": "1000000",
-            "title": "Will Bitcoin dip?",
-            "icon": None,
-            "category": "Crypto",
-            "url": None,
-            "tx": None,
-            "eventTitle": None,
-            "endDate": None,
-            "resolvedAt": None,
-            "winner": None,
-            "kickoff": None,
-            "trading": None,
-        }
-    ]
-
-
-def test_a_fill_carries_its_settlement_hash_or_null():
-    conn = fresh_test_conn()
-    _market(conn)
-    address = _agent(conn, "Hashed", 0.0, 2)
-    tx = "0x" + "32" * 32
-    conn.execute("UPDATE trades SET TRANSACTION_HASH = CASE WHEN MATCH_TIME = %s THEN %s ELSE '' END", (NOW - 60, tx))
-    conn.close()
-    with TestClient(app) as client:
-        activity = _profile(client, address)["activity"]
-    assert [f["tx"] for f in activity] == [tx, None]
-
-
-def test_an_open_position_carries_its_shares():
-    conn = fresh_test_conn()
-    _market(conn)
-    address = _agent(conn, "Holder", 0.0, 1)
-    conn.close()
-    with TestClient(app) as client:
-        _holdings[address] = Holdings(
-            valued_at=NOW, cash_raw=0, positions=[PositionWire(conditionId=CRYPTO, size=333.0, currentValue=83.25)], closed=[]
-        )
-        assert [p["shares"] for p in _profile(client, address)["positions"]["open"]] == [333.0]
 
 
 def test_the_owner_name_shows_on_two_board_agents_never_on_one_and_never_when_hidden():
@@ -158,17 +134,30 @@ def test_the_owner_name_shows_on_two_board_agents_never_on_one_and_never_when_hi
     assert hidden == [None, None]
 
 
-def test_a_polymarket_fill_links_to_its_market():
+def test_the_profile_lists_bets_instead_of_positions_book_record_and_activity(monkeypatch):
     conn = fresh_test_conn()
     _market(conn, polymarket_id=7)
     address = _agent(conn, "Linked", 0.0, 1)
     conn.close()
+    _value(address)
+
+    def unread(*_args, **_kwargs):
+        raise AssertionError("a profile must not read fills per request")
+
+    monkeypatch.setattr(AccountService, "list_activity", unread)
     with TestClient(app) as client:
         body = _profile(client, address)
-    assert body["activity"][0]["url"] == "https://polymarket.com/market/btc"
+    assert not {"positions", "book", "record", "activity"} & set(body)
+    (bet,) = body["bets"]
+    assert set(bet) == {
+        "id", "title", "icon", "url", "category", "outcome", "status", "openedAt", "closedAt", "buys", "sells",
+        "entry", "exit", "shares", "sold", "held", "cost", "back", "value", "sellsFor", "pnl",
+        "eventTitle", "endDate", "resolvedAt", "winner", "kickoff", "trading", "fills", "prices",
+    }
+    assert (bet["id"], bet["url"], bet["category"], bet["status"]) == ("btc-y", "https://polymarket.com/market/btc", "Crypto", "open")
 
 
-def test_each_market_carries_its_event_and_status():
+def test_each_bet_carries_its_event_and_status():
     conn = fresh_test_conn()
     _market(conn)
     fed = TableWrite.upsert_event(conn, slug="fed", title="Fed decision in October?", category="Business")
@@ -195,26 +184,55 @@ def test_each_market_carries_its_event_and_status():
     )
     TableWrite.set_market_state(conn, cut.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (0, 1))
     address = _agent(conn, "Contexts", 0.0, 1)
+    _buy(conn, address, cut.condition_id.value, "cut-y", NOW - 120)
+    _buy(conn, address, hold.condition_id.value, "hold-y", NOW - 90)
     conn.close()
+    _value(address)
     with TestClient(app) as client:
-        _holdings[address] = Holdings(
-            valued_at=NOW,
-            cash_raw=0,
-            positions=[
-                PositionWire(conditionId=c, title=t, currentValue=v)
-                for c, t, v in ((CRYPTO, "Will Bitcoin dip?", 3.0), (cut.condition_id.value, "Fed cuts 25 bps?", 2.0), (hold.condition_id.value, "Fed holds?", 1.0))
-            ],
-            closed=[],
-        )
-        body = _profile(client, address)
-    contexts = [(p["eventTitle"], p["endDate"], p["winner"]) for p in body["positions"]["open"]]
-    assert contexts == [
-        (None, None, None),
-        ("Fed decision in October?", NOW - 86_400, "No"),
-        ("Fed decision in October?", NOW + 86_400, None),
+        bets = _profile(client, address)["bets"]
+    assert [(b["id"], b["status"], b["category"], b["eventTitle"], b["endDate"], b["winner"]) for b in bets] == [
+        ("btc-y", "open", "Crypto", None, None, None),
+        ("hold-y", "open", "Business", "Fed decision in October?", NOW + 86_400, None),
+        ("cut-y", "lost", "Business", "Fed decision in October?", NOW - 86_400, "No"),
     ]
-    resolved = [p["resolvedAt"] for p in body["positions"]["open"]]
-    assert resolved[0] is None and resolved[1] >= NOW and resolved[2] is None
+    assert bets[0]["resolvedAt"] is None and bets[2]["resolvedAt"] >= NOW
+
+
+def test_the_profile_lists_every_open_bet_and_the_newest_100_closed_and_counts_them_all():
+    conn = fresh_test_conn()
+    _market(conn)
+    address = _agent(conn, "Busy", 0.0, 1)
+    conn.close()
+    opened = [_bet(n, "open", 5) for n in range(3)]
+    closed = [_bet(n, "won" if n % 2 else "lost", 1 if n % 2 else -1) for n in range(3, 106)]
+    _holdings[address] = Holdings(valued_at=NOW, cash_raw=0, positions=[], closed=[], bets=[*opened, *closed])
+    with TestClient(app) as client:
+        body = _profile(client, address)
+    assert [b["id"] for b in body["bets"]] == [str(n) for n in range(103)]
+    assert body["betTotals"] == {
+        "open": {"n": 3, "pnl": "15"},
+        "won": {"n": 52, "pnl": "52"},
+        "lost": {"n": 51, "pnl": "-51"},
+        "sold": {"n": 0, "pnl": "0"},
+        "split": {"n": 0, "pnl": "0"},
+    }
+
+
+def test_the_bet_totals_add_up_to_earned():
+    conn = fresh_test_conn()
+    m = _market(conn)
+    address = _agent(conn, "Settled", 0.003, 1)
+    TableWrite.set_market_state(conn, m.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0))
+    user = TableRead.get_user_by_eth_address(conn, address)
+    assert user is not None
+    TableWrite.log_transaction(conn, user.api_key, "REDEEM", m.market_id, {"collateral_amount": 4_000_000})
+    conn.close()
+    _value(address)
+    with TestClient(app) as client:
+        body = _profile(client, address)
+    assert body["money"]["earned"] == "3000000"
+    assert sum(int(t["pnl"]) for t in body["betTotals"].values()) == int(body["money"]["earned"])
+    assert body["betTotals"]["won"] == {"n": 1, "pnl": "3000000"}
 
 
 def test_an_agent_not_on_the_board_is_an_empty_404():
@@ -281,96 +299,14 @@ def test_a_warming_agent_has_no_place_and_stands_among_the_warming():
     assert newbie["tags"] == []
 
 
-def _open(
-    condition_id: str, value: float, sells_for: float, cost: float, avg: float, outcome: str, end: int
-) -> PositionWire:
-    return PositionWire(
-        conditionId=condition_id,
-        outcome=outcome,
-        avgPrice=avg,
-        curPrice=avg,
-        initialValue=cost,
-        currentValue=value,
-        sellableValue=sells_for,
-        cashPnl=value - cost,
-        endDate=str(end),
-    )
-
-
-def test_the_book_needs_three_open_positions():
+def test_the_money_reads_the_latest_snapshot():
     conn = fresh_test_conn()
     _market(conn)
-    address = _agent(conn, "Booked", 1.0, 10)
-    conn.close()
-    day = 86_400
-    two = [
-        _open(CRYPTO, 30.0, 10.0, 20.0, 0.05, "Yes", NOW + 40 * day),
-        _open(UNFILED, 10.0, 9.0, 10.0, 0.95, "No", NOW + 2 * day),
-    ]
-    three = [*two, _open(CRYPTO, 15.0, 15.0, 10.0, 1.0, "Yes", NOW - day)]
-    settled = PositionWire(conditionId=CRYPTO, avgPrice=0.5, initialValue=5.0, currentValue=500.0, settled=True)
-    with TestClient(app) as client:
-        _holdings[address] = Holdings(valued_at=NOW, cash_raw=0, positions=[*two, settled], closed=[])
-        assert _profile(client, address)["book"] is None
-        _holdings[address] = Holdings(valued_at=NOW, cash_raw=0, positions=[*three, settled], closed=[])
-        body = _profile(client, address)
-    assert body["positions"]["count"] == 3
-    assert (body["positions"]["mark"], body["positions"]["sellsFor"]) == ("55000000", "34000000")
-    assert [(p["value"], p["sellsFor"], p["pnl"], p["category"]) for p in body["positions"]["top"]] == [
-        ("30000000", "10000000", "10000000", "Crypto"),
-        ("15000000", "15000000", "5000000", "Crypto"),
-        ("10000000", "9000000", "0", None),
-    ]
-    assert body["positions"]["open"] == body["positions"]["top"]
-    book = body["book"]
-    assert book["mix"] == [
-        {"category": "Crypto", "share": 0.75, "count": 2},
-        {"category": None, "share": 0.25, "count": 1},
-    ]
-    bins = [(b["yes"], b["no"]) for b in book["entryPrice"]]
-    assert bins[0] == ("20000000", "0") and bins[9] == ("10000000", "10000000")
-    assert all(b == ("0", "0") for b in bins[1:9])
-    assert book["horizonDays"] == 2
-
-
-def test_the_record_counts_decided_positions_oldest_first():
-    conn = fresh_test_conn()
-    _market(conn)
-    address = _agent(conn, "Decided", 1.0, 10)
-    conn.close()
-    won = PositionWire(
-        conditionId=CRYPTO, title="Won", outcome="Yes", avgPrice=0.4, curPrice=1.0, cashPnl=10.0, endDate="300", url="https://polymarket.com/market/won"
-    )
-    split = PositionWire(title="Split", avgPrice=0.0, cashPnl=50.0, endDate="50")
-    push = PositionWire(title="Push", avgPrice=0.2, cashPnl=0.3, endDate="60")
-    lost = PositionWire(title="Lost", outcome="No", avgPrice=0.5, curPrice=0.0, cashPnl=-20.0, endDate="100")
-    unredeemed = PositionWire(title="Unredeemed", avgPrice=0.3, cashPnl=-5.0, settled=True, endDate="200")
-    with TestClient(app) as client:
-        _holdings[address] = Holdings(
-            valued_at=NOW, cash_raw=0, positions=[unredeemed], closed=[won, split, push, lost]
-        )
-        body = _profile(client, address)
-    record = body["record"]
-    assert (record["wins"], record["losses"]) == (1, 2)
-    assert record["pnls"] == ["-20000000", "-5000000", "10000000"]
-    assert record["best"] == {
-        "title": "Won", "icon": None, "category": "Crypto", "outcome": "Yes", "entry": 0.4, "exit": 1.0, "pnl": "10000000",
-        "url": "https://polymarket.com/market/won", "eventTitle": None, "endDate": None, "resolvedAt": None, "winner": None, "kickoff": None, "trading": None,
-    }
-    assert (record["worst"]["title"], record["worst"]["category"], record["worst"]["exit"]) == ("Lost", None, 0.0)
-    assert body["positions"]["count"] == 0
-
-
-def test_the_money_reconciles_to_capital():
-    conn = fresh_test_conn()
-    _market(conn)
-    address = _agent(conn, "Counted", -8.07, 10, invested=35_012_400_000, unrealized=-3_044_190_000)
+    address = _agent(conn, "Counted", -8.07, 10)
     conn.close()
     with TestClient(app) as client:
         money = _profile(client, address)["money"]
     assert (money["returnPct"], money["capital"], money["earned"]) == (-8.07, "91930000000", "-8070000000")
-    assert money["cash"] == "59961790000"
-    assert int(money["cash"]) + int(money["invested"]) + int(money["unrealized"]) == int(money["capital"])
     assert (money["trendStart"], money["trend"]) == (
         datetime.fromtimestamp(NOW - 30, UTC).date().isoformat(),
         ["-8070000000"],

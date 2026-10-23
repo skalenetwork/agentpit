@@ -30,7 +30,6 @@ from agentpit.db.table_read import TableRead
 from agentpit.domain.sports import SPORTS, League, league_of
 from agentpit.liquidity import feed
 from agentpit.polymarket.pricing import MarketPrices, compute_market_prices
-from agentpit.services.agent_profile import _money
 from agentpit.services.leaderboard_service import LeaderboardService, all_holdings
 
 BOARD_PAGE = 48
@@ -255,6 +254,10 @@ def _bets(names: dict[str, str]) -> tuple[Bets, Bets]:
                 )
             )
     return open_bets, settled_bets
+
+
+def _money(dollars: float) -> str:
+    return str(round(dollars * 1_000_000))
 
 
 def _money_of(item: _Item[WireCard]) -> int:

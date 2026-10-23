@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from agentpit.config import Settings
+from agentpit.datastructures.bet import Bet
 from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.table_read import DailyClose, TableRead, TradeTally
 from agentpit.db.table_write import TableWrite
@@ -168,25 +169,33 @@ class _FakeChain:
 
 
 class _FakeAccounts:
-    """Cash, open and closed positions keyed by address; an address never given
-    any holds nothing, like the real AccountService for an account that never
-    traded."""
+    """Cash, open and closed positions and bets keyed by address; an address
+    never given any holds nothing, like the real AccountService for an account
+    that never traded. `handed` records the previous bets and valuation time
+    each valuation passed."""
 
     def __init__(
         self,
         cash: dict[str, int] | None = None,
         positions: dict[str, list[PositionWire]] | None = None,
         closed: dict[str, list[PositionWire]] | None = None,
+        bets: dict[str, list[Bet]] | None = None,
     ):
         self._cash = cash or {}
         self._positions = positions or {}
         self._closed = closed or {}
+        self._bets = bets or {}
+        self.handed: list[tuple[list[Bet], int]] = []
 
     def wallet(self, address: str) -> Wallet:
         return Wallet(7, self._cash.get(address, 0), self._positions.get(address, []))
 
     def list_closed_positions(self, address: str) -> list[PositionWire]:
         return self._closed.get(address, [])
+
+    def list_bets(self, address: str, positions: list[PositionWire], now: int, previous: list[Bet], previous_at: int) -> list[Bet]:
+        self.handed.append((previous, previous_at))
+        return self._bets.get(address, [])
 
 
 def _worth(value: float, cost: float = 0.0) -> list[PositionWire]:
@@ -246,6 +255,21 @@ def test_valuing_an_account_keeps_what_it_holds_for_the_profile(monkeypatch):
     )
     assert held.closed == closed
     assert service.holdings("0xabc") is leaderboard_service._holdings["0xabc"] is held
+
+
+def test_valuing_an_account_keeps_its_bets_and_hands_them_to_the_next_valuation(monkeypatch):
+    bet = Bet(
+        id="1", conditionId="0x1", title="Will it?", icon=None, url=None, outcome="Yes", status="open", openedAt=1,
+        closedAt=None, buys=1, sells=0, entry=0.5, exit=None, shares=2.0, sold=0.0, held=2.0, cost="1000000",
+        back="0", value="0", sellsFor="0", pnl="-1000000", fills=[], prices=None,
+    )
+    accounts = _FakeAccounts(bets={"0xbet": [bet]})
+    service = LeaderboardService(db=None, onchain=_FakeChain(), accounts=accounts, settings=Settings())
+    monkeypatch.setattr(leaderboard_service, "time", SimpleNamespace(time=lambda: 1_700_000_000))
+    first = service.value_account("0xbet")
+    service.value_account("0xbet")
+    assert first.bets == [bet]
+    assert accounts.handed == [([], 0), ([bet], 1_700_000_000)]
 
 
 def test_the_board_is_assembled_once_per_ttl(monkeypatch):
