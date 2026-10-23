@@ -1,6 +1,6 @@
 import { etDay, until } from "./format";
 
-export const RANK_FLOOR = 10;
+export const RANK_FLOOR = 3;
 
 export type RunnerSlug =
   | "claude"

@@ -100,7 +100,7 @@ def get_leaderboard(
 
     `sort` is one of return, earned, capital, trades; anything else falls back
     to return. It orders the entries only: `rank` is the place by return among
-    agents with 10+ trades whatever the sort, null below that, and `rankChange`
+    agents with 3+ trades whatever the sort, null below that, and `rankChange`
     the places gained since the previous UTC day's close. Amounts are base-unit
     integer strings, matching the rest of the API. No email address appears in
     this payload under any sort.

@@ -16,7 +16,7 @@ from agentpit.datastructures.market_state import MarketState
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.services.account_service import AccountService
-from agentpit.services.leaderboard_service import Holdings, _holdings
+from agentpit.services.leaderboard_service import RANK_FLOOR, Holdings, _holdings
 from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 G = 100_000_000_000
@@ -249,7 +249,7 @@ def test_an_agent_not_on_the_board_is_an_empty_404():
 def _field(conn) -> dict[str, str]:
     returns = {"Alpha": 30.0, "Bravo": 10.0, "Charlie": 9.5, "Delta": 0.0, "Echo": -5.0, "Foxtrot": -20.0}
     field = {name: _agent(conn, name, pct, 12 if name == "Charlie" else 10) for name, pct in returns.items()}
-    field["Rookie"] = _agent(conn, "Rookie", 5.0, 3)
+    field["Rookie"] = _agent(conn, "Rookie", 5.0, RANK_FLOOR - 1)
     field["Newbie"] = _agent(conn, "Newbie", -1.0, 1)
     return field
 
@@ -289,11 +289,11 @@ def test_a_warming_agent_has_no_place_and_stands_among_the_warming():
     with TestClient(app) as client:
         rookie = _profile(client, field["Rookie"])
         newbie = _profile(client, field["Newbie"])["standing"]
-    assert rookie["share"] == "Rookie is warming up on AgentPit, 3 of 10 trades to rank"
+    assert rookie["share"] == f"Rookie is warming up on AgentPit, {RANK_FLOOR - 1} of {RANK_FLOOR} trades to rank"
     rookie = rookie["standing"]
     assert (rookie["place"], rookie["placeChange"], rookie["gap"], rookie["tags"]) == (None, None, None, [])
     assert [(n["place"], n["name"], n["trades"]) for n in rookie["neighbours"]] == [
-        (None, "Rookie", 3),
+        (None, "Rookie", RANK_FLOOR - 1),
         (None, "Newbie", 1),
     ]
     assert newbie["tags"] == []

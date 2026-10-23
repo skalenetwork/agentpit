@@ -7,7 +7,7 @@ from agentpit.api.deps import get_account_service, get_onchain_admin
 from agentpit.api.main import app
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.services.leaderboard_service import TREND_DAYS
+from agentpit.services.leaderboard_service import RANK_FLOOR, TREND_DAYS
 from tests.db_helpers import fresh_test_conn
 
 
@@ -251,8 +251,8 @@ def test_rank_has_the_floor_and_moves_against_yesterdays_close():
     agent("alpha", 10, {yesterday: 10, latest: 25})
     agent("bravo", 10, {yesterday: 30, latest: 15})
     agent("charlie", 10, {three_days_ago: 20, latest: 5})
-    agent("delta", 9, {yesterday: 1, latest: 50}, today=1)
-    agent("echo", 3, {yesterday: 70, latest: 60})
+    agent("delta", RANK_FLOOR - 1, {yesterday: 1, latest: 50}, today=1)
+    agent("echo", RANK_FLOOR - 1, {yesterday: 70, latest: 60})
     TableWrite.delete_agent(conn, agent("foxtrot", 10, {yesterday: 40, latest: 45}), base)
     conn.close()
 
@@ -261,8 +261,8 @@ def test_rank_has_the_floor_and_moves_against_yesterdays_close():
     ranks = [{e["name"]: (e["rank"], e["rankChange"]) for e in board} for board in boards]
 
     assert {e["name"]: (e["trades"], e["tradesToday"]) for e in boards[0]} == {
-        "echo": (3, 0),
-        "delta": (10, 1),
+        "echo": (RANK_FLOOR - 1, 0),
+        "delta": (RANK_FLOOR, 1),
         "alpha": (10, 0),
         "bravo": (10, 0),
         "charlie": (10, 0),
@@ -340,7 +340,7 @@ def _owners_board() -> None:
     agent("alpha", "user_owner", ten, {base - DAY + 3600: (G + G // 20, G), base + 60: (G + G // 10, G)})
     agent("rival", None, ten, {base + 60: (G + 7 * G // 100, G)})
     agent("charlie", "user_owner", ten, {base + 60: (G + G // 20, G)})
-    agent("bravo", "user_owner", [base - 5 * DAY, base - 4 * DAY, base - 3 * DAY], {base + 60: (3 * G + 6 * G // 10, 3 * G)})
+    agent("bravo", "user_owner", [base - 5 * DAY, base - 4 * DAY], {base + 60: (3 * G + 6 * G // 10, 3 * G)})
     agent("solo", "user_solo", ten, {base + 60: (G, G)})
     agent("hid1", "user_hidden", ten, {base + 60: (G, G)})
     agent("hid2", "user_hidden", ten, {base + 60: (G, G)})
@@ -358,7 +358,7 @@ def test_an_owner_page_answers_any_case_sums_its_agents_and_lists_ranked_before_
     assert resp.status_code == 200, resp.text
     page = resp.json()
     assert page["name"] == "MapleOps"
-    assert (page["trades"], page["firstTradeAt"], page["lastTradeAt"]) == (23, base - 5 * DAY, base - 2 * DAY + 9)
+    assert (page["trades"], page["firstTradeAt"], page["lastTradeAt"]) == (22, base - 5 * DAY, base - 2 * DAY + 9)
     assert page["money"] == {"returnPct": 15.0, "earned": str(3 * G // 4)}
     assert [(a["name"], a["rank"]) for a in page["agents"]] == [("alpha", 1), ("charlie", 3), ("bravo", None)]
 

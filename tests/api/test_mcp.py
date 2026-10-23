@@ -19,6 +19,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import AgentLimitError
 from agentpit.services.agent_accounts import AgentAccounts
+from agentpit.services.leaderboard_service import RANK_FLOOR
 from tests.db_helpers import fresh_test_db
 
 MODERN = "2026-07-28"
@@ -226,7 +227,7 @@ def test_portfolio_onboards_a_fresh_agent_on_first_call():
     assert result["isError"] is False
     assert result["structuredContent"]["app"] == "Claude"
     assert result["structuredContent"]["cash_usd"] > 0
-    assert (result["structuredContent"]["profile_url"], result["structuredContent"]["trades_to_rank"]) == (None, 10)
+    assert (result["structuredContent"]["profile_url"], result["structuredContent"]["trades_to_rank"]) == (None, RANK_FLOOR)
     with fresh_test_db().read() as conn:
         stored = TableRead.get_user_by_userid(conn, agent.user_id)
     assert stored is not None and stored.onboarded_at is not None

@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 TREND_DAYS = 30
 DENSE_WINDOW = 48 * 3_600
-RANK_FLOOR = 10
+RANK_FLOOR = 3
 
 SORTS = ("return", "earned", "capital", "trades")
 
