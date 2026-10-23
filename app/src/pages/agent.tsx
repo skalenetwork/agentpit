@@ -1,519 +1,318 @@
-import { type Burst, bursts } from "@agentpit/brand/activity";
-import { explorerAddress, explorerTx, type Fill, type MarketContext, marketCaption, type Profile, type RaceEntry, type RaceHead, stageText } from "@agentpit/brand/api";
-import { closeLabel, recordBars } from "@agentpit/brand/chart";
-import { cents, clock, count, dollars, exactDollars, pct, pool, shortAddress, shortDay, signedDollars, span, stamp, tone, utcTime } from "@agentpit/brand/format";
-import polymarket from "@agentpit/brand/polymarket.svg";
-import { recordCalls } from "@agentpit/brand/standing";
+import { type Bet, type BetStatus, explorerAddress, type Profile, type RaceEntry, type RaceHead, stageText } from "@agentpit/brand/api";
+import { betTabs, earnedChart, highlights, moneyTone, quiet, rowCaption, SHOWN, stakeLine, today, visible } from "@agentpit/brand/bets";
+import { chance, clock, count, dollars, pct, pool, shortAddress, shortDay, signedDollars, span, tone, utcTime } from "@agentpit/brand/format";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, ChartLine, LogOut, Pencil, Share, Trash2, Trophy } from "lucide-react";
+import { ArrowUpRight, ChartLine, LogOut, type LucideIcon, Pencil, Share, Trash2, TrendingDown, TrendingUp, Trophy } from "lucide-react";
 import { type FormEvent, Fragment, type ReactNode, useState } from "react";
 import { type Agent, type Order, useAgents, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRaceEntries, useRenameAgent } from "../api";
-import { Chart } from "../chart";
-import { LastTrade, Sep, TONE } from "../labels";
+import { BetSheet, Outcome } from "../bet";
+import { EarnedLine } from "../chart";
+import { HUE, LastTrade, Sep, TONE } from "../labels";
 import { ApiError } from "../session";
 import { Crumbs } from "../shell";
 import { Thumb } from "../thumb";
-import { Actions, Button, Card, Copy, Fault, Input, Note, RankPill, Robot, Sheet, SOFT } from "../ui";
+import { Actions, Button, Copy, Fault, Input, Note, RankPill, Robot, Sheet, SOFT } from "../ui";
+
+type Part = readonly [text: string, tint?: string];
+type TabKey = BetStatus | "orders";
 
 const SITE = "https://agentpit.dev";
-const POSITIONS = 6;
-const BURSTS = 8;
-const DAY = 86_400;
-const VERB = { BUY: "Bought", SELL: "Sold", SPLIT: "Split", MERGE: "Merged", REDEEM: "Redeemed" } as const;
 const ICON = "max-md:w-7.5 max-md:px-0";
-const LEAD = "flex min-h-10 items-center text-caption text-muted";
-const POSITION_COLS = "md:grid-cols-[30px_minmax(0,1fr)_104px_104px_104px_104px]";
-const BURST_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_104px]";
-const ACTIVITY_COLS = "md:grid-cols-[30px_minmax(0,1fr)_160px_104px_72px_104px]";
 const UNDERLINE = "underline decoration-faint underline-offset-[3px] transition-colors duration-150 hover:text-ink hover:decoration-current";
-const STICKER = {
-  live: ["Live", "bg-down text-paper scheme-light"],
-  upcoming: ["Entries open", "bg-signal text-paper scheme-light"],
-  locked: ["Starting soon", "bg-gold text-ink scheme-light"],
-  ended: ["Ended", "bg-ink/7 text-muted"],
-} as const satisfies Record<RaceHead["phase"], readonly [string, string]>;
+const CARD = `relative min-w-0 p-5 sm:p-6 ${SOFT}`;
+const CHIP = "inline-flex max-w-full align-top max-sm:max-w-36 max-sm:*:block max-sm:*:max-w-full max-sm:*:truncate max-sm:*:leading-6";
+const ROW =
+  "relative -mx-5 grid-cols-[32px_minmax(0,1fr)_auto] items-baseline gap-x-4 px-5 py-3 before:absolute before:inset-x-5 before:top-0 before:h-px before:bg-line first:before:hidden last:pb-5 sm:-mx-6 sm:px-6 sm:before:inset-x-6 sm:last:pb-6";
+const THUMB = "col-start-1 row-span-2 row-start-1 size-8 self-start sm:self-center";
+const TITLE = "col-start-2 row-start-1 min-w-0 text-small text-ink max-sm:line-clamp-2 sm:truncate";
+const LINE = "col-start-2 row-start-2 mt-0.5 min-w-0 text-label text-muted tabular-nums max-sm:col-end-4";
+const LEAD = {
+  live: ["Live", "text-signal"],
+  upcoming: ["Entries open"],
+  locked: ["Starting soon"],
+  ended: ["Ended"],
+} as const satisfies Record<RaceHead["phase"], Part>;
 
 const route = getRouteApi("/console/agents/$address");
 
-type Market = Pick<Fill, "title" | "icon" | "category" | "url"> & MarketContext;
-
-type Part = readonly [text: string, tint?: string];
-
-interface Tab {
-  readonly label: string;
-  readonly count?: number;
-  readonly panel: ReactNode;
-}
-
-interface RowProps {
-  readonly market: Market;
-  readonly now: number;
-  readonly cols: string;
-  readonly what: ReactNode;
-  readonly at: ReactNode;
-  readonly time?: ReactNode;
-  readonly value?: ReactNode;
-  readonly note?: ReactNode;
-  readonly earned?: number;
-  readonly onOpen?: () => void;
-}
-
-const day = (at: number, now: number) => {
-  const back = Math.floor(now / DAY) - Math.floor(at / DAY);
-  return back === 0 ? "Today" : back === 1 ? "Yesterday" : shortDay(new Date(at * 1000));
-};
-
-const TINT: Readonly<Record<string, string>> = { Yes: "bg-yes/10 text-yes dark:bg-yes/16", No: "bg-no/10 text-no dark:bg-no/16" };
-
-const verb = (fill: Fill) => (fill.type === "TRADE" ? VERB[fill.side ?? "BUY"] : VERB[fill.type]);
-
-const when = (burst: Burst<Fill>) => stamp(new Date(Math.min(...burst.fills.map((fill) => fill.at)) * 1000), new Date(burst.at * 1000));
-
-const Outcome = ({ outcome }: { outcome: string }) => (
-  <span className={`inline-flex h-6 shrink-0 items-center rounded-control px-2.5 text-label font-medium ${TINT[outcome] ?? "bg-paper text-ink"}`}>{outcome}</span>
-);
-
-const Move = ({ from, to }: { from: number; to: number }) => (
-  <span>
-    {from ? cents(from) : "Split"} <span className="text-faint">→</span> {cents(to)}
-  </span>
-);
-
-const More = ({ onClick, children }: { onClick: () => void; children: ReactNode }) => (
-  <div className="mt-3 flex">
-    <Button variant="paper" onClick={onClick}>
-      {children}
-    </Button>
+const Label = ({ icon: Icon, title, note }: { icon: LucideIcon; title: string; note?: ReactNode }) => (
+  <div className="flex h-5 items-center gap-1.5 text-label text-muted">
+    <Icon className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+    <h2 className="truncate">{title}</h2>
+    {note && <span className="ml-auto pl-3 text-caption whitespace-nowrap text-muted tabular-nums">{note}</span>}
   </div>
 );
 
-const OnPolymarket = ({ className }: { className: string }) => (
-  <>
-    <span
-      aria-hidden="true"
-      className={`size-3 shrink-0 bg-muted transition-colors duration-150 group-hover/link:bg-ink ${className}`}
-      style={{ mask: `url("${polymarket}") center / contain no-repeat` }}
-    />
-    <span className="sr-only">, on Polymarket</span>
-  </>
-);
-
-const Caption = ({ parts }: { parts: readonly string[] }) =>
-  parts.length > 0 && (
-    <span className="flex min-w-0 items-center gap-1.5 overflow-hidden text-caption font-normal whitespace-nowrap text-muted">
-      {parts.map((part, i) => (
-        <Fragment key={part}>
-          {i > 0 && <Sep />}
-          <span className={i ? "shrink-0" : "truncate"}>{part}</span>
-        </Fragment>
-      ))}
-    </span>
-  );
-
-const Row = ({ market, now, cols, what, at, time, value, note, earned, onOpen }: RowProps) => (
-  <li
-    className={`grid grid-cols-[30px_minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line py-2.5 tabular-nums md:items-center md:py-2 ${note ? "md:min-h-15" : "md:min-h-13"} ${cols} ${onOpen ? "relative -mx-5 px-5 transition-colors duration-150 hover:bg-paper/50 sm:-mx-6 sm:px-6" : ""}`}
-  >
-    {onOpen && <button type="button" onClick={onOpen} aria-label={`Receipt: ${market.title}`} className="absolute inset-0 -outline-offset-2" />}
-    <Thumb src={market.icon} title={market.title} category={market.category} />
-    <span className="min-w-0 md:contents">
-      <span className="grid min-w-0">
-        {market.url ? (
-          <a href={market.url} target="_blank" rel="noopener" className="group/link relative z-1 flex max-w-full min-w-0 items-end gap-1 justify-self-start font-medium">
-            <span className="min-w-0 underline-offset-2 group-hover/link:underline max-md:line-clamp-2 md:truncate">{market.title}</span>
-            <OnPolymarket className="mb-1" />
-          </a>
-        ) : (
-          <span className="line-clamp-2 font-medium md:line-clamp-1">{market.title}</span>
-        )}
-        <Caption parts={marketCaption(market, now)} />
-      </span>
-      <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted max-md:text-caption md:contents">
-        <span className="flex items-center gap-1.5 whitespace-nowrap">{what}</span>
-        <span className="whitespace-nowrap md:text-right">{at}</span>
-      </span>
-    </span>
-    <span className="grid justify-items-end gap-0.5 text-right md:contents">
-      {time !== undefined && <span className="whitespace-nowrap text-muted max-md:order-last max-md:text-caption md:text-right">{time}</span>}
-      {value !== undefined && (
-        <span className="grid justify-items-end">
-          {value}
-          {note && <small className="mt-0.5 text-caption whitespace-nowrap text-muted">{note}</small>}
-        </span>
+const Header = ({ agent, profile, now }: { agent: Agent; profile: Profile | undefined; now: number }) => {
+  const change = profile ? today(profile.money) : 0;
+  return (
+    <header className="mt-5 flex flex-col gap-4 sm:mt-7 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-8">
+      <div className="flex min-w-0 items-start gap-3 sm:items-center">
+        <Robot address={agent.eth_address} className="size-13" />
+        <div className="grid min-w-0 gap-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <h1 className="max-w-full truncate text-title">{agent.name}</h1>
+            {profile && <RankPill place={profile.standing.place} change={profile.standing.placeChange} rankedCount={profile.standing.rankedCount} />}
+          </div>
+          <p className="flex flex-wrap items-center gap-x-1.5 text-caption text-muted *:whitespace-nowrap">
+            <span>Runs on {agent.runner.label}</span>
+            {profile ? (
+              <>
+                <Sep />
+                <span>
+                  {dollars(profile.money.deposited)} paper since {shortDay(new Date(profile.firstTradeAt * 1000))}
+                </span>
+                <Sep />
+                {profile.money.capital < 1 ? <span>No money left</span> : <LastTrade at={profile.lastTradeAt} now={now} prefix="Last trade " />}
+              </>
+            ) : (
+              agent.trades === 0 && (
+                <>
+                  <Sep />
+                  <span>No trades yet</span>
+                </>
+              )
+            )}
+          </p>
+        </div>
+      </div>
+      {profile && (
+        <dl className="grid grid-cols-3 gap-3 sm:flex sm:shrink-0 sm:gap-10">
+          {[
+            { term: "Return", value: pct(profile.money.returnPct), hue: TONE[tone(profile.money.returnPct)] },
+            { term: "Earned", value: signedDollars(profile.money.earned), hue: TONE[tone(Math.round(profile.money.earned))] },
+            { term: "Today", value: signedDollars(change), hue: HUE[moneyTone(change)], title: "Change in Earned since 00:00 UTC" },
+          ].map(({ term, value, hue, title }) => (
+            <div key={term} title={title} className="grid min-w-0 content-start sm:justify-items-end sm:text-right">
+              <dt className="text-caption text-muted">{term}</dt>
+              <dd className={`truncate text-figure tabular-nums max-sm:text-title ${hue}`}>{value}</dd>
+            </div>
+          ))}
+        </dl>
       )}
-      {earned !== undefined && <span className={`font-medium max-md:text-caption md:text-right ${TONE[tone(Math.round(earned))]}`}>{signedDollars(earned)}</span>}
-    </span>
+    </header>
+  );
+};
+
+const placing = ({ race, standing, above, below }: RaceEntry): readonly Part[] => {
+  const { rank, returnPct, behind, wouldRank, bids } = standing;
+  if (race.phase === "upcoming" || race.phase === "locked") return [];
+  if (standing.disqualified) return [["Out", "text-down"]];
+  if (rank === null) return race.phase === "ended" ? [["Did not place"]] : wouldRank ? [["No trades yet"], [`one trade puts it #${wouldRank}`]] : [["No trades yet"]];
+  const result: Part = [pct(returnPct), HUE[tone(returnPct)]];
+  if (race.phase === "ended") return race.final ? [[`Finished #${rank} of ${race.ranked}`], result] : [[`#${rank} at the bell`], ["final coming in"]];
+  const gap = rank === 1 ? below && `${dollars(below.behind ?? 0)} ahead of ${below.name}` : above && `${dollars(behind ?? 0)} behind ${above.name}`;
+  const shift = bids?.rank && bids.rank !== rank ? `#${bids.rank} at the bids` : null;
+  return [[`#${rank} of ${race.ranked}`], result, ...[gap, shift].flatMap((text): Part[] => (text ? [[text]] : []))];
+};
+
+const Entry = ({ entry, now }: { entry: RaceEntry; now: number }) => {
+  const { race, standing } = entry;
+  const leave = useEntry(standing.address);
+  const parts: readonly Part[] = [race.phase === "ended" && race.final ? ["Final"] : LEAD[race.phase], ...(race.phase === "ended" ? [] : [[stageText(race, now)] as const]), ...placing(entry)];
+  return (
+    <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 border-t border-line py-3 first:border-t-0 first:pt-0 last:pb-0">
+      <div className="min-w-0">
+        <p className="truncate text-small text-ink">{race.title}</p>
+        <p className="mt-0.5 text-label text-muted tabular-nums">
+          {parts.map(([text, tint], i) => (
+            <Fragment key={text}>
+              {i > 0 && (
+                <>
+                  {" "}
+                  <Sep />{" "}
+                </>
+              )}
+              <span className={`whitespace-nowrap ${tint ?? ""}`}>{text}</span>
+            </Fragment>
+          ))}
+        </p>
+        {leave.isError && <Fault>{(leave.error instanceof ApiError && leave.error.detail) || "Could not leave. Try again in a moment."}</Fault>}
+      </div>
+      <div className="flex gap-2">
+        {race.phase === "upcoming" && (
+          <Button variant="warn" disabled={leave.isPending} onClick={() => leave.mutate({ slug: race.slug, enter: false })} className={ICON}>
+            <LogOut size={14} strokeWidth={1.75} />
+            <span className="max-md:sr-only">Leave</span>
+          </Button>
+        )}
+        <Button href={`${SITE}/competitions/${race.slug}?agent=${standing.address}`} target="_blank" rel="noreferrer" variant="paper" className={ICON}>
+          <ArrowUpRight size={14} strokeWidth={1.75} />
+          <span className="max-md:sr-only">View</span>
+        </Button>
+      </div>
+    </li>
+  );
+};
+
+const EarnedCard = ({ profile }: { profile: Profile }) => {
+  const [hot, setHot] = useState<number | null>(null);
+  const chart = earnedChart(profile);
+  const point = hot === null ? undefined : chart.points[hot];
+  return (
+    <article className={CARD}>
+      <Label
+        icon={ChartLine}
+        title="Earned"
+        note={
+          point ? (
+            <>
+              {shortDay(new Date(point.at * 1000))} {clock(new Date(point.at * 1000))} <Sep /> <span className={HUE[moneyTone(point.value)]}>{signedDollars(point.value)}</span>
+            </>
+          ) : (
+            `Since ${shortDay(new Date(profile.firstTradeAt * 1000))}`
+          )
+        }
+      />
+      <EarnedLine chart={chart} hot={hot} onHot={setHot} />
+    </article>
+  );
+};
+
+const Highlights = ({ bets, onOpen }: { bets: readonly Bet[]; onOpen: (id: string) => void }) => {
+  const pair = highlights(bets);
+  return (
+    pair && (
+      <div className="grid gap-5 sm:grid-cols-2">
+        {(
+          [
+            [TrendingUp, "Best bet", pair.best],
+            [TrendingDown, "Worst bet", pair.worst],
+          ] as const
+        ).map(([icon, title, bet]) => (
+          <article key={title} className={`${CARD} transition-colors duration-150 hover:bg-surface active:bg-surface`}>
+            <Label icon={icon} title={title} />
+            <div className="relative mt-4 flex items-center gap-4">
+              <Thumb src={bet.icon} title={bet.title} category={bet.category} className="size-16" />
+              <div className="min-w-0">
+                <p className={`truncate text-figure tabular-nums ${HUE[moneyTone(bet.pnl)]}`}>{signedDollars(bet.pnl)}</p>
+                <p className="mt-1.5 flex h-6 min-w-0 items-center gap-1.5 text-label text-muted">
+                  <span className={CHIP}>
+                    <Outcome outcome={bet.outcome} />
+                  </span>
+                  <span className="truncate">{bet.title}</span>
+                </p>
+              </div>
+            </div>
+            <button type="button" onClick={() => onOpen(bet.id)} aria-label={`Details: ${bet.title}, ${bet.outcome}`} className="absolute inset-0 cursor-pointer rounded-card -outline-offset-2" />
+          </article>
+        ))}
+      </div>
+    )
+  );
+};
+
+const BetRow = ({ bet, now, hidden, onOpen }: { bet: Bet; now: number; hidden: boolean; onOpen: (id: string) => void }) => {
+  const { stake, price } = stakeLine(bet);
+  const caption = rowCaption(bet, now);
+  const when = caption.live ? <span className="text-signal">{caption.text}</span> : caption.text;
+  return (
+    <li className={`group/row ${ROW} transition-colors duration-150 hover:bg-paper/70 active:bg-paper/70 dark:hover:bg-surface dark:active:bg-surface ${hidden ? "hidden" : "grid"}`}>
+      <Thumb src={bet.icon} title={bet.title} category={bet.category} className={THUMB} />
+      <p className={TITLE}>{bet.title}</p>
+      <div className="col-start-3 row-start-1 text-right whitespace-nowrap tabular-nums">
+        <p className={`text-small font-medium ${quiet(bet) ? "text-muted" : HUE[moneyTone(bet.pnl)]}`}>{signedDollars(bet.pnl)}</p>
+        <p className="mt-0.5 text-caption text-muted sm:hidden">{when}</p>
+      </div>
+      <p className={LINE}>
+        <span className="whitespace-nowrap">{stake}</span>{" "}
+        <span className={`-my-0.5 ${CHIP}`}>
+          <Outcome outcome={bet.outcome} />
+        </span>{" "}
+        <span className="whitespace-nowrap">{price}</span>
+      </p>
+      <p className="col-start-3 row-start-2 mt-0.5 text-right text-caption whitespace-nowrap text-muted tabular-nums max-sm:hidden">{when}</p>
+      <button
+        type="button"
+        onClick={() => onOpen(bet.id)}
+        aria-label={`Details: ${bet.title}, ${bet.outcome}`}
+        className="absolute inset-0 cursor-pointer -outline-offset-2 group-last/row:rounded-b-card"
+      />
+    </li>
+  );
+};
+
+const OrderRow = ({ order, icon }: { order: Order; icon: string | null }) => (
+  <li className={`grid ${ROW}`}>
+    <Thumb src={icon} title={order.title} category={null} className={THUMB} />
+    <p className={TITLE}>{order.title}</p>
+    <p className="col-start-3 row-start-1 text-right text-small font-medium whitespace-nowrap text-ink tabular-nums">{dollars(Number(order.price) * Number(order.original_size))}</p>
+    <p className={LINE}>
+      <span className="whitespace-nowrap">
+        {order.side === "BUY" ? "Buy" : "Sell"} {count(Number(order.original_size))}
+      </span>{" "}
+      <span className={`-my-0.5 ${CHIP}`}>
+        <Outcome outcome={order.outcome} />
+      </span>{" "}
+      <span className="whitespace-nowrap">at {chance(Number(order.price))}</span>
+    </p>
   </li>
 );
 
-const Tabs = ({ tabs }: { tabs: readonly Tab[] }) => {
-  const [chosen, setChosen] = useState(tabs[0]?.label);
-  const current = tabs.find((tab) => tab.label === chosen) ?? tabs[0];
+const BetsCard = ({ profile, orders, now, onOpen }: { profile: Profile | undefined; orders: readonly Order[]; now: number; onOpen: (id: string) => void }) => {
+  const [chosen, setChosen] = useState<TabKey>();
+  const [all, setAll] = useState(false);
+  const view = profile ? betTabs(profile) : null;
+  const tabs = [...(view?.tabs ?? []), ...(orders.length ? [{ status: "orders" as const, label: "Orders", n: orders.length, shown: undefined }] : [])];
+  const current = tabs.find((tab) => tab.status === chosen)?.status ?? view?.active ?? "orders";
+  const bets = view?.tabs.find((tab) => tab.status === current)?.bets ?? [];
+  const cut = all ? bets.length : visible(bets.length, SHOWN);
+  if (!tabs.length) return null;
   return (
-    <section className={`px-5 pb-5 sm:px-6 sm:pb-6 ${SOFT}`}>
-      <div role="tablist" className="-mx-5 flex border-b border-line px-2 sm:-mx-6 sm:px-3">
-        {tabs.map((tab) => (
-          <button
-            key={tab.label}
-            type="button"
-            role="tab"
-            aria-selected={tab === current}
-            onClick={() => setChosen(tab.label)}
-            className="group relative flex h-12 items-center font-medium text-muted outline-none transition-colors duration-150 after:absolute after:inset-x-3 after:-bottom-px after:h-0.5 after:rounded-full after:bg-ink after:opacity-0 hover:text-ink aria-selected:text-ink aria-selected:after:opacity-100"
-          >
-            <span className="flex h-8 items-center rounded-control px-3 transition-colors duration-150 group-hover:bg-paper group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-signal">
-              {tab.label}
-              {tab.count !== undefined && <span className="ml-1 font-normal text-muted tabular-nums max-sm:hidden">{count(tab.count)}</span>}
-            </span>
-          </button>
-        ))}
-      </div>
-      <div role="tabpanel">{current?.panel}</div>
+    <section className={`relative min-w-0 overflow-hidden px-5 pb-5 sm:px-6 sm:pb-6 ${SOFT}`} aria-label="Bets">
+      <fieldset className="-mx-5 min-w-0 overflow-x-auto px-5 text-small shadow-[inset_0_-1px_0_var(--color-line)] [scrollbar-width:none] sm:-mx-6 sm:px-6">
+        <legend className="sr-only">Bets by status</legend>
+        <div className="flex gap-8 max-sm:grid max-sm:auto-cols-[minmax(max-content,1fr)] max-sm:grid-flow-col max-sm:justify-items-start max-sm:gap-3">
+          {tabs.map(({ status, label, n, shown }) => (
+            <button
+              key={status}
+              type="button"
+              aria-pressed={status === current}
+              onClick={() => {
+                setChosen(status);
+                setAll(false);
+              }}
+              className="group/tab relative flex cursor-pointer items-center gap-2 pt-6 pb-4 whitespace-nowrap outline-none after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-full after:bg-ink after:opacity-0 aria-pressed:after:opacity-100 max-sm:flex-col max-sm:items-start max-sm:gap-0 max-sm:pt-5"
+            >
+              <span className="rounded-item group-focus-visible/tab:outline-2 group-focus-visible/tab:outline-offset-2 group-focus-visible/tab:outline-signal">
+                <span className="font-medium text-muted transition-colors duration-150 group-hover/tab:text-ink group-aria-pressed/tab:text-ink">{label}</span>{" "}
+                <span className="text-muted tabular-nums">{count(n)}</span>
+              </span>
+              {shown !== undefined && <span className={`tabular-nums ${HUE[moneyTone(shown)]}`}>{signedDollars(shown)}</span>}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+      {current === "orders" ? (
+        <>
+          <p className="pt-3 pb-1 text-caption text-muted">Resting orders fill when the Polymarket book reaches the price.</p>
+          <ul className="-mb-5 sm:-mb-6">
+            {orders.map((order) => (
+              <OrderRow key={order.id} order={order} icon={profile?.bets.find((bet) => bet.title === order.title)?.icon ?? null} />
+            ))}
+          </ul>
+        </>
+      ) : (
+        <>
+          <ul className={cut < bets.length ? "-mb-3" : "-mb-5 sm:-mb-6"}>
+            {bets.map((bet, i) => (
+              <BetRow key={bet.id} bet={bet} now={now} hidden={i >= cut} onOpen={onOpen} />
+            ))}
+          </ul>
+          {cut < bets.length && (
+            <div className="mt-4 flex">
+              <Button variant="paper" onClick={() => setAll(true)}>
+                Show all {count(bets.length)}
+              </Button>
+            </div>
+          )}
+        </>
+      )}
     </section>
   );
 };
 
-const Header = ({ agent, profile, now }: { agent: Agent; profile: Profile | undefined; now: number }) => (
-  <header className="mt-5 flex flex-col gap-4 sm:mt-7 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-8">
-    <div className="flex min-w-0 items-start gap-3 sm:items-center">
-      <Robot address={agent.eth_address} className="size-13" />
-      <div className="grid min-w-0 gap-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <h1 className="max-w-full truncate text-title">{agent.name}</h1>
-          {profile && <RankPill place={profile.standing.place} change={profile.standing.placeChange} rankedCount={profile.standing.rankedCount} />}
-        </div>
-        <p className="flex flex-wrap items-center gap-x-1.5 text-caption text-muted *:whitespace-nowrap">
-          <span>Runs on {agent.runner.label}</span>
-          {profile ? (
-            <>
-              <Sep />
-              <span>Trading since {shortDay(new Date(profile.firstTradeAt * 1000))}</span>
-              <Sep />
-              <LastTrade at={profile.lastTradeAt} now={now} prefix="Last trade " />
-            </>
-          ) : (
-            agent.trades === 0 && (
-              <>
-                <Sep />
-                <span>No trades yet</span>
-              </>
-            )
-          )}
-        </p>
-      </div>
-    </div>
-    {profile && (
-      <dl className="grid grid-cols-3 gap-3 sm:flex sm:shrink-0 sm:gap-10">
-        {(
-          [
-            ["Return", pct(profile.money.returnPct), TONE[tone(profile.money.returnPct)]],
-            ["Earned", signedDollars(profile.money.earned), TONE[tone(Math.round(profile.money.earned))]],
-            ["Equity", dollars(profile.money.capital), "text-ink"],
-          ] as const
-        ).map(([term, value, color]) => (
-          <div key={term} className="grid min-w-0 content-start sm:justify-items-end sm:text-right">
-            <dt className="text-caption text-muted">{term}</dt>
-            <dd className={`truncate text-figure tabular-nums max-sm:text-title ${color}`}>{value}</dd>
-          </div>
-        ))}
-      </dl>
-    )}
-  </header>
-);
-
-const EarnedCard = ({ money, valuedAt }: { money: Profile["money"]; valuedAt: number }) => {
-  const [hot, setHot] = useState<number | null>(null);
-  const { trend, trendStart } = money;
-  const value = hot === null ? undefined : trend[hot];
-  return (
-    <Card
-      title="Earned, last 30 days"
-      icon={ChartLine}
-      note={
-        hot === null || value === undefined ? (
-          `As of ${utcTime(new Date(valuedAt * 1000))}`
-        ) : (
-          <>
-            {closeLabel(trendStart, hot, trend.length)} <span className={TONE[tone(Math.round(value))]}>{signedDollars(value)}</span>
-          </>
-        )
-      }
-    >
-      {trend.length > 1 ? (
-        <>
-          <Chart trend={trend} hot={hot} onHot={setHot} />
-          <p className="mt-2 flex justify-between text-caption text-muted tabular-nums">
-            <span>{closeLabel(trendStart, 0, trend.length)}</span>
-            <span>Today</span>
-          </p>
-        </>
-      ) : (
-        <p className="text-muted">The line starts after the first UTC close.</p>
-      )}
-    </Card>
-  );
-};
-
-const PositionsPanel = ({ positions, cash, now }: { positions: Profile["positions"]; cash: number; now: number }) => {
-  const [all, setAll] = useState(false);
-  const { open } = positions;
-  return (
-    <>
-      <div className={`${LEAD} gap-x-3 md:grid ${POSITION_COLS}`}>
-        <p className="flex flex-wrap items-center gap-x-1.5 md:col-span-3">
-          <span>
-            <span className="font-medium text-ink tabular-nums">{dollars(positions.mark)}</span> in positions
-          </span>
-          <Sep />
-          <span>
-            <span className="font-medium text-ink tabular-nums">{dollars(cash)}</span> cash
-          </span>
-        </p>
-        {open.length > 0 &&
-          ["Avg → now", "Value", "Earned"].map((head) => (
-            <span key={head} className="text-right max-md:hidden">
-              {head}
-            </span>
-          ))}
-      </div>
-      {open.length ? (
-        <ul>
-          {(all ? open : open.slice(0, POSITIONS)).map((position) => (
-            <Row
-              key={`${position.title}${position.outcome}`}
-              market={position}
-              now={now}
-              cols={POSITION_COLS}
-              what={<Outcome outcome={position.outcome} />}
-              at={<Move from={position.avgPrice} to={position.curPrice} />}
-              value={dollars(position.value)}
-              note={position.sellsFor < 0.9 * position.value && `sells for ${dollars(position.sellsFor)}`}
-              earned={position.pnl}
-            />
-          ))}
-        </ul>
-      ) : (
-        <p className="flex min-h-13 items-center border-t border-line text-muted">Nothing open.</p>
-      )}
-      {!all && open.length > POSITIONS && <More onClick={() => setAll(true)}>Show all {count(open.length)} positions</More>}
-    </>
-  );
-};
-
-const Time = ({ burst }: { burst: Burst<Fill> }) => {
-  const date = new Date(burst.at * 1000);
-  const time = (
-    <time dateTime={date.toISOString()} title={when(burst)}>
-      {clock(date)}
-    </time>
-  );
-  return burst.tx ? (
-    <a href={explorerTx(burst.tx)} target="_blank" rel="noopener" aria-label="Settlement transaction, opens the explorer" className={`relative z-1 ${UNDERLINE}`}>
-      {time}
-    </a>
-  ) : (
-    time
-  );
-};
-
-const Fact = ({ term, children }: { term: string; children: ReactNode }) => (
-  <div className="flex min-h-10 items-center justify-between gap-4 border-t border-line py-2">
-    <dt className="shrink-0 text-muted">{term}</dt>
-    <dd className="min-w-0 text-right tabular-nums">{children}</dd>
-  </div>
-);
-
-const Receipt = ({ burst, open, now, onClose }: { burst: Burst<Fill>; open: Profile["positions"]["open"]; now: number; onClose: () => void }) => {
-  const { title, url, fills, tx } = burst;
-  const cut = title.lastIndexOf(" ") + 1;
-  const position = open.find((held) => held.title === title && held.outcome === burst.outcome);
-  return (
-    <Sheet
-      title={
-        <span className="flex items-start gap-3">
-          <Thumb src={burst.icon} title={title} category={burst.category} />
-          <span className="grid min-w-0 gap-0.5 text-pretty">
-            {url ? (
-              <a href={url} target="_blank" rel="noopener" className="group/link underline-offset-2 hover:underline">
-                {title.slice(0, cut)}
-                <span className="whitespace-nowrap">
-                  {title.slice(cut)}
-                  <OnPolymarket className="ml-1 inline-block" />
-                </span>
-              </a>
-            ) : (
-              title
-            )}
-            <Caption parts={marketCaption(burst, now)} />
-          </span>
-        </span>
-      }
-      onClose={onClose}
-    >
-      <p className="mt-4 flex min-h-6 items-center gap-1.5">
-        <span className="font-medium">{verb(burst)}</span>
-        {burst.outcome && <Outcome outcome={burst.outcome} />}
-        {fills.length > 1 && <span className="text-muted tabular-nums">×{fills.length}</span>}
-      </p>
-      <dl className="mt-3">
-        <Fact term={burst.type === "TRADE" ? "Filled at" : `${VERB[burst.type]} at`}>{when(burst)}</Fact>
-        <Fact term="Shares">{count(burst.shares)}</Fact>
-        {burst.type === "TRADE" && burst.shares > 0 && <Fact term="Average price">{cents(burst.dollars / burst.shares)}</Fact>}
-        <Fact term={burst.side === "SELL" || burst.type === "MERGE" || burst.type === "REDEEM" ? "Proceeds" : "Cost"}>{exactDollars(burst.dollars)}</Fact>
-      </dl>
-      {fills.length > 1 && (
-        <>
-          <h3 className={`mt-4 ${LEAD}`}>{fills.length} fills</h3>
-          <ul>
-            {fills.map((fill) => (
-              <li key={`${fill.at}${fill.shares}${fill.dollars}`} className="grid min-h-10 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 border-t border-line py-2 tabular-nums">
-                <time dateTime={new Date(fill.at * 1000).toISOString()} className="text-muted">
-                  {clock(new Date(fill.at * 1000), true)}
-                </time>
-                <span className="truncate text-muted">
-                  {count(fill.shares)} {burst.type === "TRADE" ? `at ${cents(fill.dollars / fill.shares)}` : "shares"}
-                </span>
-                <span className="text-right">{exactDollars(fill.dollars)}</span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-      <dl className={fills.length > 1 ? "mt-4" : undefined}>
-        {position && (
-          <Fact term="Position now">
-            {count(position.shares)} <Sep /> <Move from={position.avgPrice} to={position.curPrice} /> <Sep />{" "}
-            <span className={`font-medium ${TONE[tone(Math.round(position.pnl))]}`}>{signedDollars(position.pnl)}</span>
-          </Fact>
-        )}
-        {tx && (
-          <Fact term="Settlement">
-            <a href={explorerTx(tx)} target="_blank" rel="noopener" className={`inline-flex items-center gap-1 whitespace-nowrap ${UNDERLINE}`}>
-              Transaction <span className="font-mono">{shortAddress(tx)}</span>
-              <ArrowUpRight size={14} strokeWidth={1.75} className="shrink-0 text-muted" />
-            </a>
-          </Fact>
-        )}
-      </dl>
-      {tx && <p className="mt-1 text-caption text-muted">The explorer names the house operator as sender, shows shares in raw units and does not name the market.</p>}
-    </Sheet>
-  );
-};
-
-const ActivityPanel = ({ activity, open, now }: { activity: Profile["activity"]; open: Profile["positions"]["open"]; now: number }) => {
-  const [all, setAll] = useState(false);
-  const [receipt, setReceipt] = useState<Burst<Fill>>();
-  const list = bursts(activity);
-  const shown = all ? list : list.slice(0, BURSTS);
-  return (
-    <>
-      {[...new Set(shown.map((burst) => day(burst.at, now)))].map((label) => (
-        <section key={label} className="not-first:mt-3">
-          <h3 className={LEAD}>{label}</h3>
-          <ul>
-            {shown
-              .filter((burst) => day(burst.at, now) === label)
-              .map((burst) => (
-                <Row
-                  key={`${burst.at}${burst.title}${burst.outcome}`}
-                  market={burst}
-                  now={now}
-                  cols={ACTIVITY_COLS}
-                  what={
-                    <>
-                      <span className="text-ink">{verb(burst)}</span>
-                      {burst.outcome && <Outcome outcome={burst.outcome} />}
-                      {burst.fills.length > 1 && <span>×{burst.fills.length}</span>}
-                    </>
-                  }
-                  at={burst.type === "TRADE" && burst.shares > 0 && `at ${cents(burst.dollars / burst.shares)}`}
-                  time={<Time burst={burst} />}
-                  value={dollars(burst.dollars)}
-                  onOpen={() => setReceipt(burst)}
-                />
-              ))}
-          </ul>
-        </section>
-      ))}
-      {!all && list.length > BURSTS && <More onClick={() => setAll(true)}>Show {count(list.length - BURSTS)} more</More>}
-      {shown.some((burst) => burst.tx) && <p className="mt-4 text-caption text-muted">Times are UTC. Linked times open the settlement transaction on SKALE on Base, sent by the house operator.</p>}
-      {receipt && <Receipt burst={receipt} open={open} now={now} onClose={() => setReceipt(undefined)} />}
-    </>
-  );
-};
-
-const RecordPanel = ({ record, now }: { record: NonNullable<Profile["record"]>; now: number }) => {
-  const decided = record.wins + record.losses;
-  const { zero, width, bars } = recordBars(record.pnls);
-  const won = bars.filter((bar) => bar.tone === "up").length;
-  return (
-    <>
-      <p className={LEAD}>
-        <span>
-          <span className="font-medium text-ink tabular-nums">{record.wins}</span> of <span className="font-medium text-ink tabular-nums">{decided}</span> won
-        </span>
-      </p>
-      {decided >= 3 && (
-        <>
-          <svg className="mt-1 h-22 w-full overflow-visible" role="img" aria-label={`${won} won, ${bars.length - won} lost, oldest to latest`}>
-            <line x2="100%" y1={`${zero}%`} y2={`${zero}%`} className="stroke-line" strokeDasharray="3 3" />
-            {bars.map((bar) => (
-              <rect key={bar.x} x={`${bar.x}%`} y={`${bar.y}%`} width={`${width}%`} height={`${bar.height}%`} rx="2" className={bar.tone === "up" ? "fill-up" : "fill-down"} />
-            ))}
-          </svg>
-          <p className="mt-2 mb-3 flex justify-between text-caption leading-4 text-muted">
-            <span>Oldest</span>
-            <span>Latest</span>
-          </p>
-        </>
-      )}
-      <ul>
-        {recordCalls(record).map(({ label, call }) => (
-          <Row
-            key={label}
-            market={call}
-            now={now}
-            cols={BURST_COLS}
-            what={
-              <>
-                <span className="text-ink">{label}</span>
-                <Outcome outcome={call.outcome} />
-              </>
-            }
-            at={<Move from={call.entry} to={call.exit} />}
-            earned={call.pnl}
-          />
-        ))}
-      </ul>
-    </>
-  );
-};
-
-const OrdersPanel = ({ orders, icons, now }: { orders: readonly Order[]; icons: ReadonlyMap<string, string | null>; now: number }) => (
-  <>
-    <p className={LEAD}>Resting orders fill when the Polymarket book reaches the price.</p>
-    <ul>
-      {orders.map((order) => (
-        <Row
-          key={order.id}
-          market={{ ...order, icon: icons.get(order.title) ?? null, category: null }}
-          now={now}
-          cols={BURST_COLS}
-          what={
-            <>
-              <span className="text-ink">{order.side === "BUY" ? "Buy" : "Sell"}</span>
-              <Outcome outcome={order.outcome} />
-            </>
-          }
-          at={`${count(Number(order.original_size))} at ${cents(Number(order.price))}`}
-          value={dollars(Number(order.price) * Number(order.original_size))}
-        />
-      ))}
-    </ul>
-  </>
-);
-
-const Wallet = ({ address }: { address: string }) => (
+const Wallet = ({ address, valuedAt }: { address: string; valuedAt: number }) => (
   <footer className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted">
     <span className="flex items-center gap-2">
       Wallet
@@ -524,7 +323,9 @@ const Wallet = ({ address }: { address: string }) => (
       View on explorer
       <ArrowUpRight size={12} strokeWidth={1.75} />
     </a>
-    <span className="sm:ml-auto">Paper apUSD on SKALE on Base</span>
+    <span className="sm:ml-auto">
+      As of {utcTime(new Date(valuedAt * 1000))} <Sep /> Paper money on SKALE on Base
+    </span>
   </footer>
 );
 
@@ -625,66 +426,15 @@ const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competit
   );
 };
 
-const placing = ({ race, standing, above, below }: RaceEntry): readonly Part[] => {
-  const { rank, returnPct, behind, wouldRank, bids } = standing;
-  if (race.phase === "upcoming" || race.phase === "locked") return [];
-  if (standing.disqualified) return [["Out", "font-medium text-down"]];
-  if (rank === null) return race.phase === "ended" ? [["Did not place"]] : wouldRank ? [["No trades yet"], [`one trade puts it #${wouldRank}`]] : [["No trades yet"]];
-  const result: Part = [pct(returnPct), `font-medium ${TONE[tone(returnPct)]}`];
-  if (race.phase === "ended") return race.final ? [[`Finished #${rank} of ${race.ranked}`], result] : [[`#${rank} at the bell`], ["final coming in"]];
-  const gap = rank === 1 ? below && `${dollars(below.behind ?? 0)} ahead of ${below.name}` : above && `${dollars(behind ?? 0)} behind ${above.name}`;
-  const shift = bids?.rank && bids.rank !== rank ? `#${bids.rank} at the bids` : null;
-  return [[`#${rank} of ${race.ranked}`], result, ...[gap, shift].flatMap((text): Part[] => (text ? [[text]] : []))];
-};
-
-const Entry = ({ entry, now }: { entry: RaceEntry; now: number }) => {
-  const { race, standing } = entry;
-  const leave = useEntry(standing.address);
-  const [label, look] = STICKER[race.phase];
-  return (
-    <li className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-      <div className="grid min-w-0 flex-1 gap-0.5">
-        <p className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-medium">{race.title}</span>
-          <span className={`inline-flex h-6 shrink-0 items-center gap-1.5 rounded-control px-2.5 text-label font-medium ${look}`}>
-            {race.phase === "live" && <span className="size-1.5 rounded-full bg-paper" />}
-            {race.phase === "ended" && race.final ? "Final" : label}
-          </span>
-        </p>
-        <p className="flex flex-wrap items-center gap-x-1.5 text-caption text-muted tabular-nums *:whitespace-nowrap">
-          <span>{stageText(race, now)}</span>
-          {placing(entry).map(([text, tint]) => (
-            <Fragment key={text}>
-              <Sep />
-              <span className={tint}>{text}</span>
-            </Fragment>
-          ))}
-        </p>
-        {leave.isError && <Fault>{(leave.error instanceof ApiError && leave.error.detail) || "Could not leave. Try again in a moment."}</Fault>}
-      </div>
-      {race.phase === "upcoming" && (
-        <Button variant="warn" disabled={leave.isPending} onClick={() => leave.mutate({ slug: race.slug, enter: false })} className={ICON}>
-          <LogOut size={14} strokeWidth={1.75} />
-          <span className="max-md:sr-only">Leave</span>
-        </Button>
-      )}
-      <Button href={`${SITE}/competitions/${race.slug}?agent=${standing.address}`} target="_blank" rel="noreferrer" variant="paper" className={ICON}>
-        <ArrowUpRight size={14} strokeWidth={1.75} />
-        <span className="max-md:sr-only">View</span>
-      </Button>
-    </li>
-  );
-};
-
 const View = ({ agent, now }: { agent: Agent; now: number }) => {
   const [sheet, setSheet] = useState<"compete" | "rename" | "delete">();
+  const [open, setOpen] = useState<string | null>(null);
   const competitions = useCompetitions().data?.competitions.filter(({ phase }) => phase !== "ended") ?? [];
   const entries = useRaceEntries(agent.eth_address).data ?? [];
   const { data: profile, isError } = useProfile(agent);
-  const orders = useOrders(agent).data;
+  const orders = useOrders(agent).data ?? [];
   const page = `${SITE}/agents/${agent.eth_address}`;
-  const icons = new Map([...(profile?.positions.open ?? []), ...(profile?.activity ?? [])].map((item) => [item.title, item.icon]));
-  const ordersTab: readonly Tab[] = orders?.length ? [{ label: "Orders", count: orders.length, panel: <OrdersPanel orders={orders} icons={icons} now={now} /> }] : [];
+  const bet = profile?.bets.find((candidate) => candidate.id === open);
   const close = () => setSheet(undefined);
 
   return (
@@ -727,36 +477,29 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
       <Header agent={agent} profile={profile} now={now} />
       <div className="mt-5 grid gap-5 sm:mt-7">
         {entries.length > 0 && (
-          <Card title="Competitions" icon={Trophy}>
-            <ul className="divide-y divide-line">
+          <article className={CARD}>
+            <Label icon={Trophy} title="Competitions" />
+            <ul className="mt-4">
               {entries.map((entry) => (
                 <Entry key={entry.race.slug} entry={entry} now={now} />
               ))}
             </ul>
-          </Card>
+          </article>
         )}
         {profile ? (
           <>
-            <EarnedCard money={profile.money} valuedAt={profile.valuedAt} />
-            <Tabs
-              tabs={[
-                { label: "Positions", count: profile.positions.count, panel: <PositionsPanel positions={profile.positions} cash={profile.money.cash} now={now} /> },
-                { label: "Activity", panel: <ActivityPanel activity={profile.activity} open={profile.positions.open} now={now} /> },
-                ...(profile.record ? [{ label: "Record", count: profile.record.wins + profile.record.losses, panel: <RecordPanel record={profile.record} now={now} /> }] : []),
-                ...ordersTab,
-              ]}
-            />
+            <EarnedCard profile={profile} />
+            <Highlights bets={profile.bets} onOpen={setOpen} />
           </>
         ) : (
-          <>
-            {(agent.trades === 0 || isError) && (
-              <p className="text-muted">{agent.trades === 0 ? `${dollars(agent.equity)} of paper money is ready.` : "Could not load this agent. Reload to try again."}</p>
-            )}
-            {ordersTab.length > 0 && <Tabs tabs={ordersTab} />}
-          </>
+          (agent.trades === 0 || isError) && (
+            <p className="text-muted">{agent.trades === 0 ? `${dollars(agent.equity)} of paper money is ready.` : "Could not load this agent. Reload to try again."}</p>
+          )
         )}
+        <BetsCard profile={profile} orders={orders} now={now} onOpen={setOpen} />
       </div>
-      {profile && <Wallet address={profile.address} />}
+      {profile && <Wallet address={profile.address} valuedAt={profile.valuedAt} />}
+      {bet && <BetSheet bet={bet} now={now} onClose={() => setOpen(null)} />}
       {sheet === "compete" && <Compete agent={agent} competitions={competitions} now={now} onClose={close} />}
       {sheet === "rename" && <Rename agent={agent} onClose={close} />}
       {sheet === "delete" && <Delete agent={agent} onClose={close} />}

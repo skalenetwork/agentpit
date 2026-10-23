@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 
 export const TONE: Readonly<Record<Tone, string>> = { up: "text-up", down: "text-down", flat: "text-ink" };
 
+export const HUE: Readonly<Record<Tone, string>> = { ...TONE, flat: "text-muted" };
+
 export const Sep = () => <span className="text-faint">·</span>;
 
 export const LastTrade = ({ at, now, prefix }: { at: number; now: number; prefix?: ReactNode }) =>
