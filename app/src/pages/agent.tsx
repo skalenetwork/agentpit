@@ -428,7 +428,7 @@ const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competit
             key={competition.slug}
             agent={agent}
             competition={competition}
-            other={agents.find((owned) => owned.eth_address !== agent.eth_address && owned.competitions.includes(competition.slug))}
+            other={competition.prizes.length ? agents.find((owned) => owned.eth_address !== agent.eth_address && owned.competitions.includes(competition.slug)) : undefined}
             now={now}
           />
         ))}

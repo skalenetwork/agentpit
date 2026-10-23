@@ -61,7 +61,8 @@ class DailyClose(BaseModel):
 
 class Seat(BaseModel):
     """An account as a would-be entrant: its owner when it may enter, when it
-    entered if it is its owner's entry, and whether the owner entered another."""
+    entered, and whether the competition has prizes and the owner entered
+    another of its agents."""
 
     owner: str | None
     eth_address: str
@@ -964,14 +965,15 @@ class TableRead:
             SELECT CASE WHEN u.IS_BOT = 0 AND u.DELETED_AT IS NULL
                          AND u.PEER_TRANSFER_BLOCK IS NULL AND u.ONBOARDED_AT IS NOT NULL
                         THEN u.OWNER_WORKOS_ID END AS OWNER,
-                   u.ETH_ADDRESS,
-                   CASE WHEN e.USER_ID = u.USER_ID THEN e.ENROLLED_AT END AS ENROLLED_AT,
-                   COALESCE(e.USER_ID <> u.USER_ID, false) AS TAKEN
+                   u.ETH_ADDRESS, e.ENROLLED_AT,
+                   EXISTS (SELECT 1 FROM competition_entries o JOIN competitions c ON c.SLUG = o.SLUG
+                           WHERE o.SLUG = %(slug)s AND c.PRIZES <> '[]'
+                             AND o.OWNER = u.OWNER_WORKOS_ID AND o.USER_ID <> u.USER_ID) AS TAKEN
             FROM users u
-            LEFT JOIN competition_entries e ON e.SLUG = %s AND e.OWNER = u.OWNER_WORKOS_ID
-            WHERE u.USER_ID = %s
+            LEFT JOIN competition_entries e ON e.SLUG = %(slug)s AND e.USER_ID = u.USER_ID
+            WHERE u.USER_ID = %(user_id)s
             """,
-            (slug, user_id),
+            {"slug": slug, "user_id": user_id},
         ).fetchone()
         return Seat.model_validate(row) if row else None
 
