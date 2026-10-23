@@ -87,6 +87,33 @@ def test_entries_captured_before_their_times_existed_are_dated_and_undatable_one
     ).fetchall() == [("a", 100, 200, None), ("b", 150, None, None), ("c", None, None, None), ("e", None, None, None)]
 
 
+def test_entries_keyed_by_owner_move_to_one_per_agent_with_their_rows(conn):
+    conn.execute(
+        "CREATE TABLE competition_entries (SLUG TEXT NOT NULL, OWNER TEXT NOT NULL, USER_ID TEXT NOT NULL, "
+        "ENROLLED_AT BIGINT NOT NULL, START_RAW BIGINT, END_RAW BIGINT, DISQUALIFIED_AT BIGINT, "
+        "PRIMARY KEY (SLUG, OWNER))"
+    )
+    conn.execute(
+        "INSERT INTO competition_entries (SLUG, OWNER, USER_ID, ENROLLED_AT) VALUES "
+        "('c', 'o1', 'a', 50), ('c', 'o2', 'b', 60), ('d', 'o1', 'a', 70)"
+    )
+
+    TableCreate.create_all_tables(conn)
+    TableCreate.create_all_tables(conn)
+    conn.execute("INSERT INTO competition_entries (SLUG, OWNER, USER_ID, ENROLLED_AT) VALUES ('c', 'o1', 'x', 80)")
+
+    assert conn.execute(
+        "SELECT SLUG, OWNER, USER_ID, ENROLLED_AT FROM competition_entries ORDER BY SLUG, ENROLLED_AT"
+    ).fetchall() == [("c", "o1", "a", 50), ("c", "o2", "b", 60), ("c", "o1", "x", 80), ("d", "o1", "a", 70)]
+    assert conn.execute(
+        "SELECT array_agg(a.attname::text ORDER BY a.attnum) FROM pg_index i "
+        "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+        "WHERE i.indrelid = 'competition_entries'::regclass AND i.indisprimary"
+    ).fetchone() == (["slug", "user_id"],)
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute("INSERT INTO competition_entries (SLUG, OWNER, USER_ID, ENROLLED_AT) VALUES ('c', 'o3', 'a', 99)")
+
+
 @pytest.mark.parametrize(
     "captured",
     [

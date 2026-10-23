@@ -545,8 +545,9 @@ class TableWrite:
     @staticmethod
     def save_competition(db: psycopg.Connection, competition: Competition, now: int) -> bool:
         """Create the competition or update it: its title always, its prizes
-        until the lock, its window until the start. False, with nothing
-        changed, when the update would change what is already fixed."""
+        until the lock, its window until the start. Prizes need one entry per
+        owner at most. False, with nothing changed, when the update would
+        change what is already fixed or set prizes the entries do not allow."""
         row = db.execute(
             """
             INSERT INTO competitions AS c (SLUG, TITLE, STARTS_AT, ENDS_AT, PRIZES)
@@ -557,6 +558,9 @@ class TableWrite:
             WHERE (c.STARTS_AT > %(now)s
                    OR (c.STARTS_AT = EXCLUDED.STARTS_AT AND c.ENDS_AT = EXCLUDED.ENDS_AT))
               AND (c.STARTS_AT - %(lock)s > %(now)s OR c.PRIZES = EXCLUDED.PRIZES)
+              AND (EXCLUDED.PRIZES = '[]' OR NOT EXISTS (
+                  SELECT 1 FROM competition_entries e WHERE e.SLUG = c.SLUG
+                  GROUP BY e.OWNER HAVING COUNT(*) > 1))
             RETURNING SLUG
             """,
             {
@@ -582,19 +586,15 @@ class TableWrite:
 
     @staticmethod
     def enter_competition(
-        db: psycopg.Connection, slug: str, owner: str, user_id: str, now: int, switch: bool
+        db: psycopg.Connection, slug: str, owner: str, user_id: str, now: int, replace: bool
     ) -> bool:
-        """Enter the owner's agent, replacing the agent the owner entered
-        before when `switch`. False when the owner already has an entry and
-        `switch` is off."""
-        conflict = (
-            "DO UPDATE SET USER_ID = EXCLUDED.USER_ID, ENROLLED_AT = EXCLUDED.ENROLLED_AT"
-            if switch
-            else "DO NOTHING"
-        )
+        """Enter the agent, withdrawing the owner's other entries first when
+        `replace`. False when the agent is already entered."""
+        if replace:
+            db.execute("DELETE FROM competition_entries WHERE SLUG = %s AND OWNER = %s", (slug, owner))
         cur = db.execute(
             "INSERT INTO competition_entries (SLUG, OWNER, USER_ID, ENROLLED_AT) "
-            f"VALUES (%s, %s, %s, %s) ON CONFLICT (SLUG, OWNER) {conflict}",
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (SLUG, USER_ID) DO NOTHING",
             (slug, owner, user_id, now),
         )
         return cur.rowcount == 1

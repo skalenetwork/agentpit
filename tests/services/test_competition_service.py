@@ -39,6 +39,7 @@ STARTS = 1_800_000_000
 ENDS = STARTS + 7 * 86_400
 LOCKS = STARTS - LOCK
 SLUG = "october-test"
+PRIZES = [Prize(usd=5, skl=1)]
 
 
 class _Chain:
@@ -73,9 +74,10 @@ def _service(positions: list[PositionWire] | None = None) -> CompetitionService:
     return CompetitionService(fresh_test_db(), _Accounts(positions), Settings())
 
 
-def _competition(conn, starts: int = STARTS, ends: int = ENDS) -> None:
-    competition = Competition(slug=SLUG, title="October test", starts_at=starts, ends_at=ends, prizes=[])
+def _competition(conn, starts: int = STARTS, ends: int = ENDS, prizes: list[Prize] | None = None) -> Competition:
+    competition = Competition(slug=SLUG, title="October test", starts_at=starts, ends_at=ends, prizes=prizes or [])
     TableWrite.save_competition(conn, competition, 0)
+    return competition
 
 
 def _agent(conn, owner: str | None = "user_owner", onboarded: bool = True) -> tuple[str, str, str]:
@@ -104,9 +106,9 @@ def test_the_phase_turns_at_the_lock_the_start_and_the_end():
     assert [competition.phase(now) for now in nows] == ["upcoming", "locked", "locked", "live", "live", "ended"]
 
 
-def test_before_the_lock_an_agent_enters_once_only_the_console_switches_and_it_can_leave():
+def test_with_prizes_before_the_lock_an_agent_enters_once_only_the_console_switches_and_it_can_leave():
     conn = fresh_test_conn()
-    _competition(conn)
+    _competition(conn, prizes=PRIZES)
     first, _, _ = _agent(conn)
     second, _, _ = _agent(conn)
     service = _service()
@@ -130,9 +132,9 @@ def test_before_the_lock_an_agent_enters_once_only_the_console_switches_and_it_c
     assert left is None
 
 
-def test_from_the_lock_only_an_owner_with_no_entry_enters_an_agent_holding_just_cash():
+def test_from_the_lock_only_an_agent_holding_just_cash_enters_and_with_prizes_only_for_an_owner_with_no_entry():
     conn = fresh_test_conn()
-    _competition(conn)
+    _competition(conn, prizes=PRIZES)
     entered, _, _ = _agent(conn)
     other, _, _ = _agent(conn)
     late, _, _ = _agent(conn, "user_late")
@@ -146,6 +148,28 @@ def test_from_the_lock_only_an_owner_with_no_entry_enters_an_agent_holding_just_
     joined = _service(positions=cash_only).enroll(late, SLUG, STARTS + 10, switch=False)
 
     assert joined.run_starts_at == STARTS + 10
+
+
+def test_a_practice_competition_takes_every_agent_of_an_owner_until_prizes_are_set():
+    conn = fresh_test_conn()
+    practice = _competition(conn)
+    prized = practice.model_copy(update={"prizes": PRIZES})
+    first, _, _ = _agent(conn)
+    second, _, _ = _agent(conn)
+    service = _service()
+
+    service.enroll(first, SLUG, LOCKS - 100, switch=False)
+    service.enroll(second, SLUG, LOCKS - 90, switch=True)
+    entered = [_entry(conn, user_id)["OWNER"] for user_id in (first, second)]
+    refused = TableWrite.save_competition(conn, prized, LOCKS - 80)
+    service.leave(second, SLUG, LOCKS - 70)
+    saved = TableWrite.save_competition(conn, prized, LOCKS - 70)
+    with pytest.raises(BusinessRuleError, match="console"):
+        service.enroll(second, SLUG, LOCKS - 60, switch=False)
+
+    assert entered == ["user_owner", "user_owner"]
+    assert (refused, saved) == (False, True)
+    assert [c.prizes for c, _ in TableRead.competitions(conn)] == [PRIZES]
 
 
 def test_only_an_onboarded_unflagged_agent_of_a_person_enters_a_competition_still_running():

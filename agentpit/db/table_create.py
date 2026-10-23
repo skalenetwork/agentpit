@@ -700,7 +700,8 @@ class TableCreate:
 
     @staticmethod
     def create_competition_entries_table(conn: psycopg.Connection) -> None:
-        """One agent per owner per competition. START_RAW and END_RAW are the
+        """An agent's entry in a competition with its owner; a competition
+        with prizes takes one agent per owner. START_RAW and END_RAW are the
         account's value at its run start and at the end, NULL until captured,
         START_AT and END_AT when the wallet read behind each returned, and
         END_BLOCK the block of the end read. START_HOLDINGS and END_HOLDINGS
@@ -722,9 +723,13 @@ class TableCreate:
                 START_RAW       BIGINT,
                 END_RAW         BIGINT,
                 DISQUALIFIED_AT BIGINT,
-                PRIMARY KEY (SLUG, OWNER)
+                PRIMARY KEY (SLUG, USER_ID)
             )
             """
+        )
+        conn.execute(
+            "ALTER TABLE competition_entries DROP CONSTRAINT IF EXISTS competition_entries_pkey, "
+            "ADD CONSTRAINT competition_entries_pkey PRIMARY KEY (SLUG, USER_ID)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_competition_entries_user_id "

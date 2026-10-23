@@ -596,10 +596,12 @@ class CompetitionService:
 
     def enroll(self, user_id: str, slug: str, now: int, switch: bool) -> Enrollment:
         """Enter the agent, or return its entry unchanged when it is already
-        the owner's entry. Before the lock it replaces the owner's other agent
-        only with `switch`; from the lock only an owner with no entry can enter,
-        with an agent holding just cash. Nobody enters in the final hour, so
-        every entry gets its start value."""
+        entered. A practice competition takes every agent of an owner. One with
+        prizes takes one agent per owner: before the lock it replaces the
+        owner's other agent only with `switch`, and from the lock only an owner
+        with no entry can enter. From the lock the agent must hold just cash.
+        Nobody enters in the final hour, so every entry gets its start value.
+        An owner's entries are written one at a time."""
         with self._db.read() as conn:
             competition, _ = _one(TableRead.competitions(conn, slug), slug)
             seat = TableRead.seat(conn, slug, user_id)
@@ -618,12 +620,13 @@ class CompetitionService:
         if phase == "upcoming":
             if seat.taken and not switch:
                 raise BusinessRuleError(
-                    f"Another of your agents is entered in {competition.title}. "
-                    "Switch agents in the AgentPit console."
+                    f"{competition.title} pays prizes, so it takes one agent per person, and another of your agents "
+                    "is entered. Switch agents in the AgentPit console."
                 )
         elif seat.taken:
             raise BusinessRuleError(
-                f"Another of your agents is entered in {competition.title}, and agents cannot be switched after the lock."
+                f"{competition.title} pays prizes, so it takes one agent per person, and another of your agents "
+                "is entered. Agents cannot be switched after the lock."
             )
         elif sum(p.currentValue for p in self._accounts.wallet(seat.eth_address).positions if not p.settled) >= 1:
             raise BusinessRuleError(
@@ -631,8 +634,10 @@ class CompetitionService:
                 "Close its open positions first."
             )
         with self._db.write() as conn:
-            entered = TableWrite.enter_competition(
-                conn, slug, seat.owner, user_id, now, switch and phase == "upcoming"
+            TableWrite.ensure_owner(conn, seat.owner)
+            TableWrite.lock_owner(conn, seat.owner)
+            entered = TableRead.seat(conn, slug, user_id) == seat and TableWrite.enter_competition(
+                conn, slug, seat.owner, user_id, now, seat.taken
             )
         if not entered:
             return self.enroll(user_id, slug, now, switch)
@@ -654,9 +659,10 @@ class CompetitionService:
     def sync(conn: psycopg.Connection, folder: Path, now: int) -> None:
         """Save the competition of every *.toml file in `folder`, then delete
         the competitions with no file. A bad file, new prizes from the lock or
-        a new window from the start is logged and leaves its row as it was. A
-        competition with no file that has started or has entries is logged
-        and kept. A missing folder changes nothing."""
+        while the entries break one per owner, or a new window from the start
+        is logged and leaves its row as it was. A competition with no file
+        that has started or has entries is logged and kept. A missing folder
+        changes nothing."""
         if not folder.is_dir():
             log.error("Competitions folder %s is missing, so competitions were not synced", folder)
             return
@@ -669,7 +675,8 @@ class CompetitionService:
                 continue
             if not TableWrite.save_competition(conn, competition, now):
                 log.error(
-                    "Competition file %s refused: the prizes of %s are fixed from the lock, its start and end from the start",
+                    "Competition file %s refused: the prizes of %s are fixed from the lock and need one entry per "
+                    "owner, its start and end are fixed from the start",
                     path.name, competition.slug,
                 )
         for slug in TableWrite.delete_competitions(conn, [path.stem for path in paths], now):

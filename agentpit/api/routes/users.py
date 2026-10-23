@@ -176,7 +176,8 @@ def list_my_agent_orders(
 def enter_competition(
     address: str, slug: str, owner: OwnerDep, db: SessionDep, competitions: CompetitionServiceDep
 ) -> Response:
-    """Enter the agent, or switch the owner's entry to it before the lock."""
+    """Enter the agent; before the lock of a competition with prizes this
+    switches the owner's entry to it."""
     competitions.enroll(_owned_agent(db, owner, address).user_id, slug, int(time.time()), switch=True)
     return Response(status_code=204)
 
