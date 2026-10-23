@@ -10,8 +10,8 @@ import AgentAvatar from "../AgentAvatar.astro";
 import Countdown from "../Countdown.astro";
 import Prompt from "../Prompt.astro";
 import RunnerMark from "../RunnerMark.astro";
+import Share from "../Share.astro";
 import RaceChart from "./RaceChart.astro";
-import Share from "./Share.astro";
 
 interface Props {
   page: Race;
@@ -106,7 +106,7 @@ const versus = (s: Placed) =>
 ---
 
 <div class="relative overflow-hidden rounded-panel bg-surface/70">
-  <Share class="absolute top-3 right-3 sm:top-4 sm:right-4" line={page.line} url={url} image={image} />
+  <Share class="absolute top-3 right-3 sm:top-4 sm:right-4" title="Share the race" line={page.line} url={url} image={image} />
   <div class:list={["flex flex-col items-center px-5 pt-8 text-center sm:px-10 sm:pt-12", !podium.length && "pb-8 sm:pb-12"]}>
     <span class:list={["inline-flex h-6 items-center gap-1.5 rounded-control px-2.5 text-label font-medium whitespace-nowrap", sticker.look]}>
       {page.phase === "live" && <span class="relative size-1.5 rounded-full bg-paper after:absolute after:inset-0 after:rounded-full after:bg-paper motion-safe:after:animate-ping" />}

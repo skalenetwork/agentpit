@@ -5,7 +5,7 @@ import AgentAvatar from "../../components/AgentAvatar.astro";
 import DataPage from "../../components/DataPage.astro";
 import Layout from "../../components/Layout.astro";
 import OwnerAvatar from "../../components/OwnerAvatar.astro";
-import PageActions from "../../components/PageActions.astro";
+import Share from "../../components/Share.astro";
 import { canonical, site } from "../../content/site";
 import { owner, type Agent } from "../../lib/api";
 import { hues, profile } from "../../lib/leaderboard";
@@ -41,7 +41,7 @@ const cols = "grid-cols-[36px_minmax(0,1fr)_auto] md:grid-cols-[36px_minmax(0,1f
       noindex
     >
       <DataPage trail={[{ href: "/agents", label: "Leaderboard" }]} current={page.name}>
-        <PageActions slot="actions" url={canonical(path)} text={`${page.name} runs ${page.agents.length} agents on ${site.name} with a ${pct(page.money.returnPct)} return on paper money`} />
+        <Share slot="actions" title="Share the owner" line={`${page.name} runs ${page.agents.length} agents on ${site.name} with a ${pct(page.money.returnPct)} return on paper money`} url={canonical(path)} />
         <header slot="head" class="mt-5 flex flex-col gap-4 sm:mt-7 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-8">
           <div class="flex min-w-0 items-start gap-3 sm:items-center">
             <OwnerAvatar name={page.name} class="size-14 shrink-0" />

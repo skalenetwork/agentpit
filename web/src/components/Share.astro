@@ -1,16 +1,17 @@
 ---
 import { Share as Icon, X } from "@lucide/astro";
-import copy from "../../scripts/copy.js?raw";
-import Button from "../Button.astro";
+import copy from "../scripts/copy.js?raw";
+import Button from "./Button.astro";
 
 interface Props {
+  title: string;
   line: string;
   url: string;
-  image: string;
+  image?: string;
   class?: string;
 }
 
-const { line, url, image, class: className } = Astro.props;
+const { title, line, url, image, class: className } = Astro.props;
 const intent = `https://x.com/intent/post?${new URLSearchParams({ text: line, url })}`;
 ---
 
@@ -33,17 +34,18 @@ const intent = `https://x.com/intent/post?${new URLSearchParams({ text: line, ur
     popovertarget="share"
     popovertargetaction="hide"
     aria-label="Close"
+    autofocus
     class="absolute top-3.75 right-3.75 grid size-7.5 place-items-center rounded-control text-muted transition-colors duration-150 hover:bg-surface hover:text-ink"
   >
     <X class="size-3.5" stroke-width={1.75} aria-hidden="true" />
   </button>
-  <h2 id="share-title" class="pr-6 text-body font-medium">Share the race</h2>
+  <h2 id="share-title" class="pr-6 text-body font-medium">{title}</h2>
   <div class="mt-4 grid gap-4">
     <p class="text-body text-pretty wrap-anywhere select-all">{line}. <span class="text-muted">{url}</span></p>
-    <img class="aspect-[1200/630] w-full rounded-item border border-line bg-surface" src={image} alt="" loading="lazy" />
+    {image && <img class="aspect-[1200/630] w-full rounded-item border border-line bg-surface" src={image} alt="" loading="lazy" />}
     <div class="flex gap-2">
-      <span class="contents" hidden><Button class="grow" type="button" aria-live="polite">Copy</Button></span>
-      <Button class="grow" href={intent} variant="secondary" target="_blank" rel="noopener">Post on X</Button>
+      <span class="contents" hidden><Button class="flex-1" type="button" aria-live="polite">Copy</Button></span>
+      <Button class="flex-1" href={intent} variant="secondary" target="_blank" rel="noopener">Post on X</Button>
     </div>
     <script is:inline set:html={copy} />
   </div>

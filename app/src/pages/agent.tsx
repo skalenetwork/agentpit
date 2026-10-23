@@ -401,6 +401,23 @@ const Contest = ({ agent, competition, other, now }: { agent: Agent; competition
   );
 };
 
+const ShareSheet = ({ line, url, image, onClose }: { line: string; url: string; image: string; onClose: () => void }) => (
+  <Sheet title="Share the agent" onClose={onClose}>
+    <div className="mt-4 grid gap-4">
+      <p className="text-body text-pretty wrap-anywhere select-all">
+        {line}. <span className="text-muted">{url}</span>
+      </p>
+      <img className="aspect-[1200/630] w-full rounded-item border border-line bg-surface" src={image} alt="" />
+      <div className="flex gap-2">
+        <Copy text={`${line}. ${url}`} variant="primary" size="lg" className="flex-1" />
+        <Button href={`https://x.com/intent/post?${new URLSearchParams({ text: line, url })}`} size="lg" target="_blank" rel="noreferrer" className="flex-1">
+          Post on X
+        </Button>
+      </div>
+    </div>
+  </Sheet>
+);
+
 const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competitions: readonly RaceHead[]; now: number; onClose: () => void }) => {
   const agents = useAgents().data ?? [];
   return (
@@ -427,13 +444,14 @@ const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competit
 };
 
 const View = ({ agent, now }: { agent: Agent; now: number }) => {
-  const [sheet, setSheet] = useState<"compete" | "rename" | "delete">();
+  const [sheet, setSheet] = useState<"share" | "compete" | "rename" | "delete">();
   const [open, setOpen] = useState<string | null>(null);
   const competitions = useCompetitions().data?.competitions.filter(({ phase }) => phase !== "ended") ?? [];
   const entries = useRaceEntries(agent.eth_address).data ?? [];
   const { data: profile, isError } = useProfile(agent);
   const orders = useOrders(agent).data ?? [];
   const page = `${SITE}/agents/${agent.eth_address}`;
+  const iso = new Date(now * 1000).toISOString();
   const bet = profile?.bets.find((candidate) => candidate.id === open);
   const close = () => setSheet(undefined);
 
@@ -442,12 +460,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
       <Crumbs current={agent.name}>
         <div className="flex shrink-0 items-center gap-2">
           {profile && (
-            <Button
-              href={`https://x.com/intent/post?${new URLSearchParams({ text: profile.share, url: `${page}?d=${new Date(now * 1000).toISOString().slice(0, 10)}` })}`}
-              target="_blank"
-              rel="noreferrer"
-              className={ICON}
-            >
+            <Button className={ICON} onClick={() => setSheet("share")}>
               <Share size={14} strokeWidth={1.75} />
               <span className="max-md:sr-only">Share</span>
             </Button>
@@ -500,6 +513,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
       </div>
       {profile && <Wallet address={profile.address} valuedAt={profile.valuedAt} />}
       {bet && <BetSheet bet={bet} now={now} onClose={() => setOpen(null)} />}
+      {sheet === "share" && profile && <ShareSheet line={profile.share} url={`${page}?d=${iso.slice(0, 10)}`} image={`${page}/og/${iso.slice(0, 13)}.png`} onClose={close} />}
       {sheet === "compete" && <Compete agent={agent} competitions={competitions} now={now} onClose={close} />}
       {sheet === "rename" && <Rename agent={agent} onClose={close} />}
       {sheet === "delete" && <Delete agent={agent} onClose={close} />}
