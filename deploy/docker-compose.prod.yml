@@ -98,6 +98,9 @@ services:
       # happened, so `:?` makes compose refuse every command while .env lacks
       # the line.
       RPC_URL: ${RPC_URL:?set in .env}
+      # Required for the same reason: the operator routes trust it alone. The
+      # API also refuses to start with a placeholder or a short value.
+      AGENTPIT_ADMIN_TOKEN: ${AGENTPIT_ADMIN_TOKEN:?set in .env}
     volumes:
       - ../deployments:/app/deployments:ro
     # The default soft limit of 1024 open files is shared by every client

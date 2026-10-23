@@ -248,6 +248,34 @@ def _warn_if_simulated_on_durable_chain(settings: Settings, chain_id: int) -> No
         )
 
 
+#: What AGENTPIT_ADMIN_TOKEN is when nobody set it: the default, the
+#: template's placeholder, or a blank line.
+_UNSET_ADMIN_TOKENS = {"", "CHANGE_ME", "dev-admin-token"}
+_MIN_ADMIN_TOKEN_LEN = 32
+
+
+def _check_admin_token(settings: Settings, chain_id: int) -> None:
+    """Refuse to serve the operator routes behind a guessable token.
+
+    Every /admin and market-lifecycle route trusts this one value, and anyone
+    can send the header. A local anvil keeps the default so that a dev
+    checkout and the test suite start without setting one.
+    """
+    token = settings.admin_token.strip()
+    if token not in _UNSET_ADMIN_TOKENS and len(token) >= _MIN_ADMIN_TOKEN_LEN:
+        return
+    if is_disposable_chain(chain_id):
+        log.warning(
+            "admin_token is unset or short: accepted on a local anvil only, "
+            "the API refuses to start with it on any other chain"
+        )
+        return
+    raise RuntimeError(
+        "AGENTPIT_ADMIN_TOKEN is unset, a placeholder or shorter than "
+        f"{_MIN_ADMIN_TOKEN_LEN} characters; generate one with `openssl rand -hex 32`"
+    )
+
+
 def _build_onchain_admin(settings: Settings) -> OnchainAdmin:
     if not settings.deployment_path.exists():
         raise RuntimeError(
@@ -257,6 +285,7 @@ def _build_onchain_admin(settings: Settings) -> OnchainAdmin:
     deployment = Deployment.load(settings.deployment_path)
     client = Web3Client(settings, deployment)
     client.verify_chain()
+    _check_admin_token(settings, deployment.chain_id)
     _warn_if_simulated_on_durable_chain(settings, deployment.chain_id)
     contracts = Contracts(client.web3, deployment)
     log.info(
@@ -284,12 +313,6 @@ def _claim_admin_key(database_url: str, admin_address: str) -> psycopg.Connectio
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     _configure_root_logging()
-
-    if settings.admin_token == "dev-admin-token":
-        log.warning(
-            "admin_token is the unsafe default — set AGENTPIT_ADMIN_TOKEN before "
-            "exposing /admin/* to the network"
-        )
 
     db_session = DbSession(
         settings.database_url,
