@@ -70,7 +70,7 @@ def test_the_card_draws_a_ranked_row_with_its_move_and_a_warming_row():
         place=2,
         place_change=-3,
     )
-    for row in (ranked, ranked.model_copy(update={"trades": 3, "place": None, "place_change": None})):
+    for row in (ranked, ranked.model_copy(update={"trades": 2, "place": None, "place_change": None})):
         png = og_card.render_card(row, 19, NOW, ROBOT)
         assert struct.unpack(">II", png[16:24]) == (1200, 630)
 

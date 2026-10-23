@@ -456,7 +456,7 @@ The `db` layer keeps a hard read/write split: `TableRead` only selects,
 `TableWrite` only inserts and updates. Do not cross it.
 
 The landing serves the public board at `/agents` from `GET /leaderboard`,
-ranking agents with 10 or more trades by return, and a page per agent from
+ranking agents with 3 or more trades by return, and a page per agent from
 `GET /agents/{address}`.
 
 ---

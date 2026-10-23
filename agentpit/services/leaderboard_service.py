@@ -2,12 +2,13 @@
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from pydantic import BaseModel
 
 from agentpit.config import Settings
+from agentpit.datastructures.bet import Bet
 from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import DailyClose, TableRead
@@ -21,7 +22,7 @@ log = logging.getLogger(__name__)
 
 TREND_DAYS = 30
 DENSE_WINDOW = 48 * 3_600
-RANK_FLOOR = 10
+RANK_FLOOR = 3
 
 SORTS = ("return", "earned", "capital", "trades")
 
@@ -63,6 +64,7 @@ class Holdings:
     cash_raw: int
     positions: list[PositionWire]
     closed: list[PositionWire]
+    bets: list[Bet] = field(default_factory=list)
 
     @property
     def value_raw(self) -> int:
@@ -257,11 +259,16 @@ class LeaderboardService:
     def value_account(self, address: str) -> Holdings:
         """The account read from the chain, valued at the time the read returned."""
         wallet = self._accounts.wallet(address)
+        now = int(time.time())
+        previous = _holdings.get(address)
         held = Holdings(
-            valued_at=int(time.time()),
+            valued_at=now,
             cash_raw=wallet.cash_raw,
             positions=wallet.positions,
             closed=self._accounts.list_closed_positions(address),
+            bets=self._accounts.list_bets(
+                address, wallet.positions, now, previous.bets if previous else [], previous.valued_at if previous else 0
+            ),
         )
         _holdings[address] = held
         return held

@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass, replace
 
 from agentpit.datastructures.activity_wire import ActivityWire
+from agentpit.datastructures.bet import CLOSED_SHOWN, Bet, BetFill, BetStatus, PriceLine
 from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.match_leg import MICRO, legs_for_user
@@ -71,10 +72,11 @@ _NO_FLOW = _TokenFlow(
     bought_size=0, bought_cost=0, sold_size=0, sold_proceeds=0, last_sell_time=0, last_buy_time=0
 )
 
-#: The columns `legs_for_user` reads, from the account's live and settled fills.
+#: The columns `legs_for_user` reads and each fill's id and hash, from the
+#: account's live and settled fills.
 _FLOW_SQL = (
     "SELECT SIDE, PRICE, TRADE_SIZE, MATCH_TIME, MATCH_KIND, "
-    "ASSET_ID, MAKER_ASSET_ID, TAKER_API_KEY, MAKER_API_KEY "
+    "ASSET_ID, MAKER_ASSET_ID, TAKER_API_KEY, MAKER_API_KEY, TRANSACTION_HASH, TRADE_ID "
     "FROM trades WHERE STATUS != 'FAILED' "
 )
 
@@ -276,23 +278,7 @@ class AccountService:
             if user is None:
                 return []
             flows = self._token_flows(conn, user.api_key)
-            redeem_rows = conn.execute(
-                "SELECT MARKET_ID, DETAILS FROM transactions "
-                "WHERE API_KEY = %s AND TRANSACTION_TYPE = 'REDEEM'",
-                (user.api_key,),
-            ).fetchall()
-            # MAX payout per market: a position redeems once, so duplicate redeem
-            # logs are deduped by max rather than summed.
-            payout_micro: dict[int, int] = {}
-            for r in redeem_rows:
-                if r["MARKET_ID"] is None:
-                    continue
-                details = json.loads(r["DETAILS"]) if r["DETAILS"] else {}
-                mid = int(r["MARKET_ID"])
-                payout_micro[mid] = max(
-                    payout_micro.get(mid, 0),
-                    int(details.get("collateral_amount", 0)),
-                )
+            payout_micro = {mid: paid for mid, (paid, _) in self._redeemed(conn, user.api_key).items()}
 
             out: list[PositionWire] = []
             redeemed = {
@@ -365,6 +351,108 @@ class AccountService:
                 )
             )
         return out
+
+    def list_bets(
+        self, eth_address: str, positions: list[PositionWire], now: int, previous: list[Bet], previous_at: int
+    ) -> list[Bet]:
+        """Every outcome the account bought, from its first buy to its exit:
+        open bets newest first, then closed bets newest closed first. Only open
+        bets and the first CLOSED_SHOWN closed ones carry prices. A closed bet
+        listed in `previous` keeps the prices it had there, and so does an open
+        one while `previous_at` falls in the same UTC hour as `now`."""
+        owned = {p.asset: p for p in positions}
+        with self._db.read() as conn:
+            user = TableRead.get_user_by_eth_address(conn, eth_address)
+            if user is None:
+                return []
+            markets = TableRead.list_markets_with_user_activity(conn, user.api_key)
+            rows = conn.execute(
+                _FLOW_SQL + "AND (TAKER_API_KEY = %s OR MAKER_API_KEY = %s)",
+                (user.api_key, user.api_key),
+            ).fetchall()
+            flows = self._sum_flows(rows, user.api_key)
+            fills = self._fills(rows, user.api_key)
+            redeemed = self._redeemed(conn, user.api_key)
+            bets: list[Bet] = []
+            for mkt in markets:
+                payouts = mkt.payouts
+                mine = [
+                    (idx, token, label, flows[token])
+                    for idx, (token, label) in enumerate(mkt.erc1155_tokens)
+                    if token in flows and flows[token].bought_size > 0
+                ]
+                amount, redeem_at = redeemed.get(mkt.market_id, (0, 0))
+                weights = {
+                    token: flow.net_size * payouts[idx]
+                    for idx, token, _, flow in mine
+                    if payouts is not None and flow.net_size > 0 and token not in owned
+                }
+                total = sum(weights.values())
+                paid = {token: amount * w // total for token, w in weights.items()} if total else {}
+                if paid:
+                    paid[max(weights, key=lambda t: weights[t])] += amount - sum(paid.values())
+                for idx, token, label, flow in mine:
+                    pos = owned.get(token)
+                    payout = paid.get(token, 0)
+                    entries = fills[token]
+                    last = max(f.at for _, f in entries)
+                    status: BetStatus
+                    if payouts is not None and flow.net_size > 0:
+                        exit_ = payouts[idx] / sum(payouts)
+                        status = "won" if exit_ == 1 else "lost" if exit_ == 0 else "split"
+                        if status == "lost":
+                            closed_at = mkt.resolved_at or mkt.end_date or last
+                        else:
+                            closed_at = redeem_at if payout else mkt.resolved_at or last
+                    elif flow.net_size <= 0:
+                        status, exit_, closed_at = "sold", price_to_float(flow.sold_proceeds // flow.sold_size), flow.last_sell_time
+                    else:
+                        status, exit_, closed_at = "open", pos.curPrice if pos else None, None
+                    if payout:
+                        entries = [*entries, ("", BetFill(
+                            at=redeem_at, side="REDEEM", shares=size_to_float(flow.net_size),
+                            price=None, dollars=str(payout), tx=None,
+                        ))]
+                    cost = (flow.bought_cost + 500_000) // 1_000_000
+                    back = (flow.sold_proceeds + 500_000) // 1_000_000 + payout
+                    value = round(pos.currentValue * 1_000_000) if pos else 0
+                    bets.append(Bet(
+                        id=token,
+                        conditionId=mkt.condition_id.value,
+                        title=mkt.question,
+                        icon=mkt.icon_url or None,
+                        url=mkt.url,
+                        outcome=label,
+                        status=status,
+                        openedAt=min(f.at for _, f in entries if f.side == "BUY"),
+                        closedAt=closed_at,
+                        buys=sum(f.side == "BUY" for _, f in entries),
+                        sells=sum(f.side == "SELL" for _, f in entries),
+                        entry=price_to_float(flow.avg_buy_price_micro),
+                        exit=exit_,
+                        shares=size_to_float(flow.bought_size),
+                        sold=size_to_float(flow.sold_size),
+                        held=pos.size if pos else 0.0,
+                        cost=str(cost),
+                        back=str(back),
+                        value=str(value),
+                        sellsFor=str(round(pos.sellableValue * 1_000_000) if pos and status == "open" else 0),
+                        pnl=str(back + value - cost),
+                        fills=[f for _, f in sorted(entries, key=lambda e: (e[1].at, e[1].side == "REDEEM", e[0]), reverse=True)],
+                        prices=None,
+                    ))
+            open_ = sorted((b for b in bets if b.status == "open"), key=lambda b: (-b.openedAt, b.id))
+            closed = sorted((b for b in bets if b.status != "open"), key=lambda b: (-(b.closedAt or 0), -b.openedAt, b.id))
+            shown = open_ + closed[:CLOSED_SHOWN]
+            same_hour = previous_at // 3600 == now // 3600
+            kept = [b for b in previous if b.status == "open" and same_hour] + [b for b in previous if b.status != "open"][:CLOSED_SHOWN]
+            known = {(b.id, b.closedAt): b.prices for b in kept}
+            spans = [(b.id, b.openedAt, now if b.closedAt is None else b.closedAt) for b in shown if (b.id, b.closedAt) not in known]
+            lines = TableRead.hourly_prices(conn, [(t, o - max(7200, (e - o) // 10), e) for t, o, e in spans])
+        return [
+            b.model_copy(update={"prices": known[(b.id, b.closedAt)] if (b.id, b.closedAt) in known else PriceLine.of(lines.get(b.id, []))})
+            for b in shown
+        ] + closed[CLOSED_SHOWN:]
 
     def _sold_out_positions(
         self,
@@ -512,6 +600,42 @@ class AccountService:
                     leg.side, leg.price_micro, leg.size_micro, at
                 )
         return flows
+
+    @staticmethod
+    def _fills(rows, api_key: str) -> "dict[str, list[tuple[str, BetFill]]]":
+        """token -> (trade id, fill) of each of the account's legs of `rows`."""
+        fills: dict[str, list[tuple[str, BetFill]]] = {}
+        for r in rows:
+            at = int(r["MATCH_TIME"] or 0)
+            for leg in legs_for_user(r, api_key):
+                fills.setdefault(leg.token_id, []).append((r["TRADE_ID"], BetFill(
+                    at=at,
+                    side=leg.side,
+                    shares=size_to_float(leg.size_micro),
+                    price=price_to_float(leg.price_micro),
+                    dollars=str((leg.price_micro * leg.size_micro + 500_000) // 1_000_000),
+                    tx=r["TRANSACTION_HASH"] or None,
+                )))
+        return fills
+
+    @staticmethod
+    def _redeemed(conn, api_key: str) -> "dict[int, tuple[int, int]]":
+        """market id -> (payout, time) of the account's largest REDEEM there,
+        the earliest of equal ones: a position redeems once, so duplicate
+        redeem logs are deduped by max rather than summed."""
+        rows = conn.execute(
+            "SELECT MARKET_ID, DETAILS, EXTRACT(EPOCH FROM TIMESTAMP)::bigint AS TS FROM transactions "
+            "WHERE API_KEY = %s AND TRANSACTION_TYPE = 'REDEEM' AND MARKET_ID IS NOT NULL "
+            "ORDER BY TIMESTAMP, TRANSACTION_ID",
+            (api_key,),
+        ).fetchall()
+        redeemed: dict[int, tuple[int, int]] = {}
+        for r in rows:
+            paid = int((json.loads(r["DETAILS"]) if r["DETAILS"] else {}).get("collateral_amount", 0))
+            mid = int(r["MARKET_ID"])
+            if mid not in redeemed or paid > redeemed[mid][0]:
+                redeemed[mid] = (paid, int(r["TS"] or 0))
+        return redeemed
 
     def is_public(self, eth_address: str) -> bool:
         """Whether the anonymous by-address reads serve this address: a live

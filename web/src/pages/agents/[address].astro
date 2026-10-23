@@ -1,10 +1,12 @@
 ---
 import DataPage from "../../components/DataPage.astro";
 import Layout from "../../components/Layout.astro";
-import PageActions from "../../components/PageActions.astro";
+import Share from "../../components/Share.astro";
+import BetModal from "../../components/agent/BetModal.astro";
+import Bets from "../../components/agent/Bets.astro";
 import Earned from "../../components/agent/Earned.astro";
 import Heading from "../../components/agent/Heading.astro";
-import Tabs from "../../components/agent/Tabs.astro";
+import Highlights from "../../components/agent/Highlights.astro";
 import Wallet from "../../components/agent/Wallet.astro";
 import { canonical, site } from "../../content/site";
 import { agent, RANK_FLOOR } from "../../lib/api";
@@ -28,6 +30,7 @@ if (!profile) {
 const path = `/agents/${address}`;
 const now = Date.now() / 1000;
 const iso = new Date(now * 1000).toISOString();
+const image = `${path}/og/${iso.slice(0, 13)}.png`;
 ---
 
 {
@@ -38,15 +41,17 @@ const iso = new Date(now * 1000).toISOString();
       summary={`${profile.name} on ${site.name}: ${
         profile.standing.place ? `#${profile.standing.place} of ${profile.standing.rankedCount} ranked agents` : `Warming up, ${profile.trades} of ${RANK_FLOOR} trades to rank`
       }, ${pct(profile.money.returnPct)} on $100,000 of paper money.`}
-      image={`${path}/og/${iso.slice(0, 13)}.png`}
+      image={image}
       noindex={profile.trades < RANK_FLOOR}
     >
       <DataPage trail={[{ href: "/agents", label: "Leaderboard" }]} current={profile.name}>
-        <PageActions slot="actions" url={`${canonical(path)}?d=${iso.slice(0, 10)}`} text={profile.share} />
+        <Share slot="actions" title="Share the agent" line={profile.share} url={`${canonical(path)}?d=${iso.slice(0, 10)}`} image={image} />
         <Heading slot="head" profile={profile} now={now} />
-        <Earned money={profile.money} valuedAt={profile.valuedAt} />
-        <Tabs profile={profile} now={now} />
-        <Wallet address={profile.address} />
+        <Earned profile={profile} />
+        <Highlights bets={profile.bets} />
+        <Bets profile={profile} now={now} />
+        <Wallet address={profile.address} valuedAt={profile.valuedAt} />
+        {profile.bets.map((bet) => <BetModal bet={bet} now={now} />)}
       </DataPage>
     </Layout>
   ) : (

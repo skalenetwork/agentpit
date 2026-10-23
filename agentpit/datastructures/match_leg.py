@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 #: Prices and sizes are integers scaled by 10**6; MICRO is $1.00.
 MICRO = 1_000_000
@@ -32,7 +32,7 @@ MICRO = 1_000_000
 @dataclass(frozen=True)
 class Leg:
     token_id: str
-    side: str          # "BUY" (acquires) | "SELL" (disposes)
+    side: Literal["BUY", "SELL"]
     price_micro: int
     size_micro: int
     is_taker: bool

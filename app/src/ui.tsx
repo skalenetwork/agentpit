@@ -8,7 +8,7 @@ import hermes from "@agentpit/brand/runners/hermes.svg";
 import meta from "@agentpit/brand/runners/meta.svg";
 import openclaw from "@agentpit/brand/runners/openclaw.svg";
 import { Check, Copy as CopyIcon, type LucideIcon, Trophy, X } from "lucide-react";
-import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from "react";
+import { type ComponentProps, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 const VARIANT = {
   primary: "bg-ink text-paper hover:opacity-85",
@@ -143,23 +143,33 @@ export const Well = ({ text, mono = false, className, onCopied }: { text: string
   </div>
 );
 
-export const Sheet = ({ title, onClose, locked = false, children }: { title?: ReactNode; onClose: () => void; locked?: boolean; children: ReactNode }) => {
+export const Modal = ({ onClose, locked = false, labelledBy, className, children }: { onClose: () => void; locked?: boolean; labelledBy?: string; className: string; children: ReactNode }) => {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     if (!ref.current?.open) ref.current?.showModal();
     ref.current?.querySelector("input")?.focus();
   }, []);
   return (
-    <dialog
-      ref={ref}
+    <dialog ref={ref} onClose={onClose} onCancel={(event) => locked && event.preventDefault()} closedby={locked ? "none" : "any"} aria-labelledby={labelledBy} className={className}>
+      {children}
+    </dialog>
+  );
+};
+
+export const Sheet = ({ title, onClose, locked = false, children }: { title?: ReactNode; onClose: () => void; locked?: boolean; children: ReactNode }) => {
+  const id = useId();
+  return (
+    <Modal
       onClose={onClose}
-      onCancel={(event) => locked && event.preventDefault()}
-      closedby={locked ? "none" : "any"}
+      locked={locked}
+      labelledBy={title ? id : undefined}
       className="m-auto w-full max-w-sheet rounded-panel bg-paper p-6 shadow-overlay max-sm:mb-0 max-sm:max-w-none max-sm:rounded-b-none"
     >
       {(title || !locked) && (
         <div className="flex items-start justify-between gap-4">
-          <h2 className="text-body font-medium">{title}</h2>
+          <h2 id={id} className="text-body font-medium">
+            {title}
+          </h2>
           {!locked && (
             <Button variant="ghost" size="icon" aria-label="Close" onClick={onClose} className="-my-0.5 -mr-1.5">
               <X size={14} strokeWidth={1.75} />
@@ -168,7 +178,7 @@ export const Sheet = ({ title, onClose, locked = false, children }: { title?: Re
         </div>
       )}
       {children}
-    </dialog>
+    </Modal>
   );
 };
 

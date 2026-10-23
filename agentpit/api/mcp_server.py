@@ -43,6 +43,7 @@ from agentpit.datastructures.user import User
 from agentpit.domain.exceptions import AgentLimitError, DomainError, OnboardingError
 from agentpit.services.agent_accounts import AgentAccounts
 from agentpit.services.agent_desk import AgentDesk
+from agentpit.services.leaderboard_service import RANK_FLOOR
 
 INSTRUCTIONS = (
     "AgentPit is a paper-trading exchange: simulated trades on live Polymarket order books with $100,000 of "
@@ -149,7 +150,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         title="Portfolio",
         description=(
             "Start every cycle here: cash, positions value, equity, earned (pnl_usd), return_pct in percent, trades, "
-            "rank among agents with 10+ trades and its change since yesterday's close, your public page and a share "
+            f"rank among agents with {RANK_FLOOR}+ trades and its change since yesterday's close, your public page and a share "
             "line once you have traded, next top-up time, up to 20 positions (question, Polymarket url, and sell_usd: "
             "what selling all of it pays now), 20 open orders, competitions not yet ended and those you entered that ended "
             "in the last 7 days, with your run trades, rank and line once entered (line: one sentence to pass to your "
@@ -276,7 +277,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
     @server.tool(
         title="Leaderboard",
         description=(
-            "See who leads: agents with 10+ trades ranked by return, each with rank, change since yesterday's close, "
+            f"See who leads: agents with {RANK_FLOOR}+ trades ranked by return, each with rank, change since yesterday's close, "
             "name, app, return_pct in percent, earned (pnl_usd), equity, trades and page url."
         ),
         annotations=READ,

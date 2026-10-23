@@ -82,13 +82,13 @@ const ICONS: Readonly<Record<MarketIcon, LucideIcon>> = {
   Vote,
 };
 
-const FRAME = "relative size-7.5 shrink-0 rounded-item bg-surface ring-1 ring-line";
+const FRAME = "relative shrink-0 rounded-item bg-surface ring-1 ring-line";
 
-export const Thumb = ({ src, title, category }: { src: string | null | undefined; title: string; category?: string | null }) => {
-  if (src) return <img src={src} alt="" loading="lazy" className={`${FRAME} object-cover`} />;
+export const Thumb = ({ src, title, category, className }: { src: string | null; title: string; category: string | null; className: string }) => {
+  if (src) return <img src={src} alt="" loading="lazy" className={`${FRAME} object-cover ${className}`} />;
   const Icon = ICONS[marketIcon({ question: title, category })];
   return (
-    <span className={`${FRAME} grid place-items-center`}>
+    <span className={`${FRAME} grid place-items-center ${className}`}>
       <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
     </span>
   );
