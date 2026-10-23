@@ -2,7 +2,7 @@ import { board, entry, ownerPage, profile, race, raceSummary, usd, type Agent, t
 import { site } from "../content/site";
 
 export { RANK_FLOOR } from "@agentpit/brand/api";
-export type { Agent, Fill, OwnerPage, Profile } from "@agentpit/brand/api";
+export type { Agent, Bet, OwnerPage, Profile } from "@agentpit/brand/api";
 
 export const TREND_DAYS = 30;
 

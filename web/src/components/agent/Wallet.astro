@@ -1,14 +1,15 @@
 ---
 import { ArrowUpRight, Copy } from "@lucide/astro";
 import { explorerAddress } from "@agentpit/brand/api";
-import { shortAddress } from "@agentpit/brand/format";
+import { shortAddress, utcTime } from "@agentpit/brand/format";
 import copy from "../../scripts/copy.js?raw";
 
 interface Props {
   address: string;
+  valuedAt: number;
 }
 
-const { address } = Astro.props;
+const { address, valuedAt } = Astro.props;
 ---
 
 <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted">
@@ -27,5 +28,5 @@ const { address } = Astro.props;
   <a class="inline-flex items-center gap-1 whitespace-nowrap transition-colors duration-150 hover:text-ink" href={explorerAddress(address)}>
     View on explorer<ArrowUpRight class="size-3" aria-hidden="true" />
   </a>
-  <span class="sm:ml-auto">Paper apUSD on SKALE on Base</span>
+  <span class="sm:ml-auto">As of {utcTime(new Date(valuedAt * 1000))} <span class="text-faint">·</span> Paper money on SKALE on Base</span>
 </div>

@@ -1,0 +1,52 @@
+---
+import { type PriceTag, priceChart } from "@agentpit/brand/bets";
+import type { Bet } from "../../lib/api";
+
+interface Props {
+  bet: Bet;
+  now: number;
+}
+
+const BUY = "inline-block size-1.75 rounded-control bg-up";
+const SELL = "inline-block size-2 rounded-control border-[1.5px] border-ink bg-paper";
+
+const { bet, now } = Astro.props;
+const chart = priceChart(bet, now);
+const tags: Record<PriceTag["kind"], string> = { exit: chart.quiet ? "font-medium fill-muted" : "font-medium fill-ink", entry: "fill-muted", tick: "fill-faint" };
+const dashed = [chart.entry, chart.soldAvg].filter((mark) => mark !== null);
+---
+
+<div class="pr-22">
+  <div class="relative h-40" role="img" aria-label={chart.label}>
+    <svg class="absolute inset-0 size-full overflow-visible" aria-hidden="true">
+      {[chart.hundred, chart.zero].map((y) => <line x1="0" x2="100%" y1={`${y}%`} y2={`${y}%`} class="stroke-line" stroke-width="1" />)}
+      {dashed.map(({ x, y }) => <line x1={`${x}%`} x2="100%" y1={`${y}%`} y2={`${y}%`} class="stroke-faint" stroke-width="1" stroke-dasharray="3 3" />)}
+      <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" width="100%" height="100%" overflow="visible">
+        <path d={chart.line} class={chart.quiet ? "stroke-muted" : "stroke-ink"} fill="none" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+      </svg>
+      {
+        chart.dots.map(({ x, y, side }) =>
+          side === "BUY" ? <circle cx={`${x}%`} cy={`${y}%`} r="3.5" class="fill-up" /> : <circle cx={`${x}%`} cy={`${y}%`} r="3.25" class="fill-paper stroke-ink" stroke-width="1.5" />,
+        )
+      }
+      {chart.end !== null && <circle cx="100%" cy={`${chart.end}%`} r="4" class={chart.quiet ? "fill-muted stroke-muted/15" : "fill-ink stroke-ink/15"} stroke-width="6" paint-order="stroke" />}
+      {
+        chart.tags.map(({ y, text, kind }) => (
+          <text x="100%" dx="12" y={`${y}%`} dominant-baseline="central" class:list={["text-caption tabular-nums", tags[kind]]}>{text}</text>
+        ))
+      }
+    </svg>
+  </div>
+  <p class="mt-1 grid grid-cols-[1fr_auto_1fr] gap-4 text-caption whitespace-nowrap text-muted tabular-nums">
+    <span>{chart.left}</span>
+    {
+      chart.legend && (
+        <span class="flex items-center gap-3">
+          <span class="flex items-center gap-1.5"><span class={BUY} />Buy</span>
+          <span class="flex items-center gap-1.5"><span class={SELL} />Sell</span>
+        </span>
+      )
+    }
+    <span class="col-start-3 text-right">{chart.right}</span>
+  </p>
+</div>

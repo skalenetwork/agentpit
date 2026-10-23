@@ -1,0 +1,17 @@
+---
+import type { AstroComponent } from "@lucide/astro";
+
+interface Props {
+  icon: AstroComponent;
+  title: string;
+  note?: string;
+}
+
+const { icon: Icon, title, note } = Astro.props;
+---
+
+<div class="flex h-5 items-center gap-1.5 text-label text-muted">
+  <Icon class="size-3.5 shrink-0" stroke-width={1.75} aria-hidden="true" />
+  <h2 class="truncate">{title}</h2>
+  {note && <span class="ml-auto pl-3 text-caption whitespace-nowrap text-muted tabular-nums">{note}</span>}
+</div>

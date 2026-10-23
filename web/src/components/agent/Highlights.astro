@@ -1,0 +1,44 @@
+---
+import { TrendingDown, TrendingUp } from "@lucide/astro";
+import { highlights, moneyTone } from "@agentpit/brand/bets";
+import { signedDollars } from "@agentpit/brand/format";
+import type { Bet } from "../../lib/api";
+import { hues } from "../../lib/leaderboard";
+import Glyph from "./Glyph.astro";
+import Label from "./Label.astro";
+import Outcome from "./Outcome.astro";
+
+interface Props {
+  bets: readonly Bet[];
+}
+
+const pair = highlights(Astro.props.bets);
+---
+
+{
+  pair && (
+    <div class="grid gap-5 sm:grid-cols-2">
+      {[
+        { icon: TrendingUp, title: "Best bet", bet: pair.best },
+        { icon: TrendingDown, title: "Worst bet", bet: pair.worst },
+      ].map(({ icon, title, bet }) => (
+        <article class="relative min-w-0 rounded-card bg-surface/70 p-5 transition-colors duration-150 hover:bg-surface active:bg-surface sm:p-6">
+          <Label icon={icon} title={title} />
+          <div class="relative mt-4 flex items-center gap-4">
+            <Glyph title={bet.title} icon={bet.icon} category={bet.category} class="size-16" />
+            <div class="min-w-0">
+              <p class:list={["truncate text-figure tabular-nums", hues[moneyTone(bet.pnl)]]}>{signedDollars(bet.pnl)}</p>
+              <p class="mt-1.5 flex h-6 min-w-0 items-center gap-1.5 text-label text-muted">
+                <span class="inline-flex max-w-full align-top max-sm:max-w-36 max-sm:*:block max-sm:*:max-w-full max-sm:*:truncate max-sm:*:leading-6">
+                  <Outcome outcome={bet.outcome} />
+                </span>
+                <span class="truncate">{bet.title}</span>
+              </p>
+            </div>
+          </div>
+          <button type="button" popovertarget={`bet-${bet.id}`} aria-label={`Details: ${bet.title}, ${bet.outcome}`} class="absolute inset-0 cursor-pointer rounded-card -outline-offset-2" />
+        </article>
+      ))}
+    </div>
+  )
+}

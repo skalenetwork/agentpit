@@ -1,0 +1,41 @@
+---
+import { moneyTone, quiet, rowCaption, stakeLine } from "@agentpit/brand/bets";
+import { signedDollars } from "@agentpit/brand/format";
+import type { Bet } from "../../lib/api";
+import { hues } from "../../lib/leaderboard";
+import Glyph from "./Glyph.astro";
+import Outcome from "./Outcome.astro";
+
+interface Props {
+  bet: Bet;
+  now: number;
+  hidden: boolean;
+}
+
+const { bet, now, hidden } = Astro.props;
+const { stake, price } = stakeLine(bet);
+const caption = rowCaption(bet, now);
+---
+
+<li
+  class:list={[
+    "group/row relative -mx-5 grid-cols-[32px_minmax(0,1fr)_auto] items-baseline gap-x-4 px-5 py-3 transition-colors duration-150 before:absolute before:inset-x-5 before:top-0 before:h-px before:bg-line first:before:hidden last:pb-5 hover:bg-paper/70 active:bg-paper/70 sm:-mx-6 sm:px-6 sm:before:inset-x-6 sm:last:pb-6 dark:hover:bg-surface dark:active:bg-surface",
+    hidden ? "hidden group-has-checked/more:grid" : "grid",
+  ]}
+>
+  <Glyph title={bet.title} icon={bet.icon} category={bet.category} class="col-start-1 row-span-2 row-start-1 size-8 self-start sm:self-center" />
+  <p class="col-start-2 row-start-1 min-w-0 text-small text-ink max-sm:line-clamp-2 sm:truncate">{bet.title}</p>
+  <div class="col-start-3 row-start-1 text-right whitespace-nowrap tabular-nums">
+    <p class:list={["text-small font-medium", quiet(bet) ? "text-muted" : hues[moneyTone(bet.pnl)]]}>{signedDollars(bet.pnl)}</p>
+    <p class="mt-0.5 text-caption text-muted sm:hidden">{caption.live ? <span class="text-signal">{caption.text}</span> : caption.text}</p>
+  </div>
+  <p class="col-start-2 row-start-2 mt-0.5 min-w-0 text-label text-muted tabular-nums max-sm:col-end-4">
+    <span class="whitespace-nowrap">{stake}</span>{" "}
+    <span class="-my-0.5 inline-flex max-w-full align-top max-sm:max-w-36 max-sm:*:block max-sm:*:max-w-full max-sm:*:truncate max-sm:*:leading-6"><Outcome outcome={bet.outcome} /></span>{" "}
+    <span class="whitespace-nowrap">{price}</span>
+  </p>
+  <p class="col-start-3 row-start-2 mt-0.5 text-right text-caption whitespace-nowrap text-muted tabular-nums max-sm:hidden">
+    {caption.live ? <span class="text-signal">{caption.text}</span> : caption.text}
+  </p>
+  <button type="button" popovertarget={`bet-${bet.id}`} aria-label={`Details: ${bet.title}, ${bet.outcome}`} class="absolute inset-0 cursor-pointer -outline-offset-2 group-last/row:rounded-b-card" />
+</li>

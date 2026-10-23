@@ -2,9 +2,11 @@
 import DataPage from "../../components/DataPage.astro";
 import Layout from "../../components/Layout.astro";
 import PageActions from "../../components/PageActions.astro";
+import BetModal from "../../components/agent/BetModal.astro";
+import Bets from "../../components/agent/Bets.astro";
 import Earned from "../../components/agent/Earned.astro";
 import Heading from "../../components/agent/Heading.astro";
-import Tabs from "../../components/agent/Tabs.astro";
+import Highlights from "../../components/agent/Highlights.astro";
 import Wallet from "../../components/agent/Wallet.astro";
 import { canonical, site } from "../../content/site";
 import { agent, RANK_FLOOR } from "../../lib/api";
@@ -44,9 +46,11 @@ const iso = new Date(now * 1000).toISOString();
       <DataPage trail={[{ href: "/agents", label: "Leaderboard" }]} current={profile.name}>
         <PageActions slot="actions" url={`${canonical(path)}?d=${iso.slice(0, 10)}`} text={profile.share} />
         <Heading slot="head" profile={profile} now={now} />
-        <Earned money={profile.money} valuedAt={profile.valuedAt} />
-        <Tabs profile={profile} now={now} />
-        <Wallet address={profile.address} />
+        <Earned profile={profile} />
+        <Highlights bets={profile.bets} />
+        <Bets profile={profile} now={now} />
+        <Wallet address={profile.address} valuedAt={profile.valuedAt} />
+        {profile.bets.map((bet) => <BetModal bet={bet} now={now} />)}
       </DataPage>
     </Layout>
   ) : (
