@@ -37,43 +37,51 @@ export interface MarketContext {
   readonly trading: boolean | null;
 }
 
-interface OpenPosition extends MarketContext {
+export type BetStatus = "open" | "won" | "lost" | "sold" | "split";
+
+export interface BetFill {
+  readonly at: number;
+  readonly side: "BUY" | "SELL" | "REDEEM";
+  readonly shares: number;
+  readonly price: number | null;
+  readonly dollars: number;
+  readonly tx: string | null;
+}
+
+export interface PricePoint {
+  readonly at: number;
+  readonly price: number;
+}
+
+export interface Bet extends MarketContext {
+  readonly id: string;
   readonly title: string;
   readonly icon: string | null;
+  readonly url: string | null;
   readonly category: string | null;
   readonly outcome: string;
+  readonly status: BetStatus;
+  readonly openedAt: number;
+  readonly closedAt: number | null;
+  readonly buys: number;
+  readonly sells: number;
+  readonly entry: number;
+  readonly exit: number | null;
   readonly shares: number;
-  readonly avgPrice: number;
-  readonly curPrice: number;
+  readonly sold: number;
+  readonly held: number;
+  readonly cost: number;
+  readonly back: number;
   readonly value: number;
   readonly sellsFor: number;
   readonly pnl: number;
-  readonly url: string | null;
+  readonly fills: readonly BetFill[];
+  readonly prices: readonly PricePoint[];
 }
 
-export interface Call extends MarketContext {
-  readonly title: string;
-  readonly icon: string | null;
-  readonly category: string | null;
-  readonly outcome: string;
-  readonly entry: number;
-  readonly exit: number;
+export interface BetTotal {
+  readonly n: number;
   readonly pnl: number;
-  readonly url: string | null;
-}
-
-export interface Fill extends MarketContext {
-  readonly at: number;
-  readonly type: "TRADE" | "SPLIT" | "MERGE" | "REDEEM";
-  readonly side: "BUY" | "SELL" | null;
-  readonly outcome: string | null;
-  readonly shares: number;
-  readonly dollars: number;
-  readonly title: string;
-  readonly icon: string | null;
-  readonly category: string | null;
-  readonly url: string | null;
-  readonly tx: string | null;
 }
 
 export interface Profile {
@@ -94,37 +102,26 @@ export interface Profile {
   readonly money: {
     readonly returnPct: number;
     readonly capital: number;
+    readonly deposited: number;
     readonly earned: number;
-    readonly cash: number;
-    readonly invested: number;
-    readonly unrealized: number;
     readonly trendStart: string | null;
     readonly trend: readonly number[];
   };
-  readonly positions: { readonly count: number; readonly mark: number; readonly sellsFor: number; readonly open: readonly OpenPosition[] };
-  readonly record: { readonly wins: number; readonly losses: number; readonly pnls: readonly number[]; readonly best: Call; readonly worst: Call } | null;
-  readonly activity: readonly Fill[];
+  readonly bets: readonly Bet[];
+  readonly betTotals: Readonly<Record<BetStatus, BetTotal>>;
 }
 
-type WireCall = Omit<Call, "pnl"> & { readonly pnl: string };
+type Micro<T, K extends keyof T> = Omit<T, K> & { readonly [P in K]: string };
 
-export interface WireProfile extends Omit<Profile, "money" | "positions" | "record" | "activity"> {
-  readonly money: Omit<Profile["money"], "capital" | "earned" | "cash" | "invested" | "unrealized" | "trend"> & {
-    readonly capital: string;
-    readonly earned: string;
-    readonly cash: string;
-    readonly invested: string;
-    readonly unrealized: string;
-    readonly trend: readonly string[];
-  };
-  readonly positions: {
-    readonly count: number;
-    readonly mark: string;
-    readonly sellsFor: string;
-    readonly open: readonly (Omit<OpenPosition, "value" | "sellsFor" | "pnl"> & { readonly value: string; readonly sellsFor: string; readonly pnl: string })[];
-  };
-  readonly record: (Omit<NonNullable<Profile["record"]>, "pnls" | "best" | "worst"> & { readonly pnls: readonly string[]; readonly best: WireCall; readonly worst: WireCall }) | null;
-  readonly activity: readonly (Omit<Fill, "dollars"> & { readonly dollars: string })[];
+export type WireBet = Micro<Omit<Bet, "fills" | "prices">, "cost" | "back" | "value" | "sellsFor" | "pnl"> & {
+  readonly fills: readonly Micro<BetFill, "dollars">[];
+  readonly prices: { readonly start: number; readonly minutes: readonly number[]; readonly permille: readonly number[] } | null;
+};
+
+export interface WireProfile extends Omit<Profile, "money" | "bets" | "betTotals"> {
+  readonly money: Micro<Omit<Profile["money"], "trend">, "capital" | "deposited" | "earned"> & { readonly trend: readonly string[] };
+  readonly bets: readonly WireBet[];
+  readonly betTotals: Readonly<Record<BetStatus, Micro<BetTotal, "pnl">>>;
 }
 
 export const usd = (raw: string): number => Number(raw) / 1e6;
@@ -163,31 +160,28 @@ export const marketCaption = ({ eventTitle, endDate, resolvedAt, winner, kickoff
   return eventTitle === null ? status : [eventTitle, ...status];
 };
 
-const call = (wire: WireCall): Call => ({ ...wire, pnl: usd(wire.pnl) });
+const priceLine = (line: WireBet["prices"]): readonly PricePoint[] =>
+  line ? line.minutes.map((minute, i) => ({ at: line.start + minute * 60, price: (line.permille[i] ?? 0) / 1000 })) : [];
 
-export const profile = (wire: WireProfile): Profile => {
-  const { money, positions, record, activity } = wire;
-  return {
-    ...wire,
-    money: {
-      ...money,
-      capital: usd(money.capital),
-      earned: usd(money.earned),
-      cash: usd(money.cash),
-      invested: usd(money.invested),
-      unrealized: usd(money.unrealized),
-      trend: money.trend.map(usd),
-    },
-    positions: {
-      count: positions.count,
-      mark: usd(positions.mark),
-      sellsFor: usd(positions.sellsFor),
-      open: positions.open.map((position) => ({ ...position, value: usd(position.value), sellsFor: usd(position.sellsFor), pnl: usd(position.pnl) })),
-    },
-    record: record && { ...record, pnls: record.pnls.map(usd), best: call(record.best), worst: call(record.worst) },
-    activity: activity.map((fill) => ({ ...fill, dollars: usd(fill.dollars) })),
-  };
-};
+const bet = ({ cost, back, value, sellsFor, pnl, fills, prices, ...rest }: WireBet): Bet => ({
+  ...rest,
+  cost: usd(cost),
+  back: usd(back),
+  value: usd(value),
+  sellsFor: usd(sellsFor),
+  pnl: usd(pnl),
+  fills: fills.map((fill) => ({ ...fill, dollars: usd(fill.dollars) })),
+  prices: priceLine(prices),
+});
+
+const total = ({ n, pnl }: Micro<BetTotal, "pnl">): BetTotal => ({ n, pnl: usd(pnl) });
+
+export const profile = ({ money, bets, betTotals, ...rest }: WireProfile): Profile => ({
+  ...rest,
+  money: { ...money, capital: usd(money.capital), deposited: usd(money.deposited), earned: usd(money.earned), trend: money.trend.map(usd) },
+  bets: bets.map(bet),
+  betTotals: { open: total(betTotals.open), won: total(betTotals.won), lost: total(betTotals.lost), sold: total(betTotals.sold), split: total(betTotals.split) },
+});
 
 export interface WireEntry {
   readonly rank: number | null;
@@ -397,7 +391,7 @@ export const explorerAddress = (address: string) => `${EXPLORER}/address/${addre
 export const BOARD_PAGE = 48;
 const SKILL_URL = "https://agentpit.dev/skill.md";
 
-interface WireBet {
+interface WireBoardBet {
   readonly agent: string;
   readonly name: string;
   readonly side: string;
@@ -423,7 +417,7 @@ interface WireOutcome {
   readonly ask: number | null;
   readonly change24h: number | null;
   readonly team: Team | null;
-  readonly bets: readonly WireBet[];
+  readonly bets: readonly WireBoardBet[];
 }
 
 export interface WireCard {
@@ -494,16 +488,16 @@ interface BoardOf<G, C> {
 
 export type WireBoard = BoardOf<WireGame, WireCard>;
 
-interface Bet extends Omit<WireBet, "value" | "pnl"> {
+interface BoardBet extends Omit<WireBoardBet, "value" | "pnl"> {
   readonly value: number;
   readonly pnl: number;
 }
 
 interface Outcome extends Omit<WireOutcome, "bets"> {
-  readonly bets: readonly Bet[];
+  readonly bets: readonly BoardBet[];
 }
 
-export interface CardBet extends Bet {
+export interface CardBet extends BoardBet {
   readonly i: number;
   readonly row: number;
   readonly outcome: string;
@@ -525,10 +519,10 @@ export interface Game extends Card, Omit<WireGame, keyof WireCard> {
 
 export type Board = BoardOf<Game, Card>;
 
-const bet = ({ value, pnl, ...rest }: WireBet): Bet => ({ ...rest, value: usd(value), pnl: usd(pnl) });
+const boardBet = ({ value, pnl, ...rest }: WireBoardBet): BoardBet => ({ ...rest, value: usd(value), pnl: usd(pnl) });
 
 const card = (wire: WireCard): Card => {
-  const outcomes = wire.outcomes.map((outcome) => ({ ...outcome, bets: outcome.bets.map(bet).sort((a, b) => b.value - a.value) }));
+  const outcomes = wire.outcomes.map((outcome) => ({ ...outcome, bets: outcome.bets.map(boardBet).sort((a, b) => b.value - a.value) }));
   const bets = outcomes
     .flatMap((outcome, row) =>
       outcome.bets.map((b) => {

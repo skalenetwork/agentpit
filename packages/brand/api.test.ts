@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { agentPrompt, board, explorerAddress, explorerTx, gameStage, marketCaption, ownerPage, phase, phaseText, race, raceEntries, raceSummary, stageText, type WireBoard, type WireCard, type WireEntry, type WireRace, type WireStanding } from "./api";
+import { agentPrompt, board, explorerAddress, explorerTx, gameStage, marketCaption, ownerPage, phase, phaseText, profile, race, raceEntries, raceSummary, stageText, type WireBet, type WireBoard, type WireCard, type WireEntry, type WireProfile, type WireRace, type WireStanding } from "./api";
 
 const multi: WireCard = {
   slug: "fed-decision-in-october",
@@ -241,4 +241,65 @@ test("a race's stage counts down to its start, then its end", () => {
     "Ends in 3d",
     "Ended",
   ]);
+});
+
+test("a profile reads its money, every bet's money and fills in dollars and its price line as times and ratios", () => {
+  const wireBet: WireBet = {
+    id: "7311",
+    title: "Will FC Twente win on 2026-10-22?",
+    icon: null,
+    url: "https://polymarket.com/market/col-lin-twe-2026-10-22-twe",
+    category: "Sports",
+    outcome: "Yes",
+    status: "open",
+    openedAt: 1792661847,
+    closedAt: null,
+    buys: 1,
+    sells: 0,
+    entry: 0.81,
+    exit: 0.815,
+    shares: 123.45679,
+    sold: 0,
+    held: 123.45679,
+    cost: "100000000",
+    back: "0",
+    value: "100617284",
+    sellsFor: "99265432",
+    pnl: "617284",
+    eventTitle: null,
+    endDate: 1792695600,
+    resolvedAt: null,
+    winner: null,
+    kickoff: 1792695600,
+    trading: true,
+    fills: [{ at: 1792661847, side: "BUY", shares: 123.45679, price: 0.81, dollars: "100000000", tx: "0x7d7b" }],
+    prices: { start: 1792654647, minutes: [0, 61, 119], permille: [820, 815, 1000] },
+  };
+  const total = { n: 0, pnl: "0" };
+  const wire: WireProfile = {
+    name: "ivenster",
+    address: "0xD3298AEeb7A637e892E9357453DEC14BE1677C13",
+    owner: "CalmOtter",
+    runner: { slug: "api", label: "API", host: null },
+    trades: 120,
+    firstTradeAt: 1792040000,
+    lastTradeAt: 1792661847,
+    valuedAt: 1792667548,
+    share: "https://agentpit.dev/agents/0xD3298AEeb7A637e892E9357453DEC14BE1677C13",
+    standing: { place: 4, placeChange: null, rankedCount: 19 },
+    money: { returnPct: 0.2, capital: "100196642873", deposited: "100000000000", earned: "196642873", trendStart: "2026-10-13", trend: ["183425796", "-207024263"] },
+    bets: [wireBet, { ...wireBet, id: "7312", status: "lost", closedAt: 1792667000, exit: 0, prices: null }],
+    betTotals: { open: { n: 1, pnl: "617284" }, won: total, lost: { n: 1, pnl: "-100000000" }, sold: total, split: total },
+  };
+  const p = profile(wire);
+  expect(p.money).toEqual({ returnPct: 0.2, capital: 100196.642873, deposited: 100000, earned: 196.642873, trendStart: "2026-10-13", trend: [183.425796, -207.024263] });
+  const [open, lost] = p.bets;
+  expect([open?.cost, open?.back, open?.value, open?.sellsFor, open?.pnl, open?.fills[0]?.dollars]).toEqual([100, 0, 100.617284, 99.265432, 0.617284, 100]);
+  expect(open?.prices).toEqual([
+    { at: 1792654647, price: 0.82 },
+    { at: 1792658307, price: 0.815 },
+    { at: 1792661787, price: 1 },
+  ]);
+  expect(lost?.prices).toEqual([]);
+  expect(p.betTotals).toEqual({ open: { n: 1, pnl: 0.617284 }, won: { n: 0, pnl: 0 }, lost: { n: 1, pnl: -100 }, sold: { n: 0, pnl: 0 }, split: { n: 0, pnl: 0 } });
 });

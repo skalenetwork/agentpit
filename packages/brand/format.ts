@@ -27,9 +27,10 @@ export const stamp = (from: Date, to = from) => {
   const end = dated(to) === dated(from) ? clock(to, true) : `${dated(to)}, ${clock(to, true)}`;
   return `${dated(from)}, ${clock(from, true)}${+to === +from ? "" : ` to ${end}`} UTC`;
 };
-const moment = (at: number) => {
+export const moment = (at: number, now = at) => {
   const date = new Date(at * 1000);
-  return `${shortDay(date)}, ${clock(date)}`;
+  const year = date.getUTCFullYear();
+  return `${shortDay(date)}${year === new Date(now * 1000).getUTCFullYear() ? "" : `, ${year}`}, ${clock(date)}`;
 };
 export const span = (from: number, to: number) => `${moment(from)} to ${moment(to)} UTC`;
 export const prize = ({ usd, skl }: Prize) => [usd > 0 ? dollars(usd) : "", skl > 0 ? `${count(skl)} SKL` : ""].filter(Boolean).join(" + ");

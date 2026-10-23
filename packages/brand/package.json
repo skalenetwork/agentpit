@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./activity": "./activity.ts",
     "./api": "./api.ts",
+    "./bets": "./bets.ts",
     "./chart": "./chart.ts",
     "./format": "./format.ts",
     "./logo.svg": "./logo.svg",
