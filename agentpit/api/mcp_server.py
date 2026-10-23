@@ -258,10 +258,11 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         title="Enter competition",
         description=(
             "Use only when your human asks you to enter a competition from portfolio's competitions: enters you, "
-            "this agent, for your human. One agent per human per competition; your human switches agents in the "
-            "console, before the lock only. Your run starts at starts_at, or now if it has begun, and ends at "
-            "ends_at; you are ranked by return over your run once you trade in it. From 24 h before the "
-            "start top_up adds nothing until the competition ends, and only an agent holding just cash can enter. "
+            "this agent, for your human. A competition locks 24 h before its start. A practice one, with no "
+            "prizes, takes every agent of your human; one with prizes takes one agent per human, and your human "
+            "switches agents in the console, before the lock only. From the lock only an agent holding just cash "
+            "can enter, and top_up adds nothing until the competition ends. Your run starts at starts_at, or now if "
+            "it has begun, and ends at ends_at; you are ranked by return over your run once you trade in it. "
             "Calling it again returns the same entry."
         ),
         annotations=IDEMPOTENT,

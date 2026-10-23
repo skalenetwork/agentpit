@@ -31,6 +31,7 @@ from agentpit.datastructures.competition import (
     Competition,
     Entry,
     Fixture,
+    Holding,
     Line,
     Phase,
     Race,
@@ -595,10 +596,12 @@ class CompetitionService:
 
     def enroll(self, user_id: str, slug: str, now: int, switch: bool) -> Enrollment:
         """Enter the agent, or return its entry unchanged when it is already
-        the owner's entry. Before the lock it replaces the owner's other agent
-        only with `switch`; from the lock only an owner with no entry can enter,
-        with an agent holding just cash. Nobody enters in the final hour, so
-        every entry gets its start value."""
+        entered. A practice competition takes every agent of an owner. One with
+        prizes takes one agent per owner: before the lock it replaces the
+        owner's other agent only with `switch`, and from the lock only an owner
+        with no entry can enter. From the lock the agent must hold just cash.
+        Nobody enters in the final hour, so every entry gets its start value.
+        An owner's entries are written one at a time."""
         with self._db.read() as conn:
             competition, _ = _one(TableRead.competitions(conn, slug), slug)
             seat = TableRead.seat(conn, slug, user_id)
@@ -617,12 +620,13 @@ class CompetitionService:
         if phase == "upcoming":
             if seat.taken and not switch:
                 raise BusinessRuleError(
-                    f"Another of your agents is entered in {competition.title}. "
-                    "Switch agents in the AgentPit console."
+                    f"{competition.title} pays prizes, so it takes one agent per person, and another of your agents "
+                    "is entered. Switch agents in the AgentPit console."
                 )
         elif seat.taken:
             raise BusinessRuleError(
-                f"Another of your agents is entered in {competition.title}, and agents cannot be switched after the lock."
+                f"{competition.title} pays prizes, so it takes one agent per person, and another of your agents "
+                "is entered. Agents cannot be switched after the lock."
             )
         elif sum(p.currentValue for p in self._accounts.wallet(seat.eth_address).positions if not p.settled) >= 1:
             raise BusinessRuleError(
@@ -630,8 +634,10 @@ class CompetitionService:
                 "Close its open positions first."
             )
         with self._db.write() as conn:
-            entered = TableWrite.enter_competition(
-                conn, slug, seat.owner, user_id, now, switch and phase == "upcoming"
+            TableWrite.ensure_owner(conn, seat.owner)
+            TableWrite.lock_owner(conn, seat.owner)
+            entered = TableRead.seat(conn, slug, user_id) == seat and TableWrite.enter_competition(
+                conn, slug, seat.owner, user_id, now, seat.taken
             )
         if not entered:
             return self.enroll(user_id, slug, now, switch)
@@ -653,9 +659,10 @@ class CompetitionService:
     def sync(conn: psycopg.Connection, folder: Path, now: int) -> None:
         """Save the competition of every *.toml file in `folder`, then delete
         the competitions with no file. A bad file, new prizes from the lock or
-        a new window from the start is logged and leaves its row as it was. A
-        competition with no file that has started or has entries is logged
-        and kept. A missing folder changes nothing."""
+        while the entries break one per owner, or a new window from the start
+        is logged and leaves its row as it was. A competition with no file
+        that has started or has entries is logged and kept. A missing folder
+        changes nothing."""
         if not folder.is_dir():
             log.error("Competitions folder %s is missing, so competitions were not synced", folder)
             return
@@ -668,7 +675,8 @@ class CompetitionService:
                 continue
             if not TableWrite.save_competition(conn, competition, now):
                 log.error(
-                    "Competition file %s refused: the prizes of %s are fixed from the lock, its start and end from the start",
+                    "Competition file %s refused: the prizes of %s are fixed from the lock and need one entry per "
+                    "owner, its start and end are fixed from the start",
                     path.name, competition.slug,
                 )
         for slug in TableWrite.delete_competitions(conn, [path.stem for path in paths], now):
@@ -748,9 +756,15 @@ class CompetitionService:
                 log.exception("capturing %s in %s failed", entry.eth_address, entry.slug)
 
     def _start(self, entry: PendingCapture, now: int) -> None:
-        """Cash plus positions at the board's marks, once every unsettled
-        mirrored position has a book or BOOK_GRACE has passed since the run
-        start."""
+        """Cash plus each position at the board's mark, once no fill of the
+        account is PENDING and every unsettled mirrored position has a book,
+        or BOOK_GRACE has passed since the run start."""
+        if entry.settling:
+            if now < entry.run_starts_at + feed.BOOK_GRACE:
+                return
+            log.warning(
+                "Competition %s start value for %s taken with a fill still settling", entry.slug, entry.eth_address
+            )
         wallet = self._accounts.wallet(entry.eth_address)
         at = int(time.time())
         missing = next((p.asset for p in wallet.positions if not p.settled and not feed.booked(p.asset)), None)
@@ -761,7 +775,8 @@ class CompetitionService:
                 "Competition %s start value for %s: no book for %s, valued at its mark",
                 entry.slug, entry.eth_address, missing,
             )
-        self._take(entry, "START", wallet.cash_raw + _raw(sum(p.currentValue for p in wallet.positions)), at, None)
+        held = {p.asset: Holding(shares=_raw(p.size), value=_raw(p.currentValue)) for p in wallet.positions}
+        self._take(entry, "START", wallet.cash_raw + sum(h.value for h in held.values()), at, None, held)
 
     def _end(self, entry: PendingCapture, now: int) -> None:
         """Cash plus every position sold into its token's bell state. A token
@@ -771,7 +786,7 @@ class CompetitionService:
         wallet = self._accounts.wallet(entry.eth_address)
         at = int(time.time())
         bell = _bells[entry.slug]
-        worth = 0.0
+        held: dict[str, Holding] = {}
         for position in wallet.positions:
             state = bell.get(position.asset)
             if state is None:
@@ -785,8 +800,8 @@ class CompetitionService:
                     )
                     state = position.curPrice
                 bell[position.asset] = state
-            worth += exit_value(position, state)
-        self._take(entry, "END", wallet.cash_raw + _raw(worth), at, wallet.block)
+            held[position.asset] = Holding(shares=_raw(position.size), value=_raw(exit_value(position, state)))
+        self._take(entry, "END", wallet.cash_raw + sum(h.value for h in held.values()), at, wallet.block, held)
 
     def _end_at_bell(self, entry: PendingCapture, now: int) -> None:
         with self._db.read() as conn:
@@ -795,13 +810,19 @@ class CompetitionService:
             "Competition %s end value for %s taken at its bell point, %ds after the end",
             entry.slug, entry.eth_address, now - entry.ends_at,
         )
-        self._take(entry, "END", value_raw, now, None)
+        self._take(entry, "END", value_raw, now, None, None)
 
     def _take(
-        self, entry: PendingCapture, edge: Literal["START", "END"], value_raw: int, at: int, block: int | None
+        self,
+        entry: PendingCapture,
+        edge: Literal["START", "END"],
+        value_raw: int,
+        at: int,
+        block: int | None,
+        held: dict[str, Holding] | None,
     ) -> None:
         with self._db.write() as conn:
-            if TableWrite.capture_entry(conn, entry.slug, entry.user_id, edge, value_raw, at, block):
+            if TableWrite.capture_entry(conn, entry.slug, entry.user_id, edge, value_raw, at, block, held):
                 log.info(
                     "Competition %s %s value for %s: %d raw, %ds past the boundary",
                     entry.slug, edge.lower(), entry.eth_address, value_raw,
