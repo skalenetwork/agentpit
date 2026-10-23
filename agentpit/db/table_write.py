@@ -10,7 +10,7 @@ from eth_account.signers.local import LocalAccount
 
 from agentpit.common import check_state
 from agentpit.datastructures.board import WireTeam
-from agentpit.datastructures.competition import LOCK, Competition
+from agentpit.datastructures.competition import LOCK, Competition, Holding
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.market import Market, Payouts
@@ -614,14 +614,23 @@ class TableWrite:
         value_raw: int,
         at: int,
         block: int | None,
+        held: dict[str, Holding] | None = None,
     ) -> bool:
         """Record the entry's start or end value once, with the time its wallet
-        read returned and, for the end, that read's block. False when it was
+        read returned, for the end that read's block, and the holdings the
+        value sums with the cash when it came from the read. False when it was
         already taken."""
         cur = db.execute(
-            f"UPDATE competition_entries SET {edge}_RAW = %s, {edge}_AT = %s, END_BLOCK = %s "
+            f"UPDATE competition_entries SET {edge}_RAW = %s, {edge}_HOLDINGS = %s, {edge}_AT = %s, END_BLOCK = %s "
             f"WHERE SLUG = %s AND USER_ID = %s AND {edge}_RAW IS NULL",
-            (value_raw, at, block, slug, user_id),
+            (
+                value_raw,
+                None if held is None else json.dumps({token: h.model_dump() for token, h in held.items()}),
+                at,
+                block,
+                slug,
+                user_id,
+            ),
         )
         return cur.rowcount == 1
 

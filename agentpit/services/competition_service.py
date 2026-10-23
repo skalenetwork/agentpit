@@ -31,6 +31,7 @@ from agentpit.datastructures.competition import (
     Competition,
     Entry,
     Fixture,
+    Holding,
     Line,
     Phase,
     Race,
@@ -748,9 +749,15 @@ class CompetitionService:
                 log.exception("capturing %s in %s failed", entry.eth_address, entry.slug)
 
     def _start(self, entry: PendingCapture, now: int) -> None:
-        """Cash plus positions at the board's marks, once every unsettled
-        mirrored position has a book or BOOK_GRACE has passed since the run
-        start."""
+        """Cash plus each position at the board's mark, once no fill of the
+        account is PENDING and every unsettled mirrored position has a book,
+        or BOOK_GRACE has passed since the run start."""
+        if entry.settling:
+            if now < entry.run_starts_at + feed.BOOK_GRACE:
+                return
+            log.warning(
+                "Competition %s start value for %s taken with a fill still settling", entry.slug, entry.eth_address
+            )
         wallet = self._accounts.wallet(entry.eth_address)
         at = int(time.time())
         missing = next((p.asset for p in wallet.positions if not p.settled and not feed.booked(p.asset)), None)
@@ -761,7 +768,8 @@ class CompetitionService:
                 "Competition %s start value for %s: no book for %s, valued at its mark",
                 entry.slug, entry.eth_address, missing,
             )
-        self._take(entry, "START", wallet.cash_raw + _raw(sum(p.currentValue for p in wallet.positions)), at, None)
+        held = {p.asset: Holding(shares=_raw(p.size), value=_raw(p.currentValue)) for p in wallet.positions}
+        self._take(entry, "START", wallet.cash_raw + sum(h.value for h in held.values()), at, None, held)
 
     def _end(self, entry: PendingCapture, now: int) -> None:
         """Cash plus every position sold into its token's bell state. A token
@@ -771,7 +779,7 @@ class CompetitionService:
         wallet = self._accounts.wallet(entry.eth_address)
         at = int(time.time())
         bell = _bells[entry.slug]
-        worth = 0.0
+        held: dict[str, Holding] = {}
         for position in wallet.positions:
             state = bell.get(position.asset)
             if state is None:
@@ -785,8 +793,8 @@ class CompetitionService:
                     )
                     state = position.curPrice
                 bell[position.asset] = state
-            worth += exit_value(position, state)
-        self._take(entry, "END", wallet.cash_raw + _raw(worth), at, wallet.block)
+            held[position.asset] = Holding(shares=_raw(position.size), value=_raw(exit_value(position, state)))
+        self._take(entry, "END", wallet.cash_raw + sum(h.value for h in held.values()), at, wallet.block, held)
 
     def _end_at_bell(self, entry: PendingCapture, now: int) -> None:
         with self._db.read() as conn:
@@ -795,13 +803,19 @@ class CompetitionService:
             "Competition %s end value for %s taken at its bell point, %ds after the end",
             entry.slug, entry.eth_address, now - entry.ends_at,
         )
-        self._take(entry, "END", value_raw, now, None)
+        self._take(entry, "END", value_raw, now, None, None)
 
     def _take(
-        self, entry: PendingCapture, edge: Literal["START", "END"], value_raw: int, at: int, block: int | None
+        self,
+        entry: PendingCapture,
+        edge: Literal["START", "END"],
+        value_raw: int,
+        at: int,
+        block: int | None,
+        held: dict[str, Holding] | None,
     ) -> None:
         with self._db.write() as conn:
-            if TableWrite.capture_entry(conn, entry.slug, entry.user_id, edge, value_raw, at, block):
+            if TableWrite.capture_entry(conn, entry.slug, entry.user_id, edge, value_raw, at, block, held):
                 log.info(
                     "Competition %s %s value for %s: %d raw, %ds past the boundary",
                     entry.slug, edge.lower(), entry.eth_address, value_raw,

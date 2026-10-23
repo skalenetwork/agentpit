@@ -1,3 +1,4 @@
+import json
 import logging
 import random
 import time
@@ -173,30 +174,48 @@ def test_only_an_onboarded_unflagged_agent_of_a_person_enters_a_competition_stil
     assert service.enroll(able, SLUG, ENDS - HOUR - 1, switch=False).run_starts_at == ENDS - HOUR - 1
 
 
-def test_the_start_value_waits_for_onboarding_a_landed_top_up_and_a_book(monkeypatch, caplog):
+def test_the_start_value_waits_for_onboarding_a_landed_top_up_a_pending_fill_and_a_book_then_holds_each_mark(
+    monkeypatch, caplog
+):
     conn = fresh_test_conn()
     _competition(conn)
-    user_id, address, _ = _agent(conn, onboarded=False)
+    user_id, address, key = _agent(conn, onboarded=False)
     _entered(conn, user_id)
     TableWrite.set_last_topup_at(conn, user_id, STARTS + 100)
     monkeypatch.setattr(feed, "quote", lambda token: token)
     monkeypatch.setattr(feed, "book", lambda token: None)
-    service = _service([PositionWire(asset="rain", size=501.0, currentValue=250.5)])
+    service = _service([
+        PositionWire(asset="rain", size=501.0, currentValue=250.5),
+        PositionWire(asset="won", size=2.0, currentValue=2.0, settled=True),
+    ])
 
     service.capture(STARTS + 400)
     TableWrite.mark_user_onboarded(conn, user_id)
     service.capture(STARTS + 399)
     service.capture(STARTS + feed.BOOK_GRACE - 1)
+    _trade(conn, key, "settling", STARTS + 500, "PENDING")
+    monkeypatch.setattr(feed, "quote", lambda token: None)
+    service.capture(STARTS + feed.BOOK_GRACE - 1)
+    monkeypatch.setattr(feed, "quote", lambda token: token)
     waited = _entry(conn, user_id)["START_RAW"]
     read = int(time.time())
     with caplog.at_level(logging.WARNING):
         service.capture(STARTS + feed.BOOK_GRACE)
     entry = _entry(conn, user_id)
 
+    held = json.loads(entry["START_HOLDINGS"])
     assert waited is None
-    assert (entry["START_RAW"], entry["END_BLOCK"]) == (G + 250_500_000, None)
+    assert held == {
+        "rain": {"shares": 501_000_000, "value": 250_500_000},
+        "won": {"shares": 2_000_000, "value": 2_000_000},
+    }
+    assert (entry["START_RAW"], entry["END_BLOCK"], entry["END_HOLDINGS"]) == (G + 252_500_000, None, None)
+    assert entry["START_RAW"] == G + sum(h["value"] for h in held.values())
     assert read <= entry["START_AT"] <= time.time()
-    assert caplog.messages == [f"Competition {SLUG} start value for {address}: no book for rain, valued at its mark"]
+    assert caplog.messages == [
+        f"Competition {SLUG} start value for {address} taken with a fill still settling",
+        f"Competition {SLUG} start value for {address}: no book for rain, valued at its mark",
+    ]
 
 
 def test_the_end_value_waits_for_the_bell_point_any_pending_fill_and_books_then_walks_every_bid(monkeypatch):
@@ -239,8 +258,17 @@ def test_the_end_value_waits_for_the_bell_point_any_pending_fill_and_books_then_
     service.tick(ENDS + feed.BOOK_GRACE)
     entry = _entry(conn, user_id)
 
+    held = json.loads(entry["END_HOLDINGS"])
     assert (before_the_point, settling, unbooked) == (None, None, None)
-    assert (entry["END_RAW"], entry["END_BLOCK"]) == (G + 2_025_000 + 3_000_000 + 2_000_000 + 1_000_000 + 500_000, 7)
+    assert held == {
+        "deep": {"shares": 10_000_000, "value": 2_025_000},
+        "asked": {"shares": 10_000_000, "value": 0},
+        "empty": {"shares": 10_000_000, "value": 3_000_000},
+        "local": {"shares": 10_000_000, "value": 2_000_000},
+        "won": {"shares": 1_000_000, "value": 1_000_000},
+        "gone": {"shares": 1_000_000, "value": 500_000},
+    }
+    assert (entry["END_RAW"], entry["END_BLOCK"]) == (G + sum(h["value"] for h in held.values()), 7)
     assert read <= entry["END_AT"] <= time.time()
     assert _entry(conn, idle)["START_RAW"] is None
 
@@ -368,7 +396,7 @@ def test_a_stuck_end_is_an_error_after_an_hour_and_the_bell_point_at_the_deadlin
     assert warned == [
         f"Competition {SLUG} end value for {stuck_address} taken at its bell point, {END_DEADLINE}s after the end"
     ]
-    assert (entry["END_RAW"], entry["END_AT"], entry["END_BLOCK"]) == (G + 5, ENDS + END_DEADLINE, None)
+    assert (entry["END_RAW"], entry["END_AT"], entry["END_BLOCK"], entry["END_HOLDINGS"]) == (G + 5, ENDS + END_DEADLINE, None, None)
     assert (waiting, final()) == (None, ENDS + END_DEADLINE + 2)
     assert SLUG not in competition_service._bells
 

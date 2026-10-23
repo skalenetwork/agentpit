@@ -703,8 +703,13 @@ class TableCreate:
         """One agent per owner per competition. START_RAW and END_RAW are the
         account's value at its run start and at the end, NULL until captured,
         START_AT and END_AT when the wallet read behind each returned, and
-        END_BLOCK the block of the end read. Entries captured before these
-        columns existed get the run start and the end as their times, and no
+        END_BLOCK the block of the end read. START_HOLDINGS and END_HOLDINGS
+        are the positions of that read as a JSON object of token to shares and
+        value in base units, the values summing with the cash to the capture;
+        NULL for a capture taken before they existed or at its bell point. A
+        fill matched before START_AT can be missing from the start's holdings
+        when it was still settling at the read. Entries captured before the
+        times existed get the run start and the end as their times, and no
         block. A started entry whose competition is gone cannot be dated, so
         it is deleted."""
         conn.execute(
@@ -727,7 +732,8 @@ class TableCreate:
         )
         conn.execute(
             "ALTER TABLE competition_entries ADD COLUMN IF NOT EXISTS START_AT BIGINT, "
-            "ADD COLUMN IF NOT EXISTS END_AT BIGINT, ADD COLUMN IF NOT EXISTS END_BLOCK BIGINT"
+            "ADD COLUMN IF NOT EXISTS END_AT BIGINT, ADD COLUMN IF NOT EXISTS END_BLOCK BIGINT, "
+            "ADD COLUMN IF NOT EXISTS START_HOLDINGS TEXT, ADD COLUMN IF NOT EXISTS END_HOLDINGS TEXT"
         )
         conn.execute(
             "DELETE FROM competition_entries e WHERE e.START_RAW IS NOT NULL "
@@ -749,6 +755,8 @@ class TableCreate:
                 AND (END_RAW IS NULL) = (END_AT IS NULL)
                 AND (END_BLOCK IS NULL OR END_RAW IS NOT NULL)
                 AND (END_RAW IS NULL OR START_RAW IS NOT NULL)
+                AND (START_HOLDINGS IS NULL OR START_RAW IS NOT NULL)
+                AND (END_HOLDINGS IS NULL OR END_RAW IS NOT NULL)
             )
             """
         )

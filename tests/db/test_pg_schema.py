@@ -89,8 +89,18 @@ def test_entries_captured_before_their_times_existed_are_dated_and_undatable_one
 
 @pytest.mark.parametrize(
     "captured",
-    [(1, None, None, None, None), (None, None, 1, 2, None), (1, 2, 1, None, None), (1, 2, None, None, 3)],
-    ids=["start without its time", "end without a start", "end without its time", "block without an end"],
+    [
+        (1, None, None, None, None, None, None),
+        (None, None, 1, 2, None, None, None),
+        (1, 2, 1, None, None, None, None),
+        (1, 2, None, None, 3, None, None),
+        (None, None, None, None, None, "{}", None),
+        (1, 2, None, None, None, None, "{}"),
+    ],
+    ids=[
+        "start without its time", "end without a start", "end without its time", "block without an end",
+        "start holdings without a start", "end holdings without an end",
+    ],
 )
 def test_an_entry_holds_a_capture_only_with_its_time_and_an_end_only_after_a_start(conn, captured):
     TableCreate.create_all_tables(conn)
@@ -98,7 +108,7 @@ def test_an_entry_holds_a_capture_only_with_its_time_and_an_end_only_after_a_sta
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute(
             "INSERT INTO competition_entries (SLUG, OWNER, USER_ID, ENROLLED_AT, START_RAW, START_AT, END_RAW, "
-            "END_AT, END_BLOCK) VALUES ('c', 'o', 'u', 0, %s, %s, %s, %s, %s)",
+            "END_AT, END_BLOCK, START_HOLDINGS, END_HOLDINGS) VALUES ('c', 'o', 'u', 0, %s, %s, %s, %s, %s, %s, %s)",
             captured,
         )
 

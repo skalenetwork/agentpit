@@ -273,6 +273,14 @@ class Capture(_Strict):
     at: int
 
 
+class Holding(_Strict):
+    """A token held at a start or end value: its shares and what they count
+    for there, both in base units."""
+
+    shares: int
+    value: int
+
+
 class Entry(_Strict):
     """An entry still in its race with what its standing is built from. The
     api key never leaves the service."""
