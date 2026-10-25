@@ -18,6 +18,7 @@
 
   --animate-hop: hop 4s ease-in-out 600ms infinite;
   --animate-breathe: breathe 4s ease-in-out 600ms infinite;
+  --animate-descend: descend 1100ms cubic-bezier(0.16, 1, 0.3, 1) both;
 
   @keyframes hop {
     0%,
@@ -57,6 +58,12 @@
     93% {
       scale: 1.06;
       opacity: 1;
+    }
+  }
+
+  @keyframes descend {
+    from {
+      scale: 1 0;
     }
   }
 }
