@@ -2,6 +2,7 @@
 import type { MarkdownInstance } from "astro";
 import Layout from "./Layout.astro";
 import { site } from "../content/site";
+import toc from "../scripts/toc.js?raw";
 
 interface Props {
   doc: MarkdownInstance<Record<string, string>>;
@@ -21,11 +22,12 @@ const updated = new Date(frontmatter.updated).toLocaleDateString("en-US", { mont
       <p class="mt-1 text-caption">Updated <time datetime={frontmatter.updated}>{updated}</time></p>
       <div class="mt-5 grid gap-12 sm:mt-7 lg:grid-cols-[14rem_1fr] lg:gap-16">
         <nav class="hidden flex-col gap-3 self-start text-small font-medium lg:sticky lg:top-32 lg:flex" aria-label="Sections">
-          {sections.map((section) => <a class="text-muted transition-colors duration-150 hover:text-ink" href={`#${section.slug}`}>{section.text}</a>)}
+          {sections.map((section) => <a class="text-muted transition-colors duration-150 hover:text-ink data-visible:text-ink" href={`#${section.slug}`}>{section.text}</a>)}
         </nav>
         <article class="max-w-text [&_a]:text-ink [&_a]:underline [&_a]:decoration-line [&_a]:underline-offset-4 [&_a]:transition-colors [&_a]:duration-150 [&_a:hover]:decoration-ink [&_h2]:mt-12 [&_h2]:scroll-mt-24 [&_h2]:text-title [&_h2]:text-ink [&_li]:mt-2 [&_li]:pl-1 [&_p]:mt-4 [&_strong]:font-medium [&_strong]:text-ink [&_ul]:mt-4 [&_ul]:list-disc [&_ul]:pl-5 [&>:first-child]:mt-0">
           <Content />
         </article>
+        <script is:inline set:html={toc} />
       </div>
     </div>
   </section>
