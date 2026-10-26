@@ -1,5 +1,5 @@
 ---
-import Sombra from "./Sombra.astro";
+import sombra from "../assets/sombra-hero.avif";
 
 interface Props {
   lead?: string | readonly string[];
@@ -14,7 +14,16 @@ const above = Astro.slots.has("above");
 ---
 
 <section class:list={["relative isolate px-4 py-16 sm:px-12 sm:py-25", className]}>
-  {visual && <Sombra class="absolute inset-x-0 -top-15 bottom-0 -z-10" />}
+  {
+    visual && (
+      <img
+        class="pointer-events-none absolute inset-x-0 -top-15 -z-10 h-[calc(100%+--spacing(15))] w-full origin-top motion-safe:animate-descend"
+        src={sombra.src}
+        alt=""
+        fetchpriority="high"
+      />
+    )
+  }
   <div class="mx-auto flex w-full max-w-page flex-col items-center text-center">
     <div class:list={["flex flex-col items-center", visual && "scheme-dark [--color-muted:#cbd5e1]"]}>
       {
