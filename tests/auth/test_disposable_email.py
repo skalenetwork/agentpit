@@ -110,8 +110,9 @@ def test_no_mx_is_allowed():
 
 
 def test_resolver_failure_allows_and_is_not_cached_as_blocked(caplog):
+    clock = FakeClock()
     resolver = FakeResolver(failing={"gonrr.net"})
-    checker = _checker(blocked={"10minutemail.com"}, resolver=resolver)
+    checker = _checker(blocked={"10minutemail.com"}, resolver=resolver, clock=clock)
 
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         assert checker.is_disposable("x@gonrr.net") is False
@@ -119,10 +120,46 @@ def test_resolver_failure_allows_and_is_not_cached_as_blocked(caplog):
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any("gonrr.net" in r.getMessage() for r in warnings)
 
-    # The outage ends and the domain turns out to be a disposable one.
+    # The outage ends and the domain turns out to be a disposable one; the
+    # failure was only remembered for a minute, so the next minute asks again.
     resolver.failing.clear()
     resolver.hosts["gonrr.net"] = ["prd-smtp.10minutemail.com"]
+    clock.now += 61
     assert checker.is_disposable("x@gonrr.net") is True
+    assert resolver.calls == ["gonrr.net", "gonrr.net"]
+
+
+def test_a_resolver_failure_is_remembered_as_allowed_for_a_minute():
+    # During an outage every attempt would otherwise wait out the lookup's
+    # deadline on a shared thread, so a failure is answered from the cache.
+    clock = FakeClock()
+    resolver = FakeResolver(failing={"gonrr.net"})
+    checker = _checker(blocked={"10minutemail.com"}, resolver=resolver, clock=clock)
+
+    assert checker.is_disposable("x@gonrr.net") is False
+    clock.now += 59
+    assert checker.is_disposable("y@gonrr.net") is False
+    assert resolver.calls == ["gonrr.net"]
+
+    clock.now += 2  # 61 seconds after the failure
+    assert checker.is_disposable("z@gonrr.net") is False
+    assert resolver.calls == ["gonrr.net", "gonrr.net"]
+
+
+def test_the_failure_ttl_is_its_own_setting():
+    clock = FakeClock()
+    resolver = FakeResolver(failing={"gonrr.net"})
+    checker = _checker(
+        blocked={"10minutemail.com"},
+        resolver=resolver,
+        clock=clock,
+        ttl_seconds=86400,
+        failure_ttl_seconds=5,
+    )
+
+    checker.is_disposable("x@gonrr.net")
+    clock.now += 6
+    checker.is_disposable("x@gonrr.net")
     assert resolver.calls == ["gonrr.net", "gonrr.net"]
 
 

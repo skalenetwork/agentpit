@@ -19,7 +19,10 @@ between two sign-in attempts, and the lookup is the only network call here.
 Fail open, deliberately. This is an abuse filter, not an authentication step,
 and a DNS hiccup that locked real people out of signing in would cost more than
 the throwaway address it was meant to stop. Any resolver failure allows the
-address, logs a warning, and is not cached, so the next attempt asks again.
+address and logs a warning. The failure is remembered as "allowed" for a minute
+only, never as disposable: long enough that an outage does not make every
+sign-in and refresh wait out the lookup's deadline on a shared thread, short
+enough that the next minute asks again.
 
 `data/disposable_allowlist.txt` wins over the blocklist, for the address's own
 domain (no MX lookup at all) and for any mail host it points to: forwarding
@@ -103,6 +106,7 @@ class DisposableEmailChecker:
         resolver: MxResolver | None,
         *,
         ttl_seconds: float = 86400,
+        failure_ttl_seconds: float = 60,
         max_entries: int = 10_000,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -110,6 +114,7 @@ class DisposableEmailChecker:
         self._allowed = allowed
         self._resolver = resolver
         self._ttl = ttl_seconds
+        self._failure_ttl = failure_ttl_seconds
         self._max_entries = max_entries
         self._clock = clock
         # domain -> (verdict, expires_at), least recently used first; the
@@ -156,14 +161,16 @@ class DisposableEmailChecker:
             hosts = self._resolver.mx_hosts(domain)
         except Exception as exc:
             log.warning("MX lookup for %s failed, allowing the address: %r", domain, exc)
-            # Not cached: an outage must not turn into a day of verdicts.
+            # Allowed, and only for a short while: an outage must not turn into
+            # a day of verdicts, and must not make every attempt wait it out.
+            self._remember(domain, None, self._failure_ttl)
             return None
 
         reason = next(
             (f"mx:{blocked}" for host in hosts if (blocked := self._blocked_by(host))),
             None,
         )
-        self._remember(domain, reason)
+        self._remember(domain, reason, self._ttl)
         return reason
 
     def _allowlisted(self, name: str) -> bool:
@@ -189,9 +196,9 @@ class DisposableEmailChecker:
             self._cache.move_to_end(domain)
             return True, verdict
 
-    def _remember(self, domain: str, verdict: str | None) -> None:
+    def _remember(self, domain: str, verdict: str | None, ttl: float) -> None:
         with self._lock:
-            self._cache[domain] = (verdict, self._clock() + self._ttl)
+            self._cache[domain] = (verdict, self._clock() + ttl)
             self._cache.move_to_end(domain)
             while len(self._cache) > self._max_entries:
                 self._cache.popitem(last=False)
