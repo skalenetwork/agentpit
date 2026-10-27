@@ -244,9 +244,9 @@ class LeaderboardService:
 
     def exclude_peer_transfers(self) -> None:
         """Take both wallets of every apUSD transfer read since the last call
-        off the board, unless it was a mint or went through the exchange or
-        the CTF. Gifted capital ranks as earned otherwise. The first call reads
-        the chain from its first block."""
+        off the board, unless it was a mint, moved nothing or went through the
+        exchange or the CTF. Gifted capital ranks as earned otherwise. The
+        first call reads the chain from its first block."""
         global _peer_next_block
         found, _peer_next_block = self._onchain.peer_transfers(_peer_next_block)
         if not found:
