@@ -641,6 +641,10 @@ def _refusal_lines(caplog) -> list[str]:
     return [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
 
 
+def _logged_messages(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records]
+
+
 def test_send_code_logs_the_domain_and_reason_of_a_refusal_never_the_local_part(caplog):
     svc, _db = _service(disposable=_temp_mail_checker())
 
@@ -648,11 +652,11 @@ def test_send_code_logs_the_domain_and_reason_of_a_refusal_never_the_local_part(
         with pytest.raises(DisposableEmailError):
             svc.send_code("secretperson@mailinator.com")
 
-    lines = _refusal_lines(caplog)
-    assert len(lines) == 1
-    assert "domain=mailinator.com" in lines[0]
-    assert "reason=listed" in lines[0]
-    assert "secretperson" not in caplog.text
+    assert _refusal_lines(caplog) == [
+        "refused a code for a temporary-email address: "
+        "domain=mailinator.com reason=listed"
+    ]
+    assert not any("secretperson" in m for m in _logged_messages(caplog))
 
 
 def test_sign_in_logs_a_refusal_with_the_workos_user_id(caplog):
@@ -667,12 +671,11 @@ def test_sign_in_logs_a_refusal_with_the_workos_user_id(caplog):
         with pytest.raises(DisposableEmailError):
             svc.sign_in("secretperson@mailinator.com", code)
 
-    lines = _refusal_lines(caplog)
-    assert len(lines) == 1
-    assert "domain=mailinator.com" in lines[0]
-    assert "reason=listed" in lines[0]
-    assert f"workos_user_id={workos_id}" in lines[0]
-    assert "secretperson" not in caplog.text
+    assert _refusal_lines(caplog) == [
+        "refused a sign-in for a temporary-email address: "
+        f"domain=mailinator.com reason=listed workos_user_id={workos_id}"
+    ]
+    assert not any("secretperson" in m for m in _logged_messages(caplog))
 
 
 def test_refresh_logs_a_refusal_with_the_workos_user_id(caplog):
@@ -689,12 +692,11 @@ def test_refresh_logs_a_refusal_with_the_workos_user_id(caplog):
         with pytest.raises(InvalidCredentialsError):
             svc.refresh(session.refresh_token)
 
-    lines = _refusal_lines(caplog)
-    assert len(lines) == 1
-    assert "domain=mailinator.com" in lines[0]
-    assert "reason=listed" in lines[0]
-    assert f"workos_user_id={workos_id}" in lines[0]
-    assert "secretperson" not in caplog.text
+    assert _refusal_lines(caplog) == [
+        "refused a refresh for a temporary-email account: "
+        f"domain=mailinator.com reason=listed workos_user_id={workos_id}"
+    ]
+    assert not any("secretperson" in m for m in _logged_messages(caplog))
 
 
 def test_ordinary_addresses_are_untouched_by_the_checker():

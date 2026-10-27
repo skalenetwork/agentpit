@@ -117,8 +117,11 @@ def test_resolver_failure_allows_and_is_not_cached_as_blocked(caplog):
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         assert checker.is_disposable("x@gonrr.net") is False
 
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("gonrr.net" in r.getMessage() for r in warnings)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings == [
+        "MX lookup for gonrr.net failed, allowing the address: "
+        "RuntimeError('resolver is down')"
+    ]
 
     # The outage ends and the domain turns out to be a disposable one; the
     # failure was only remembered for a minute, so the next minute asks again.
