@@ -3,27 +3,12 @@
   const list = root.querySelector(".list");
   const detail = root.querySelector("[data-detail]");
   const still = matchMedia("(prefers-reduced-motion: reduce)");
-  const relative = new Intl.RelativeTimeFormat("en-US", { style: "narrow" });
-  const units = [
-    ["day", 86_400],
-    ["hour", 3_600],
-    ["minute", 60],
-  ];
   const rows = () => [...list.querySelectorAll(".row")];
   const hands = () => [...detail.querySelectorAll(".hand")];
   const row = (slug) => rows().find((r) => r.dataset.slug === slug);
   let at = rows()[0].dataset.slug;
   let timed = true;
   let timer;
-  const tick = () => {
-    const now = Date.now() / 1000;
-    for (const time of root.querySelectorAll("time[data-at]")) {
-      const elapsed = Math.max(0, now - Number(time.dataset.at));
-      const unit = units.find(([, size]) => elapsed >= size);
-      time.textContent = unit ? relative.format(-Math.floor(elapsed / unit[1]), unit[0]) : "now";
-      time.classList.toggle("fresh", elapsed < 600);
-    }
-  };
   const arm = () => {
     if (navigator.clipboard) for (const button of detail.querySelectorAll("[data-copy]")) button.hidden = false;
   };
@@ -79,7 +64,6 @@
     }
     for (const old of hands()) if (!kept.has(old.dataset.slug)) old.remove();
     arm();
-    tick();
     if (!still.matches) {
       for (const r of rows()) {
         const old = was.get(r.dataset.slug)?.box;
@@ -125,7 +109,5 @@
   let seen = false;
   new IntersectionObserver(([entry]) => (seen = entry.isIntersecting)).observe(root);
   setInterval(() => !document.hidden && seen && refresh(), 30_000);
-  setInterval(tick, 15_000);
   arm();
-  tick();
 }
