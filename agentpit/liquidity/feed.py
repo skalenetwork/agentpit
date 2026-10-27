@@ -16,7 +16,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError, ConnectionClosedOK
 
 from agentpit.datastructures.user import User
 from agentpit.liquidity.replica import BookReplica, BookSnapshot
@@ -251,6 +251,9 @@ class FeedConnection:
                 if isinstance(exc, ConnectionClosedOK):
                     log.info("mirror feed connection closed (%d assets): %s",
                              len(self.assets), exc)
+                elif isinstance(exc, ConnectionClosedError):
+                    log.warning("mirror feed connection dropped (%d assets): %s",
+                                len(self.assets), exc)
                 else:
                     log.exception("mirror feed connection error (%d assets)",
                                   len(self.assets))

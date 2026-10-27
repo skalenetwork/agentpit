@@ -3,7 +3,7 @@ import json
 import logging
 
 import pytest
-from websockets.exceptions import ConnectionClosedOK
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from websockets.frames import Close
 
 from agentpit.liquidity import feed
@@ -254,6 +254,21 @@ async def test_a_normal_close_drops_the_book_until_the_next_snapshot(monkeypatch
     second.frames.append(_book("PM-YES"))
     await asyncio.sleep(0.1)
     assert st.replicas["PM-YES"].snapshot() is not None
+    await _stop(task)
+
+
+async def test_a_dropped_connection_logs_one_warning_line(monkeypatch, caplog):
+    first, second = FakeWs([_book("PM-YES"), ConnectionClosedError(None, None)]), FakeWs()
+    _fast(monkeypatch, first, second)
+    caplog.set_level(logging.INFO, logger="agentpit.liquidity.feed")
+    _, task = await _connected(MirrorState([_ref()]), first, ["PM-YES"])
+    for _ in range(100):
+        if second.sent:
+            break
+        await asyncio.sleep(0.005)
+    [record] = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert (record.levelno, record.exc_info) == (logging.WARNING, None)
+    assert record.getMessage() == "mirror feed connection dropped (1 assets): no close frame received or sent"
     await _stop(task)
 
 
