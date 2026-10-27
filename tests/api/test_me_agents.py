@@ -7,7 +7,7 @@ import pytest
 from eth_account.signers.local import LocalAccount
 from fastapi.testclient import TestClient
 
-from agentpit.api.deps import get_agent_accounts
+from agentpit.api.deps import get_account_service, get_agent_accounts, get_onchain_admin
 from agentpit.api.main import app
 from agentpit.datastructures.competition import Competition
 from agentpit.datastructures.condition_id import ConditionId
@@ -73,6 +73,7 @@ def test_me_agents_lists_the_signed_in_person_s_agents(sign_in):
         "trend": [],
         "trend_start": None,
         "competitions": [],
+        "next_top_up_at": 0,
     }
 
 
@@ -274,6 +275,49 @@ def test_an_owner_reads_the_open_orders_of_only_their_own_agents(sign_in):
     ]
     assert foreign.status_code == 404
     assert keyed.status_code == 403
+
+
+class _Faucet:
+    """Cash the top-up reads, and the mints it makes."""
+
+    deployment_id = "0xFAKE"
+
+    def __init__(self, cash: int):
+        self.cash = cash
+        self.mints: list[tuple[str, int]] = []
+
+    def usd_balance(self, address: str) -> int:
+        return self.cash
+
+    def mint_to(self, recipient: str, amount_raw: int, *, timeout: int = 30):
+        self.mints.append((recipient, amount_raw))
+
+
+class _NoPositions:
+    def total_value(self, address: str) -> list[dict]:
+        return []
+
+
+def test_an_owner_tops_up_only_their_own_agents_and_the_list_shows_the_next_one(sign_in, monkeypatch):
+    accounts = _accounts()
+    faucet = _Faucet(3 * G // 4)
+    with TestClient(app) as client:
+        headers, owner = _owner(client, sign_in, "owner@example.com")
+        mine = accounts.agent_for(owner, "Claude", None, None)
+        other = accounts.agent_for("user_someone_else", "Claude", None, None)
+        monkeypatch.setitem(app.dependency_overrides, get_onchain_admin, lambda: faucet)
+        monkeypatch.setitem(app.dependency_overrides, get_account_service, lambda: _NoPositions())
+
+        topped = client.post(f"/me/agents/{mine.eth_address.lower()}/top-up", headers=headers)
+        listed = client.get("/me/agents", headers=headers).json()
+        foreign = client.post(f"/me/agents/{other.eth_address}/top-up", headers=headers)
+
+    assert topped.status_code == 200
+    body = topped.json()
+    assert (body["balance"], body["minted"]) == (str(G), str(G // 4))
+    assert listed[0]["next_top_up_at"] == body["nextAllowedAt"] >= NOW + DAY
+    assert foreign.status_code == 404
+    assert faucet.mints == [(mine.eth_address, G // 4)]
 
 
 def test_a_deleted_agent_leaves_the_list_and_its_key_stops_working(sign_in):

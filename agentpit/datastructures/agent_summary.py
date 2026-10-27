@@ -37,3 +37,4 @@ class OwnedAgent(AgentSummary):
     trend: list[str] = []
     trend_start: date | None = None
     competitions: list[str] = []
+    next_top_up_at: int = 0
