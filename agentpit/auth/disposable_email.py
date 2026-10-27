@@ -21,11 +21,13 @@ and a DNS hiccup that locked real people out of signing in would cost more than
 the throwaway address it was meant to stop. Any resolver failure allows the
 address, logs a warning, and is not cached, so the next attempt asks again.
 
-`data/disposable_allowlist.txt` wins over the blocklist: forwarding services
-(Apple's hide-my-email, SimpleLogin, addy.io, Firefox Relay, DuckDuckGo) hand
-out addresses that look disposable and are not, since a real inbox sits behind
-them. The blocklist is never fetched at runtime; `scripts/update_disposable_domains.py`
-refreshes it by hand, so what runs is what was reviewed.
+`data/disposable_allowlist.txt` wins over the blocklist, for the address's own
+domain (no MX lookup at all) and for any mail host it points to: forwarding
+services (Apple's hide-my-email, SimpleLogin, addy.io, Firefox Relay,
+DuckDuckGo) hand out addresses that look disposable and are not, since a real
+inbox sits behind them. The blocklist is never fetched at runtime;
+`scripts/update_disposable_domains.py` refreshes it by hand, so what runs is
+what was reviewed.
 """
 import logging
 import threading
@@ -120,6 +122,9 @@ class DisposableEmailChecker:
             return False
         domain = email.rsplit("@", 1)[1].lower().rstrip(".")
         if not domain:
+            return False
+        # The allowlist wins outright: no list check, no MX lookup, no cache.
+        if any(suffix in self._allowed for suffix in _suffixes(domain)):
             return False
         if self._listed(domain):
             return True

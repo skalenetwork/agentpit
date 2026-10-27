@@ -66,6 +66,31 @@ def test_allowlist_wins_for_subdomains():
     assert checker.is_disposable("me@alice.anonaddy.com") is False
 
 
+def test_an_allowlisted_address_domain_skips_the_mx_lookup():
+    # duck.com forwards to a real inbox even when its mail host is one a
+    # temporary-mail service also uses: the allowlist wins, and DNS is not asked.
+    resolver = FakeResolver({"duck.com": ["mx.10minutemail.com"]})
+    checker = _checker(
+        blocked={"10minutemail.com"}, allowed={"duck.com"}, resolver=resolver
+    )
+
+    assert checker.is_disposable("me@duck.com") is False
+    assert checker.is_disposable("me@sub.duck.com") is False
+    assert resolver.calls == []
+
+
+def test_a_mail_host_that_is_both_blocked_and_allowed_is_not_disposable():
+    # An alias service the list carries and the allowlist excuses: a domain whose
+    # mail goes to it is a person's alias, not a throwaway inbox.
+    resolver = FakeResolver({"example.org": ["mx1.simplelogin.com"]})
+    checker = _checker(
+        blocked={"simplelogin.com"}, allowed={"simplelogin.com"}, resolver=resolver
+    )
+
+    assert checker.is_disposable("me@example.org") is False
+    assert resolver.calls == ["example.org"]
+
+
 def test_mx_on_a_listed_provider_is_disposable():
     resolver = FakeResolver({"gonrr.net": ["prd-smtp.10minutemail.com"]})
     checker = _checker(blocked={"10minutemail.com"}, resolver=resolver)
