@@ -126,6 +126,32 @@ def test_resolver_failure_allows_and_is_not_cached_as_blocked(caplog):
     assert resolver.calls == ["gonrr.net", "gonrr.net"]
 
 
+def test_verdict_says_listed_for_a_blocklisted_address_domain():
+    checker = _checker(blocked={"mailinator.com"})
+    assert checker.verdict("a@x.mailinator.com") == "listed"
+
+
+def test_verdict_names_the_listed_domain_of_the_mail_host():
+    resolver = FakeResolver({"gonrr.net": ["mx1.example.org", "prd-smtp.10minutemail.com"]})
+    checker = _checker(blocked={"10minutemail.com"}, resolver=resolver)
+
+    assert checker.verdict("x@gonrr.net") == "mx:10minutemail.com"
+    # Served from the cache the second time, with the same reason.
+    assert checker.verdict("y@gonrr.net") == "mx:10minutemail.com"
+    assert resolver.calls == ["gonrr.net"]
+
+
+def test_verdict_is_none_for_an_allowed_address():
+    resolver = FakeResolver({"example.org": ["aspmx.l.google.com"]})
+    checker = _checker(
+        blocked={"10minutemail.com"}, allowed={"duck.com"}, resolver=resolver
+    )
+
+    assert checker.verdict("x@example.org") is None
+    assert checker.verdict("x@duck.com") is None
+    assert checker.verdict("nobody") is None
+
+
 def test_verdicts_are_cached():
     resolver = FakeResolver({"example.org": ["aspmx.l.google.com"]})
     checker = _checker(resolver=resolver)

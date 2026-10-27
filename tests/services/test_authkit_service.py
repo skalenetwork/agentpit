@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from agentpit.auth.disposable_email import DisposableEmailChecker
@@ -630,6 +632,69 @@ def test_refresh_of_a_temporary_email_account_is_refused_as_invalid_session():
 
     with pytest.raises(InvalidCredentialsError):
         svc.refresh(session.refresh_token)
+
+
+LOGGER = "agentpit.services.authkit_service"
+
+
+def _refusal_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
+
+
+def test_send_code_logs_the_domain_and_reason_of_a_refusal_never_the_local_part(caplog):
+    svc, _db = _service(disposable=_temp_mail_checker())
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        with pytest.raises(DisposableEmailError):
+            svc.send_code("secretperson@mailinator.com")
+
+    lines = _refusal_lines(caplog)
+    assert len(lines) == 1
+    assert "domain=mailinator.com" in lines[0]
+    assert "reason=listed" in lines[0]
+    assert "secretperson" not in caplog.text
+
+
+def test_sign_in_logs_a_refusal_with_the_workos_user_id(caplog):
+    workos, onboarder = FakeWorkOsClient(), _Onboarder()
+    open_svc, _db = _service(workos, onboarder)
+    open_svc.send_code("secretperson@mailinator.com")
+    code = workos.last_code("secretperson@mailinator.com")
+    workos_id = workos.find_user_by_email("secretperson@mailinator.com").workos_user_id
+    svc, _db = _service(workos, onboarder, disposable=_temp_mail_checker())
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        with pytest.raises(DisposableEmailError):
+            svc.sign_in("secretperson@mailinator.com", code)
+
+    lines = _refusal_lines(caplog)
+    assert len(lines) == 1
+    assert "domain=mailinator.com" in lines[0]
+    assert "reason=listed" in lines[0]
+    assert f"workos_user_id={workos_id}" in lines[0]
+    assert "secretperson" not in caplog.text
+
+
+def test_refresh_logs_a_refusal_with_the_workos_user_id(caplog):
+    workos = FakeWorkOsClient()
+    open_svc, _db = _service(workos)
+    open_svc.send_code("secretperson@mailinator.com")
+    session = open_svc.sign_in(
+        "secretperson@mailinator.com", workos.last_code("secretperson@mailinator.com")
+    )
+    workos_id = workos.find_user_by_email("secretperson@mailinator.com").workos_user_id
+    svc, _db = _service(workos, disposable=_temp_mail_checker())
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        with pytest.raises(InvalidCredentialsError):
+            svc.refresh(session.refresh_token)
+
+    lines = _refusal_lines(caplog)
+    assert len(lines) == 1
+    assert "domain=mailinator.com" in lines[0]
+    assert "reason=listed" in lines[0]
+    assert f"workos_user_id={workos_id}" in lines[0]
+    assert "secretperson" not in caplog.text
 
 
 def test_ordinary_addresses_are_untouched_by_the_checker():

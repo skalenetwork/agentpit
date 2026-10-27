@@ -81,6 +81,15 @@ def _suffixes(name: str) -> Iterator[str]:
         yield ".".join(labels[start:])
 
 
+def email_domain(email: str) -> str:
+    """The lower-case domain after the last "@", without a trailing dot; empty
+    when there is no "@" or nothing after it. The one normalisation the checker
+    judges and the service logs, so a refusal's log line names what was judged."""
+    if "@" not in email:
+        return ""
+    return email.rsplit("@", 1)[1].lower().rstrip(".")
+
+
 def _load(path: Path) -> frozenset[str]:
     lines = (line.strip().lower() for line in path.read_text(encoding="utf-8").splitlines())
     return frozenset(line for line in lines if line and not line.startswith("#"))
@@ -103,10 +112,11 @@ class DisposableEmailChecker:
         self._ttl = ttl_seconds
         self._max_entries = max_entries
         self._clock = clock
-        # domain -> (verdict, expires_at), least recently used first. Sign-in
-        # runs on a thread pool, so every touch of it holds the lock; the DNS
-        # call itself does not, or one slow lookup would stall every sign-in.
-        self._cache: OrderedDict[str, tuple[bool, float]] = OrderedDict()
+        # domain -> (verdict, expires_at), least recently used first; the
+        # verdict is `verdict()`'s answer, None for "allowed". Sign-in runs on a
+        # thread pool, so every touch of it holds the lock; the DNS call itself
+        # does not, or one slow lookup would stall every sign-in.
+        self._cache: OrderedDict[str, tuple[str | None, float]] = OrderedDict()
         self._lock = threading.Lock()
 
     @classmethod
@@ -118,54 +128,68 @@ class DisposableEmailChecker:
         )
 
     def is_disposable(self, email: str) -> bool:
-        if "@" not in email:
-            return False
-        domain = email.rsplit("@", 1)[1].lower().rstrip(".")
-        if not domain:
-            return False
-        # The allowlist wins outright: no list check, no MX lookup, no cache.
-        if any(suffix in self._allowed for suffix in _suffixes(domain)):
-            return False
-        if self._listed(domain):
-            return True
-        if self._resolver is None:
-            return False
+        return self.verdict(email) is not None
 
-        cached = self._cached(domain)
-        if cached is not None:
+    def verdict(self, email: str) -> str | None:
+        """None when the address is allowed, otherwise why it is not.
+
+        "listed" is the address's own domain being on the blocklist;
+        "mx:<domain>" is its mail going to a host under that blocklisted domain.
+        A short reason for a log line, never the address itself.
+        """
+        domain = email_domain(email)
+        if not domain:
+            return None
+        # The allowlist wins outright: no list check, no MX lookup, no cache.
+        if self._allowlisted(domain):
+            return None
+        if self._blocked_by(domain) is not None:
+            return "listed"
+        if self._resolver is None:
+            return None
+
+        hit, cached = self._cached(domain)
+        if hit:
             return cached
 
         try:
             hosts = self._resolver.mx_hosts(domain)
         except Exception as exc:
-            # Not cached: an outage must not turn into a day of verdicts.
             log.warning("MX lookup for %s failed, allowing the address: %r", domain, exc)
-            return False
+            # Not cached: an outage must not turn into a day of verdicts.
+            return None
 
-        verdict = any(self._listed(host) for host in hosts)
-        self._remember(domain, verdict)
-        return verdict
+        reason = next(
+            (f"mx:{blocked}" for host in hosts if (blocked := self._blocked_by(host))),
+            None,
+        )
+        self._remember(domain, reason)
+        return reason
 
-    def _listed(self, name: str) -> bool:
-        """On the blocklist by itself or a parent, and under no allowlisted domain."""
-        suffixes = tuple(_suffixes(name))
-        if any(s in self._allowed for s in suffixes):
-            return False
-        return any(s in self._blocked for s in suffixes)
+    def _allowlisted(self, name: str) -> bool:
+        return any(s in self._allowed for s in _suffixes(name))
 
-    def _cached(self, domain: str) -> bool | None:
+    def _blocked_by(self, name: str) -> str | None:
+        """The blocklisted domain `name` is on or under, or None. A name under an
+        allowlisted domain is never blocked."""
+        if self._allowlisted(name):
+            return None
+        return next((s for s in _suffixes(name) if s in self._blocked), None)
+
+    def _cached(self, domain: str) -> tuple[bool, str | None]:
+        """(hit, verdict): a cached "allowed" is (True, None), a miss (False, None)."""
         with self._lock:
             entry = self._cache.get(domain)
             if entry is None:
-                return None
+                return False, None
             verdict, expires_at = entry
             if self._clock() >= expires_at:
                 del self._cache[domain]
-                return None
+                return False, None
             self._cache.move_to_end(domain)
-            return verdict
+            return True, verdict
 
-    def _remember(self, domain: str, verdict: bool) -> None:
+    def _remember(self, domain: str, verdict: str | None) -> None:
         with self._lock:
             self._cache[domain] = (verdict, self._clock() + self._ttl)
             self._cache.move_to_end(domain)

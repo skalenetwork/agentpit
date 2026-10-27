@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from psycopg.errors import UniqueViolation
 
-from agentpit.auth.disposable_email import DisposableEmailChecker
+from agentpit.auth.disposable_email import DisposableEmailChecker, email_domain
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
@@ -134,8 +134,17 @@ class AuthKitService:
                         retry_after=self.RATE_LIMIT_WINDOW_SECONDS
                     )
 
-        if self._disposable and self._disposable.is_disposable(email):
-            raise DisposableEmailError()
+        if self._disposable is not None:
+            reason = self._disposable.verdict(email)
+            if reason is not None:
+                # The domain and the reason only: a log line must never carry
+                # the part before the "@".
+                log.info(
+                    "refused a code for a temporary-email address: domain=%s reason=%s",
+                    email_domain(email),
+                    reason,
+                )
+                raise DisposableEmailError()
 
         self._workos.send_magic_auth_code(email)
 
@@ -193,15 +202,34 @@ class AuthKitService:
         # for a code requested before the filter existed, one the checker let
         # through while DNS was down, and the redirect door (Google, the hosted
         # UI), which reports the address only after the exchange.
-        if self._disposable and self._disposable.is_disposable(session.email):
+        reason = (
+            self._disposable.verdict(session.email)
+            if self._disposable is not None
+            else None
+        )
+        if reason is not None:
+            # The domain, the reason and the WorkOS id: enough to trace a
+            # refusal, and never the part of the address before the "@".
             if create:
-                log.info("refused a sign-in for a temporary-email address")
+                log.info(
+                    "refused a sign-in for a temporary-email address: "
+                    "domain=%s reason=%s workos_user_id=%s",
+                    email_domain(session.email),
+                    reason,
+                    session.workos_user_id,
+                )
                 raise DisposableEmailError()
             # A refresh is 401, not 400: the console's `renew()` ends the
             # session on a 401 and on nothing else, so an account whose address
             # has since reached the list loses its session at the next refresh
             # instead of keeping it for as long as it keeps refreshing.
-            log.info("refused a refresh for a temporary-email account")
+            log.info(
+                "refused a refresh for a temporary-email account: "
+                "domain=%s reason=%s workos_user_id=%s",
+                email_domain(session.email),
+                reason,
+                session.workos_user_id,
+            )
             raise InvalidCredentialsError("invalid session")
         if create:
             with self._db.write() as conn:
