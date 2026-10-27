@@ -7,6 +7,8 @@ bcrypt>=4.1,<5.0
 coincurve>=21,<22
 # PyJWT checks RS256 signatures with it; 50 has the fixed bundled OpenSSL.
 cryptography>=50
+# MX lookup for the temporary-email check; email-validator also pulls it in.
+dnspython>=2.9,<3
 # pydantic's EmailStr.
 email-validator>=2.1,<3.0
 eth-abi
