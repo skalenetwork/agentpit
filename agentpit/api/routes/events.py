@@ -30,7 +30,7 @@ _EVENTS_CACHE_MAX = 32
 _EVENTS_CACHE_MAX_LIMIT = 100
 _events_cache_lock = threading.Lock()
 _events_cache: dict[
-    tuple[int, int, str | None, str | None, tuple[str, ...], str],
+    tuple[int, int, str | None, str | None, tuple[str, ...], str, bool | None],
     tuple[float, list[GammaEvent]],
 ] = {}
 
@@ -44,6 +44,7 @@ def _list_events_cached(
     tag: str | None = None,
     subtags: list[str] | None = None,
     sort: str | None = None,
+    closed: bool | None = None,
     now: float,
 ) -> list[GammaEvent]:
     """Return the cached page if it is younger than the TTL, else fetch + store.
@@ -75,6 +76,7 @@ def _list_events_cached(
         # `sort` at all produce the same page, so they must share one entry
         # rather than filling the cache with junk keys.
         resolved_sort.value,
+        closed,
     )
     hit = _events_cache.get(key)
     if hit is not None and now - hit[0] < _EVENTS_TTL_S:
@@ -86,6 +88,7 @@ def _list_events_cached(
         tag=normalized_tag,
         subtags=list(normalized_subtags),
         sort=resolved_sort,
+        closed=closed,
     )
     if limit > _EVENTS_CACHE_MAX_LIMIT:
         return result
@@ -106,6 +109,7 @@ def list_events(
     tag: str | None = None,
     subtag: Annotated[list[str] | None, Query()] = None,
     sort: str | None = None,
+    closed: bool | None = None,
 ) -> list[GammaEvent]:
     return _list_events_cached(
         service,
@@ -115,6 +119,7 @@ def list_events(
         tag=tag,
         subtags=subtag,
         sort=sort,
+        closed=closed,
         now=time.monotonic(),
     )
 

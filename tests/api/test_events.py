@@ -97,6 +97,28 @@ def test_list_events_rejects_bad_pagination(client_and_db):
     assert resp.status_code == 400
 
 
+def test_list_events_closed_filter_follows_the_events_markets(client_and_db):
+    client, session = client_and_db
+    with session.write() as conn:
+        live = TableWrite.upsert_event(conn, slug="live", title="Live")
+        done = TableWrite.upsert_event(conn, slug="done", title="Done")
+    _seed_market(session, question="still open?", cond_id=_hex32("op"), event_id=live.event_id)
+    settled = [
+        _seed_market(session, question="settled?", cond_id=_hex32("st"), event_id=live.event_id),
+        _seed_market(session, question="over?", cond_id=_hex32("ov"), event_id=done.event_id),
+    ]
+    with session.write() as conn:
+        for m in settled:
+            TableWrite.set_market_state(conn, m.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0))
+
+    def events(query: str) -> list[dict]:
+        return client.get(f"/events?limit=10&offset=0&{query}").json()
+
+    [open_event] = events("closed=false")
+    assert (open_event["slug"], len(open_event["markets"])) == ("live", 2)
+    assert [e["slug"] for e in events("closed=true")] == ["done"]
+
+
 def test_list_events_can_filter_by_category(client_and_db):
     # Politics rather than Sports: Sports is in `Settings.excluded_categories`
     # by default, so using it here would test the exclusion, not the filter.

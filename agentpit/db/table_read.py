@@ -18,7 +18,7 @@ from agentpit.datastructures.event import Event
 from agentpit.datastructures.event_sort import EventSort
 from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_context import MarketContext
-from agentpit.datastructures.market_state import MarketState
+from agentpit.datastructures.market_state import CLOSED_STATES, MarketState
 from agentpit.datastructures.user import User
 from agentpit.liquidity.tape import MIRROR_API_KEY
 from ..datastructures.condition_id import ConditionId
@@ -1458,6 +1458,7 @@ class TableRead:
         tag: str | None = None,
         subtags: "list[str] | None" = None,
         sort: "EventSort | None" = None,
+        closed: bool | None = None,
         excluded_categories: "Iterable[str] | None" = None,
         excluded_tags: "Iterable[str] | None" = None,
     ) -> "tuple[list[tuple[Event, list[Market]]], int]":
@@ -1495,6 +1496,9 @@ class TableRead:
         ended months ago, since a never-ending stream of past events sorts
         before every future one. No other sort is restricted — a stale event
         still belongs in "Newest" or "Total Volume".
+
+        ``closed`` is Polymarket's event flag: an event is closed once none of
+        its markets is left open, which is what ``closed=false`` excludes.
         """
         # Predicates accumulate and are joined with AND; the tag filters are
         # EXISTS subqueries because an event's tag set lives on its markets.
@@ -1536,6 +1540,12 @@ class TableRead:
                 "WHERE m.EVENT_ID = events.EVENT_ID AND mt.SLUG = ANY(%s))"
             )
             params.append(normalized_subtags)
+        if closed is not None:
+            clauses.append(
+                f"{'NOT ' if closed else ''}EXISTS (SELECT 1 FROM markets m "
+                "WHERE m.EVENT_ID = events.EVENT_ID AND COALESCE(m.MARKET_STATE, 'DRAFT') <> ALL(%s))"
+            )
+            params.append([s.value for s in CLOSED_STATES])
         if resolved_sort is EventSort.ENDING_SOON:
             # Scoped to this one sort: "Ending Soon" is the only ordering an
             # already-ended event would otherwise lead, because ASC over the
@@ -1591,6 +1601,8 @@ class TableRead:
         condition_ids: list[str] | None = None,
         clob_token_ids: list[str] | None = None,
         polymarket_condition_id: str | None = None,
+        active: bool | None = None,
+        closed: bool | None = None,
         excluded_categories: "Iterable[str] | None" = None,
         excluded_tags: "Iterable[str] | None" = None,
     ) -> "list[Market]":
@@ -1600,6 +1612,10 @@ class TableRead:
         parameter rather than a fixed rule because the direct lookups that also
         come through here are addressing a known market, not browsing, and must
         keep resolving it.
+
+        `active` and `closed` match the Gamma fields of the same names (see
+        `to_gamma_market`), so a Polymarket client's `closed=false` gets only
+        the markets it would read as open.
         """
         clauses: list[str] = []
         params: list = []
@@ -1622,6 +1638,12 @@ class TableRead:
         if polymarket_condition_id is not None:
             clauses.append("POLYMARKET_CONDITION_ID = %s")
             params.append(polymarket_condition_id)
+        if active is not None:
+            clauses.append(f"COALESCE(MARKET_STATE, 'DRAFT') {'=' if active else '<>'} %s")
+            params.append(MarketState.ACTIVE.value)
+        if closed is not None:
+            clauses.append(f"COALESCE(MARKET_STATE, 'DRAFT') {'= ANY' if closed else '<> ALL'}(%s)")
+            params.append([s.value for s in CLOSED_STATES])
         if clob_token_ids:
             # Match markets whose ERC1155_TOKENS JSON contains any given token id.
             # Quote-anchored, wildcards escaped (see resolve.resolve_by_token_id).

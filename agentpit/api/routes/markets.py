@@ -37,6 +37,8 @@ def list_markets(
     condition_ids: str | None = None,
     clob_token_ids: str | None = None,
     polymarket_condition_id: str | None = None,
+    active: bool | None = None,
+    closed: bool | None = None,
 ) -> list[GammaMarket]:
     return service.list_markets_gamma(
         limit=limit,
@@ -46,6 +48,8 @@ def list_markets(
         condition_ids=_csv(condition_ids, "condition_ids"),
         clob_token_ids=_csv(clob_token_ids, "clob_token_ids"),
         polymarket_condition_id=polymarket_condition_id,
+        active=active,
+        closed=closed,
     )
 
 

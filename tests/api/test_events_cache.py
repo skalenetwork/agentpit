@@ -1,7 +1,7 @@
 """The /events listing has a short-TTL response cache so a high client poll
 rate collapses to ~one DB read per TTL window.
 
-The cache key is `(limit, offset, category, tag, sorted_subtags)`: once the
+The cache key is `(limit, offset, category, tag, sorted_subtags, sort, closed)`: once the
 listing gained a category filter, keying on `(limit, offset)` alone would serve
 one category's page to every other category. Similarly, tag and subtags filters
 must be part of the key to avoid serving a filtered page to an unfiltered
@@ -32,6 +32,7 @@ class _FakeService:
         tag: str | None = None,
         subtags: list[str] | None = None,
         sort=None,
+        closed=None,
     ):
         self.calls += 1
         return [f"page-{limit}-{offset}-{category}-call{self.calls}"]
@@ -128,3 +129,10 @@ def test_an_insert_drops_every_expired_entry():
         svc, limit=20, offset=0, category="new", now=100.0 + _EVENTS_TTL_S
     )
     assert [key[2] for key in events._events_cache] == ["new"]
+
+
+def test_open_and_unfiltered_pages_cache_independently():
+    svc = _FakeService()
+    _list_events_cached(svc, limit=20, offset=0, closed=False, now=100.0)
+    _list_events_cached(svc, limit=20, offset=0, now=100.0)
+    assert svc.calls == 2

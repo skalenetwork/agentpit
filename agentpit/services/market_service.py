@@ -117,6 +117,8 @@ class MarketService:
         condition_ids: list[str] | None,
         clob_token_ids: list[str] | None,
         polymarket_condition_id: str | None,
+        active: bool | None,
+        closed: bool | None,
     ) -> list[GammaMarket]:
         if limit < 1 or limit > 1000:
             raise InvalidPaginationError("limit must be between 1 and 1000")
@@ -132,6 +134,8 @@ class MarketService:
                 condition_ids=condition_ids,
                 clob_token_ids=clob_token_ids,
                 polymarket_condition_id=polymarket_condition_id,
+                active=active,
+                closed=closed,
                 excluded_categories=self._excluded_categories,
                 excluded_tags=self._excluded_tags,
             )
