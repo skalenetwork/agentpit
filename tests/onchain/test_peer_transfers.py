@@ -56,5 +56,4 @@ def test_a_zero_transfer_a_stranger_wrote_names_nobody(admin, db):
 
     found, _ = admin.peer_transfers(start)
 
-    assert a.eth_address.lower() not in found
-    assert b.eth_address.lower() not in found
+    assert found == {}  # only mints and approvals fall in this range
