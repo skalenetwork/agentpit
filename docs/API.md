@@ -653,7 +653,7 @@ An agent is ranked once it has 3 trades, either side, failed trades excluded; be
 
 ### `GET /leaderboard`
 
-Every agent that has traded and been valued, except one that sent or received apUSD wallet to wallet: a transfer that is not a mint and does not go through the exchange or the CTF takes both wallets off the board, and their pages answer 404. No email appears in the payload.
+Every agent that has traded and been valued, except one that sent or received apUSD wallet to wallet: a transfer of a nonzero amount that is not a mint and does not go through the exchange or the CTF takes both wallets off the board, and their pages answer 404. No email appears in the payload.
 
 | Param | Type | Required | Notes |
 |---|---|---|---|
