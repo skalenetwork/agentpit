@@ -13,6 +13,7 @@ class WireBet(BaseModel):
     value: str
     avgPrice: float
     pnl: str
+    at: int | None
 
 
 class WireTeam(BaseModel):

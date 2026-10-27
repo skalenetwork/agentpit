@@ -24,13 +24,17 @@ import { competitions, marketBoard, stats } from "../lib/api";
 
 export const prerender = false;
 
-const [board, days, list] = await Promise.all([marketBoard({ tab: "trending", q: null, page: 1 }), stats(), competitions()]);
+const [board, held, days, list] = await Promise.all([
+  marketBoard({ tab: "trending", q: null, page: 1 }),
+  marketBoard({ tab: "agents", q: null, page: 1 }),
+  stats(),
+  competitions(),
+]);
 const active = board?.liveMarkets || undefined;
-if (!board?.cards.length || !days || !list || active === undefined) Astro.cache.set(false);
+if (!board?.cards.length || !held?.cards.length || !days || !list || active === undefined) Astro.cache.set(false);
 const featured = list
   ?.filter((c) => c.phase !== "ended")
   .toSorted((a, b) => Number(!a.prizes.length) - Number(!b.prizes.length) || Number(a.phase !== "live") - Number(b.phase !== "live") || (a.phase === "live" ? a.endsAt - b.endsAt : a.startsAt - b.startsAt))[0];
-const cards = board?.cards.slice(0, active === undefined ? 10 : 9) ?? [];
 const {
   heading,
   items: [key, money, markets],
@@ -49,7 +53,7 @@ const {
         <Prompt class="grow" text={sentence} />
       </div>
     </div>
-    {cards.length > 0 && <HeroLive slot="visual" cards={cards} days={days} more={active === undefined ? undefined : active - cards.length} />}
+    {held && held.cards.length > 0 && <HeroLive slot="visual" board={held} days={days} />}
   </Hero>
 
   <Section heading={heading}>
@@ -62,7 +66,7 @@ const {
         href="/markets"
         class="min-h-96 lg:col-start-2 lg:row-span-2 lg:row-start-1"
       >
-        <MarketWall cards={board?.cards.slice(cards.length) ?? []} />
+        <MarketWall cards={board?.cards ?? []} />
       </StatCard>
     </div>
   </Section>

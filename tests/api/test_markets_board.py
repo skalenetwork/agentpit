@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from agentpit.api.deps import get_db_session, get_onchain_admin
 from agentpit.api.main import app
+from agentpit.datastructures.bet import Bet, BetFill
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market import Market
@@ -434,6 +435,7 @@ def test_tabs_count_live_events_and_trending_follows_volume(house_book):
             "value": "10000000",
             "avgPrice": 0.5,
             "pnl": "1000000",
+            "at": None,
         }
     ]
     assert [b["name"] for b in fed["outcomes"][1]["bets"]] == ["Ada"]
@@ -493,7 +495,7 @@ def test_agents_ending_and_settled_tabs(house_book):
         held = _get(client, tab="agents")
         ending = _get(client, tab="ending")
         settled = _get(client, tab="settled")
-    assert [c["slug"] for c in held["cards"]] == ["fed", "local", "super-bowl"]
+    assert [c["slug"] for c in held["cards"]] == ["fed", "super-bowl", "local"]
     assert [c["slug"] for c in ending["cards"]] == [
         "nfl-atl-no",
         "cs2-m80",
@@ -518,7 +520,44 @@ def test_agents_ending_and_settled_tabs(house_book):
             "value": "100000000",
             "avgPrice": 0.5,
             "pnl": "60000000",
+            "at": None,
         }
+    ]
+
+
+def _traded(slug: str, side: int, *at: int) -> tuple[PositionWire, Bet]:
+    """An open position on `slug` and its bet, traded at each of `at`, then redeemed now."""
+    token, condition = f"{slug}-{side}", "0x" + hashlib.sha256(slug.encode()).hexdigest()
+    fills = [BetFill(at=t, side="BUY", shares=2.0, price=0.5, dollars="1000000", tx=None) for t in at]
+    bet = Bet(
+        id=token, conditionId=condition, title=slug, icon=None, url=None, outcome="Yes", status="open", openedAt=min(at),
+        closedAt=None, buys=len(at), sells=0, entry=0.5, exit=None, shares=2.0, sold=0.0, held=2.0, cost="1000000",
+        back="0", value="1000000", sellsFor="0", pnl="0", prices=None,
+        fills=[BetFill(at=NOW, side="REDEEM", shares=0.0, price=None, dollars="0", tx=None), *fills],
+    )
+    position = PositionWire(asset=token, conditionId=condition, outcome="Yes", outcomeIndex=side, avgPrice=0.5, currentValue=1.0)
+    return position, bet
+
+
+def test_the_agents_tab_leads_with_crowds_traded_today_then_the_newest_trade(house_book):
+    agents = _world(house_book)
+    conn = fresh_test_conn()
+    cara = _agent(conn, "Cara")
+    conn.close()
+    held = {
+        agents["ada"]: [_traded("hike", 0, NOW - 3600), _traded("filler-0", 0, NOW - 60), _traded("filler-2", 0, NOW - 3 * DAY)],
+        agents["bob"]: [_traded("cut", 0, NOW - 4000, NOW - 600), _traded("filler-0", 1, NOW - 7200), _traded("local", 0, NOW - 2 * DAY)],
+        cara: [_traded("hold", 0, NOW - 5 * DAY), _traded("filler-1", 0, NOW - 30), _traded("filler-2", 1, NOW - 3 * DAY)],
+    }
+    for address, pairs in held.items():
+        _holdings[address] = Holdings(NOW, 0, [p for p, _ in pairs], [], [b for _, b in pairs])
+    with TestClient(app) as client:
+        cards = _get(client, tab="agents")["cards"]
+    assert [c["slug"] for c in cards] == ["fed", "filler-0", "filler-1", "filler-2", "local"]
+    assert [(b["name"], b["at"]) for o in cards[0]["outcomes"] for b in o["bets"]] == [
+        ("Bob", NOW - 600),
+        ("Cara", NOW - 5 * DAY),
+        ("Ada", NOW - 3600),
     ]
 
 

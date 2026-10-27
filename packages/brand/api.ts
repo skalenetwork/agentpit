@@ -398,6 +398,7 @@ interface WireBoardBet {
   readonly value: string;
   readonly avgPrice: number;
   readonly pnl: string;
+  readonly at: number | null;
 }
 
 export interface Team {

@@ -1,28 +1,32 @@
 ---
 import { Bot, Check, Copy, Plus } from "@lucide/astro";
-import { agentPrompt, type Card, type CardBet } from "@agentpit/brand/api";
-import { cents, count, dollars, tone } from "@agentpit/brand/format";
+import { agentPrompt, type Board, type Card, type CardBet } from "@agentpit/brand/api";
+import { ago, cents, compactDollars, count, dollars, tone } from "@agentpit/brand/format";
 import SkaleOnBase from "../assets/skale-on-base.svg";
 import SkaleShort from "../assets/skale-short.svg";
 import type { StatsDay } from "../lib/api";
-import { noun } from "../lib/leaderboard";
 import hero from "../scripts/hero.js?raw";
 import AgentAvatar from "./AgentAvatar.astro";
 import Glyph from "./agent/Glyph.astro";
 
 interface Props {
-  cards: readonly Card[];
+  board: Board;
   days: readonly StatsDay[] | undefined;
-  more: number | undefined;
 }
 
-const { cards, days, more } = Astro.props;
+const { board, days } = Astro.props;
+const cards = board.cards.slice(0, 9);
+const more = board.total - cards.length;
+const now = Date.now() / 1000;
 const short = (title: string) => title.split(" (")[0].replace(/\?$/, "");
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", signDisplay: "exceptZero" });
 const large = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", minimumFractionDigits: 0, maximumFractionDigits: 1, signDisplay: "exceptZero" });
 const signed = (value: number) => (Math.abs(value) < 1000 ? money : large).format(value).replace("-", "−");
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const sum = (bets: readonly CardBet[], of: (bet: CardBet) => number) => bets.reduce((total, bet) => total + of(bet), 0);
+const traded = (bets: readonly CardBet[]) => Math.max(0, ...bets.map((bet) => bet.at ?? 0));
+const pick = (card: Card, bet: CardBet) =>
+  card.kind === "multi" && (bet.side === "Yes" || bet.side === "No") ? `${bet.side === "Yes" ? "on" : "against"} ${short(card.outcomes[bet.row].label)}` : `on ${bet.side}`;
 const ticket = (card: Card, bets: readonly CardBet[]) => {
   const [bet] = bets;
   const row = card.outcomes[bet.row].label;
@@ -40,41 +44,56 @@ const ticket = (card: Card, bets: readonly CardBet[]) => {
     value: sum(bets, (b) => b.value),
     stake: sum(bets, (b) => b.value - b.pnl),
     pnl: sum(bets, (b) => b.pnl),
+    at: traded(bets),
   };
 };
 const markets = cards.map((card) => {
   const tickets = card.agents.map((address) => ticket(card, card.bets.filter((bet) => bet.agent === address))).sort((a, b) => b.value - a.value);
-  return { card, seats: [0, 1, 2].map((k) => tickets.at(k)), prompt: agentPrompt(card) };
+  const latest = card.bets.toSorted((a, b) => (b.at ?? 0) - (a.at ?? 0))[0];
+  return {
+    card,
+    at: traded(card.bets),
+    latest: latest && `${latest.name} · ${compactDollars(latest.value - latest.pnl)} ${pick(card, latest)}`,
+    seats: [0, 1, 2].map((k) => tickets.at(k)),
+    prompt: agentPrompt(card),
+  };
 });
 const totals = days && { trades: days.reduce((total, day) => total + day.trades, 0), volume: days.reduce((total, day) => total + day.volume, 0) };
 ---
 
-<div class="pit grid gap-4 p-3 text-left sm:p-6 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)]">
+<div class="pit grid gap-4 p-3 text-left sm:p-6 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
   <div class="list flex gap-1 overflow-x-auto [scrollbar-width:none] lg:grid lg:auto-rows-fr lg:gap-0.5 lg:overflow-visible lg:contain-size">
     {
-      markets.map(({ card }, i) => (
+      markets.map(({ card, at, latest }, i) => (
         <button
-          class:list={["row flex h-8 max-w-60 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-left text-label/4.5 font-medium text-muted lg:grid lg:h-auto lg:max-w-none lg:grid-cols-[28px_minmax(0,1fr)_auto] lg:gap-3 lg:px-3", i === 0 && "timing"]}
+          class:list={["row flex h-8 max-w-60 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-left text-label/4.5 font-medium text-muted lg:grid lg:h-auto lg:max-w-none lg:grid-cols-[36px_minmax(0,1fr)] lg:gap-3 lg:px-3", i === 0 && "timing"]}
           type="button"
           aria-pressed={i === 0 ? "true" : "false"}
+          data-slug={card.slug}
+          data-at={at}
         >
-          <Glyph class="glyph size-6 lg:size-7" title={card.title} icon={card.icon} category={card.category} />
-          <span class="truncate">{short(card.title)}</span>
-          <span class:list={["hidden items-center gap-1 tabular-nums lg:inline-flex", !card.agents.length && "text-faint"]}>
-            <Bot class="size-3.5" aria-hidden="true" />
-            {card.agents.length}
-            <span class="sr-only">{` ${noun(card.agents.length, "agent")}`}</span>
+          <Glyph class="glyph size-6 lg:size-9" title={card.title} icon={card.icon} category={card.category} />
+          <span class="flex min-w-0 grow flex-col gap-0.5">
+            <span class="flex min-w-0 items-baseline gap-2">
+              <span class="truncate">{short(card.title)}</span>
+              {at > 0 && (
+                <time class="ml-auto shrink-0 text-caption/4 font-normal text-muted tabular-nums" datetime={new Date(at * 1000).toISOString()} data-at={at}>
+                  {ago(at, now)}
+                </time>
+              )}
+            </span>
+            {latest && <span class="hidden truncate text-caption/4 font-normal text-muted lg:block">{latest}</span>}
           </span>
         </button>
       ))
     }
     {
-      more !== undefined && more > 0 && (
-        <a class="flex h-8 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-label/4.5 font-medium text-muted transition-colors duration-150 hover:text-ink lg:grid lg:h-auto lg:grid-cols-[28px_minmax(0,1fr)] lg:gap-3 lg:px-3" href="/markets">
-          <span class="grid size-6 place-items-center rounded-full bg-paper/85 text-ink lg:size-7">
+      more > 0 && (
+        <a class="flex h-8 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-label/4.5 font-medium text-muted transition-colors duration-150 hover:text-ink lg:grid lg:h-auto lg:grid-cols-[36px_minmax(0,1fr)] lg:gap-3 lg:px-3" href="/markets/agents">
+          <span class="grid size-6 place-items-center rounded-full bg-paper/85 text-ink lg:size-9">
             <Plus class="size-3.5" aria-hidden="true" />
           </span>
-          <span class="truncate">{`And ${count(more)} more markets`}</span>
+          <span class="truncate">{`And ${count(more)} more markets with agents`}</span>
         </a>
       )
     }
@@ -82,8 +101,8 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
 
   <div class="fan tabular-nums" data-detail>
     {
-      markets.map(({ card, seats, prompt }, i) => (
-        <ol class="hand" hidden={i !== 0}>
+      markets.map(({ card, at, seats, prompt }, i) => (
+        <ol class="hand" hidden={i !== 0} data-slug={card.slug} data-at={at}>
           {seats.map((seat) => {
             const Face = seat ? "a" : "div";
             return (
@@ -128,6 +147,14 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
                           </p>
                         </div>
                         <p class="paid">Staked {usd.format(seat.stake)}</p>
+                        {seat.at > 0 && (
+                          <p class="paid">
+                            {"Last bet "}
+                            <time datetime={new Date(seat.at * 1000).toISOString()} data-at={seat.at}>
+                              {ago(seat.at, now)}
+                            </time>
+                          </p>
+                        )}
                         <p class:list={["pl", tone(seat.pnl)]}>{signed(seat.pnl)}</p>
                       </Fragment>
                     ) : (
@@ -191,8 +218,18 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
     color: var(--color-ink);
   }
 
+  .row .fresh {
+    color: var(--color-signal);
+  }
+
   :is(.row, .pre) :global(.glyph) {
     border-radius: calc(infinity * 1px);
+  }
+
+  @media (min-width: 1024px) {
+    .row :global(.glyph) {
+      border-radius: var(--radius-item);
+    }
   }
 
   .pit:has(.tk:is(:hover, :focus-within)) .timing {
