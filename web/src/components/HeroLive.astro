@@ -1,10 +1,11 @@
 ---
 import { Bot, Check, Copy, Plus } from "@lucide/astro";
 import { agentPrompt, type Board, type Card, type CardBet } from "@agentpit/brand/api";
-import { ago, cents, compactDollars, count, dollars, tone } from "@agentpit/brand/format";
+import { cents, compactDollars, count, dollars, tone } from "@agentpit/brand/format";
 import SkaleOnBase from "../assets/skale-on-base.svg";
 import SkaleShort from "../assets/skale-short.svg";
 import type { StatsDay } from "../lib/api";
+import { noun } from "../lib/leaderboard";
 import hero from "../scripts/hero.js?raw";
 import AgentAvatar from "./AgentAvatar.astro";
 import Glyph from "./agent/Glyph.astro";
@@ -25,45 +26,34 @@ const cards = board.cards
     for (const key of keys) shown.set(key, (shown.get(key) ?? 0) + 1);
     return true;
   })
-  .slice(0, 9);
+  .slice(0, 8);
 const more = board.total - cards.length;
-const now = Date.now() / 1000;
 const short = (title: string) => title.split(" (")[0].replace(/\?$/, "");
-const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", signDisplay: "exceptZero" });
+const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0, signDisplay: "exceptZero" });
 const large = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact", minimumFractionDigits: 0, maximumFractionDigits: 1, signDisplay: "exceptZero" });
 const signed = (value: number) => (Math.abs(value) < 1000 ? money : large).format(value).replace("-", "−");
-const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const sum = (bets: readonly CardBet[], of: (bet: CardBet) => number) => bets.reduce((total, bet) => total + of(bet), 0);
 const traded = (bets: readonly CardBet[]) => Math.max(0, ...bets.map((bet) => bet.at ?? 0));
-const pick = (card: Card, bet: CardBet) =>
-  card.kind === "multi" && (bet.side === "Yes" || bet.side === "No") ? `${bet.side === "Yes" ? "on" : "against"} ${short(card.outcomes[bet.row].label)}` : `on ${bet.side}`;
 const ticket = (card: Card, bets: readonly CardBet[]) => {
   const [bet] = bets;
-  const row = card.outcomes[bet.row].label;
   const side = bet.side === "Yes" || bet.side === "No" ? bet.side : null;
-  const [pre, head] = card.kind === "binary" ? [card.category ?? "", short(card.title)] : side ? [short(card.title), row] : [card.kind === "multi" ? row : short(card.title), bet.side];
   return {
     agent: bet.agent,
     name: bet.name,
-    pre,
-    head,
+    head: card.kind === "binary" ? short(card.title) : side ? card.outcomes[bet.row].label : bet.side,
     lean: card.kind === "window" ? (bet.side === "Up" ? "up" : "down") : null,
     side,
     avg: cents(bet.avgPrice),
-    bets: bets.length,
     value: sum(bets, (b) => b.value),
     stake: sum(bets, (b) => b.value - b.pnl),
     pnl: sum(bets, (b) => b.pnl),
-    at: traded(bets),
   };
 };
 const markets = cards.map((card) => {
   const tickets = card.agents.map((address) => ticket(card, card.bets.filter((bet) => bet.agent === address))).sort((a, b) => b.value - a.value);
-  const latest = latestBet(card);
   return {
     card,
     at: traded(card.bets),
-    latest: latest && `${latest.name} · ${compactDollars(latest.value - latest.pnl)} ${pick(card, latest)}`,
     seats: [0, 1, 2].map((k) => tickets.at(k)),
     prompt: agentPrompt(card),
   };
@@ -72,38 +62,33 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
 ---
 
 <div class="pit grid gap-4 p-3 text-left sm:p-6 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
-  <div class="list flex gap-1 overflow-x-auto [scrollbar-width:none] lg:grid lg:auto-rows-fr lg:gap-0.5 lg:overflow-visible lg:contain-size">
+  <div class="list flex gap-1 overflow-x-auto [scrollbar-width:none] lg:grid lg:auto-rows-fr lg:grid-cols-1 lg:gap-2 lg:overflow-visible lg:contain-size">
     {
-      markets.map(({ card, at, latest }, i) => (
+      markets.map(({ card, at }, i) => (
         <button
-          class:list={["row flex h-8 max-w-60 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-left text-label/4.5 font-medium text-muted lg:grid lg:h-auto lg:max-w-none lg:grid-cols-[36px_minmax(0,1fr)] lg:gap-3 lg:px-3", i === 0 && "timing"]}
+          class:list={["row flex h-8 max-w-60 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-left text-label/4.5 font-medium text-muted lg:h-auto lg:max-w-none lg:items-stretch lg:gap-3", i === 0 && "timing"]}
           type="button"
           aria-pressed={i === 0 ? "true" : "false"}
           data-slug={card.slug}
           data-at={at}
         >
-          <Glyph class="glyph size-6 lg:size-9" title={card.title} icon={card.icon} category={card.category} />
-          <span class="flex min-w-0 grow flex-col gap-0.5">
-            <span class="flex min-w-0 items-baseline gap-2">
-              <span class="truncate">{short(card.title)}</span>
-              {at > 0 && (
-                <time class="ml-auto shrink-0 text-caption/4 font-normal text-muted tabular-nums" datetime={new Date(at * 1000).toISOString()} data-at={at}>
-                  {ago(at, now)}
-                </time>
-              )}
+          <Glyph class="glyph size-6 lg:aspect-square lg:size-auto" title={card.title} icon={card.icon} category={card.category} />
+          <span class="flex min-w-0 grow flex-col justify-center gap-0.5">
+            <span class="truncate">{short(card.title)}</span>
+            <span class="hidden text-caption/4 font-normal text-muted tabular-nums lg:block">
+              {`${card.agents.length} ${noun(card.agents.length, "agent")} · ${compactDollars(card.money - card.pnl)} staked`}
             </span>
-            {latest && <span class="hidden truncate text-caption/4 font-normal text-muted lg:block">{latest}</span>}
           </span>
         </button>
       ))
     }
     {
       more > 0 && (
-        <a class="flex h-8 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-label/4.5 font-medium text-muted transition-colors duration-150 hover:text-ink lg:grid lg:h-auto lg:grid-cols-[36px_minmax(0,1fr)] lg:gap-3 lg:px-3" href="/markets/agents">
-          <span class="grid size-6 place-items-center rounded-full bg-paper/85 text-ink lg:size-9">
+        <a class="more flex h-8 shrink-0 items-center gap-2 rounded-card pr-3.5 pl-1 text-label/4.5 font-medium text-muted transition-colors duration-150 hover:text-ink lg:h-auto lg:items-stretch lg:gap-3" href="/markets/agents">
+          <span class="grid size-6 shrink-0 place-items-center rounded-full bg-paper/85 text-ink lg:aspect-square lg:size-auto">
             <Plus class="size-3.5" aria-hidden="true" />
           </span>
-          <span class="truncate">{`And ${count(more)} more markets with agents`}</span>
+          <span class="truncate lg:self-center">{`And ${count(more)} more markets with agents`}</span>
         </a>
       )
     }
@@ -132,39 +117,12 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
                   <p class="who">{seat?.name ?? "Your agent"}</p>
                 </div>
                 <div class="body">
-                  <p class="pre" title={card.title}>
-                    <Glyph class="glyph size-4.5" title={card.title} icon={card.icon} category={card.category} />
-                    <span class="truncate">{seat?.pre ?? short(card.title)}</span>
-                  </p>
+                  {seat?.side && <span class:list={["side", seat.side === "No" && "no"]}>{seat.side}</span>}
                   <p class:list={["name", seat?.lean]}>{seat?.head ?? "Open seat"}</p>
                   <div class="tally">
                     {seat ? (
                       <Fragment>
-                        <div class="seats">
-                          {seat.side && (
-                            <p class="seat">
-                              <span>Side</span>
-                              <b class={seat.side === "Yes" ? "up" : "down"}>{seat.side}</b>
-                            </p>
-                          )}
-                          <p class="seat">
-                            <span>Avg</span>
-                            <b>{seat.avg}</b>
-                          </p>
-                          <p class="seat">
-                            <span>Bets</span>
-                            <b>{seat.bets}</b>
-                          </p>
-                        </div>
-                        <p class="paid">Staked {usd.format(seat.stake)}</p>
-                        {seat.at > 0 && (
-                          <p class="paid">
-                            {"Last bet "}
-                            <time datetime={new Date(seat.at * 1000).toISOString()} data-at={seat.at}>
-                              {ago(seat.at, now)}
-                            </time>
-                          </p>
-                        )}
+                        <p class="paid">{`${compactDollars(seat.stake)} at ${seat.avg}`}</p>
                         <p class:list={["pl", tone(seat.pnl)]}>{signed(seat.pnl)}</p>
                       </Fragment>
                     ) : (
@@ -228,17 +186,18 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
     color: var(--color-ink);
   }
 
-  .row .fresh {
-    color: var(--color-signal);
-  }
-
-  :is(.row, .pre) :global(.glyph) {
+  .row :global(.glyph) {
     border-radius: calc(infinity * 1px);
   }
 
   @media (min-width: 1024px) {
+    :is(.row, .more) {
+      --inset: 5px;
+      padding: var(--inset) 12px var(--inset) var(--inset);
+    }
+
     .row :global(.glyph) {
-      border-radius: var(--radius-item);
+      border-radius: calc(var(--radius-card) - var(--inset));
     }
   }
 
@@ -315,6 +274,16 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
       radial-gradient(circle at var(--at) 0, var(--hole)),
       radial-gradient(circle at var(--at) 100%, var(--hole));
     mask-composite: intersect;
+  }
+
+  .tk:first-child .face {
+    color-scheme: dark;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .tk:first-child .face {
+      color-scheme: light;
+    }
   }
 
   .face:focus-visible {
@@ -403,22 +372,29 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
     padding: 16px;
   }
 
-  .pre {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    font-size: 12px;
-    line-height: 18px;
-    color: var(--color-muted);
+  .side {
+    width: fit-content;
+    padding: 4px 12px;
+    border-radius: var(--radius-control);
+    background: #047857;
+    color: #ffffff;
+    font-size: 15px;
+    line-height: 20px;
+    font-weight: 500;
+  }
+
+  .side.no {
+    background: #e11d48;
   }
 
   .name {
     display: -webkit-box;
-    margin-top: 10px;
+    max-width: 100%;
+    margin-top: 12px;
     overflow: hidden;
-    font-size: 26px;
-    line-height: 30px;
+    font-size: 30px;
+    line-height: 34px;
+    hyphens: auto;
     font-weight: 500;
     letter-spacing: -0.02em;
     text-wrap: balance;
@@ -442,46 +418,15 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
     margin-top: auto;
   }
 
-  .seats {
-    display: flex;
-    gap: 4px;
-    align-self: stretch;
-    margin-bottom: 16px;
-  }
-
-  .seat {
-    display: flex;
-    flex: 1 1 auto;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-    padding: 8px;
-    border-radius: 10px;
-    background: var(--color-surface);
-    white-space: nowrap;
-  }
-
-  .seat span {
-    font-size: 11px;
-    line-height: 14px;
-    color: var(--color-muted);
-  }
-
-  .seat b {
-    font-size: 16px;
-    line-height: 20px;
-    font-weight: 500;
-  }
-
   .paid {
-    font-size: 12px;
-    line-height: 16px;
+    font-size: 14px;
+    line-height: 20px;
     color: var(--color-muted);
   }
 
   .pl {
-    font-size: 32px;
-    line-height: 36px;
+    font-size: 40px;
+    line-height: 44px;
     font-weight: 500;
     letter-spacing: -0.03em;
     white-space: nowrap;
@@ -537,22 +482,13 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
     }
 
     .name {
-      font-size: 21px;
-      line-height: 25px;
-    }
-
-    .seat {
-      padding: 6px;
-      border-radius: 8px;
-    }
-
-    .seat b {
-      font-size: 14px;
+      font-size: 24px;
+      line-height: 28px;
     }
 
     .pl {
-      font-size: 26px;
-      line-height: 30px;
+      font-size: 32px;
+      line-height: 36px;
     }
 
     .copy :global(svg) {
@@ -581,10 +517,6 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
     .tk:nth-child(3) :is(.body, .tally) {
       align-items: flex-end;
       text-align: right;
-    }
-
-    .tk:nth-child(3) .seats {
-      flex-direction: row-reverse;
     }
   }
 
@@ -629,23 +561,14 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
     }
 
     .name {
-      font-size: 22px;
-      line-height: 26px;
+      font-size: 26px;
+      line-height: 30px;
       -webkit-line-clamp: 2;
     }
 
-    .seats {
-      margin-bottom: 12px;
-    }
-
-    .seat {
-      flex: 0 1 auto;
-      min-width: 64px;
-    }
-
     .pl {
-      font-size: 26px;
-      line-height: 30px;
+      font-size: 34px;
+      line-height: 38px;
     }
   }
 
