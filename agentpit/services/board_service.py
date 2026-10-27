@@ -34,8 +34,10 @@ from agentpit.services.leaderboard_service import LeaderboardService, all_holdin
 
 BOARD_PAGE = 48
 TTL = 30
-WEEK = 7 * 86_400
+DAY = 86_400
+WEEK = 7 * DAY
 MOVE = 0.01
+CROWD = 3
 VIEWS = {"trending": "Trending", "movers": "Movers", "agents": "Agents", "ending": "Ending soon", "settled": "Settled"}
 SPORT_VIEWS = {"upcoming": "Upcoming", "agents": "Agents", "futures": "Futures", "settled": "Settled"}
 
@@ -244,13 +246,22 @@ def _bets(names: dict[str, str]) -> tuple[Bets, Bets]:
         name = names.get(address)
         if name is None:
             continue
+        traded = {b.id: max((f.at for f in b.fills if f.side != "REDEEM"), default=None) for b in held.bets}
         placed = [(settled_bets if p.settled else open_bets, p) for p in held.positions]
         placed += [(settled_bets, p) for p in held.closed if p.curPrice in (0.0, 0.5, 1.0) and p.realizedPnl == 0]
         for target, p in placed:
             target.setdefault(p.conditionId, []).append(
                 (
                     p.outcomeIndex,
-                    WireBet(agent=address, name=name, side=p.outcome, value=_money(p.currentValue), avgPrice=p.avgPrice, pnl=_money(p.cashPnl)),
+                    WireBet(
+                        agent=address,
+                        name=name,
+                        side=p.outcome,
+                        value=_money(p.currentValue),
+                        avgPrice=p.avgPrice,
+                        pnl=_money(p.cashPnl),
+                        at=traded.get(p.asset),
+                    ),
                 )
             )
     return open_bets, settled_bets
@@ -260,12 +271,13 @@ def _money(dollars: float) -> str:
     return str(round(dollars * 1_000_000))
 
 
-def _money_of(item: _Item[WireCard]) -> int:
-    return sum(int(b.value) for o in item.card.outcomes for b in o.bets)
-
-
 def _agents_of(item: _Item[WireCard]) -> int:
     return len({b.agent for o in item.card.outcomes for b in o.bets})
+
+
+def _heat(item: _Item[WireCard], now: int) -> tuple[bool, int, int]:
+    last = max((b.at for o in item.card.outcomes for b in o.bets if b.at is not None), default=0)
+    return now - last >= DAY, -min(_agents_of(item), CROWD), -last
 
 
 def _when(item: _Item[WireGame]) -> int:
@@ -482,7 +494,7 @@ class BoardService:
         lists = {
             "trending": trending,
             "movers": [i for _, i in sorted(movers, key=lambda mi: -mi[0])],
-            "agents": sorted((i for i in trending if i.held), key=lambda i: (-_agents_of(i), -_money_of(i))),
+            "agents": sorted((i for i in trending if i.held), key=lambda i: _heat(i, now)),
             "ending": [i for e, i in sorted(live, key=lambda ei: ei[0].closes) if now < e.closes <= now + WEEK],
             "settled": [i for _, i in sorted(settled, key=lambda ei: -(ei[0].resolved_at or 0))],
         }
