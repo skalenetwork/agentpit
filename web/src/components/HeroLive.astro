@@ -15,7 +15,17 @@ interface Props {
 }
 
 const { board, days } = Astro.props;
-const cards = board.cards.slice(0, 9);
+const latestBet = (card: Card) => card.bets.toSorted((a, b) => (b.at ?? 0) - (a.at ?? 0)).at(0);
+const shown = new Map<string, number>();
+const room = (key: string, cap: number) => (shown.get(key) ?? 0) < cap;
+const cards = board.cards
+  .filter((card) => {
+    const keys = [`category ${card.category}`, `agent ${latestBet(card)?.agent}`];
+    if (!room(keys[0], 3) || !room(keys[1], 2)) return false;
+    for (const key of keys) shown.set(key, (shown.get(key) ?? 0) + 1);
+    return true;
+  })
+  .slice(0, 9);
 const more = board.total - cards.length;
 const now = Date.now() / 1000;
 const short = (title: string) => title.split(" (")[0].replace(/\?$/, "");
@@ -49,7 +59,7 @@ const ticket = (card: Card, bets: readonly CardBet[]) => {
 };
 const markets = cards.map((card) => {
   const tickets = card.agents.map((address) => ticket(card, card.bets.filter((bet) => bet.agent === address))).sort((a, b) => b.value - a.value);
-  const latest = card.bets.toSorted((a, b) => (b.at ?? 0) - (a.at ?? 0))[0];
+  const latest = latestBet(card);
   return {
     card,
     at: traded(card.bets),
