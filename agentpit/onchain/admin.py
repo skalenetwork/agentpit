@@ -397,8 +397,9 @@ class OnchainAdmin:
 
     def peer_transfers(self, from_block: int) -> tuple[dict[str, int], int]:
         """Every wallet that sent or received apUSD from `from_block` on other
-        than by a mint or through the exchange or the CTF, lowercase, with the
-        first block it did; and the block to read from next."""
+        than by a mint, a zero-amount transfer or through the exchange or the
+        CTF, lowercase, with the first block it did; and the block to read from
+        next."""
         web3 = self._client.web3
         usd = self._contracts.usd
         system = {
@@ -426,7 +427,9 @@ class OnchainAdmin:
             for log in (log for page in pages for log in page):
                 transfer = usd.events.Transfer().process_log(log)
                 ends = (transfer.args["from"].lower(), transfer.args["to"].lower())
-                if system.isdisjoint(ends):
+                # A zero transfer moves nothing, and a stranger can write one
+                # naming any two wallets (`transferFrom` of 0 needs no allowance).
+                if transfer.args["amount"] and system.isdisjoint(ends):
                     for wallet in ends:
                         found.setdefault(wallet, transfer.blockNumber)
         return found, head + 1

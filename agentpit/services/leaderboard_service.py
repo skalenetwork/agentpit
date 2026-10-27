@@ -244,15 +244,21 @@ class LeaderboardService:
 
     def exclude_peer_transfers(self) -> None:
         """Take both wallets of every apUSD transfer read since the last call
-        off the board, unless it was a mint or went through the exchange or
-        the CTF. Gifted capital ranks as earned otherwise. The first call reads
-        the chain from its first block."""
+        off the board, unless it was a mint, moved nothing or went through the
+        exchange or the CTF. Gifted capital ranks as earned otherwise. The
+        first call reads the chain from its first block.
+
+        The scan counts as having read a range only once its flags are
+        written: a competition turns final on that position, so a failed
+        write leaves it where it was and the next call reads the range again
+        (flagging is idempotent)."""
         global _peer_next_block
-        found, _peer_next_block = self._onchain.peer_transfers(_peer_next_block)
-        if not found:
-            return
-        with self._db.write() as conn:
-            flagged = TableWrite.flag_peer_transfers(conn, found)
+        found, next_block = self._onchain.peer_transfers(_peer_next_block)
+        flagged: list[str] = []
+        if found:
+            with self._db.write() as conn:
+                flagged = TableWrite.flag_peer_transfers(conn, found)
+        _peer_next_block = next_block
         if flagged:
             log.warning("Off the board for moving apUSD wallet to wallet: %s", ", ".join(flagged))
 
