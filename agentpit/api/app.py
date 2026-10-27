@@ -201,9 +201,23 @@ async def _order_cleanup_loop(db: DbSession, settings: Settings) -> None:
 
 
 def _run_leaderboard_tick(service, engine_enabled: bool) -> tuple[int, int]:
-    written = service.take_snapshot() if feed.ready(engine_enabled) else 0
-    deleted = service.thin_snapshots(int(time.time()))
-    service.exclude_peer_transfers()
+    """One pass: value, thin, scan transfers. Each step runs whatever the
+    others did -- a failed valuation or thinning must not skip the scan, or no
+    competition could turn final -- and a failed one counts as 0."""
+    written = deleted = 0
+    if feed.ready(engine_enabled):
+        try:
+            written = service.take_snapshot()
+        except Exception:
+            log.exception("Leaderboard valuation failed")
+    try:
+        deleted = service.thin_snapshots(int(time.time()))
+    except Exception:
+        log.exception("Leaderboard thinning failed")
+    try:
+        service.exclude_peer_transfers()
+    except Exception:
+        log.exception("Peer-transfer scan failed: competitions cannot turn final until it succeeds")
     return written, deleted
 
 
