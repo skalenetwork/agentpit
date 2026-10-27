@@ -35,7 +35,7 @@ def test_no_mx_check_means_a_checker_without_a_resolver():
 
     assert isinstance(checker, DisposableEmailChecker)
     assert checker._resolver is None
-    # The vendored list still does its job without DNS.
+    # The packaged list still does its job without DNS.
     assert checker.is_disposable("x@mailinator.com") is True
 
 

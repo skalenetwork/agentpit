@@ -1,16 +1,17 @@
 """The temporary-email check, against a resolver that never touches the network.
 
-Every test but `test_vendored_files_load` and the `DnsMxResolver` ones builds the
+Every test but the `test_packaged_*` and `DnsMxResolver` ones builds the
 checker from literal sets and a `FakeResolver`, so what is pinned here is the
 decision rule and the cache -- not the contents of a list that changes upstream
-every week. `test_vendored_files_load` is the one place that reads the real
-data files, and only to prove they load and keep the common providers out.
+every week. The `test_packaged_*` tests are the only ones that read the real
+lists, and only to prove they load and keep the common providers out.
 """
 import logging
 
 import dns.rdata
 import dns.resolver
 import pytest
+from disposable_email_domains import blocklist
 
 from agentpit.auth import disposable_email
 from agentpit.auth.disposable_email import DisposableEmailChecker, DnsMxResolver
@@ -240,8 +241,8 @@ def test_an_address_without_at_sign_is_not_disposable():
     assert resolver.calls == []
 
 
-def test_vendored_files_load():
-    checker = DisposableEmailChecker.from_files(None)
+def test_packaged_blocklist_loads():
+    checker = DisposableEmailChecker.standard(None)
 
     assert checker.is_disposable("x@mailinator.com") is True
     assert checker.is_disposable("x@10minutemail.com") is True
@@ -252,6 +253,25 @@ def test_vendored_files_load():
         "x@mozmail.com",
     ):
         assert checker.is_disposable(address) is False, address
+
+
+def test_packaged_blocklist_never_lists_an_allowlisted_or_major_provider():
+    allowed = disposable_email._load(
+        disposable_email._DATA_DIR / "disposable_allowlist.txt"
+    )
+    majors = {
+        "gmail.com",
+        "googlemail.com",
+        "outlook.com",
+        "hotmail.com",
+        "icloud.com",
+        "proton.me",
+        "protonmail.com",
+        "yahoo.com",
+    }
+
+    assert allowed
+    assert (allowed | majors) & blocklist == set()
 
 
 def _mx_answer(*exchanges: str) -> list:

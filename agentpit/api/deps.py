@@ -231,7 +231,7 @@ def get_disposable_email_checker(
     with _disposable_checkers_lock:
         checker = _disposable_checkers.get(key)
         if checker is None:
-            checker = _disposable_checkers[key] = DisposableEmailChecker.from_files(
+            checker = _disposable_checkers[key] = DisposableEmailChecker.standard(
                 DnsMxResolver() if settings.disposable_mx_check else None
             )
         return checker

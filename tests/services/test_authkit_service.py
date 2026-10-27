@@ -558,7 +558,7 @@ def test_a_create_race_lost_to_a_bot_row_hands_back_nothing(monkeypatch):
 
 def _temp_mail_checker() -> DisposableEmailChecker:
     """A checker that knows one temporary domain and does no DNS, so these tests
-    do not depend on the vendored list."""
+    do not depend on the packaged list."""
     return DisposableEmailChecker(frozenset({"mailinator.com"}), frozenset(), None)
 
 

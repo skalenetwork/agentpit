@@ -159,7 +159,7 @@ def test_a_window_that_has_expired_starts_over():
 
 
 def _temp_mail_checker():
-    # Small and offline, so the route tests do not depend on the vendored list.
+    # Small and offline, so the route tests do not depend on the packaged list.
     return DisposableEmailChecker(frozenset({"mailinator.com"}), frozenset(), None)
 
 

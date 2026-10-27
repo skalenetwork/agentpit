@@ -7,8 +7,10 @@ the one asymmetry worth closing here.
 
 Two checks, in order of cost:
 
-1. The address's own domain, against a blocklist vendored in
-   `data/disposable_domains.txt`. Free, and it catches the well-known services.
+1. The address's own domain, against the blocklist from the
+   `disposable-email-domains` package, the packaged mirror of
+   github.com/disposable-email-domains/disposable-email-domains. Free, and it
+   catches the well-known services.
 2. The domain's MX hosts, against the same list. Temporary-mail services keep
    minting fresh domains that all deliver to a few mail servers, so a domain
    missing from the list is still caught when its mail goes to one that is on it.
@@ -28,9 +30,9 @@ enough that the next minute asks again.
 domain (no MX lookup at all) and for any mail host it points to: forwarding
 services (Apple's hide-my-email, SimpleLogin, addy.io, Firefox Relay,
 DuckDuckGo) hand out addresses that look disposable and are not, since a real
-inbox sits behind them. The blocklist is never fetched at runtime;
-`scripts/update_disposable_domains.py` refreshes it by hand, so what runs is
-what was reviewed.
+inbox sits behind them. The blocklist is never fetched at runtime: it ships with
+the pinned package and is updated by bumping that pin, so what runs is what was
+reviewed.
 """
 import logging
 import threading
@@ -41,6 +43,7 @@ from pathlib import Path
 from typing import Protocol
 
 import dns.resolver
+from disposable_email_domains import blocklist
 
 log = logging.getLogger(__name__)
 
@@ -125,9 +128,10 @@ class DisposableEmailChecker:
         self._lock = threading.Lock()
 
     @classmethod
-    def from_files(cls, resolver: MxResolver | None) -> "DisposableEmailChecker":
+    def standard(cls, resolver: MxResolver | None) -> "DisposableEmailChecker":
+        """The production checker: the packaged blocklist, our alias allowlist."""
         return cls(
-            _load(_DATA_DIR / "disposable_domains.txt"),
+            frozenset(blocklist),
             _load(_DATA_DIR / "disposable_allowlist.txt"),
             resolver,
         )

@@ -1,6 +1,8 @@
 # Alias services that forward to a real inbox. Signing in with one of these is a
 # real person with a real address, so they stay allowed even if a blocklist
 # lists them, and an MX on any of them never marks a custom domain disposable.
+# Kept here by hand; the blocklist these override is the disposable-email-domains
+# package's, which does not carry this list.
 privaterelay.appleid.com
 simplelogin.com
 simplelogin.co
