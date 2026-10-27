@@ -15,6 +15,7 @@ interface WireAgent {
   readonly place_change: number | null;
   readonly trend: readonly string[];
   readonly competitions: readonly string[];
+  readonly next_top_up_at: number;
 }
 
 export interface Agent extends Omit<WireAgent, "handle" | "equity" | "earned" | "trend"> {
@@ -93,5 +94,7 @@ export const useCreateAgent = () => {
 
 export const useRenameAgent = (address: string) => useAgentMutation((handle: string) => request(`/me/agents/${address}`, "PATCH", { handle }));
 export const useDeleteAgent = (address: string) => useAgentMutation(() => request(`/me/agents/${address}`, "DELETE"));
+export const useTopUp = (address: string) =>
+  useAgentMutation(async () => usd((await request<{ readonly minted: string }>(`/me/agents/${address}/top-up`, "POST")).minted), [AGENTS, ["profile", address]]);
 export const useEntry = (address: string) =>
   useAgentMutation(({ slug, enter }: { readonly slug: string; readonly enter: boolean }) => request(`/me/agents/${address}/competitions/${slug}`, enter ? "POST" : "DELETE"), [AGENTS, COMPETITIONS]);
