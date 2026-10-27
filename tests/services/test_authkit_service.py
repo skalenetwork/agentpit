@@ -1,11 +1,19 @@
+import logging
+
 import pytest
 
+from agentpit.auth.disposable_email import DisposableEmailChecker
 from agentpit.auth.workos_client import FakeWorkOsClient, WorkOsError
 from agentpit.config import Settings
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import InvalidCredentialsError, OnboardingError
+from agentpit.domain.exceptions import (
+    AuthCodeRateLimitedError,
+    DisposableEmailError,
+    InvalidCredentialsError,
+    OnboardingError,
+)
 from agentpit.services.authkit_service import AuthKitService
 
 
@@ -62,13 +70,17 @@ class _Reonboarder:
 
 
 
-def _service(workos=None, onboarder=None, reonboarder=None):
+def _service(
+    workos=None, onboarder=None, reonboarder=None, disposable=None, **limits
+):
     db = DbSession(Settings().database_url)
     return AuthKitService(
         db=db,
         workos=workos or FakeWorkOsClient(),
         onboard=onboarder or _Onboarder(),
         reonboard=reonboarder or _Reonboarder(),
+        disposable=disposable,
+        **limits,
     ), db
 
 
@@ -542,3 +554,157 @@ def test_a_create_race_lost_to_a_bot_row_hands_back_nothing(monkeypatch):
     with pytest.raises(InvalidCredentialsError):
         svc.sign_in_with_authorization_code(code)
     assert _workos_id_of(db, bot["user_id"]) is None
+
+
+def _temp_mail_checker() -> DisposableEmailChecker:
+    """A checker that knows one temporary domain and does no DNS, so these tests
+    do not depend on the packaged list."""
+    return DisposableEmailChecker(frozenset({"mailinator.com"}), frozenset(), None)
+
+
+def test_send_code_refuses_a_temporary_address_without_calling_workos():
+    workos = FakeWorkOsClient()
+    svc, _db = _service(workos, disposable=_temp_mail_checker())
+
+    with pytest.raises(DisposableEmailError):
+        svc.send_code("t@mailinator.com")
+
+    # WorkOS makes its user when it mails the first code, so a user that is not
+    # there is the proof that no mail was sent.
+    assert workos.find_user_by_email("t@mailinator.com") is None
+
+
+def test_a_refused_temporary_address_still_spends_its_rate_limit_claim():
+    # The claim is written before the check on purpose: a script feeding
+    # throwaway addresses pays the same one row per request as any other
+    # caller, and meets the ceiling instead of a free, unlimited probe.
+    svc, _db = _service(disposable=_temp_mail_checker(), per_email_hourly=1)
+
+    with pytest.raises(DisposableEmailError):
+        svc.send_code("t@mailinator.com")
+    with pytest.raises(AuthCodeRateLimitedError):
+        svc.send_code("t@mailinator.com")
+
+
+def test_sign_in_with_a_temporary_address_creates_nothing():
+    # The mail is sent by a service with no checker, as for a code requested
+    # before the filter existed or a checker that failed open; `sign_in` is the
+    # second line.
+    workos, onboarder = FakeWorkOsClient(), _Onboarder()
+    open_svc, db = _service(workos, onboarder)
+    open_svc.send_code("t@mailinator.com")
+    code = workos.last_code("t@mailinator.com")
+    svc, _db = _service(workos, onboarder, disposable=_temp_mail_checker())
+
+    with pytest.raises(DisposableEmailError):
+        svc.sign_in("t@mailinator.com", code)
+
+    with db.read() as conn:
+        row = TableRead.get_user_by_workos_id(
+            conn, workos.find_user_by_email("t@mailinator.com").workos_user_id
+        )
+    assert row is None
+    assert onboarder.calls == []
+
+
+def test_a_temporary_authorization_code_is_refused():
+    # The redirect door (Google and the hosted UI) reports the address only
+    # after the exchange, so this is the one place the callback can refuse.
+    workos, onboarder = FakeWorkOsClient(), _Onboarder()
+    svc, _db = _service(workos, onboarder, disposable=_temp_mail_checker())
+
+    code = workos.issue_authorization_code("g@mailinator.com")
+    with pytest.raises(DisposableEmailError):
+        svc.sign_in_with_authorization_code(code)
+
+    assert onboarder.calls == []
+
+
+def test_refresh_of_a_temporary_email_account_is_refused_as_invalid_session():
+    # 401, not 400: the console's `renew()` ends the session on a 401 and only
+    # then, so an account whose address is on the list loses its session at its
+    # next refresh instead of keeping it for as long as it keeps refreshing.
+    workos = FakeWorkOsClient()
+    open_svc, _db = _service(workos)
+    open_svc.send_code("t@mailinator.com")
+    session = open_svc.sign_in("t@mailinator.com", workos.last_code("t@mailinator.com"))
+    svc, _db = _service(workos, disposable=_temp_mail_checker())
+
+    with pytest.raises(InvalidCredentialsError):
+        svc.refresh(session.refresh_token)
+
+
+LOGGER = "agentpit.services.authkit_service"
+
+
+def _refusal_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
+
+
+def _logged_messages(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records]
+
+
+def test_send_code_logs_the_domain_and_reason_of_a_refusal_never_the_local_part(caplog):
+    svc, _db = _service(disposable=_temp_mail_checker())
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        with pytest.raises(DisposableEmailError):
+            svc.send_code("secretperson@mailinator.com")
+
+    assert _refusal_lines(caplog) == [
+        "refused a code for a temporary-email address: "
+        "domain=mailinator.com reason=listed"
+    ]
+    assert not any("secretperson" in m for m in _logged_messages(caplog))
+
+
+def test_sign_in_logs_a_refusal_with_the_workos_user_id(caplog):
+    workos, onboarder = FakeWorkOsClient(), _Onboarder()
+    open_svc, _db = _service(workos, onboarder)
+    open_svc.send_code("secretperson@mailinator.com")
+    code = workos.last_code("secretperson@mailinator.com")
+    workos_id = workos.find_user_by_email("secretperson@mailinator.com").workos_user_id
+    svc, _db = _service(workos, onboarder, disposable=_temp_mail_checker())
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        with pytest.raises(DisposableEmailError):
+            svc.sign_in("secretperson@mailinator.com", code)
+
+    assert _refusal_lines(caplog) == [
+        "refused a sign-in for a temporary-email address: "
+        f"domain=mailinator.com reason=listed workos_user_id={workos_id}"
+    ]
+    assert not any("secretperson" in m for m in _logged_messages(caplog))
+
+
+def test_refresh_logs_a_refusal_with_the_workos_user_id(caplog):
+    workos = FakeWorkOsClient()
+    open_svc, _db = _service(workos)
+    open_svc.send_code("secretperson@mailinator.com")
+    session = open_svc.sign_in(
+        "secretperson@mailinator.com", workos.last_code("secretperson@mailinator.com")
+    )
+    workos_id = workos.find_user_by_email("secretperson@mailinator.com").workos_user_id
+    svc, _db = _service(workos, disposable=_temp_mail_checker())
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        with pytest.raises(InvalidCredentialsError):
+            svc.refresh(session.refresh_token)
+
+    assert _refusal_lines(caplog) == [
+        "refused a refresh for a temporary-email account: "
+        f"domain=mailinator.com reason=listed workos_user_id={workos_id}"
+    ]
+    assert not any("secretperson" in m for m in _logged_messages(caplog))
+
+
+def test_ordinary_addresses_are_untouched_by_the_checker():
+    workos = FakeWorkOsClient()
+    svc, _db = _service(workos, disposable=_temp_mail_checker())
+
+    svc.send_code("new@example.com")
+    session = svc.sign_in("new@example.com", workos.last_code("new@example.com"))
+    refreshed = svc.refresh(session.refresh_token)
+
+    assert refreshed.user.user_id == session.user.user_id

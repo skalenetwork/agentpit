@@ -53,6 +53,19 @@ class InvalidCredentialsError(BusinessRuleError):
     pass
 
 
+class DisposableEmailError(BusinessRuleError):
+    """The address belongs to a temporary-email service.
+
+    A `BusinessRuleError` on purpose, so it is a 400: the caller can fix it by
+    using another address, and the sentence is written to be shown as it is.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Temporary email addresses can't be used. Use a permanent address."
+        )
+
+
 class AuthCodeRateLimitedError(DomainError):
     """Too many code requests for this address or from this caller.
 

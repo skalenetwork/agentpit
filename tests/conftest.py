@@ -79,6 +79,8 @@ os.environ.setdefault("JWT_SECRET", "test-only-secret")
 # The $1 minimum order (AGENTPIT_MIN_ORDER_NOTIONAL_MICRO) would reject the
 # small orders much of the suite places; guard tests set it explicitly.
 os.environ.setdefault("AGENTPIT_MIN_ORDER_NOTIONAL_MICRO", "0")
+# The temporary-email filter stays on, in list-only mode: the suite never touches DNS.
+os.environ.setdefault("AGENTPIT_DISPOSABLE_MX_CHECK", "false")
 
 import pytest
 

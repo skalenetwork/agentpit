@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { callbackCode, callbackError, googleUrl, normaliseCode, safeRedirect, sendCodeError, signInError } from "./auth";
+import { callbackCode, callbackError, googleUrl, normaliseCode, safeRedirect, sendCodeError, signInError, TEMPORARY_EMAIL } from "./auth";
 import { ApiError } from "./session";
 
 test("a pasted code keeps its first six digits", () => {
@@ -11,6 +11,12 @@ test("errors read as what to do next", () => {
   expect(sendCodeError(new ApiError(422))).toBe("Enter a valid email address.");
   expect(callbackError(new ApiError(503))).toBe("Sign-in is not available right now. Try again later.");
   expect(signInError(new Error("offline"))).toBe("Could not sign you in. Try again in a moment.");
+});
+
+test("a temporary address reads as such on every sign-in door", () => {
+  const refused = new ApiError(400, TEMPORARY_EMAIL);
+  expect([sendCodeError(refused), signInError(refused), callbackError(refused)]).toEqual([TEMPORARY_EMAIL, TEMPORARY_EMAIL, TEMPORARY_EMAIL]);
+  expect(sendCodeError(new ApiError(400, "something else"))).toBe("Could not send the code. Try again in a moment.");
 });
 
 test("only a path on this origin is a redirect target", () => {
