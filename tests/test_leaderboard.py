@@ -1,6 +1,7 @@
 from datetime import date
 from types import SimpleNamespace
 
+import psycopg
 import pytest
 
 from agentpit.config import Settings
@@ -233,6 +234,46 @@ def test_the_transfer_scan_reads_on_from_where_it_stopped():
     service.exclude_peer_transfers()
 
     assert (onchain.asked, leaderboard_service.peer_next_block()) == ([0, 51], 60)
+    with db.read() as check:
+        assert user_id not in {r.user_id for r in TableRead.list_traded_accounts(check)}
+    db.close()
+
+
+def test_a_failed_flag_write_leaves_the_transfer_scan_where_it_was(monkeypatch):
+    """The blocks it read count as scanned only once their flags are written:
+    a competition turns final on the scan's position."""
+    conn = fresh_test_conn()
+    user_id, acct, key = TableWrite.create_user(
+        conn, email="unwritten@example.com", password_hash="x", handle=None
+    )
+    conn.execute(
+        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) "
+        "VALUES (%s, %s, %s, %s)",
+        ("t8", key, 1_700_000_000, "PENDING"),
+    )
+    conn.close()
+
+    flag, writes = TableWrite.flag_peer_transfers, []
+
+    def lose_the_first_write(conn, found):
+        writes.append(found)
+        if len(writes) == 1:
+            raise psycopg.OperationalError("the connection was lost")
+        return flag(conn, found)
+
+    monkeypatch.setattr(TableWrite, "flag_peer_transfers", lose_the_first_write)
+    db = fresh_test_db()
+    gift = {acct.address.lower(): 40}
+    onchain = _FakeTransfers((gift, 51), (gift, 51))
+    service = LeaderboardService(db, onchain, _FakeAccounts(), Settings())
+
+    with pytest.raises(psycopg.OperationalError):
+        service.exclude_peer_transfers()
+    assert leaderboard_service.peer_next_block() == 0
+
+    service.exclude_peer_transfers()
+
+    assert (onchain.asked, leaderboard_service.peer_next_block()) == ([0, 0], 51)
     with db.read() as check:
         assert user_id not in {r.user_id for r in TableRead.list_traded_accounts(check)}
     db.close()
