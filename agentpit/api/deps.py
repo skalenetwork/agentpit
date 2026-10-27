@@ -1,8 +1,10 @@
 import hmac
+import threading
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
 
+from agentpit.auth.disposable_email import DisposableEmailChecker, DnsMxResolver
 from agentpit.auth.google import GoogleTokenVerifier
 from agentpit.auth.jwt import JwtCoder
 from agentpit.auth.workos_client import WorkOsClient
@@ -210,6 +212,36 @@ OrderServiceDep = Annotated[OrderService, Depends(get_order_service)]
 TradeServiceDep = Annotated[TradeService, Depends(get_trade_service)]
 
 
+# The checkers made so far, one per setting combination, for the life of the
+# process. `get_authkit_service` runs on every request, and the checker's MX
+# cache is only worth anything if the same object answers the next one.
+_disposable_checkers: dict[tuple[bool, bool], DisposableEmailChecker] = {}
+_disposable_checkers_lock = threading.Lock()
+
+
+def get_disposable_email_checker(
+    settings: SettingsDep,
+) -> DisposableEmailChecker | None:
+    """The temporary-email filter, or None when `AGENTPIT_BLOCK_DISPOSABLE_EMAIL`
+    is off. Its own dependency, not built inside `get_authkit_service`, so a
+    test swaps it for a small offline checker."""
+    if not settings.block_disposable_email:
+        return None
+    key = (settings.block_disposable_email, settings.disposable_mx_check)
+    with _disposable_checkers_lock:
+        checker = _disposable_checkers.get(key)
+        if checker is None:
+            checker = _disposable_checkers[key] = DisposableEmailChecker.from_files(
+                DnsMxResolver() if settings.disposable_mx_check else None
+            )
+        return checker
+
+
+DisposableEmailCheckerDep = Annotated[
+    DisposableEmailChecker | None, Depends(get_disposable_email_checker)
+]
+
+
 # Below `AuthServiceDep` because it depends on it, and these annotations are
 # evaluated at def time.
 def get_authkit_service(
@@ -217,6 +249,7 @@ def get_authkit_service(
     workos: WorkOsClientDep,
     auth: AuthServiceDep,
     settings: SettingsDep,
+    disposable: DisposableEmailCheckerDep,
 ) -> AuthKitService:
     if workos is None:
         # No WORKOS_API_KEY: the same shape Google sign-in takes without a
@@ -235,6 +268,7 @@ def get_authkit_service(
         reonboard=auth._maybe_reonboard,
         per_email_hourly=settings.auth_code_per_email_hourly,
         per_ip_hourly=settings.auth_code_per_ip_hourly,
+        disposable=disposable,
     )
 
 

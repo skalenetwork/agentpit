@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from agentpit.api import deps
 from agentpit.api.main import app
+from agentpit.auth.disposable_email import DisposableEmailChecker
 from agentpit.auth.workos_client import FakeWorkOsClient
 from agentpit.config import Settings
 from agentpit.db.session import DbSession
@@ -155,3 +156,29 @@ def test_a_window_that_has_expired_starts_over():
         assert TableWrite.claim_auth_code_attempt(conn, "roll", 1030, 60, 1) is False
         # 61 seconds after the window opened, the allowance is fresh.
         assert TableWrite.claim_auth_code_attempt(conn, "roll", 1061, 60, 1) is True
+
+
+def _temp_mail_checker():
+    # Small and offline, so the route tests do not depend on the vendored list.
+    return DisposableEmailChecker(frozenset({"mailinator.com"}), frozenset(), None)
+
+
+def test_a_temporary_address_gets_400_with_the_message(workos):
+    checker = _temp_mail_checker()
+    with _overriding(deps.get_disposable_email_checker, lambda: checker):
+        with TestClient(app) as client:
+            resp = client.post("/auth/code", json={"email": "t@mailinator.com"})
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == (
+        "Temporary email addresses can't be used. Use a permanent address."
+    )
+
+
+def test_an_ordinary_address_still_gets_202(workos):
+    checker = _temp_mail_checker()
+    with _overriding(deps.get_disposable_email_checker, lambda: checker):
+        with TestClient(app) as client:
+            resp = client.post("/auth/code", json={"email": "ok@example.com"})
+
+    assert resp.status_code == 202, resp.text

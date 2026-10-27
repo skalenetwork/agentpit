@@ -15,12 +15,14 @@ from dataclasses import dataclass
 
 from psycopg.errors import UniqueViolation
 
+from agentpit.auth.disposable_email import DisposableEmailChecker
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import (
     AuthCodeRateLimitedError,
+    DisposableEmailError,
     InvalidCredentialsError,
 )
 from agentpit.domain.handles import pick_handle
@@ -63,6 +65,7 @@ class AuthKitService:
         reonboard,
         per_email_hourly: int = 20,
         per_ip_hourly: int = 60,
+        disposable: DisposableEmailChecker | None = None,
     ):
         self._db = db
         self._workos = workos
@@ -74,6 +77,8 @@ class AuthKitService:
         self._reonboard = reonboard
         self._per_email_hourly = per_email_hourly
         self._per_ip_hourly = per_ip_hourly
+        # None switches the filter off (`AGENTPIT_BLOCK_DISPOSABLE_EMAIL`).
+        self._disposable = disposable
 
     #: One hour, fixed window. Two subjects, because either alone leaves the
     #: other's hole open: keyed on the ADDRESS an attacker rotates addresses and
@@ -93,6 +98,13 @@ class AuthKitService:
         Every rule is checked BEFORE the WorkOS call, and that ordering is the
         whole point: a refused request must cost one row write, not an email
         and an HTTP round trip to another provider.
+
+        A temporary-email address is refused after the rate-limit claims are
+        written, not before: a script feeding throwaway addresses then pays
+        the same row write as any other caller and runs into the same ceiling,
+        instead of probing for free. The check comes after the transaction
+        closes because it may wait on DNS, and a refusal raised inside it
+        would roll the claims back.
 
         `client_ip` is None when the request arrived without one the app is
         willing to trust. That skips the per-IP rule rather than lumping every
@@ -121,6 +133,9 @@ class AuthKitService:
                     raise AuthCodeRateLimitedError(
                         retry_after=self.RATE_LIMIT_WINDOW_SECONDS
                     )
+
+        if self._disposable and self._disposable.is_disposable(email):
+            raise DisposableEmailError()
 
         self._workos.send_magic_auth_code(email)
 

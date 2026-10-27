@@ -1,11 +1,17 @@
 import pytest
 
+from agentpit.auth.disposable_email import DisposableEmailChecker
 from agentpit.auth.workos_client import FakeWorkOsClient, WorkOsError
 from agentpit.config import Settings
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
-from agentpit.domain.exceptions import InvalidCredentialsError, OnboardingError
+from agentpit.domain.exceptions import (
+    AuthCodeRateLimitedError,
+    DisposableEmailError,
+    InvalidCredentialsError,
+    OnboardingError,
+)
 from agentpit.services.authkit_service import AuthKitService
 
 
@@ -62,13 +68,17 @@ class _Reonboarder:
 
 
 
-def _service(workos=None, onboarder=None, reonboarder=None):
+def _service(
+    workos=None, onboarder=None, reonboarder=None, disposable=None, **limits
+):
     db = DbSession(Settings().database_url)
     return AuthKitService(
         db=db,
         workos=workos or FakeWorkOsClient(),
         onboard=onboarder or _Onboarder(),
         reonboard=reonboarder or _Reonboarder(),
+        disposable=disposable,
+        **limits,
     ), db
 
 
@@ -542,3 +552,33 @@ def test_a_create_race_lost_to_a_bot_row_hands_back_nothing(monkeypatch):
     with pytest.raises(InvalidCredentialsError):
         svc.sign_in_with_authorization_code(code)
     assert _workos_id_of(db, bot["user_id"]) is None
+
+
+def _temp_mail_checker() -> DisposableEmailChecker:
+    """A checker that knows one temporary domain and does no DNS, so these tests
+    do not depend on the vendored list."""
+    return DisposableEmailChecker(frozenset({"mailinator.com"}), frozenset(), None)
+
+
+def test_send_code_refuses_a_temporary_address_without_calling_workos():
+    workos = FakeWorkOsClient()
+    svc, _db = _service(workos, disposable=_temp_mail_checker())
+
+    with pytest.raises(DisposableEmailError):
+        svc.send_code("t@mailinator.com")
+
+    # WorkOS makes its user when it mails the first code, so a user that is not
+    # there is the proof that no mail was sent.
+    assert workos.find_user_by_email("t@mailinator.com") is None
+
+
+def test_a_refused_temporary_address_still_spends_its_rate_limit_claim():
+    # The claim is written before the check on purpose: a script feeding
+    # throwaway addresses pays the same one row per request as any other
+    # caller, and meets the ceiling instead of a free, unlimited probe.
+    svc, _db = _service(disposable=_temp_mail_checker(), per_email_hourly=1)
+
+    with pytest.raises(DisposableEmailError):
+        svc.send_code("t@mailinator.com")
+    with pytest.raises(AuthCodeRateLimitedError):
+        svc.send_code("t@mailinator.com")

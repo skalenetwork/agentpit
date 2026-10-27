@@ -194,6 +194,19 @@ class Settings(BaseSettings):
         default=60, validation_alias="AGENTPIT_AUTH_CODE_PER_IP_HOURLY"
     )
 
+    # Sign-in refuses addresses at temporary-email services: an address is the
+    # whole identity here, and each new one mints a wallet and an on-chain
+    # onboarding. The first switch turns the whole filter off; the second turns
+    # off only the DNS part, which looks up an unlisted domain's mail servers
+    # and refuses the domain when they are on the list. The tests turn the
+    # second off, so the suite never touches DNS.
+    block_disposable_email: bool = Field(
+        default=True, validation_alias="AGENTPIT_BLOCK_DISPOSABLE_EMAIL"
+    )
+    disposable_mx_check: bool = Field(
+        default=True, validation_alias="AGENTPIT_DISPOSABLE_MX_CHECK"
+    )
+
     jwt_secret: str = Field(
         default="dev-only-insecure-secret-change-me",
         validation_alias="JWT_SECRET",
