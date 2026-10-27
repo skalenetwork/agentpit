@@ -188,6 +188,21 @@ class AuthKitService:
     def _resolve_account(
         self, session: WorkOsSession, *, create: bool, repair: bool
     ) -> User:
+        # First, before `ensure_owner` or any read: a refused address leaves no
+        # trace. `send_code` already refuses these, so this is the second line,
+        # for a code requested before the filter existed, one the checker let
+        # through while DNS was down, and the redirect door (Google, the hosted
+        # UI), which reports the address only after the exchange.
+        if self._disposable and self._disposable.is_disposable(session.email):
+            if create:
+                log.info("refused a sign-in for a temporary-email address")
+                raise DisposableEmailError()
+            # A refresh is 401, not 400: the console's `renew()` ends the
+            # session on a 401 and on nothing else, so an account whose address
+            # has since reached the list loses its session at the next refresh
+            # instead of keeping it for as long as it keeps refreshing.
+            log.info("refused a refresh for a temporary-email account")
+            raise InvalidCredentialsError("invalid session")
         if create:
             with self._db.write() as conn:
                 TableWrite.ensure_owner(conn, session.workos_user_id)

@@ -582,3 +582,62 @@ def test_a_refused_temporary_address_still_spends_its_rate_limit_claim():
         svc.send_code("t@mailinator.com")
     with pytest.raises(AuthCodeRateLimitedError):
         svc.send_code("t@mailinator.com")
+
+
+def test_sign_in_with_a_temporary_address_creates_nothing():
+    # The mail is sent by a service with no checker, as for a code requested
+    # before the filter existed or a checker that failed open; `sign_in` is the
+    # second line.
+    workos, onboarder = FakeWorkOsClient(), _Onboarder()
+    open_svc, db = _service(workos, onboarder)
+    open_svc.send_code("t@mailinator.com")
+    code = workos.last_code("t@mailinator.com")
+    svc, _db = _service(workos, onboarder, disposable=_temp_mail_checker())
+
+    with pytest.raises(DisposableEmailError):
+        svc.sign_in("t@mailinator.com", code)
+
+    with db.read() as conn:
+        row = TableRead.get_user_by_workos_id(
+            conn, workos.find_user_by_email("t@mailinator.com").workos_user_id
+        )
+    assert row is None
+    assert onboarder.calls == []
+
+
+def test_a_temporary_authorization_code_is_refused():
+    # The redirect door (Google and the hosted UI) reports the address only
+    # after the exchange, so this is the one place the callback can refuse.
+    workos, onboarder = FakeWorkOsClient(), _Onboarder()
+    svc, _db = _service(workos, onboarder, disposable=_temp_mail_checker())
+
+    code = workos.issue_authorization_code("g@mailinator.com")
+    with pytest.raises(DisposableEmailError):
+        svc.sign_in_with_authorization_code(code)
+
+    assert onboarder.calls == []
+
+
+def test_refresh_of_a_temporary_email_account_is_refused_as_invalid_session():
+    # 401, not 400: the console's `renew()` ends the session on a 401 and only
+    # then, so an account whose address is on the list loses its session at its
+    # next refresh instead of keeping it for as long as it keeps refreshing.
+    workos = FakeWorkOsClient()
+    open_svc, _db = _service(workos)
+    open_svc.send_code("t@mailinator.com")
+    session = open_svc.sign_in("t@mailinator.com", workos.last_code("t@mailinator.com"))
+    svc, _db = _service(workos, disposable=_temp_mail_checker())
+
+    with pytest.raises(InvalidCredentialsError):
+        svc.refresh(session.refresh_token)
+
+
+def test_ordinary_addresses_are_untouched_by_the_checker():
+    workos = FakeWorkOsClient()
+    svc, _db = _service(workos, disposable=_temp_mail_checker())
+
+    svc.send_code("new@example.com")
+    session = svc.sign_in("new@example.com", workos.last_code("new@example.com"))
+    refreshed = svc.refresh(session.refresh_token)
+
+    assert refreshed.user.user_id == session.user.user_id
