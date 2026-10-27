@@ -1,0 +1,12 @@
+---
+import HeroLive from "../components/HeroLive.astro";
+import { marketBoard } from "../lib/api";
+
+export const prerender = false;
+export const partial = true;
+
+const held = await marketBoard({ tab: "agents", q: null, page: 1 });
+if (!held?.cards.length) Astro.cache.set(false);
+---
+
+{held && held.cards.length > 0 && <HeroLive board={held} days={undefined} />}
