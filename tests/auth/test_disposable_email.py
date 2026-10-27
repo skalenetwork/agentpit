@@ -1,10 +1,11 @@
 """The temporary-email check, against a resolver that never touches the network.
 
-Every test but the `test_packaged_*` and `DnsMxResolver` ones builds the
-checker from literal sets and a `FakeResolver`, so what is pinned here is the
-decision rule and the cache -- not the contents of a list that changes upstream
-every week. The `test_packaged_*` tests are the only ones that read the real
-lists, and only to prove they load and keep the common providers out.
+Every test but the ones that call `DisposableEmailChecker.standard` and the
+`DnsMxResolver` ones builds the checker from literal sets and a `FakeResolver`,
+so what is pinned here is the decision rule and the cache -- not the contents of
+a list that changes upstream every week. The `standard` tests are the only ones
+that read the real lists: to prove they load, keep the common providers out, and
+catch the services our own additions exist for.
 """
 import logging
 
@@ -255,11 +256,37 @@ def test_packaged_blocklist_loads():
         assert checker.is_disposable(address) is False, address
 
 
-def test_packaged_blocklist_never_lists_an_allowlisted_or_major_provider():
+def test_a_domain_pointing_at_a_listed_mail_server_is_refused_by_the_standard_checker():
+    # mail.cx hands out rotating domains; only its mail server is on our list.
+    resolver = FakeResolver({"uqu.me": ["smtp.mail.cx"]})
+    checker = DisposableEmailChecker.standard(resolver)
+
+    assert checker.verdict("x@uqu.me") == "mx:mail.cx"
+
+
+def test_a_generator_email_style_domain_is_refused_by_its_mail_server():
+    resolver = FakeResolver({"fresh-domain.example": ["mx.add5000.com"]})
+    checker = DisposableEmailChecker.standard(resolver)
+
+    assert checker.verdict("x@fresh-domain.example") == "mx:add5000.com"
+
+
+def test_a_service_domain_from_our_additions_is_refused_without_dns():
+    resolver = FakeResolver()
+    checker = DisposableEmailChecker.standard(resolver)
+
+    assert checker.verdict("x@tempmail.lol") == "listed"
+    assert resolver.calls == []
+
+
+def test_the_blocklist_never_lists_an_allowlisted_or_major_provider():
     allowed = disposable_email._load(
         disposable_email._DATA_DIR / "disposable_allowlist.txt"
     )
-    majors = {
+    extra = disposable_email._load(disposable_email._DATA_DIR / "disposable_extra.txt")
+    combined = frozenset(blocklist) | extra
+    must_stay_out = allowed | {
+        # Mailbox providers.
         "gmail.com",
         "googlemail.com",
         "outlook.com",
@@ -268,10 +295,25 @@ def test_packaged_blocklist_never_lists_an_allowlisted_or_major_provider():
         "proton.me",
         "protonmail.com",
         "yahoo.com",
+        # Shared mail hosts: an entry here would mark every domain behind them.
+        "cloudflare.net",
+        "yandex.net",
+        "google.com",
+        "protonmail.ch",
+        "mailgun.org",
+        "hostinger.com",
+        "purelymail.com",
     }
 
-    assert allowed
-    assert (allowed | majors) & blocklist == set()
+    assert allowed and extra
+    # The checker's own matching: a name is listed when it, or any parent
+    # domain of it, is on the list.
+    listed = {
+        name
+        for name in must_stay_out
+        if any(suffix in combined for suffix in disposable_email._suffixes(name))
+    }
+    assert listed == set()
 
 
 def _mx_answer(*exchanges: str) -> list:

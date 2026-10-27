@@ -7,13 +7,15 @@ the one asymmetry worth closing here.
 
 Two checks, in order of cost:
 
-1. The address's own domain, against the blocklist from the
-   `disposable-email-domains` package, the packaged mirror of
-   github.com/disposable-email-domains/disposable-email-domains. Free, and it
-   catches the well-known services.
+1. The address's own domain, against the blocklist: the `disposable-email-domains`
+   package, the packaged mirror of
+   github.com/disposable-email-domains/disposable-email-domains, plus
+   `data/disposable_extra.txt`, our own additions for services it misses. Free,
+   and it catches the well-known services.
 2. The domain's MX hosts, against the same list. Temporary-mail services keep
    minting fresh domains that all deliver to a few mail servers, so a domain
    missing from the list is still caught when its mail goes to one that is on it.
+   The additions file is where those mail servers go when the package lacks them.
 
 The MX answer is cached for a day -- a domain's mail server does not change
 between two sign-in attempts, and the lookup is the only network call here.
@@ -30,9 +32,9 @@ enough that the next minute asks again.
 domain (no MX lookup at all) and for any mail host it points to: forwarding
 services (Apple's hide-my-email, SimpleLogin, addy.io, Firefox Relay,
 DuckDuckGo) hand out addresses that look disposable and are not, since a real
-inbox sits behind them. The blocklist is never fetched at runtime: it ships with
-the pinned package and is updated by bumping that pin, so what runs is what was
-reviewed.
+inbox sits behind them. The blocklist is never fetched at runtime: the package
+ships with the pinned version and is updated by bumping that pin, the additions
+are a file in this repository, so what runs is what was reviewed.
 """
 import logging
 import threading
@@ -129,9 +131,10 @@ class DisposableEmailChecker:
 
     @classmethod
     def standard(cls, resolver: MxResolver | None) -> "DisposableEmailChecker":
-        """The production checker: the packaged blocklist, our alias allowlist."""
+        """The production checker: the packaged blocklist plus our own additions,
+        less our alias allowlist."""
         return cls(
-            frozenset(blocklist),
+            frozenset(blocklist) | _load(_DATA_DIR / "disposable_extra.txt"),
             _load(_DATA_DIR / "disposable_allowlist.txt"),
             resolver,
         )
