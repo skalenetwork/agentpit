@@ -9,8 +9,12 @@ export const CODE_LENGTH = 6;
 
 export const normaliseCode = (raw: string) => raw.replace(/\D+/g, "").slice(0, CODE_LENGTH);
 
+export const TEMPORARY_EMAIL = "Temporary email addresses can't be used. Use a permanent address.";
+
 const fault = (specific: Record<number, string>, fallback: string) => (error: unknown) =>
-  ({ 429: "Too many attempts. Wait a moment and try again.", 503: "Sign-in is not available right now. Try again later.", ...specific })[error instanceof ApiError ? error.status : 0] ?? fallback;
+  error instanceof ApiError && error.status === 400 && error.detail === TEMPORARY_EMAIL
+    ? TEMPORARY_EMAIL
+    : ({ 429: "Too many attempts. Wait a moment and try again.", 503: "Sign-in is not available right now. Try again later.", ...specific }[error instanceof ApiError ? error.status : 0] ?? fallback);
 
 export const sendCodeError = fault({ 422: "Enter a valid email address." }, "Could not send the code. Try again in a moment.");
 export const signInError = fault({ 401: "That code is wrong or expired." }, "Could not sign you in. Try again in a moment.");
