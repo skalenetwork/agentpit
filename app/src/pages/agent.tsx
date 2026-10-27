@@ -1,10 +1,10 @@
 import { type Bet, type BetStatus, explorerAddress, type Profile, type RaceEntry, type RaceHead, stageText } from "@agentpit/brand/api";
 import { betTabs, earnedChart, highlights, moneyTone, quiet, rowCaption, SHOWN, stakeLine, today, visible } from "@agentpit/brand/bets";
-import { chance, clock, count, dollars, pct, pool, shortAddress, shortDay, signedDollars, span, tone, utcTime } from "@agentpit/brand/format";
+import { chance, clock, count, dollars, pct, pool, shortAddress, shortDay, signedDollars, span, tone, until, utcTime } from "@agentpit/brand/format";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, ChartLine, LogOut, type LucideIcon, Pencil, Share, Trash2, TrendingDown, TrendingUp, Trophy } from "lucide-react";
+import { ArrowUpRight, BanknoteArrowUp, ChartLine, LogOut, type LucideIcon, Pencil, Share, Trash2, TrendingDown, TrendingUp, Trophy } from "lucide-react";
 import { type FormEvent, Fragment, type ReactNode, useState } from "react";
-import { type Agent, type Order, useAgents, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRaceEntries, useRenameAgent } from "../api";
+import { type Agent, type Order, useAgents, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRaceEntries, useRenameAgent, useTopUp } from "../api";
 import { BetSheet, Outcome } from "../bet";
 import { EarnedLine } from "../chart";
 import { HUE, LastTrade, Sep, TONE } from "../labels";
@@ -17,6 +17,7 @@ type Part = readonly [text: string, tint?: string];
 type TabKey = BetStatus | "orders";
 
 const SITE = "https://agentpit.dev";
+const GRANT = 100_000;
 const ICON = "max-md:w-7.5 max-md:px-0";
 const UNDERLINE = "underline decoration-faint underline-offset-[3px] transition-colors duration-150 hover:text-ink hover:decoration-current";
 const CARD = `relative min-w-0 p-5 sm:p-6 ${SOFT}`;
@@ -372,6 +373,26 @@ const Delete = ({ agent, onClose }: { agent: Agent; onClose: () => void }) => {
   );
 };
 
+const TopUp = ({ agent, now, onClose }: { agent: Agent; now: number; onClose: () => void }) => {
+  const top = useTopUp(agent.eth_address);
+  const wait = agent.next_top_up_at - now;
+  return (
+    <Sheet title="Top up paper money" onClose={onClose}>
+      <p className="mt-3 text-muted">
+        {wait > 0 ? `Next top-up in ${until(wait)}.` : `Adds about ${dollars(GRANT - agent.equity)} of paper money, bringing equity back to ${dollars(GRANT)}. The next top-up is 24 hours later.`}
+        {agent.competitions.length > 0 && " Top-ups pause from 24 hours before a competition's start until its final values are in."}
+      </p>
+      {top.data === 0 && wait <= 0 && <p className="mt-2 text-caption text-muted">Nothing to add: equity is already {dollars(GRANT)}.</p>}
+      {top.isError && <Fault>{(top.error instanceof ApiError && top.error.detail) || "Could not top up. Try again in a moment."}</Fault>}
+      <Actions onClose={onClose}>
+        <Button variant="primary" size="lg" disabled={wait > 0 || top.isPending} onClick={() => top.mutate(undefined, { onSuccess: (minted) => minted > 0 && onClose() })}>
+          Top up
+        </Button>
+      </Actions>
+    </Sheet>
+  );
+};
+
 const Contest = ({ agent, competition, other, now }: { agent: Agent; competition: RaceHead; other: Agent | undefined; now: number }) => {
   const entry = useEntry(agent.eth_address);
   const entered = agent.competitions.includes(competition.slug);
@@ -444,7 +465,7 @@ const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competit
 };
 
 const View = ({ agent, now }: { agent: Agent; now: number }) => {
-  const [sheet, setSheet] = useState<"share" | "compete" | "rename" | "delete">();
+  const [sheet, setSheet] = useState<"top-up" | "share" | "compete" | "rename" | "delete">();
   const [open, setOpen] = useState<string | null>(null);
   const competitions = useCompetitions().data?.competitions.filter(({ phase }) => phase !== "ended") ?? [];
   const entries = useRaceEntries(agent.eth_address).data ?? [];
@@ -459,6 +480,12 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
     <>
       <Crumbs current={agent.name}>
         <div className="flex shrink-0 items-center gap-2">
+          {agent.equity < GRANT && (
+            <Button className={ICON} onClick={() => setSheet("top-up")}>
+              <BanknoteArrowUp size={14} strokeWidth={1.75} />
+              <span className="max-md:sr-only">Top up</span>
+            </Button>
+          )}
           {profile && (
             <Button className={ICON} onClick={() => setSheet("share")}>
               <Share size={14} strokeWidth={1.75} />
@@ -513,6 +540,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
       </div>
       {profile && <Wallet address={profile.address} valuedAt={profile.valuedAt} />}
       {bet && <BetSheet bet={bet} now={now} onClose={() => setOpen(null)} />}
+      {sheet === "top-up" && <TopUp agent={agent} now={now} onClose={close} />}
       {sheet === "share" && profile && <ShareSheet line={profile.share} url={`${page}?d=${iso.slice(0, 10)}`} image={`${page}/og/${iso.slice(0, 13)}.png`} onClose={close} />}
       {sheet === "compete" && <Compete agent={agent} competitions={competitions} now={now} onClose={close} />}
       {sheet === "rename" && <Rename agent={agent} onClose={close} />}

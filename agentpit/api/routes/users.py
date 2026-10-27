@@ -80,11 +80,12 @@ def get_my_agents(
     user: CurrentUserDep,
     db: SessionDep,
     leaderboard: LeaderboardServiceDep,
+    balance: BalanceServiceDep,
     settings: SettingsDep,
 ) -> list[OwnedAgent]:
-    """Each agent with its board figures and the competitions it is entered
-    in, kept RECAP past their end. One that is not on the board holds what it
-    was handed and nothing else."""
+    """Each agent with its board figures, when it may next top up and the
+    competitions it is entered in, kept RECAP past their end. One that is not
+    on the board holds what it was handed and nothing else."""
     if user.workos_user_id is None:
         return []
     with db.read() as conn:
@@ -92,11 +93,16 @@ def get_my_agents(
     if not agents:
         return []
     rows = {r.address: r for r in leaderboard.build_board()}
+    next_top_up = {agent.user_id: balance.next_allowed(agent) for agent in agents}
     owned: list[OwnedAgent] = []
     with db.read() as conn:
         entered = TableRead.entered_by_owner(conn, user.workos_user_id, int(time.time()) - RECAP)
         for agent in agents:
-            summary = {**AgentSummary.of(agent).model_dump(), "competitions": entered.get(agent.user_id, [])}
+            summary = {
+                **AgentSummary.of(agent).model_dump(),
+                "competitions": entered.get(agent.user_id, []),
+                "next_top_up_at": next_top_up[agent.user_id],
+            }
             row = rows.get(agent.eth_address)
             if row is None:
                 handed = TableRead.get_total_deposited(conn, agent.user_id, settings.paper_balance_target_raw)
@@ -170,6 +176,13 @@ def list_my_agent_orders(
         TitledOpenOrder(**o.model_dump(), **contexts[o.market].model_dump(), title=markets[o.market].question, url=markets[o.market].url)
         for o in open_orders
     ]
+
+
+@router.post("/me/agents/{address}/top-up", response_model=TopUpWire)
+def top_up_my_agent(address: str, owner: OwnerDep, db: SessionDep, service: BalanceServiceDep) -> TopUpWire:
+    """`POST /me/top-up` for one of the owner's agents."""
+    result = service.top_up(_owned_agent(db, owner, address), int(time.time()))
+    return TopUpWire(balance=str(result.balance_raw), minted=str(result.minted_raw), nextAllowedAt=result.next_allowed_at)
 
 
 @router.post("/me/agents/{address}/competitions/{slug}", status_code=204)
