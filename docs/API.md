@@ -146,6 +146,8 @@ Mail a six-digit code to an address. Public.
 
 Always `202 {"status": "sent"}`, whether or not the address has an account — the reply must not tell a stranger who is registered. WorkOS creates its user and mails the code here; no agentpit row is created until the code comes back.
 
+The exception is a temporary-email address: `/auth/code`, `/auth/session` and `/auth/callback` answer `400` with `detail` `Temporary email addresses can't be used. Use a permanent address.`, and `/auth/refresh` answers `401` for an account with such an address.
+
 ### `POST /auth/session`
 Exchange a mailed code for a session. Public. Creates the agentpit account on first use — provisioning the EOA and running on-chain onboarding (paper-USDC faucet drip + exchange approvals, their gas topped up by the platform) — and re-runs onboarding on later sign-ins if `ONBOARDED_AT` is null.
 
