@@ -227,7 +227,12 @@ async def _leaderboard_loop(service: LeaderboardService, settings: Settings) -> 
         try:
             touched = drain()
             if touched:
-                await asyncio.to_thread(service.take_snapshot, touched)
+                try:
+                    await asyncio.to_thread(service.take_snapshot, touched)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("Leaderboard valuation of touched accounts failed")
             if time.monotonic() >= next_pass:
                 next_pass = time.monotonic() + settings.leaderboard_interval_seconds
                 written, deleted = await asyncio.to_thread(
