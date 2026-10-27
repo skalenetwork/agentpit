@@ -120,3 +120,29 @@ def test_id_filter_at_cap_still_matches(client_and_market):
     body = resp.json()
     assert len(body) == 1
     assert body[0]["id"] == str(market.market_id)
+
+
+def test_closed_and_active_filter_like_the_gamma_fields(client_and_market):
+    client, market = client_and_market
+    session = app.dependency_overrides[get_db_session]()
+    with session.write() as conn:
+        done = TableWrite.create_market(
+            conn,
+            CreateMarketRequest(
+                question="Did it snow?",
+                description="d",
+                erc1155_tokens=[("333", "Yes"), ("444", "No")],
+                slug="did-it-snow",
+                condition_id=ConditionId(_hex32("c2")),
+                state=MarketState.ACTIVE,
+            ),
+            is_polygon_market=False,
+        )
+        TableWrite.set_market_state(conn, done.market_id, MarketState.ACTIVE, MarketState.RESOLVED, (1, 0))
+
+    def ids(query: str) -> set[str]:
+        return {m["id"] for m in client.get(f"/markets?{query}").json()}
+
+    assert ids("closed=false&active=true") == {str(market.market_id)}
+    assert ids("closed=true") == ids("active=false") == {str(done.market_id)}
+    assert ids("closed=false&active=false") == set()

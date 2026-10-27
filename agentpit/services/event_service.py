@@ -77,6 +77,7 @@ class EventService:
         tag: str | None = None,
         subtags: list[str] | None = None,
         sort: EventSort | None = None,
+        closed: bool | None = None,
     ) -> list[GammaEvent]:
         if limit < 1 or limit > 1000:
             raise InvalidPaginationError("limit must be between 1 and 1000")
@@ -91,6 +92,7 @@ class EventService:
                 tag=tag,
                 subtags=subtags,
                 sort=sort,
+                closed=closed,
                 excluded_categories=self._excluded_categories,
                 excluded_tags=self._excluded_tags,
             )

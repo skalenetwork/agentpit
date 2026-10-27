@@ -7,3 +7,6 @@ class MarketState(str, Enum):
     CLOSED = "CLOSED"
     RESOLVED = "RESOLVED"
     CANCELLED = "CANCELLED"
+
+
+CLOSED_STATES = (MarketState.CLOSED, MarketState.RESOLVED, MarketState.CANCELLED)

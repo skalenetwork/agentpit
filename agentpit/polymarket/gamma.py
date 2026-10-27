@@ -12,11 +12,9 @@ from datetime import datetime, timezone
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.gamma_market import GammaEvent, GammaMarket
 from agentpit.datastructures.market import Market
-from agentpit.datastructures.market_state import MarketState
+from agentpit.datastructures.market_state import CLOSED_STATES, MarketState
 from agentpit.polymarket.format import price_to_decimal_str, price_to_float
 from agentpit.polymarket.pricing import MarketPrices
-
-_CLOSED_STATES = (MarketState.CLOSED, MarketState.RESOLVED, MarketState.CANCELLED)
 
 
 def _iso(epoch: int | None) -> str | None:
@@ -72,7 +70,7 @@ def to_gamma_market(
     labels = [label for _token_id, label in market.erc1155_tokens]
     token_ids = [token_id for token_id, _label in market.erc1155_tokens]
     active = market.market_state == MarketState.ACTIVE
-    closed = market.market_state in _CLOSED_STATES
+    closed = market.market_state in CLOSED_STATES
     end_iso = _iso(market.end_date)
     price_fields = _price_fields(prices, labels)
     if market.payouts is not None:
