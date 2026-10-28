@@ -37,10 +37,13 @@ const traded = (bets: readonly CardBet[]) => Math.max(0, ...bets.map((bet) => be
 const ticket = (card: Card, bets: readonly CardBet[]) => {
   const [bet] = bets;
   const side = bet.side === "Yes" || bet.side === "No" ? bet.side : null;
+  const head = card.kind === "binary" ? short(card.title) : side ? card.outcomes[bet.row].label : bet.side;
+  const word = Math.max(...head.split(" ").map((w) => w.length));
   return {
     agent: bet.agent,
     name: bet.name,
-    head: card.kind === "binary" ? short(card.title) : side ? card.outcomes[bet.row].label : bet.side,
+    head,
+    fit: word > 11 ? "smaller" : word > 8 ? "small" : null,
     lean: card.kind === "window" ? (bet.side === "Up" ? "up" : "down") : null,
     side,
     avg: cents(bet.avgPrice),
@@ -62,7 +65,7 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
 ---
 
 <div class="pit grid gap-4 p-3 text-left sm:p-6 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
-  <div class="list flex gap-1 overflow-x-auto [scrollbar-width:none] lg:grid lg:auto-rows-fr lg:grid-cols-1 lg:gap-2 lg:overflow-visible lg:contain-size">
+  <div class="list flex gap-1 overflow-x-auto [scrollbar-width:none] lg:grid lg:grid-cols-1 lg:grid-rows-9 lg:gap-2 lg:overflow-visible lg:contain-size">
     {
       markets.map(({ card, at }, i) => (
         <button
@@ -118,7 +121,7 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
                 </div>
                 <div class="body">
                   {seat?.side && <span class:list={["side", seat.side === "No" && "no"]}>{seat.side}</span>}
-                  <p class:list={["name", seat?.lean]}>{seat?.head ?? "Open seat"}</p>
+                  <p class:list={["name", seat?.lean, seat?.fit]}>{seat?.head ?? "Open seat"}</p>
                   <div class="tally">
                     {seat ? (
                       <Fragment>
@@ -394,13 +397,22 @@ const totals = days && { trades: days.reduce((total, day) => total + day.trades,
     overflow: hidden;
     font-size: 30px;
     line-height: 34px;
-    hyphens: auto;
     font-weight: 500;
     letter-spacing: -0.02em;
     text-wrap: balance;
     overflow-wrap: break-word;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;
+  }
+
+  .name.small {
+    font-size: 24px;
+    line-height: 28px;
+  }
+
+  .name.smaller {
+    font-size: 20px;
+    line-height: 24px;
   }
 
   .blank .name {
