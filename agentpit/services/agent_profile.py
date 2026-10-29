@@ -58,6 +58,7 @@ class AgentProfile(BaseModel):
     owner: str | None
     runner: Runner
     trades: int
+    markets: int
     firstTradeAt: int
     lastTradeAt: int
     valuedAt: int
@@ -79,7 +80,7 @@ def build_profile(
     to 2 places, so every tie resolves the way the landing resolves it."""
     shown = {r.address: round(r.return_pct, 2) for r in board}
     ranked = [r for r in board if r.place is not None]
-    warming = sorted((r for r in board if r.place is None), key=lambda r: r.trades, reverse=True)
+    warming = sorted((r for r in board if r.place is None), key=lambda r: r.markets, reverse=True)
     own = ranked if row.place else warming
     i = own.index(row)
     start = min(max(0, i - 2), max(0, len(own) - 5))
@@ -103,6 +104,7 @@ def build_profile(
         owner=row.owner if row.owner and sum(r.owner == row.owner for r in board) > 1 else None,
         runner=runner_for(row.app, row.host),
         trades=row.trades,
+        markets=row.markets,
         firstTradeAt=row.first_trade_at,
         lastTradeAt=row.last_trade_at,
         valuedAt=held.valued_at,

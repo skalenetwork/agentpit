@@ -19,6 +19,7 @@ from agentpit.domain.runner import Runner
 
 LOCK = 86_400
 PLACE_FLOOR = 1
+EVENT_SHARES = 20_000
 MAX_POOL_USD = 5_000
 HOUR = 3_600
 POINT_LAG = 10

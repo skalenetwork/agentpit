@@ -471,11 +471,11 @@ def test_portfolio_matches_the_leaderboard(house_book):
     assert warming.address == agent.eth_address
     assert warming.cash_usd == 100_000 - 20
     assert warming.equity_usd == pytest.approx(warming.cash_usd + warming.positions_value_usd)
-    assert (warming.trades, warming.rank, warming.rank_change, warming.trades_to_rank, warming.ranked_agents) == (
-        1, None, None, RANK_FLOOR - 1, 0
+    assert (warming.trades, warming.markets, warming.rank, warming.rank_change, warming.markets_to_rank, warming.ranked_agents) == (
+        1, 1, None, None, RANK_FLOOR - 1, 0
     )
     assert warming.profile_url == page
-    assert warming.share == f"{warming.agent} is warming up on AgentPit, 1 of {RANK_FLOOR} trades to rank: {dated}"
+    assert warming.share == f"{warming.agent} is warming up on AgentPit, 1 of {RANK_FLOOR} markets to rank: {dated}"
     question = desk.get_market(slug).question
     assert [(h.market, h.question, h.url, h.outcome, h.shares, h.avg_price, h.sell_usd) for h in warming.positions] == [
         (slug, question, None, "YES", 50, 0.4, 0)
@@ -487,8 +487,11 @@ def test_portfolio_matches_the_leaderboard(house_book):
     assert (warming.next_top_up_at, warming.competitions) == (None, [])
     assert desk.leaderboard().agents == []
 
+    client = fresh_client()
     for _ in range(RANK_FLOOR - 1):
-        desk.trade(agent, slug, "YES", "buy", shares=1)
+        market = create_market(client)
+        house_book(market["erc1155_tokens"][0][0], asks=(("0.45", "100"),), user=house(client))
+        desk.trade(agent, market["slug"], "YES", "buy", shares=1)
     desk._board.take_snapshot(drain())
 
     mine = desk.portfolio(agent)
@@ -496,7 +499,7 @@ def test_portfolio_matches_the_leaderboard(house_book):
     standing = next(s for s in board.agents if s.agent == mine.agent)
 
     assert (mine.equity_usd, mine.pnl_usd, mine.rank) == (standing.equity_usd, standing.pnl_usd, standing.rank)
-    assert (mine.trades, mine.trades_to_rank, mine.rank_change) == (RANK_FLOOR, 0, None)
+    assert (mine.trades, mine.markets, mine.markets_to_rank, mine.rank_change) == (RANK_FLOOR, RANK_FLOOR, 0, None)
     assert mine.ranked_agents == board.total == 1
     assert mine.share == (
         f"{mine.agent} is #{mine.rank} of 1 on AgentPit with a {pct(standing.return_pct)} return on paper money: {dated}"
@@ -613,8 +616,8 @@ def test_top_up_adds_nothing_while_an_entered_competition_pauses_it():
     now = int(time.time())
     with fresh_test_db().write() as conn:
         user_id, _, key = TableWrite.create_user(conn, None, None, owner_workos_id="user_o")
-        _competition(conn, "locked", now + 3_600, now + DAY)
-        TableWrite.enter_competition(conn, "locked", "user_o", user_id, now - 60, False)
+        _competition(conn, "live", now - 3_600, now + DAY)
+        TableWrite.enter_competition(conn, "live", "user_o", user_id, now - 7_200, False)
 
     result = _desk().top_up(_user(key))
 
@@ -628,8 +631,8 @@ def test_leaderboard_carries_the_agent_app():
         )
         for k in range(RANK_FLOOR):
             conn.execute(
-                "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) VALUES (%s, %s, 0, 'CONFIRMED')",
-                (f"t{k}", api_key),
+                "INSERT INTO trades (TRADE_ID, MARKET, TAKER_API_KEY, MATCH_TIME, STATUS) VALUES (%s, %s, %s, 0, 'CONFIRMED')",
+                (f"t{k}", f"m{k}", api_key),
             )
         TableWrite.insert_account_snapshot(conn, user_id, 1, 110_000_000_000, 100_000_000_000)
 

@@ -2,8 +2,11 @@
 
 Fed by CLOB WSS market-channel events. No I/O. All prices/sizes are integer
 micro units (1_000_000 == $1.00 == 1 share), parsed from the feed's decimal
-STRINGS via Decimal — never through float.
+STRINGS via Decimal — never through float. What agents take from a level is
+shared by every agent and stays taken for DEPTH_MEMORY_SECONDS after the
+latest take there, whatever Polymarket does to the level's size meanwhile.
 """
+import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, Overflow
 
@@ -11,6 +14,7 @@ from agentpit.datastructures.match import Take
 
 MICRO = 1_000_000
 TICK = 1_000  # 0.001 — the local book's price grid
+DEPTH_MEMORY_SECONDS = 60  # taken depth stays taken this long after a level's latest take
 
 
 def to_micro(value) -> int | None:
@@ -30,11 +34,11 @@ def to_micro(value) -> int | None:
 
 @dataclass(frozen=True, slots=True)
 class Used:
-    seen: int
     taken: int
+    until: float
 
 
-UseKey = tuple[str, bool, int]
+UseKey = tuple[bool, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,31 +124,31 @@ class BookReplica:
             asks=tuple(sorted(asks.items())),
         )
 
-    def take(self, agent: str, ask: bool, bound: int, size: int) -> tuple[Take, ...]:
+    def take(self, ask: bool, bound: int, size: int) -> tuple[Take, ...]:
+        """Walk the asks (ask) or bids up to bound for size; each level offers
+        what it shows less what agents took there and is still remembered."""
         snap = self.snapshot()
         if snap is None:
             return ()
+        now = time.monotonic()
         takes: list[Take] = []
         for price, shown in snap.asks if ask else snap.bids:
             if not size or (price > bound if ask else price < bound):
                 break
-            u = self.used.get((agent, ask, price))
-            q = min(
-                shown - u.taken if u is not None and u.seen == shown else shown, size
-            )
+            u = self.used.get((ask, price))
+            q = min(shown - (u.taken if u is not None and u.until > now else 0), size)
             if q > 0:
-                takes.append(Take(ask, price, shown, q))
+                takes.append(Take(ask, price, q))
                 size -= q
         return tuple(takes)
 
-    def use(self, agent: str, takes: tuple[Take, ...]) -> None:
+    def use(self, takes: tuple[Take, ...]) -> None:
+        """Record filled takes: add to each level's live taken and remember it
+        DEPTH_MEMORY_SECONDS from now; forget expired levels."""
+        now = time.monotonic()
+        self.used = {k: u for k, u in self.used.items() if u.until > now}
         for t in takes:
-            u = self.used.get((agent, t.ask, t.price))
-            prior = u.taken if u is not None and u.seen == t.shown else 0
-            self.used[(agent, t.ask, t.price)] = Used(t.shown, prior + t.size)
-        bids, asks = dict(self.bids), dict(self.asks)
-        self.used = {
-            k: u
-            for k, u in self.used.items()
-            if (asks if k[1] else bids).get(k[2]) == u.seen
-        }
+            u = self.used.get((t.ask, t.price))
+            self.used[(t.ask, t.price)] = Used(
+                (0 if u is None else u.taken) + t.size, now + DEPTH_MEMORY_SECONDS
+            )

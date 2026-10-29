@@ -13,12 +13,13 @@ from pydantic import BaseModel
 from agentpit.utils.parse import parse_32b_hex_private_key
 from agentpit.datastructures.agent_desk import Sort
 from agentpit.datastructures.board import WireTeam
-from agentpit.datastructures.competition import LOCK, Competition, Entry
+from agentpit.datastructures.competition import EVENT_SHARES, Competition, Entry
 from agentpit.datastructures.event import Event
 from agentpit.datastructures.event_sort import EventSort
 from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_context import MarketContext
 from agentpit.datastructures.market_state import CLOSED_STATES, MarketState
+from agentpit.datastructures.match_leg import MICRO
 from agentpit.datastructures.user import User
 from agentpit.liquidity.tape import MIRROR_API_KEY
 from ..datastructures.condition_id import ConditionId
@@ -41,6 +42,8 @@ class Owner(BaseModel):
 class TradeTally(BaseModel):
     trades: int
     trades_before: int
+    markets: int
+    markets_before: int
     first_trade_at: int
     last_trade_at: int
 
@@ -72,15 +75,34 @@ class Seat(BaseModel):
 
 class PendingCapture(BaseModel):
     """An entry whose start or end value is due; `settling` while a fill of
-    the account is still PENDING."""
+    the account is still PENDING, `prize` when its competition has prizes."""
 
     slug: str
     user_id: str
+    api_key: str
     eth_address: str
     run_starts_at: int
     ends_at: int
     start_raw: int | None
     settling: bool
+    prize: bool
+
+
+class EventRoom(BaseModel):
+    """A prize entrant in its run: the competition, the event of a market,
+    the shares it holds there and how many more it may hold, in base units."""
+
+    title: str
+    event: str
+    held: int
+    room: int
+
+
+class HeldEvent(BaseModel):
+    """The event holding the most of an account's shares, in base units."""
+
+    event: str
+    held: int
 
 
 class MarketFields(NamedTuple):
@@ -294,11 +316,11 @@ class TableRead:
     )
 
     #: An account's competition entries that pause its top-ups: past their
-    #: lock, still without an end value, and started or not yet ended. Takes
-    #: THREE parameters, the user id and `now` twice. Prefix your own `SELECT ...`.
+    #: run start, still without an end value, and started or not yet ended.
+    #: Takes THREE parameters, the user id and `now` twice. Prefix your own `SELECT ...`.
     PAUSING_ENTRIES = (
         "FROM competition_entries e JOIN competitions c ON c.SLUG = e.SLUG "
-        f"WHERE e.USER_ID = %s AND e.END_RAW IS NULL AND c.STARTS_AT <= %s + {LOCK} "
+        "WHERE e.USER_ID = %s AND e.END_RAW IS NULL AND GREATEST(c.STARTS_AT, e.ENROLLED_AT) <= %s "
         "AND (e.START_RAW IS NOT NULL OR c.ENDS_AT > %s)"
     )
 
@@ -310,6 +332,35 @@ class TableRead:
         "JOIN users u ON u.USER_ID = e.USER_ID "
         "WHERE e.START_RAW IS NOT NULL AND e.END_RAW IS NULL AND c.ENDS_AT <= %s"
     )
+
+    #: The shares an account holds in each event over the event's unresolved
+    #: markets, as `held(EVENT, MARKET_ID, SHARES)`: the event is
+    #: `COALESCE(EVENT_ID, -MARKET_ID)` and MARKET_ID one of its markets. A
+    #: token's shares are the account's fills that did not fail, agents being
+    #: the taker on every fill and a MINT or MERGE keeping the taker's SIDE,
+    #: plus its landed splits less its merges, which move every outcome of
+    #: their market, floored at 0. Takes TWO parameters, the api key twice.
+    #: Append your own `SELECT ... FROM held`.
+    EVENT_HOLDINGS_CTE = """
+        WITH legs AS (
+            SELECT m.MARKET_ID, m.EVENT_ID, t.ASSET_ID AS TOKEN,
+                   CASE WHEN t.SIDE = 'BUY' THEN t.TRADE_SIZE ELSE -t.TRADE_SIZE END AS SHARES
+            FROM trades t JOIN markets m ON m.CONDITION_ID = t.MARKET
+            WHERE t.TAKER_API_KEY = %s AND t.STATUS IN ('PENDING', 'CONFIRMED') AND m.PAYOUTS IS NULL
+            UNION ALL
+            SELECT m.MARKET_ID, m.EVENT_ID, k.PAIR ->> 0,
+                   CASE WHEN x.TRANSACTION_TYPE = 'SPLIT' THEN 1 ELSE -1 END * (x.DETAILS::jsonb ->> 'amount')::BIGINT
+            FROM transactions x JOIN markets m ON m.MARKET_ID = x.MARKET_ID
+            CROSS JOIN jsonb_array_elements(m.ERC1155_TOKENS::jsonb) AS k(PAIR)
+            WHERE x.API_KEY = %s AND x.TRANSACTION_TYPE IN ('SPLIT', 'MERGE') AND m.PAYOUTS IS NULL
+        ), tokens AS (
+            SELECT MARKET_ID, EVENT_ID, GREATEST(SUM(SHARES), 0) AS SHARES
+            FROM legs GROUP BY MARKET_ID, EVENT_ID, TOKEN
+        ), held AS (
+            SELECT COALESCE(EVENT_ID, -MARKET_ID) AS EVENT, MIN(MARKET_ID) AS MARKET_ID, SUM(SHARES)::BIGINT AS SHARES
+            FROM tokens GROUP BY COALESCE(EVENT_ID, -MARKET_ID)
+        )
+    """
 
     #: One price print per Polymarket print and token: "this token traded at
     #: this price". Only the mirrored tape prints, so nothing an agent does
@@ -766,8 +817,8 @@ class TableRead:
     @staticmethod
     def count_trades_by_user(db: psycopg.Connection, before: int) -> "dict[str, TradeTally]":
         """user_id -> how many non-failed trades it took part in, either side,
-        how many of them matched before `before`, and when the first and the
-        latest of them matched.
+        in how many distinct markets, both counts again for the trades matched
+        before `before`, and when the first and the latest of them matched.
 
         Drives from `users` for the same reason as `list_traded_accounts`:
         `trades` is dominated by the liquidity mirror's unbounded synthetic
@@ -783,7 +834,8 @@ class TableRead:
         required: the `UNION ALL` inside the lateral emits one row per
         api-key column, so a trade where this user is both taker and maker
         appears twice within that user's own subquery and must be
-        collapsed back to one. Measured locally the same way as
+        collapsed back to one. MARKET rides along on the same rows, so the
+        market counts need no join. Measured locally the same way as
         `list_traded_accounts`: the old form 58.6ms (`Hash Join` over two
         `Seq Scan`s of `trades`), this form 1.4ms (`Nested Loop` driven by
         `users`, `Index Scan` on both api-key indexes per user).
@@ -793,14 +845,16 @@ class TableRead:
             SELECT u.USER_ID AS uid,
                    COUNT(DISTINCT x.TRADE_ID) AS trades,
                    COUNT(DISTINCT x.TRADE_ID) FILTER (WHERE x.MATCH_TIME < %(before)s) AS trades_before,
+                   COUNT(DISTINCT x.MARKET) AS markets,
+                   COUNT(DISTINCT x.MARKET) FILTER (WHERE x.MATCH_TIME < %(before)s) AS markets_before,
                    MIN(x.MATCH_TIME) AS first_trade_at,
                    MAX(x.MATCH_TIME) AS last_trade_at
             FROM users u
             JOIN LATERAL (
-                SELECT TRADE_ID, MATCH_TIME FROM trades
+                SELECT TRADE_ID, MARKET, MATCH_TIME FROM trades
                 WHERE TAKER_API_KEY = u.API_KEY AND STATUS != 'FAILED'
                 UNION ALL
-                SELECT TRADE_ID, MATCH_TIME FROM trades
+                SELECT TRADE_ID, MARKET, MATCH_TIME FROM trades
                 WHERE MAKER_API_KEY = u.API_KEY AND STATUS != 'FAILED'
             ) x ON true
             WHERE u.IS_BOT = 0
@@ -941,6 +995,45 @@ class TableRead:
         return row["TITLE"] if row else None
 
     @staticmethod
+    def event_room(db: psycopg.Connection, api_key: str, market_id: int, now: int) -> "EventRoom | None":
+        """The account's shares in the event of market `market_id` and the room
+        left under EVENT_SHARES while it is in the run of a competition with
+        prizes, from its run start until the end; None outside one."""
+        row = db.execute(
+            f"""
+            {TableRead.EVENT_HOLDINGS_CTE}
+            SELECT c.TITLE, COALESCE(v.TITLE, m.QUESTION) AS EVENT, COALESCE(h.SHARES, 0) AS HELD,
+                   GREATEST(%s - COALESCE(h.SHARES, 0), 0) AS ROOM
+            FROM users u
+            JOIN competition_entries e ON e.USER_ID = u.USER_ID
+            JOIN competitions c ON c.SLUG = e.SLUG
+            JOIN markets m ON m.MARKET_ID = %s
+            LEFT JOIN events v ON v.EVENT_ID = m.EVENT_ID
+            LEFT JOIN LATERAL (SELECT SHARES FROM held WHERE EVENT = COALESCE(m.EVENT_ID, -m.MARKET_ID)) h ON true
+            WHERE u.API_KEY = %s AND c.PRIZES <> '[]'
+              AND GREATEST(c.STARTS_AT, e.ENROLLED_AT) <= %s AND c.ENDS_AT > %s
+            ORDER BY c.ENDS_AT LIMIT 1
+            """,
+            (api_key, api_key, EVENT_SHARES * MICRO, market_id, api_key, now, now),
+        ).fetchone()
+        return EventRoom.model_validate(row) if row else None
+
+    @staticmethod
+    def over_cap(db: psycopg.Connection, api_key: str) -> "HeldEvent | None":
+        """The event holding the most of the account's shares when that is over
+        EVENT_SHARES, which holds a prize entry's start value; None when none is."""
+        row = db.execute(
+            f"""
+            {TableRead.EVENT_HOLDINGS_CTE}
+            SELECT COALESCE(v.TITLE, m.QUESTION) AS EVENT, h.SHARES AS HELD
+            FROM held h JOIN markets m ON m.MARKET_ID = h.MARKET_ID LEFT JOIN events v ON v.EVENT_ID = m.EVENT_ID
+            WHERE h.SHARES > %s ORDER BY h.SHARES DESC, h.EVENT LIMIT 1
+            """,
+            (api_key, api_key, EVENT_SHARES * MICRO),
+        ).fetchone()
+        return HeldEvent.model_validate(row) if row else None
+
+    @staticmethod
     def competitions(
         db: psycopg.Connection, slug: str | None = None
     ) -> "list[tuple[Competition, int | None]]":
@@ -999,10 +1092,11 @@ class TableRead:
         after the end."""
         rows = db.execute(
             """
-            SELECT e.SLUG, e.USER_ID, u.ETH_ADDRESS,
+            SELECT e.SLUG, e.USER_ID, u.API_KEY, u.ETH_ADDRESS,
                    GREATEST(c.STARTS_AT, e.ENROLLED_AT) AS RUN_STARTS_AT, c.ENDS_AT, e.START_RAW,
                    EXISTS (SELECT 1 FROM trades t WHERE t.TAKER_API_KEY = u.API_KEY
-                           AND t.STATUS = 'PENDING') AS SETTLING
+                           AND t.STATUS = 'PENDING') AS SETTLING,
+                   c.PRIZES <> '[]' AS PRIZE
             FROM competition_entries e
             JOIN competitions c ON c.SLUG = e.SLUG
             JOIN users u ON u.USER_ID = e.USER_ID

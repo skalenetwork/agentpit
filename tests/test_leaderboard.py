@@ -440,7 +440,7 @@ from agentpit.services.leaderboard_service import (
 )
 
 
-def _row(name, capital, deposited, trades=1, address="0x" + "11" * 20):
+def _row(name, capital, deposited, trades=1, markets=1, address="0x" + "11" * 20):
     return LeaderboardRow(
         name=name,
         address=address,
@@ -449,6 +449,7 @@ def _row(name, capital, deposited, trades=1, address="0x" + "11" * 20):
         capital_raw=capital,
         deposited_raw=deposited,
         trades=trades,
+        markets=markets,
         first_trade_at=0,
         last_trade_at=0,
     )
@@ -508,11 +509,11 @@ def test_ties_break_deterministically_by_address():
         assert first == second, f"sort={sort} was not deterministic"
 
 
-def test_places_rank_by_return_only_at_the_floor():
-    hot = _row("hot", capital=150, deposited=100, trades=RANK_FLOOR - 1, address="0x" + "99" * 20)
-    first = _row("first", capital=120, deposited=100, trades=RANK_FLOOR, address="0x" + "33" * 20)
-    tied_low = _row("tied_low", capital=110, deposited=100, trades=40, address="0x" + "11" * 20)
-    tied_high = _row("tied_high", capital=110, deposited=100, trades=RANK_FLOOR, address="0x" + "22" * 20)
+def test_places_rank_by_return_only_at_the_market_floor():
+    hot = _row("hot", capital=150, deposited=100, trades=40, markets=RANK_FLOOR - 1, address="0x" + "99" * 20)
+    first = _row("first", capital=120, deposited=100, trades=RANK_FLOOR, markets=RANK_FLOOR, address="0x" + "33" * 20)
+    tied_low = _row("tied_low", capital=110, deposited=100, trades=40, markets=12, address="0x" + "11" * 20)
+    tied_high = _row("tied_high", capital=110, deposited=100, trades=RANK_FLOOR, markets=RANK_FLOOR, address="0x" + "22" * 20)
     assert places([tied_low, hot, tied_high, first]) == {first.address: 1, tied_high.address: 2, tied_low.address: 3}
 
 
@@ -781,22 +782,23 @@ def test_counts_cover_both_sides_of_a_trade():
         conn, email="counted-taker@example.com", password_hash="x", handle=None
     )
     conn.execute(
-        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MAKER_API_KEY, MATCH_TIME, STATUS) "
-        "VALUES (%s, %s, %s, %s, %s)",
-        ("t-both", taker_key, maker_key, 1_700_000_000, "PENDING"),
+        "INSERT INTO trades (TRADE_ID, MARKET, TAKER_API_KEY, MAKER_API_KEY, MATCH_TIME, STATUS) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        ("t-both", "m-1", taker_key, maker_key, 1_700_000_000, "PENDING"),
     )
-    conn.execute(
-        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) "
-        "VALUES (%s, %s, %s, %s)",
-        ("t-taker-only", taker_key, 1_700_000_100, "PENDING"),
-    )
+    for trade_id, market in (("t-taker-again", "m-1"), ("t-taker-other", "m-2")):
+        conn.execute(
+            "INSERT INTO trades (TRADE_ID, MARKET, TAKER_API_KEY, MATCH_TIME, STATUS) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (trade_id, market, taker_key, 1_700_000_100, "PENDING"),
+        )
 
     tallies = TableRead.count_trades_by_user(conn, 1_700_000_050)
     assert tallies[taker_id] == TradeTally(
-        trades=2, trades_before=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_100
+        trades=3, trades_before=1, markets=2, markets_before=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_100
     )
     assert tallies[maker_id] == TradeTally(
-        trades=1, trades_before=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000
+        trades=1, trades_before=1, markets=1, markets_before=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000
     )
     conn.close()
 
@@ -820,19 +822,19 @@ def test_a_failed_trade_does_not_put_an_account_on_the_board():
         ("t-only-failed", only_failed_key, 1_700_000_000, "FAILED"),
     )
     conn.execute(
-        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) "
-        "VALUES (%s, %s, %s, %s)",
-        ("t-mixed-good", mixed_key, 1_700_000_000, "PENDING"),
+        "INSERT INTO trades (TRADE_ID, MARKET, TAKER_API_KEY, MATCH_TIME, STATUS) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        ("t-mixed-good", "m-1", mixed_key, 1_700_000_000, "PENDING"),
     )
     conn.execute(
-        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) "
-        "VALUES (%s, %s, %s, %s)",
-        ("t-mixed-failed", mixed_key, 1_700_000_100, "FAILED"),
+        "INSERT INTO trades (TRADE_ID, MARKET, TAKER_API_KEY, MATCH_TIME, STATUS) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        ("t-mixed-failed", "m-2", mixed_key, 1_700_000_100, "FAILED"),
     )
     conn.execute(
-        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MATCH_TIME, STATUS) "
-        "VALUES (%s, %s, %s, %s)",
-        ("t-mixed-early-failed", mixed_key, 1_699_999_900, "FAILED"),
+        "INSERT INTO trades (TRADE_ID, MARKET, TAKER_API_KEY, MATCH_TIME, STATUS) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        ("t-mixed-early-failed", "m-3", mixed_key, 1_699_999_900, "FAILED"),
     )
 
     ids = {r.user_id for r in TableRead.list_traded_accounts(conn)}
@@ -842,7 +844,7 @@ def test_a_failed_trade_does_not_put_an_account_on_the_board():
     tallies = TableRead.count_trades_by_user(conn, 1_700_000_050)
     assert only_failed_id not in tallies
     assert tallies[mixed_id] == TradeTally(
-        trades=1, trades_before=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000
+        trades=1, trades_before=1, markets=1, markets_before=1, first_trade_at=1_700_000_000, last_trade_at=1_700_000_000
     )
     conn.close()
 

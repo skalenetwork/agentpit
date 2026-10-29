@@ -12,8 +12,9 @@ from agentpit.datastructures.competition import FINAL_DAY, HOUR, LOCK, POINT_LAG
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
+from agentpit.datastructures.match_leg import MICRO
 from agentpit.datastructures.position_wire import PositionWire
-from agentpit.db.table_read import TableRead
+from agentpit.db.table_read import EventRoom, HeldEvent, TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import BusinessRuleError, NotFoundError
 from agentpit.liquidity import feed
@@ -901,19 +902,20 @@ def test_the_race_line_without_a_place_and_the_enroll_line():
     )
 
 
-def test_an_entry_pauses_top_ups_from_its_lock_until_its_end_value_or_until_its_end_without_a_start():
+def test_an_entry_pauses_top_ups_from_its_run_start_until_its_end_value_or_until_its_end_without_a_start():
     now = int(time.time())
     conn = fresh_test_conn()
-    ends = now + LOCK + 3_600
-    _competition(conn, starts=now + LOCK + 60, ends=ends)
+    ends = now + 3_600
+    _competition(conn, starts=now + 60, ends=ends)
     user_id, _, _ = _agent(conn)
-    _entered(conn, user_id)
+    TableWrite.enter_competition(conn, SLUG, "user_owner", user_id, now - LOCK, False)
     balance = BalanceService(fresh_test_db(), _Chain(G // 2), Settings(), _Accounts())
     user = TableRead.get_user_by_userid(conn, user_id)
     assert user is not None
 
-    before = balance.next_allowed(user)
-    conn.execute("UPDATE competitions SET STARTS_AT = %s", (now + 60,))
+    locked = BalanceService(fresh_test_db(), _Chain(G // 2), Settings(), _Accounts()).top_up(user, now)
+    TableWrite.set_last_topup_at(conn, user_id, None)
+    conn.execute("UPDATE competitions SET STARTS_AT = %s", (now,))
     paused = balance.top_up(user, now)
     status = balance.next_allowed(user)
     claimed = TableWrite.claim_topup(conn, user_id, now, now, 1, G)
@@ -924,10 +926,99 @@ def test_an_entry_pauses_top_ups_from_its_lock_until_its_end_value_or_until_its_
     TableWrite.capture_entry(conn, SLUG, user_id, "END", G // 2, now, 1)
     resumed = balance.top_up(user, now)
 
-    assert before == 0
+    assert locked.minted_raw == G // 2
     assert (paused.minted_raw, paused.next_allowed_at, status, claimed) == (0, ends, ends, False)
     assert (unstarted, started) == ((0, None), now)
     assert resumed.minted_raw == G // 2
+
+
+def _event(conn, title: str, slugs: list[str]) -> None:
+    event_id = conn.execute(
+        "INSERT INTO events (SLUG, TITLE) VALUES (%s, %s) RETURNING EVENT_ID", (slugs[0], title)
+    ).fetchone()["EVENT_ID"]
+    conn.execute("UPDATE markets SET EVENT_ID = %s WHERE SLUG = ANY(%s)", (event_id, slugs))
+
+
+def _fill(conn, key: str, trade_id: str, cid: str, token: str, side: str, shares: int, status: str = "CONFIRMED") -> None:
+    conn.execute(
+        "INSERT INTO trades (TRADE_ID, MARKET, ASSET_ID, MATCH_KIND, SIDE, TRADE_SIZE, MATCH_TIME, STATUS, TAKER_API_KEY) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (trade_id, cid, token, "MINT" if side == "BUY" else "NORMAL", side, shares * MICRO, STARTS - 10, status, key),
+    )
+
+
+def _market_id(conn, slug: str) -> int:
+    return conn.execute("SELECT MARKET_ID FROM markets WHERE SLUG = %s", (slug,)).fetchone()["MARKET_ID"]
+
+
+def test_a_prize_entrant_in_its_run_holds_an_events_shares_over_its_unresolved_markets_from_fills_and_splits():
+    conn = fresh_test_conn()
+    _competition(conn, prizes=PRIZES)
+    user_id, _, key = _agent(conn)
+    _, _, stranger = _agent(conn, "user_stranger")
+    _entered(conn, user_id)
+    win, draw, lose, other = (_market(conn, slug, ENDS) for slug in ("win", "draw", "lose", "other"))
+    _event(conn, "Venezia vs Lecce", ["win", "draw", "lose"])
+    for trade_id, cid, token, side, shares, status in (
+        ("bought", win, "win-n", "BUY", 9_000, "CONFIRMED"),
+        ("sold", win, "win-n", "SELL", 1_000, "PENDING"),
+        ("short", win, "win-y", "SELL", 700, "CONFIRMED"),
+        ("draw", draw, "draw-y", "BUY", 3_000, "CONFIRMED"),
+        ("failed", draw, "draw-y", "BUY", 50_000, "FAILED"),
+        ("lost", lose, "lose-y", "BUY", 30_000, "CONFIRMED"),
+        ("alone", other, "other-y", "BUY", 25_000, "CONFIRMED"),
+    ):
+        _fill(conn, key, trade_id, cid, token, side, shares, status)
+    TableWrite.log_transaction(conn, key, "SPLIT", _market_id(conn, "draw"), {"amount": 2_000 * MICRO})
+    TableWrite.log_transaction(conn, key, "MERGE", _market_id(conn, "draw"), {"amount": 500 * MICRO})
+    TableWrite.set_market_state(conn, _market_id(conn, "lose"), MarketState.ACTIVE, MarketState.RESOLVED, (1, 0))
+    room = TableRead.event_room(conn, key, _market_id(conn, "lose"), STARTS)
+    alone = TableRead.event_room(conn, key, _market_id(conn, "other"), ENDS - 1)
+    outside = [
+        TableRead.event_room(conn, key, _market_id(conn, "win"), STARTS - 1),
+        TableRead.event_room(conn, key, _market_id(conn, "win"), ENDS),
+        TableRead.event_room(conn, stranger, _market_id(conn, "win"), STARTS),
+    ]
+    conn.execute("UPDATE competition_entries SET ENROLLED_AT = %s", (STARTS + 100,))
+    late = [TableRead.event_room(conn, key, _market_id(conn, "win"), now) for now in (STARTS + 99, STARTS + 100)]
+    conn.execute("UPDATE competitions SET PRIZES = '[]'")
+    practice = TableRead.event_room(conn, key, _market_id(conn, "win"), STARTS + 100)
+
+    assert room == EventRoom(title="October test", event="Venezia vs Lecce", held=14_000 * MICRO, room=6_000 * MICRO)
+    assert alone == EventRoom(title="October test", event="other?", held=25_000 * MICRO, room=0)
+    assert TableRead.over_cap(conn, key) == HeldEvent(event="other?", held=25_000 * MICRO)
+    assert outside == [None, None, None]
+    assert late == [None, room]
+    assert practice is None
+
+
+def test_a_prize_start_waits_past_the_book_grace_while_an_event_holds_over_the_cap_and_starts_once_sold_down():
+    conn = fresh_test_conn()
+    _competition(conn, prizes=PRIZES)
+    practice = Competition(slug="practice", title="Practice", starts_at=STARTS, ends_at=ENDS, prizes=[])
+    TableWrite.save_competition(conn, practice, 0)
+    user_id, address, key = _agent(conn)
+    _entered(conn, user_id)
+    other_id, _, other_key = _agent(conn, "user_other")
+    TableWrite.enter_competition(conn, "practice", "user_other", other_id, LOCKS - 1, False)
+    cid = _market(conn, "win", ENDS)
+    _event(conn, "Venezia vs Lecce", ["win"])
+    for k in (key, other_key):
+        _fill(conn, k, f"{k}-bought", cid, "win-n", "BUY", 25_000)
+    service = _service()
+
+    service.capture(STARTS + feed.BOOK_GRACE)
+    held = (_entry(conn, user_id)["START_RAW"], _entry(conn, other_id)["START_RAW"])
+    line = _build(STARTS + feed.BOOK_GRACE).entries[address.lower()].line
+    _fill(conn, key, "sold", cid, "win-n", "SELL", 5_000)
+    service.capture(STARTS + feed.BOOK_GRACE + 1)
+
+    assert held == (None, G)
+    assert line == (
+        f"{_short(address)} has joined October test; its start waits until its 25,000 shares in Venezia vs Lecce "
+        "are at most 20,000"
+    )
+    assert _entry(conn, user_id)["START_RAW"] == G
 
 
 def test_the_sync_keeps_what_is_fixed_and_deletes_only_unstarted_competitions_with_no_file_or_entry(tmp_path, caplog):

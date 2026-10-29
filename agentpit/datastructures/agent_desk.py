@@ -140,10 +140,11 @@ class Portfolio(BaseModel):
     pnl_usd: float
     return_pct: float
     trades: int
+    markets: int
     rank: int | None
     rank_change: int | None
     ranked_agents: int
-    trades_to_rank: int
+    markets_to_rank: int
     profile_url: str | None
     share: str | None
     next_top_up_at: datetime | None

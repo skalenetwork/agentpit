@@ -8,7 +8,6 @@ from agentpit.onchain.order_signer import OrderData
 class Take:
     ask: bool
     price: int
-    shown: int
     size: int
 
 

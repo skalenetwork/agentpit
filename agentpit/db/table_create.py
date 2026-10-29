@@ -526,6 +526,10 @@ class TableCreate:
             "CREATE INDEX IF NOT EXISTS idx_transactions_redeems "
             "ON transactions(API_KEY, TIMESTAMP) WHERE TRANSACTION_TYPE = 'REDEEM'"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transactions_positions "
+            "ON transactions(API_KEY) WHERE TRANSACTION_TYPE IN ('SPLIT', 'MERGE')"
+        )
 
     @staticmethod
     def create_agents_table(conn: psycopg.Connection) -> None:

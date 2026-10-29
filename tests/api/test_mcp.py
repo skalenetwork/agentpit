@@ -227,7 +227,7 @@ def test_portfolio_onboards_a_fresh_agent_on_first_call():
     assert result["isError"] is False
     assert result["structuredContent"]["app"] == "Claude"
     assert result["structuredContent"]["cash_usd"] > 0
-    assert (result["structuredContent"]["profile_url"], result["structuredContent"]["trades_to_rank"]) == (None, RANK_FLOOR)
+    assert (result["structuredContent"]["profile_url"], result["structuredContent"]["markets_to_rank"]) == (None, RANK_FLOOR)
     with fresh_test_db().read() as conn:
         stored = TableRead.get_user_by_userid(conn, agent.user_id)
     assert stored is not None and stored.onboarded_at is not None

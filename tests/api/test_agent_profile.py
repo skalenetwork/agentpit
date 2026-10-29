@@ -57,15 +57,15 @@ def _market(conn, polymarket_id: int | None = None) -> Market:
 
 
 def _agent(
-    conn, handle: str, return_pct: float, trades: int, *, owner: str | None = None
+    conn, handle: str, return_pct: float, trades: int, *, markets: int = 1, owner: str | None = None
 ) -> str:
-    """A snapshotted agent with `trades` fills of 4 Yes at 25¢, the newest at `NOW - 60`,
-    whose holdings the pass has already kept."""
+    """A snapshotted agent with `trades` fills of 4 Yes at 25¢ over `markets` markets, the first
+    in CRYPTO and the newest at `NOW - 60`, whose holdings the pass has already kept."""
     user_id, acct, _key = TableWrite.create_user(
         conn, email=f"{handle}@example.com", password_hash="x", handle=handle, owner_workos_id=owner
     )
     for k in range(trades):
-        _buy(conn, acct.address, CRYPTO, "btc-y", NOW - 60 - k)
+        _buy(conn, acct.address, f"0x{k % markets:064x}" if k % markets else CRYPTO, "btc-y", NOW - 60 - k)
     TableWrite.insert_account_snapshot(
         conn, user_id, NOW - 30, G + round(return_pct * G / 100), G, 0, 0
     )
@@ -112,7 +112,7 @@ def test_a_lowercase_address_answers_with_the_checksummed_one():
     with TestClient(app) as client:
         body = _profile(client, address.lower())
     assert body["address"] == address
-    assert (body["name"], body["trades"], body["valuedAt"]) == ("Solo", 1, NOW - 30)
+    assert (body["name"], body["trades"], body["markets"], body["valuedAt"]) == ("Solo", 1, 1, NOW - 30)
     assert body["runner"] == {"slug": "api", "label": "API", "host": None}
 
 
@@ -248,8 +248,8 @@ def test_an_agent_not_on_the_board_is_an_empty_404():
 
 def _field(conn) -> dict[str, str]:
     returns = {"Alpha": 30.0, "Bravo": 10.0, "Charlie": 9.5, "Delta": 0.0, "Echo": -5.0, "Foxtrot": -20.0}
-    field = {name: _agent(conn, name, pct, 12 if name == "Charlie" else 10) for name, pct in returns.items()}
-    field["Rookie"] = _agent(conn, "Rookie", 5.0, RANK_FLOOR - 1)
+    field = {name: _agent(conn, name, pct, 12 if name == "Charlie" else 10, markets=RANK_FLOOR) for name, pct in returns.items()}
+    field["Rookie"] = _agent(conn, "Rookie", 5.0, 10, markets=RANK_FLOOR - 1)
     field["Newbie"] = _agent(conn, "Newbie", -1.0, 1)
     return field
 
@@ -289,11 +289,11 @@ def test_a_warming_agent_has_no_place_and_stands_among_the_warming():
     with TestClient(app) as client:
         rookie = _profile(client, field["Rookie"])
         newbie = _profile(client, field["Newbie"])["standing"]
-    assert rookie["share"] == f"Rookie is warming up on AgentPit, {RANK_FLOOR - 1} of {RANK_FLOOR} trades to rank"
+    assert rookie["share"] == f"Rookie is warming up on AgentPit, {RANK_FLOOR - 1} of {RANK_FLOOR} markets to rank"
     rookie = rookie["standing"]
     assert (rookie["place"], rookie["placeChange"], rookie["gap"], rookie["tags"]) == (None, None, None, [])
     assert [(n["place"], n["name"], n["trades"]) for n in rookie["neighbours"]] == [
-        (None, "Rookie", RANK_FLOOR - 1),
+        (None, "Rookie", 10),
         (None, "Newbie", 1),
     ]
     assert newbie["tags"] == []

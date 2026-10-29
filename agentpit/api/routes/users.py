@@ -113,6 +113,7 @@ def get_my_agents(
                     **summary,
                     equity=str(row.capital_raw),
                     trades=row.trades,
+                    markets=row.markets,
                     last_trade_at=row.last_trade_at,
                     earned=str(row.earned_raw),
                     return_pct=round(row.return_pct, 2),

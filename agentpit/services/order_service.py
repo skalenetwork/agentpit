@@ -16,8 +16,10 @@ from agentpit.config import Settings
 from agentpit.datastructures.cancel_orders_response import CancelOrdersResponse
 from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookSummary
 from agentpit.common import check_state
+from agentpit.datastructures.competition import EVENT_SHARES
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.match import Match
+from agentpit.datastructures.match_leg import MICRO
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.order_response import OrderResponse
 from agentpit.datastructures.place_order_request import PlaceOrderRequest
@@ -180,6 +182,16 @@ class OrderService:
                         raise BusinessRuleError(
                             f"Trading is paused from the end of {title} until its final value is taken."
                         )
+                    if payload.side == "BUY":
+                        cap = TableRead.event_room(
+                            conn, user.api_key, resolved.market.market_id, int(time.time())
+                        )
+                        if cap is not None and size_micro > cap.room:
+                            raise BusinessRuleError(
+                                f"{cap.title} caps each event at {EVENT_SHARES:,} shares: you hold "
+                                f"{-(-cap.held // MICRO):,} in {cap.event}, so this buy can be at most "
+                                f"{cap.room // MICRO:,} shares."
+                            )
                     if coid is not None:
                         TableWrite.claim_idempotency_key(
                             conn,
@@ -214,7 +226,7 @@ class OrderService:
                     if match is not None:
                         self._reserve_sponsored_gas(conn, user)
                 if match is not None and quote is not None:
-                    quote[2].use(user.api_key, match.takes)
+                    quote[2].use(match.takes)
         except psycopg.errors.UniqueViolation:
             # A concurrent request claimed this client_order_id first; the row is
             # committed by the time the violation fires, so replay its order. A
@@ -280,7 +292,6 @@ class OrderService:
             ref, yes, rep = quote
             limit = int(row["PRICE"])
             if not rep.take(
-                row["API_KEY"],
                 (row["SIDE"] == "BUY") == yes,
                 limit if yes else _PRICE_ONE - limit,
                 int(row["REMAINING_AMOUNT"]),
@@ -303,13 +314,24 @@ class OrderService:
                         if fresh is None:
                             continue
                         agent_order, agent_signature = self._order_from_json(fresh)
-                        match = self._take(conn, fresh, agent_order, quote)
+                        cap = (
+                            TableRead.event_room(
+                                conn, fresh["API_KEY"], ref.market_id, int(time.time())
+                            )
+                            if fresh["SIDE"] == "BUY"
+                            else None
+                        )
+                        if cap is not None and not cap.room:
+                            continue
+                        match = self._take(
+                            conn, fresh, agent_order, quote, None if cap is None else cap.room
+                        )
                         if match is None:
                             continue
                         agent = TableRead.get_user_by_api_key(conn, fresh["API_KEY"])
                         assert agent is not None
                         self._reserve_sponsored_gas(conn, agent)
-                    rep.use(fresh["API_KEY"], match.takes)
+                    rep.use(match.takes)
                 self._settle(agent_order, agent_signature, match, wait=False)
                 touch(fresh["MAKER"])
             except AdminGasPausedError:
@@ -866,6 +888,7 @@ class OrderService:
         row,
         agent_order: OrderData,
         quote: tuple[MarketRef, bool, BookReplica] | None,
+        at_most: int | None = None,
     ) -> Match | None:
         house = feed.HOUSE
         if house is None or quote is None:
@@ -874,9 +897,8 @@ class OrderService:
         buy = row["SIDE"] == "BUY"
         limit = int(row["PRICE"])
         remaining = int(row["REMAINING_AMOUNT"])
-        takes = rep.take(
-            row["API_KEY"], buy == yes, limit if yes else _PRICE_ONE - limit, remaining
-        )
+        wanted = remaining if at_most is None else min(remaining, at_most)
+        takes = rep.take(buy == yes, limit if yes else _PRICE_ONE - limit, wanted)
         size = sum(t.size for t in takes)
         cost = sum((t.price if yes else _PRICE_ONE - t.price) * t.size for t in takes)
         house_amount = self._house_amounts(agent_order, size, cost)

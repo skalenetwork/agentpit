@@ -7,6 +7,7 @@ from typing import Literal
 import pytest
 
 from agentpit.config import Settings
+from agentpit.datastructures.competition import Competition, Prize
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market import Market
@@ -23,7 +24,7 @@ from agentpit.domain.exceptions import (
     OrderNotFilledError,
 )
 from agentpit.liquidity import feed
-from agentpit.liquidity.replica import BookReplica, Used
+from agentpit.liquidity.replica import BookReplica
 from agentpit.onchain.deployment import Deployment
 from agentpit.services.order_service import OrderService
 from tests.db_helpers import enter_ended, fresh_test_db, take_end
@@ -169,7 +170,7 @@ def test_a_fill_trades_with_the_house_at_polymarkets_level(house_book):
         ("102", "BUY", "matched", 0),
         ("102", "BUY", "matched", 0),
     ]
-    assert book.used == {(agent.api_key, True, 600_000): Used(20_000_000, 15_000_000)}
+    assert {k: u.taken for k, u in book.used.items()} == {(True, 600_000): 15_000_000}
 
 
 def test_a_killed_order_writes_nothing_and_uses_nothing_up(house_book):
@@ -188,7 +189,21 @@ def test_a_killed_order_writes_nothing_and_uses_nothing_up(house_book):
     assert (counts["o"], counts["t"], book.used) == (0, 0, {})
 
 
-def test_the_sweeper_fills_crossed_orders_oldest_first_within_the_agents_use_up(
+def test_a_second_agent_gets_only_what_the_first_left_even_after_polymarket_resizes(house_book):
+    db = fresh_test_db()
+    _, first = _world(db)
+    with db.write() as conn:
+        second = TableRead.get_user_by_api_key(conn, TableWrite.create_user(conn, None, None)[2])
+    assert second is not None
+    book = house_book("101", asks=(("0.6", "5"),))
+    svc = _service(db)
+    _place(svc, first, "101", "BUY", "0.6", "4")
+    _ask(book, "0.6", "6")
+
+    assert _place(svc, second, "101", "BUY", "0.6", "4").takingAmount == "2"
+
+
+def test_the_sweeper_fills_crossed_orders_oldest_first_within_the_levels_use_up(
     house_book,
 ):
     db = fresh_test_db()
@@ -434,3 +449,103 @@ def test_the_sweeper_leaves_a_halted_entrants_order_resting_until_its_end_value(
     svc.sweep()
 
     assert _row(db, order.orderID) == ("matched", 0)
+
+
+def _weather(db: DbSession) -> None:
+    """A second market, "snow" (201 and 202), and an event both markets are in."""
+    with db.write() as conn:
+        TableWrite.create_market(
+            conn,
+            CreateMarketRequest(
+                question="Will it snow?",
+                description="d",
+                erc1155_tokens=[("201", "Yes"), ("202", "No")],
+                slug="snow",
+                condition_id=ConditionId("0x" + "cd" * 32),
+                state=MarketState.ACTIVE,
+            ),
+            is_polygon_market=False,
+        )
+        event_id = conn.execute(
+            "INSERT INTO events (SLUG, TITLE) VALUES ('weather', 'Weather') RETURNING EVENT_ID"
+        ).fetchone()["EVENT_ID"]
+        conn.execute("UPDATE markets SET EVENT_ID = %s", (event_id,))
+
+
+def _sprint(db: DbSession, agent: User, *, prizes: bool = True, starts: int = -3_600) -> None:
+    """Enter the agent in "October sprint", which starts `starts` seconds from now and runs two hours."""
+    now = int(time.time())
+    with db.write() as conn:
+        TableWrite.save_competition(
+            conn,
+            Competition(
+                slug="sprint",
+                title="October sprint",
+                starts_at=now + starts,
+                ends_at=now + starts + 7_200,
+                prizes=[Prize(usd=5, skl=0)] if prizes else [],
+            ),
+            0,
+        )
+        TableWrite.enter_competition(conn, "sprint", "user_owner", agent.user_id, now - 7_200, False)
+
+
+def test_a_prize_entrant_in_its_run_buys_at_most_its_events_room_and_always_sells(house_book):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    _weather(db)
+    house_book("101", bids=(("0.5", "30000"),), asks=(("0.6", "30000"),))
+    house_book("201", asks=(("0.6", "30000"),))
+    svc = _service(db)
+    _sprint(db, agent)
+
+    _place(svc, agent, "101", "BUY", "0.6", "15000")
+    counts = _counts(db)
+    with pytest.raises(
+        BusinessRuleError,
+        match=r"^October sprint caps each event at 20,000 shares: you hold 15,000 in Weather, "
+        r"so this buy can be at most 5,000 shares\.$",
+    ):
+        _place(svc, agent, "201", "BUY", "0.6", "5000.01")
+    refused = _counts(db)
+    sold = _place(svc, agent, "101", "SELL", "0.5", "2000")
+    bought = _place(svc, agent, "201", "BUY", "0.6", "7000")
+    with pytest.raises(BusinessRuleError, match="so this buy can be at most 0 shares"):
+        _place(svc, agent, "102", "BUY", "0.6", "1", kind="GTC")
+
+    assert refused == counts
+    assert (sold.success, bought.success, bought.takingAmount) == (True, True, "7000")
+
+
+@pytest.mark.parametrize(
+    "sprint",
+    [None, {"prizes": False}, {"starts": 600}],
+    ids=["not-entered", "practice", "before-its-run-start"],
+)
+def test_an_account_outside_a_prize_run_buys_past_the_cap(house_book, sprint):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    house_book("101", asks=(("0.6", "30000"),))
+    if sprint is not None:
+        _sprint(db, agent, **sprint)
+
+    assert _place(_service(db), agent, "101", "BUY", "0.6", "25000").takingAmount == "25000"
+
+
+def test_the_sweeper_fills_a_prize_entrants_resting_buy_up_to_its_events_room_then_skips_it(house_book):
+    db = fresh_test_db()
+    _, agent = _world(db)
+    _weather(db)
+    house_book("101", asks=(("0.6", "30000"),))
+    snow = house_book("201", asks=(("0.6", "30000"),))
+    svc = _service(db)
+    _sprint(db, agent)
+    order = _place(svc, agent, "201", "BUY", "0.55", "8000", kind="GTC")
+    _place(svc, agent, "101", "BUY", "0.6", "15000")
+    _ask(snow, "0.55", "10000")
+
+    svc.sweep()
+    clamped = _row(db, order.orderID)
+    svc.sweep()
+
+    assert clamped == _row(db, order.orderID) == ("live", 3_000_000_000)

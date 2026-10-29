@@ -174,7 +174,7 @@ def test_a_resting_order_fills_to_exhaustion_over_several_sweeps(house_book):
         json={"token_id": yes, "side": "BUY", "price": "0.5", "size": 30},
     ).json()
     assert (placed["status"], placed["takingAmount"]) == ("live", "10"), placed
-    for size, left in (("12", 8_000_000), ("15", 0)):
+    for size, left in (("22", 8_000_000), ("30", 0)):
         book.apply_price_change_entry(
             {"asset_id": book.asset_id, "side": "SELL", "price": "0.5", "size": size}
         )

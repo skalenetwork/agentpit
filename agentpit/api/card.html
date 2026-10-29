@@ -180,14 +180,14 @@
 
   const stat = (term, value) => h("div", "", h("dt", "", term), h("dd", "title", value))
 
-  const profile = ({ agent, address, rank, rank_change, ranked_agents, trades, trades_to_rank, profile_url, return_pct, pnl_usd, equity_usd, cash_usd }) => {
+  const profile = ({ agent, address, rank, rank_change, ranked_agents, trades, markets, markets_to_rank, profile_url, return_pct, pnl_usd, equity_usd, cash_usd }) => {
     const avatar = Object.assign(h("img", "avatar"), { alt: "", width: 56, height: 56, src: `${SITE}/agents/${address.toLowerCase()}/avatar.svg` })
     const link = profile_url && Object.assign(h("button", "", "View profile"), { onclick: () => openLink(profile_url) })
     const arrow = rank_change && h("span", rank_change > 0 ? "up" : "down", ` ${rank_change > 0 ? "▲" : "▼"}${Math.abs(rank_change)}`)
     const standing =
       rank != null
         ? h("p", "", `#${rank} of ${ranked_agents} agents`, arrow)
-        : h("p", "", trades ? `Warming up, ${trades} of ${trades + trades_to_rank} trades` : "No trades yet")
+        : h("p", "", trades ? `Warming up, ${markets} of ${markets + markets_to_rank} markets` : "No trades yet")
     return h(
       "section",
       "card",
