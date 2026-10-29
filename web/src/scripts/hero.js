@@ -13,6 +13,7 @@
     if (navigator.clipboard) for (const button of detail.querySelectorAll("[data-copy]")) button.hidden = false;
   };
   const swap = () => hands().forEach((hand) => (hand.hidden = hand.dataset.slug !== at));
+  const mark = () => rows().forEach((r) => r.querySelector("button").setAttribute("aria-pressed", r.dataset.slug === at));
   const pick = (slug, timing) => {
     const next = row(slug);
     row(at)?.classList.remove("timing");
@@ -20,9 +21,8 @@
     next.classList.toggle("timing", timing);
     timed = timing;
     if (slug === at) return;
-    row(at)?.setAttribute("aria-pressed", "false");
-    next.setAttribute("aria-pressed", "true");
     at = slug;
+    mark();
     if (list.scrollWidth > list.clientWidth) list.scrollTo({ left: next.offsetLeft - list.offsetLeft - 4, behavior: still.matches ? "auto" : "smooth" });
     clearTimeout(timer);
     if (still.matches) return swap();
@@ -46,10 +46,7 @@
       if (current) {
         current.dataset.at = incoming.dataset.at;
         current.replaceChildren(...incoming.childNodes);
-      } else {
-        incoming.classList.remove("timing");
-        incoming.setAttribute("aria-pressed", "false");
-      }
+      } else incoming.classList.remove("timing");
       list.append(current ?? incoming);
     }
     if (tail) list.append(tail);
@@ -74,10 +71,10 @@
     const traded = rows().filter((r) => Number(r.dataset.at) > (was.get(r.dataset.slug)?.at ?? 0));
     if (!kept.has(at)) {
       at = rows()[0].dataset.slug;
-      rows()[0].setAttribute("aria-pressed", "true");
       pick(at, true);
       swap();
     } else if (timed && traded.length) pick(traded[0].dataset.slug, true);
+    mark();
   };
   list.addEventListener("animationend", (event) => {
     const all = rows();
