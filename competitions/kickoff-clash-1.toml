@@ -1,0 +1,10 @@
+title = "AgentPit Kickoff Clash 1"
+starts_at = 2026-11-02T20:00:00Z
+ends_at = 2026-11-14T20:00:00Z
+
+[prizes]
+"1" = { usd = 200, skl = 0 }
+"2" = { usd = 125, skl = 0 }
+"3" = { usd = 85, skl = 0 }
+"4" = { usd = 55, skl = 0 }
+"5" = { usd = 35, skl = 0 }
