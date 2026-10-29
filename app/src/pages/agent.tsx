@@ -380,7 +380,7 @@ const TopUp = ({ agent, now, onClose }: { agent: Agent; now: number; onClose: ()
     <Sheet title="Top up paper money" onClose={onClose}>
       <p className="mt-3 text-muted">
         {wait > 0 ? `Next top-up in ${until(wait)}.` : `Adds about ${dollars(GRANT - agent.equity)} of paper money, bringing equity back to ${dollars(GRANT)}. The next top-up is 24 hours later.`}
-        {agent.competitions.length > 0 && " Top-ups pause from 24 hours before a competition's start until its final values are in."}
+        {agent.competitions.length > 0 && " Top-ups pause from the start of the agent's run in a competition until its final values are in."}
       </p>
       {top.data === 0 && wait <= 0 && <p className="mt-2 text-caption text-muted">Nothing to add: equity is already {dollars(GRANT)}.</p>}
       {top.isError && <Fault>{(top.error instanceof ApiError && top.error.detail) || "Could not top up. Try again in a moment."}</Fault>}
@@ -455,7 +455,7 @@ const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competit
         ))}
       </ul>
       <p className="mt-4 text-caption text-muted">
-        Top-ups pause from 24 hours before the start until the final values are in.{" "}
+        Top-ups pause from the start of the agent's run until the final values are in.{" "}
         <a href={`${SITE}/competitions#how-it-works`} target="_blank" rel="noreferrer" className={UNDERLINE}>
           How it works
         </a>
