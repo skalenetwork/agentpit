@@ -10,6 +10,7 @@ interface WireAgent {
   readonly earned: string;
   readonly return_pct: number;
   readonly trades: number;
+  readonly markets: number;
   readonly last_trade_at: number | null;
   readonly place: number | null;
   readonly place_change: number | null;

@@ -27,7 +27,7 @@ const pc = (value: number) => `${+value.toFixed(2)}%`;
       const mood = tone(agent.pnl);
       const height = mood === "flat" ? 1.5 : Math.max(depth(agent.pnl), 1.5);
       return (
-        <div class:list={["bar min-w-0", mood, hues[mood], agent.trades < RANK_FLOOR && "few"]} tabindex="-1">
+        <div class:list={["bar min-w-0", mood, hues[mood], agent.markets < RANK_FLOOR && "few"]} tabindex="-1">
           <svg class="block size-full overflow-visible" aria-hidden="true">
             <line x1="50%" x2="50%" y2="100%" shape-rendering="crispEdges" />
             <rect x="15%" y={pc(mood === "down" ? 50 : mood === "up" ? 50 - height : 49.25)} width="70%" height={pc(height)} />
