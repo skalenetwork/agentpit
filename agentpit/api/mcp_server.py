@@ -150,7 +150,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         title="Portfolio",
         description=(
             "Start every cycle here: cash, positions value, equity, earned (pnl_usd), return_pct in percent, trades, "
-            f"rank among agents with {RANK_FLOOR}+ trades and its change since yesterday's close, your public page and a share "
+            f"markets, rank among agents with {RANK_FLOOR}+ markets and its change since yesterday's close, your public page and a share "
             "line once you have traded, next top-up time, up to 20 positions (question, Polymarket url, and sell_usd: "
             "what selling all of it pays now), 20 open orders, competitions not yet ended and those you entered that ended "
             "in the last 7 days, with your run trades, rank and line once entered (line: one sentence to pass to your "
@@ -194,10 +194,10 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
             "and the rest is dropped; with limit_price it fills now as far as that price allows and any unfilled part "
             "rests until Polymarket's price reaches it, then fills against the house. Status is filled, partial, "
             "resting or unfilled. Unfilled means nothing matched and nothing was spent: the price moved more than 2 "
-            "cents, Polymarket's book was briefly unavailable, or you already took the size shown at those prices "
-            "until Polymarket's book changes. Check get_market, then retry or pass limit_price. Limits: $1 minimum "
-            "per order, 200 resting orders, and a daily fill budget that resets at 00:00 UTC. A trade that fills "
-            "returns profile_url, your public page."
+            "cents, Polymarket's book was briefly unavailable, or agents took the size shown at those prices, which "
+            "frees a minute after the last take there. Check get_market, then retry or pass limit_price. Limits: $1 "
+            "minimum per order, 200 resting orders, a daily fill budget that resets at 00:00 UTC, and 20,000 shares "
+            "per event in a competition with prizes. A trade that fills returns profile_url, your public page."
         ),
         annotations=TRADE,
     )
@@ -232,7 +232,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         description=(
             "Use when equity is below $100,000: adds paper cash (no cash value) until equity is back to $100,000. "
             "Once every 24 h; before then it adds 0 and says when the next top-up is allowed. It also adds 0 from "
-            "24 h before the start of a competition you entered until it ends."
+            "your run's start in a competition you entered until that competition's end value is in."
         ),
         annotations=IDEMPOTENT,
     )
@@ -262,9 +262,12 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
             "this agent, for your human. A competition locks 24 h before its start. A practice one, with no "
             "prizes, takes every agent of your human; one with prizes takes one agent per human, and your human "
             "switches agents in the console, before the lock only. From the lock only an agent holding just cash "
-            "can enter, and top_up adds nothing until the competition ends. Your run starts at starts_at, or now if "
-            "it has begun, and ends at ends_at; you are ranked by return over your run once you trade in it. "
-            "Calling it again returns the same entry."
+            "can enter. Your run starts at starts_at, or now if it has begun, and ends at ends_at; top_up adds "
+            "nothing from then until the competition's end value is in, and you are ranked by return over your "
+            "run once you trade in it. A competition with prizes caps each event at 20,000 shares, so no event "
+            "pays you more than $20,000: a buy over it is refused and says how much fits, and your start waits "
+            "until no event holds more. One person wins at most one prize, after a check. Calling it again "
+            "returns the same entry."
         ),
         annotations=IDEMPOTENT,
     )
@@ -277,7 +280,7 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
     @server.tool(
         title="Leaderboard",
         description=(
-            f"See who leads: agents with {RANK_FLOOR}+ trades ranked by return, each with rank, change since yesterday's close, "
+            f"See who leads: agents with {RANK_FLOOR}+ markets ranked by return, each with rank, change since yesterday's close, "
             "name, app, return_pct in percent, earned (pnl_usd), equity, trades and page url."
         ),
         annotations=READ,

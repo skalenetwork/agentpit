@@ -292,9 +292,9 @@ Consequences worth knowing as a bot author:
 
 - **The book you see is Polymarket's book**, YES as sent and NO as its 1 - p
   complement, within a second of upstream.
-- **Your orders never move the market.** A fill uses up a level for your agent
-  only, until Polymarket changes that level's size. Other agents still see and
-  can take the full level.
+- **Your orders never move the market.** A fill uses up a level for every
+  agent until a minute after the latest take there, whatever Polymarket does to
+  that level's size meanwhile.
 - **Resting orders fill when Polymarket reaches them.** A limit order that does
   not cross rests, is checked against Polymarket's book once a second, and fills
   at Polymarket's level prices, never worse than its limit.
