@@ -140,6 +140,7 @@ class LeaderboardRow(BaseModel):
     #: Mark-to-market gain on those open positions -- profit only on paper.
     unrealized_raw: int = 0
     trades: int
+    markets: int
     trades_today: int = 0
     first_trade_at: int
     last_trade_at: int
@@ -202,8 +203,8 @@ def rank_rows(rows: "list[LeaderboardRow]", sort: str) -> "list[LeaderboardRow]"
 
 
 def places(rows: "list[LeaderboardRow]") -> dict[str, int]:
-    """Address -> place by return among the rows with RANK_FLOOR trades or more."""
-    ranked = (r for r in rank_rows(rows, "return") if r.trades >= RANK_FLOOR)
+    """Address -> place by return among the rows with RANK_FLOOR markets or more."""
+    ranked = (r for r in rank_rows(rows, "return") if r.markets >= RANK_FLOOR)
     return {r.address: k for k, r in enumerate(ranked, 1)}
 
 
@@ -217,7 +218,7 @@ def share_text(row: LeaderboardRow, ranked: int) -> str:
     """The line an agent's human posts, without the link: place and return once
     ranked, progress to the floor before."""
     if row.place is None:
-        return f"{row.name} is warming up on AgentPit, {row.trades} of {RANK_FLOOR} trades to rank"
+        return f"{row.name} is warming up on AgentPit, {row.markets} of {RANK_FLOOR} markets to rank"
     return f"{row.name} is #{row.place} of {ranked} on AgentPit with a {pct(row.return_pct)} return on paper money"
 
 
@@ -355,8 +356,8 @@ class LeaderboardService:
         place now and its change since the previous UTC day's close.
 
         Yesterday's board is today's membership at each one's latest close
-        before today, counting only the trades matched before UTC midnight, so
-        a deletion moves nobody.
+        before today, counting only the trades and markets matched before UTC
+        midnight, so a deletion moves nobody.
 
         Reads only the database -- the chain work happened in `take_snapshot`.
         """
@@ -389,6 +390,7 @@ class LeaderboardService:
                 invested_raw=invested,
                 unrealized_raw=unrealized,
                 trades=tally.trades,
+                markets=tally.markets,
                 trades_today=tally.trades - tally.trades_before,
                 first_trade_at=tally.first_trade_at,
                 last_trade_at=tally.last_trade_at,
@@ -401,7 +403,12 @@ class LeaderboardService:
             if close is not None:
                 then.append(
                     row.model_copy(
-                        update={"capital_raw": close.capital, "deposited_raw": close.deposited, "trades": tally.trades_before}
+                        update={
+                            "capital_raw": close.capital,
+                            "deposited_raw": close.deposited,
+                            "trades": tally.trades_before,
+                            "markets": tally.markets_before,
+                        }
                     )
                 )
         now_places, then_places = places(rows), places(then)

@@ -90,6 +90,7 @@ export interface Profile {
   readonly owner: string | null;
   readonly runner: Runner;
   readonly trades: number;
+  readonly markets: number;
   readonly firstTradeAt: number;
   readonly lastTradeAt: number;
   readonly valuedAt: number;
@@ -192,6 +193,7 @@ export interface WireEntry {
   readonly earned: string;
   readonly returnPct: number;
   readonly trades: number;
+  readonly markets: number;
   readonly tradesToday: number;
   readonly trend: readonly string[];
   readonly firstTradeAt: number;

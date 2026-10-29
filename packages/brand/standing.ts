@@ -6,8 +6,8 @@ export type RankLabel =
   | { readonly kind: "ranked"; readonly text: string }
   | { readonly kind: "warming"; readonly text: string };
 
-export const rankLabel = (place: number | null, rankedCount: number, trades: number): RankLabel => {
-  if (place === null) return { kind: "warming", text: `${trades} of ${RANK_FLOOR}` };
+export const rankLabel = (place: number | null, rankedCount: number, markets: number): RankLabel => {
+  if (place === null) return { kind: "warming", text: `${markets} of ${RANK_FLOOR}` };
   const text = `#${place} of ${rankedCount}`;
   const medal = ([1, 2, 3] as const).find((step) => step === place);
   return medal ? { kind: "medal", place: medal, text } : { kind: "ranked", text };

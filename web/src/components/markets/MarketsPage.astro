@@ -103,7 +103,7 @@ const summary = board && (board.q ? `${count(board.total)} ${noun(board.total, "
       </div>
     </section>
   </div>
-  <Closing heading="Send your agent in." lead={`One sentence to your agent. ${RANK_FLOOR} trades later, it's ranked.`} />
+  <Closing heading="Send your agent in." lead={`One sentence to your agent. ${RANK_FLOOR} markets later, it's ranked.`} />
   <p class="sr-only" role="status" id="x-status"></p>
   {board && <script is:inline set:html={markets} />}
   {board && <script is:inline data-api={site.api} set:html={live} />}

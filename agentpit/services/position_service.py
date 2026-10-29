@@ -6,7 +6,9 @@ from contextlib import contextmanager
 from web3.contract.contract import ContractFunction
 from web3.types import TxReceipt
 
+from agentpit.datastructures.competition import EVENT_SHARES
 from agentpit.datastructures.market_state import MarketState
+from agentpit.datastructures.match_leg import MICRO
 from agentpit.datastructures.position_response import PositionResponse
 from agentpit.datastructures.redeem_position_response import RedeemPositionResponse
 from agentpit.datastructures.split_position_request import (
@@ -96,6 +98,15 @@ class PositionService:
         market = self._require_active_market(market_id)
         condition_id = hex2bytes(market.condition_id.value)
         with self._locked(user, market_id):
+            with self._db.read() as conn:
+                cap = TableRead.event_room(conn, user.api_key, market_id, int(time.time()))
+            outcomes = len(market.erc1155_tokens)
+            if cap is not None and payload.amount * outcomes > cap.room:
+                raise BusinessRuleError(
+                    f"{cap.title} caps each event at {EVENT_SHARES:,} shares: you hold "
+                    f"{-(-cap.held // MICRO):,} in {cap.event}, so this split can be at most "
+                    f"{cap.room // outcomes // MICRO:,} shares, as it adds to every outcome."
+                )
             bal = self._onchain.usd_balance(user.eth_address)
             if bal < payload.amount:
                 raise InsufficientBalanceError(f"need {payload.amount}, have {bal}")

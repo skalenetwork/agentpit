@@ -29,6 +29,7 @@ class NewAgent(AgentSummary):
 class OwnedAgent(AgentSummary):
     equity: str
     trades: int = 0
+    markets: int = 0
     last_trade_at: int | None = None
     earned: str = "0"
     return_pct: float = 0.0

@@ -32,13 +32,14 @@ def _accounts() -> AgentAccounts:
     return AgentAccounts(fresh_test_db(), lambda *_: pytest.fail("must not onboard"))
 
 
-def _traded(conn, agent: User, trades: int, earned: int) -> None:
-    """`trades` fills, the newest at `NOW - 60`, and a snapshot `earned` above the grant."""
+def _traded(conn, agent: User, trades: int, earned: int, markets: int = 1) -> None:
+    """`trades` fills over `markets` markets, the first in CRYPTO and the newest at `NOW - 60`,
+    and a snapshot `earned` above the grant."""
     for k in range(trades):
         conn.execute(
             "INSERT INTO trades (TRADE_ID, MARKET, ASSET_ID, SIDE, PRICE, TRADE_SIZE, MATCH_KIND, STATUS, "
             "TAKER_API_KEY, MATCH_TIME) VALUES (%s, %s, 'btc-y', 'BUY', 250000, 4000000, 'NORMAL', 'CONFIRMED', %s, %s)",
-            (uuid.uuid4().hex, CRYPTO, agent.api_key, NOW - 60 - k),
+            (uuid.uuid4().hex, f"0x{k % markets:064x}" if k % markets else CRYPTO, agent.api_key, NOW - 60 - k),
         )
     TableWrite.insert_account_snapshot(conn, agent.user_id, NOW - 30, G + earned, G)
 
@@ -65,6 +66,7 @@ def test_me_agents_lists_the_signed_in_person_s_agents(sign_in):
         "runner": {"slug": "codex", "label": "Codex", "host": "Self-hosted"},
         "equity": str(G),
         "trades": 0,
+        "markets": 0,
         "last_trade_at": None,
         "earned": "0",
         "return_pct": 0.0,
@@ -86,17 +88,18 @@ def test_me_agents_carries_each_agent_s_board_figures(sign_in):
         warming = accounts.agent_for(owner, "Codex", None, None)
         rival = accounts.agent_for("user_someone_else", "Claude", None, None)
         conn = fresh_test_conn()
-        _traded(conn, ranked, RANK_FLOOR, 5 * G // 100)
-        _traded(conn, warming, RANK_FLOOR - 1, 20 * G // 100)
-        _traded(conn, rival, RANK_FLOOR, 10 * G // 100)
+        _traded(conn, ranked, RANK_FLOOR, 5 * G // 100, RANK_FLOOR)
+        _traded(conn, warming, 10, 20 * G // 100, RANK_FLOOR - 1)
+        _traded(conn, rival, RANK_FLOOR, 10 * G // 100, RANK_FLOOR)
         conn.close()
 
         agents = client.get("/me/agents", headers={"Authorization": f"Bearer {token}"}).json()
 
-    figures = ("trades", "last_trade_at", "equity", "earned", "return_pct", "place", "place_change", "trend")
+    figures = ("trades", "markets", "last_trade_at", "equity", "earned", "return_pct", "place", "place_change", "trend")
     assert [{k: a[k] for k in figures} for a in agents] == [
         {
             "trades": RANK_FLOOR,
+            "markets": RANK_FLOOR,
             "last_trade_at": NOW - 60,
             "equity": "105000000000",
             "earned": "5000000000",
@@ -106,7 +109,8 @@ def test_me_agents_carries_each_agent_s_board_figures(sign_in):
             "trend": ["5000000000"],
         },
         {
-            "trades": RANK_FLOOR - 1,
+            "trades": 10,
+            "markets": RANK_FLOOR - 1,
             "last_trade_at": NOW - 60,
             "equity": "120000000000",
             "earned": "20000000000",

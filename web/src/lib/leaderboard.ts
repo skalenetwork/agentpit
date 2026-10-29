@@ -21,7 +21,7 @@ export const standings = (agents: readonly Agent[]) => ({
   ranked: agents.filter((agent): agent is Ranked => agent.rank !== null),
   warming: agents
     .filter((agent) => agent.rank === null)
-    .toSorted((a, b) => b.trades - a.trades || b.returnPct - a.returnPct),
+    .toSorted((a, b) => b.markets - a.markets || b.returnPct - a.returnPct),
 });
 
 const most = <T>(items: readonly T[], score: (item: T) => number): T | undefined =>

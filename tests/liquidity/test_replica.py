@@ -1,5 +1,7 @@
+import time
+
 from agentpit.datastructures.match import Take
-from agentpit.liquidity.replica import MICRO, BookReplica, BookSnapshot, to_micro
+from agentpit.liquidity.replica import MICRO, BookReplica, BookSnapshot, Used, to_micro
 
 
 def _book_msg(asset="A", bids=None, asks=None):
@@ -131,65 +133,79 @@ def _seeded(bids=(("0.40", "10"), ("0.39", "20")), asks=(("0.60", "5"), ("0.61",
     return r
 
 
-def _walk(r, agent, side, yes, limit, size):
-    return r.take(agent, (side == "BUY") == yes, limit if yes else MICRO - limit, size)
+def _walk(r, side, yes, limit, size):
+    return r.take((side == "BUY") == yes, limit if yes else MICRO - limit, size)
+
+
+def _clock(monkeypatch) -> list[float]:
+    now = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    return now
 
 
 def test_take_walks_the_four_mappings_up_to_the_limit():
     r = _seeded()
-    assert _walk(r, "a", "BUY", True, 600_000, 9_000_000) == (
-        Take(True, 600_000, 5_000_000, 5_000_000),
+    assert _walk(r, "BUY", True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 5_000_000),
     )
-    assert _walk(r, "a", "SELL", True, 390_000, 15_000_000) == (
-        Take(False, 400_000, 10_000_000, 10_000_000),
-        Take(False, 390_000, 20_000_000, 5_000_000),
+    assert _walk(r, "SELL", True, 390_000, 15_000_000) == (
+        Take(False, 400_000, 10_000_000),
+        Take(False, 390_000, 5_000_000),
     )
-    assert _walk(r, "a", "BUY", False, 600_000, 3_000_000) == (
-        Take(False, 400_000, 10_000_000, 3_000_000),
+    assert _walk(r, "BUY", False, 600_000, 3_000_000) == (
+        Take(False, 400_000, 3_000_000),
     )
-    assert _walk(r, "a", "SELL", False, 390_000, 20_000_000) == (
-        Take(True, 600_000, 5_000_000, 5_000_000),
-        Take(True, 610_000, 7_000_000, 7_000_000),
+    assert _walk(r, "SELL", False, 390_000, 20_000_000) == (
+        Take(True, 600_000, 5_000_000),
+        Take(True, 610_000, 7_000_000),
     )
-    assert _walk(r, "a", "BUY", True, 590_000, 1_000_000) == ()
+    assert _walk(r, "BUY", True, 590_000, 1_000_000) == ()
 
 
 def test_take_is_empty_on_an_unseeded_or_crossed_book():
-    assert BookReplica("A").take("a", True, 990_000, 1_000_000) == ()
-    assert (
-        _seeded(bids=(("0.60", "1"),), asks=(("0.55", "1"),)).take(
-            "a", True, 990_000, 1
-        )
-        == ()
-    )
+    assert BookReplica("A").take(True, 990_000, 1_000_000) == ()
+    assert _seeded(bids=(("0.60", "1"),), asks=(("0.55", "1"),)).take(True, 990_000, 1) == ()
 
 
-def test_use_up_is_per_agent_and_lasts_until_the_size_changes():
+def test_taken_depth_stays_taken_whatever_polymarket_does_to_the_level():
     r = _seeded()
-    r.use("a", r.take("a", True, 600_000, 3_000_000))
-    assert r.take("a", True, 600_000, 9_000_000) == (
-        Take(True, 600_000, 5_000_000, 2_000_000),
+    r.use(r.take(True, 600_000, 3_000_000))
+    assert r.take(True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 2_000_000),
     )
-    assert r.take("b", True, 600_000, 9_000_000) == (
-        Take(True, 600_000, 5_000_000, 5_000_000),
-    )
-    r.apply_book(_book_msg(bids=[("0.40", "10")], asks=[("0.60", "5"), ("0.61", "7")]))
-    assert r.take("a", True, 600_000, 9_000_000) == (
-        Take(True, 600_000, 5_000_000, 2_000_000),
+    r.apply_book(_book_msg(bids=[("0.40", "10")], asks=[("0.60", "6"), ("0.61", "7")]))
+    assert r.take(True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 3_000_000),
     )
     r.apply_price_change_entry(
-        {"asset_id": "A", "side": "SELL", "price": "0.60", "size": "6"}
+        {"asset_id": "A", "side": "SELL", "price": "0.60", "size": "2"}
     )
-    assert r.take("a", True, 600_000, 9_000_000) == (
-        Take(True, 600_000, 6_000_000, 6_000_000),
+    assert r.take(True, 610_000, 9_000_000) == (
+        Take(True, 610_000, 7_000_000),
+    )
+
+
+def test_taken_depth_frees_a_minute_after_the_latest_take_at_its_level(monkeypatch):
+    now = _clock(monkeypatch)
+    r = _seeded()
+    r.use(r.take(True, 600_000, 2_000_000))
+    now[0] = 30.0
+    r.use(r.take(True, 600_000, 2_000_000))
+    now[0] = 89.0
+    assert r.take(True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 1_000_000),
+    )
+    now[0] = 90.0
+    assert r.take(True, 600_000, 9_000_000) == (
+        Take(True, 600_000, 5_000_000),
     )
 
 
 def test_a_yes_buyer_and_a_no_seller_share_the_ask_level():
     r = _seeded()
-    r.use("a", _walk(r, "a", "BUY", True, 600_000, 4_000_000))
-    assert _walk(r, "a", "SELL", False, 400_000, 9_000_000) == (
-        Take(True, 600_000, 5_000_000, 1_000_000),
+    r.use(_walk(r, "BUY", True, 600_000, 4_000_000))
+    assert _walk(r, "SELL", False, 400_000, 9_000_000) == (
+        Take(True, 600_000, 1_000_000),
     )
 
 
@@ -197,24 +213,19 @@ def test_split_orders_take_at_most_the_level():
     r = _seeded()
     filled = 0
     for _ in range(10):
-        takes = r.take("a", True, 600_000, 1_000_000)
-        r.use("a", takes)
+        takes = r.take(True, 600_000, 1_000_000)
+        r.use(takes)
         filled += sum(t.size for t in takes)
     assert filled == 5_000_000
 
 
-def test_use_prunes_levels_that_are_gone_or_resized():
+def test_use_forgets_expired_levels(monkeypatch):
+    now = _clock(monkeypatch)
     r = _seeded()
-    r.use("a", r.take("a", True, 610_000, 12_000_000))
-    r.use("b", r.take("b", False, 400_000, 1_000_000))
-    r.apply_price_change_entry(
-        {"asset_id": "A", "side": "SELL", "price": "0.60", "size": "0"}
-    )
-    r.apply_price_change_entry(
-        {"asset_id": "A", "side": "BUY", "price": "0.40", "size": "11"}
-    )
-    r.use("b", r.take("b", True, 610_000, 1_000_000))
-    assert set(r.used) == {("a", True, 610_000), ("b", True, 610_000)}
+    r.use(r.take(True, 610_000, 12_000_000))
+    now[0] = 60.0
+    r.use(r.take(False, 400_000, 1_000_000))
+    assert r.used == {(False, 400_000): Used(1_000_000, 120.0)}
 
 
 def test_flipped_is_the_no_book():

@@ -136,7 +136,7 @@ def _line(top: float, icon: str, *spans: tuple[str, str]) -> str:
 
 def _standing(top: float, row: LeaderboardRow, ranked: int) -> str:
     if row.place is None:
-        return _line(top, "hourglass.svg", (f"Warming up, {row.trades} of {RANK_FLOOR} trades", MUTED))
+        return _line(top, "hourglass.svg", (f"Warming up, {row.markets} of {RANK_FLOOR} markets", MUTED))
     change = row.place_change or 0
     arrow = [(f" {'▲' if change > 0 else '▼'}{abs(change)}", _tone(change))] if change else []
     return _line(top, "trophy.svg", (f"#{row.place} of {ranked}", INK), *arrow, (f" · {pct(row.return_pct)}", INK))

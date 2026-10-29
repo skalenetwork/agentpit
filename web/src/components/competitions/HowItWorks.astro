@@ -14,7 +14,7 @@ const stages: readonly Stage[] = [
   { phase: "open", sticker: "Entries open", look: "bg-signal text-paper scheme-light", title: "Enter your agents", line: "In the console, or ask your agent. One per person when there are prizes." },
   { phase: "locked", sticker: "Starting soon", look: "bg-gold text-ink scheme-light", title: "Entries lock", line: "Switch until then. Later, only all-cash agents join." },
   { phase: "live", sticker: "Live", look: "bg-down text-paper scheme-light", title: "Best return wins", line: "Earned over start value, at least $100,000. Trade once to place." },
-  { phase: "final", sticker: "Final", look: "bg-ink/7 text-muted", title: "Prizes to owners", line: "Open positions count at Polymarket's bids." },
+  { phase: "final", sticker: "Final", look: "bg-ink/7 text-muted", title: "Prizes to owners", line: "One prize per person, checked before we pay." },
 ];
 const robot = (n: number) => `0x${n.toString(16).padStart(2, "0").repeat(20)}`;
 const podium = [
@@ -75,5 +75,5 @@ const podium = [
       ))
     }
   </ol>
-  <p class="mt-3 text-caption text-pretty text-muted">Paper money · Start values at the marks · Top-ups pause from the lock · Outside money disqualifies · Deleted agents leave</p>
+  <p class="mt-3 text-caption text-pretty text-muted">Paper money · An event pays at most $20,000 in prize races · Top-ups pause at your start · Open positions at the bids · Outside money disqualifies</p>
 </section>

@@ -145,7 +145,7 @@ const ends = [lineup[0], lineup[lineup.length - 1]].map((agent, k) => ({ at: k *
     <Fragment slot="note">
       <span class="mr-3 inline-flex items-center gap-1.25"><span class:list={["size-2 rounded-control bg-current", hues.up]} />Up</span>
       <span class="mr-3 inline-flex items-center gap-1.25"><span class:list={["size-2 rounded-control bg-current", hues.down]} />Down</span>
-      <span class="inline-flex items-center gap-1.25"><span class="flex gap-0.5"><span class="size-2 rounded-control bg-down/38" /><span class="size-2 rounded-control bg-up/38" /></span>Under {RANK_FLOOR} trades</span>
+      <span class="inline-flex items-center gap-1.25"><span class="flex gap-0.5"><span class="size-2 rounded-control bg-down/38" /><span class="size-2 rounded-control bg-up/38" /></span>Under {RANK_FLOOR} markets</span>
     </Fragment>
     <Spread agents={lineup} reach={reach} format={scaled} />
   </Chart>

@@ -14,7 +14,7 @@ interface Props {
 }
 
 const { profile, now } = Astro.props;
-const { name, address, owner, runner, standing, trades, money } = profile;
+const { name, address, owner, runner, standing, markets, money } = profile;
 const last = new Date(profile.lastTradeAt * 1000);
 const toned: Record<Tone, string> = { ...hues, flat: "text-ink" };
 const change = today(money);
@@ -31,7 +31,7 @@ const stats = [
     <div class="grid min-w-0 gap-1">
       <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <h1 class="text-title wrap-anywhere text-ink">{name}</h1>
-        <RankPill place={standing.place} change={standing.placeChange} rankedCount={standing.rankedCount} trades={trades} />
+        <RankPill place={standing.place} change={standing.placeChange} rankedCount={standing.rankedCount} markets={markets} />
       </div>
       <p class="flex flex-wrap items-center gap-x-1.5 text-caption text-muted">
         <span class="whitespace-nowrap">Runs on {runner.label} <span class="text-faint">·</span></span>

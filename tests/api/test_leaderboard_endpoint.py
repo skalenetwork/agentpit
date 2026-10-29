@@ -144,11 +144,12 @@ def _trade(
     price: int | None = None,
     size: int | None = None,
     kind: str | None = None,
+    market: str | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MAKER_API_KEY, MATCH_TIME, STATUS, PRICE, TRADE_SIZE, MATCH_KIND) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-        (trade_id, taker, maker, at, status, price, size, kind),
+        "INSERT INTO trades (TRADE_ID, TAKER_API_KEY, MAKER_API_KEY, MATCH_TIME, STATUS, PRICE, TRADE_SIZE, MATCH_KIND, MARKET) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (trade_id, taker, maker, at, status, price, size, kind, market),
     )
 
 
@@ -237,12 +238,12 @@ def test_rank_has_the_floor_and_moves_against_yesterdays_close():
     base = int(time.time()) // DAY * DAY
     conn = fresh_test_conn()
 
-    def agent(handle: str, trades: int, closes: dict[int, float], *, today: int = 0) -> str:
+    def agent(handle: str, trades: int, closes: dict[int, float], *, markets: int = 10, today: int = 0) -> str:
         user_id, key = _account(conn, handle)
         for k in range(trades):
-            _trade(conn, f"{handle}-{k}", key, None, base - 2 * DAY + k)
+            _trade(conn, f"{handle}-{k}", key, None, base - 2 * DAY + k, market=f"m-{k % markets}")
         for k in range(today):
-            _trade(conn, f"{handle}-today-{k}", key, None, base + 30 + k)
+            _trade(conn, f"{handle}-today-{k}", key, None, base + 30 + k, market=f"m-today-{k}")
         for t, pct in closes.items():
             TableWrite.insert_account_snapshot(conn, user_id, t, G + round(pct * G / 100), G)
         return user_id
@@ -252,7 +253,7 @@ def test_rank_has_the_floor_and_moves_against_yesterdays_close():
     agent("bravo", 10, {yesterday: 30, latest: 15})
     agent("charlie", 10, {three_days_ago: 20, latest: 5})
     agent("delta", RANK_FLOOR - 1, {yesterday: 1, latest: 50}, today=1)
-    agent("echo", RANK_FLOOR - 1, {yesterday: 70, latest: 60})
+    agent("echo", 10, {yesterday: 70, latest: 60}, markets=RANK_FLOOR - 1)
     TableWrite.delete_agent(conn, agent("foxtrot", 10, {yesterday: 40, latest: 45}), base)
     conn.close()
 
@@ -260,12 +261,12 @@ def test_rank_has_the_floor_and_moves_against_yesterdays_close():
         boards = [client.get(f"/leaderboard?sort={sort}").json()["entries"] for sort in ("return", "trades")]
     ranks = [{e["name"]: (e["rank"], e["rankChange"]) for e in board} for board in boards]
 
-    assert {e["name"]: (e["trades"], e["tradesToday"]) for e in boards[0]} == {
-        "echo": (RANK_FLOOR - 1, 0),
-        "delta": (RANK_FLOOR, 1),
-        "alpha": (10, 0),
-        "bravo": (10, 0),
-        "charlie": (10, 0),
+    assert {e["name"]: (e["trades"], e["markets"], e["tradesToday"]) for e in boards[0]} == {
+        "echo": (10, RANK_FLOOR - 1, 0),
+        "delta": (RANK_FLOOR, RANK_FLOOR, 1),
+        "alpha": (10, 10, 0),
+        "bravo": (10, 10, 0),
+        "charlie": (10, 10, 0),
     }
     assert ranks[0] == {
         "echo": (None, None),
@@ -332,7 +333,7 @@ def _owners_board() -> None:
     def agent(handle: str, owner: str | None, trades: list[int], closes: dict[int, tuple[int, int]]) -> None:
         user_id, key = _account(conn, handle, owner)
         for k, at in enumerate(trades):
-            _trade(conn, f"{handle}-{k}", key, None, at)
+            _trade(conn, f"{handle}-{k}", key, None, at, market=f"m-{k}")
         for t, (capital, deposited) in closes.items():
             TableWrite.insert_account_snapshot(conn, user_id, t, capital, deposited)
 

@@ -55,7 +55,7 @@ class BalanceService:
         Backs the GET side of the top-up endpoint, so the button knows when
         it may be clicked without paying for an RPC round-trip or touching
         LAST_TOPUP_AT the way a real top-up attempt would. A competition entry
-        past its lock pauses top-ups until its end value is taken.
+        past its run start pauses top-ups until its end value is taken.
         """
         with self._db.read() as conn:
             last = TableRead.get_last_topup_at(conn, user.user_id)

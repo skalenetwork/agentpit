@@ -337,6 +337,7 @@ class AgentDesk:
         row = next((r for r in board if r.address == user.eth_address), None)
         ranked = sum(r.place is not None for r in board)
         trades = row.trades if row else 0
+        markets = row.markets if row else 0
         page = self._page(user.eth_address)
         next_at = self._balance.next_allowed(user)
         orders = self._orders.list_open_orders(user)
@@ -363,10 +364,11 @@ class AgentDesk:
             pnl_usd=_usd(equity - deposited),
             return_pct=_round2(compute_return_pct(equity, deposited)),
             trades=trades,
+            markets=markets,
             rank=row.place if row else None,
             rank_change=row.place_change if row else None,
             ranked_agents=ranked,
-            trades_to_rank=max(0, RANK_FLOOR - trades),
+            markets_to_rank=max(0, RANK_FLOOR - markets),
             profile_url=page if row else None,
             share=f"{share_text(row, ranked)}: {page}?d={datetime.now(UTC).date()}" if row else None,
             next_top_up_at=_when(next_at if next_at > time.time() else None),

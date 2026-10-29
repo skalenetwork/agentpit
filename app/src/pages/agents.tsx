@@ -128,7 +128,7 @@ export const Agents = () => {
                         "No trades yet"
                       ) : (
                         <>
-                          {agent.place === null ? `Warming up, ${agent.trades} of ${RANK_FLOOR}` : `${count(agent.trades)} trades`} <Sep /> <LastTrade at={agent.last_trade_at} now={now} />
+                          {agent.place === null ? `Warming up, ${agent.markets} of ${RANK_FLOOR}` : `${count(agent.trades)} trades`} <Sep /> <LastTrade at={agent.last_trade_at} now={now} />
                         </>
                       )}{" "}
                       <Sep /> {agent.runner.label}

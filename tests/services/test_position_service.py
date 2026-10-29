@@ -28,6 +28,7 @@ from web3.exceptions import BadResponseFormat, TimeExhausted, Web3RPCError
 
 from agentpit.api.deps import get_position_service
 from agentpit.config import Settings
+from agentpit.datastructures.competition import Competition, Prize
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
@@ -680,6 +681,36 @@ def test_a_split_or_merge_without_the_funds_sends_nothing(action, balances, usd)
         _act(service, action, user, mid)
     assert sponsor.sent == []
     assert _rows(db, user) == []
+
+
+def test_a_prize_entrant_splits_only_within_its_events_room_and_always_merges():
+    db, user, mid = _setup(MarketState.ACTIVE)
+    now = int(time.time())
+    sprint = Competition(slug="sprint", title="October sprint", starts_at=now - 60, ends_at=now + 3_600, prizes=[Prize(usd=5, skl=0)])
+    with db.write() as conn:
+        TableWrite.save_competition(conn, sprint, 0)
+        TableWrite.enter_competition(conn, "sprint", "user_owner", user.user_id, now - 120, False)
+        conn.execute(
+            "INSERT INTO trades (TRADE_ID, MARKET, ASSET_ID, SIDE, TRADE_SIZE, STATUS, TAKER_API_KEY) "
+            "VALUES ('held', %s, %s, 'BUY', 15000000000, 'CONFIRMED', %s)",
+            (_CONDITION, _YES, user.api_key),
+        )
+    chain = _FakeChain(balances=(40_000_000_000, 40_000_000_000), usd=(10**12,))
+    sponsor = _FakeSponsor()
+    service = _service(db, chain, sponsor)
+
+    with pytest.raises(
+        BusinessRuleError,
+        match=r"^October sprint caps each event at 20,000 shares: you hold 15,000 in Gate\?, "
+        r"so this split can be at most 2,500 shares, as it adds to every outcome\.$",
+    ):
+        _act(service, "split", user, mid, 2_500_000_001)
+    assert (chain.reads, sponsor.sent) == ([], [])
+
+    _act(service, "split", user, mid, 2_500_000_000)
+    _act(service, "merge", user, mid, 1_000_000_000)
+
+    assert _rows(db, user) == ["SPLIT", "MERGE"]
 
 
 def test_the_dependency_sponsors_with_the_apps_settings():

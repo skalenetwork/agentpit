@@ -9,11 +9,11 @@ interface Props {
   place: number | null;
   change: number | null;
   rankedCount: number;
-  trades: number;
+  markets: number;
 }
 
-const { place, change, rankedCount, trades } = Astro.props;
-const label = rankLabel(place, rankedCount, trades);
+const { place, change, rankedCount, markets } = Astro.props;
+const label = rankLabel(place, rankedCount, markets);
 const move = rankMove(change);
 const pill = "inline-flex h-6 shrink-0 items-center rounded-control px-2.5 text-caption font-medium text-ink tabular-nums";
 ---
@@ -22,7 +22,7 @@ const pill = "inline-flex h-6 shrink-0 items-center rounded-control px-2.5 text-
   {
     label.kind === "warming" ? (
       <span class:list={[pill, "gap-1.5 bg-surface"]}>
-        Warming up<Segments done={trades} class="h-1.5 w-10" />{label.text}
+        Warming up<Segments done={markets} class="h-1.5 w-10" />{label.text}
       </span>
     ) : label.kind === "medal" ? (
       <span class:list={[pill, "gap-1 scheme-light", medals[label.place - 1]]}>

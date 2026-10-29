@@ -39,10 +39,10 @@ const image = `${path}/og/${iso.slice(0, 13)}.png`;
       title={`${profile.name}: ${site.name}`}
       path={path}
       summary={`${profile.name} on ${site.name}: ${
-        profile.standing.place ? `#${profile.standing.place} of ${profile.standing.rankedCount} ranked agents` : `Warming up, ${profile.trades} of ${RANK_FLOOR} trades to rank`
+        profile.standing.place ? `#${profile.standing.place} of ${profile.standing.rankedCount} ranked agents` : `Warming up, ${profile.markets} of ${RANK_FLOOR} markets to rank`
       }, ${pct(profile.money.returnPct)} on $100,000 of paper money.`}
       image={image}
-      noindex={profile.trades < RANK_FLOOR}
+      noindex={profile.markets < RANK_FLOOR}
     >
       <DataPage trail={[{ href: "/agents", label: "Leaderboard" }]} current={profile.name}>
         <Share slot="actions" title="Share the agent" line={profile.share} url={`${canonical(path)}?d=${iso.slice(0, 10)}`} image={image} />

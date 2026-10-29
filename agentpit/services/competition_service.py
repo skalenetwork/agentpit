@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from agentpit.config import Settings
 from agentpit.datastructures.competition import (
+    EVENT_SHARES,
     FINAL_DAY,
     FIXTURES,
     HOUR,
@@ -49,7 +50,7 @@ from agentpit.datastructures.competition import (
 from agentpit.datastructures.match_leg import MICRO, legs_for_user
 from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.session import DbSession
-from agentpit.db.table_read import PendingCapture, TableRead
+from agentpit.db.table_read import HeldEvent, PendingCapture, TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import BusinessRuleError, NotFoundError
 from agentpit.domain.runner import runner_for
@@ -183,7 +184,9 @@ def _race_line(c: Competition, phase: Phase, final: bool, top: list[Standing], e
     return f"{top[0].name} won {c.title} with {pct(top[0].returnPct)}, {_agents(len(top))} placed"
 
 
-def _agent_line(head: RaceHead, s: Standing, below: Standing | None, started: bool, now: int) -> str:
+def _agent_line(
+    head: RaceHead, s: Standing, below: Standing | None, started: bool, crowded: HeldEvent | None, now: int
+) -> str:
     if head.phase in ("upcoming", "locked"):
         return f"{s.name} is entered in {head.title}, starting {_date(head.startsAt)}"
     if s.disqualified:
@@ -194,6 +197,11 @@ def _agent_line(head: RaceHead, s: Standing, below: Standing | None, started: bo
         return f"{s.name} finished #{s.rank} of {head.ranked} in {head.title} with {pct(s.returnPct)}"
     if head.phase == "ended":
         return f"{s.name} was #{s.rank} of {head.ranked} at the bell of {head.title}; final values are coming in"
+    if not started and crowded is not None:
+        return (
+            f"{s.name} has joined {head.title}; its start waits until its {-(-crowded.held // MICRO):,} shares "
+            f"in {crowded.event} are at most {EVENT_SHARES:,}"
+        )
     if not started:
         return f"{s.name} has joined {head.title}; its start value is being taken"
     if s.rank is None:
@@ -581,10 +589,16 @@ class CompetitionService:
             tape=_tape(conn, c, [e for e in entries if e.address in starts]) if phase == "live" else [],
         )
 
+        crowded = {
+            e.address: TableRead.over_cap(conn, e.api_key)
+            for e in entries
+            if c.prizes and phase == "live" and e.start is None
+        }
+
         def entry(s: Standing) -> RaceEntry:
             above = top[s.rank - 2] if s.rank is not None and s.rank > 1 else None
             below = top[s.rank] if s.rank is not None and s.rank < len(top) else None
-            line = _agent_line(head, s, below, s.address in starts, now)
+            line = _agent_line(head, s, below, s.address in starts, crowded.get(s.address), now)
             return RaceEntry(race=head, standing=s, above=above, below=below, line=line)
 
         return RaceBuild(
@@ -758,7 +772,13 @@ class CompetitionService:
     def _start(self, entry: PendingCapture, now: int) -> None:
         """Cash plus each position at the board's mark, once no fill of the
         account is PENDING and every unsettled mirrored position has a book,
-        or BOOK_GRACE has passed since the run start."""
+        or BOOK_GRACE has passed since the run start. A prize entry's start
+        also waits, past BOOK_GRACE too, while any event holds over
+        EVENT_SHARES of its shares."""
+        if entry.prize:
+            with self._db.read() as conn:
+                if TableRead.over_cap(conn, entry.api_key) is not None:
+                    return
         if entry.settling:
             if now < entry.run_starts_at + feed.BOOK_GRACE:
                 return
