@@ -865,6 +865,16 @@ class TableRead:
         return {r["uid"]: TradeTally.model_validate(r) for r in rows}
 
     @staticmethod
+    def account_holdings(db: psycopg.Connection, deployment_id: str) -> dict[str, str]:
+        """eth_address -> its saved valuation on `deployment_id`, as written.
+        A valuation from a replaced chain is not one of them."""
+        rows = db.execute(
+            "SELECT ETH_ADDRESS, HOLDINGS FROM account_holdings WHERE DEPLOYMENT_ID = %s",
+            (deployment_id,),
+        ).fetchall()
+        return {r["ETH_ADDRESS"]: r["HOLDINGS"] for r in rows}
+
+    @staticmethod
     def latest_account_snapshots(
         db: psycopg.Connection,
     ) -> "dict[str, tuple[int, int, int, int]]":

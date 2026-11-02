@@ -482,6 +482,18 @@ class TableWrite:
         )
 
     @staticmethod
+    def save_account_holdings(
+        db: psycopg.Connection, eth_address: str, deployment_id: str, valued_at: int, holdings: str
+    ) -> None:
+        """The account's latest valuation, replacing the one saved before."""
+        db.execute(
+            "INSERT INTO account_holdings (ETH_ADDRESS, DEPLOYMENT_ID, VALUED_AT, HOLDINGS) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (ETH_ADDRESS) DO UPDATE SET "
+            "DEPLOYMENT_ID = EXCLUDED.DEPLOYMENT_ID, VALUED_AT = EXCLUDED.VALUED_AT, HOLDINGS = EXCLUDED.HOLDINGS",
+            (eth_address, deployment_id, valued_at, holdings),
+        )
+
+    @staticmethod
     def thin_account_snapshots(db: psycopg.Connection, before: int) -> int:
         """Of the rows older than `before`, keep only each account's last
         valuation of each UTC day. Returns rows deleted."""
