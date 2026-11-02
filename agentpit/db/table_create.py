@@ -592,6 +592,24 @@ class TableCreate:
         )
 
     @staticmethod
+    def create_account_holdings_table(conn: psycopg.Connection) -> None:
+        """Each account's latest valuation written to history, on the
+        deployment DEPLOYMENT_ID, as the JSON of its Holdings. A restart
+        starts from these instead of an empty cache, so the board, profiles
+        and races show what they showed before it while the first pass after
+        it reads the chain again."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_holdings (
+                ETH_ADDRESS   TEXT   PRIMARY KEY,
+                DEPLOYMENT_ID TEXT   NOT NULL,
+                VALUED_AT     BIGINT NOT NULL,
+                HOLDINGS      TEXT   NOT NULL
+            )
+            """
+        )
+
+    @staticmethod
     def create_idempotency_keys_table(conn: psycopg.Connection) -> None:
         conn.execute(
             """
@@ -804,6 +822,7 @@ class TableCreate:
         TableCreate.create_transactions_table(conn)
         conn.execute("DROP TABLE IF EXISTS price_snapshots")
         TableCreate.create_account_snapshots_table(conn)
+        TableCreate.create_account_holdings_table(conn)
         TableCreate.create_idempotency_keys_table(conn)
         TableCreate.create_auth_code_attempts_table(conn)
         TableCreate.create_sponsored_gas_table(conn)

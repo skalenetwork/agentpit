@@ -5,7 +5,7 @@ import psycopg
 import pytest
 
 from agentpit.config import Settings
-from agentpit.datastructures.bet import Bet
+from agentpit.datastructures.bet import Bet, BetFill, PriceLine
 from agentpit.datastructures.position_wire import PositionWire
 from agentpit.db.table_read import DailyClose, TableRead, TradeTally
 from agentpit.db.table_write import TableWrite
@@ -13,7 +13,7 @@ from agentpit.domain.runner import Runner, runner_for
 from agentpit.liquidity import feed
 from agentpit.services import leaderboard_service
 from agentpit.services.account_service import Wallet
-from agentpit.services.leaderboard_service import LeaderboardService, daily_trend, drain
+from agentpit.services.leaderboard_service import Holdings, LeaderboardService, daily_trend, drain
 from tests.db_helpers import fresh_test_conn, fresh_test_db
 
 
@@ -727,6 +727,56 @@ def test_without_the_engine_or_a_position_every_valuation_is_written(monkeypatch
     cash_only = LeaderboardService(fresh_test_db(), _FakeChain(), _FakeAccounts(), Settings()).take_snapshot()
 
     assert (unmirrored, cash_only) == (1, 1)
+
+
+def _held_bet() -> Bet:
+    return Bet(
+        id="7", conditionId="0x7", title="Will it?", icon=None, url=None, outcome="Yes", status="open", openedAt=1,
+        closedAt=None, buys=1, sells=0, entry=0.5, exit=None, shares=2.0, sold=0.0, held=2.0, cost="1000000",
+        back="0", value="1200000", sellsFor="1100000", pnl="200000",
+        fills=[BetFill(at=1, side="BUY", shares=2.0, price=0.5, dollars="1000000", tx="0xabc")],
+        prices=PriceLine(start=1, minutes=[0, 5], permille=[500, 600]),
+    )
+
+
+def test_a_valuation_reads_back_as_saved_with_the_condition_id_its_wire_shape_drops():
+    held = Holdings(7, 42_000_000, _worth(5.0, 4.0), [PositionWire(cashPnl=1.5)], [_held_bet()])
+    loaded = Holdings.load(held.dump())
+    assert (loaded, loaded.bets[0].conditionId) == (held, "0x7")
+
+
+def test_a_restart_starts_from_the_holdings_the_last_pass_saved(monkeypatch):
+    """The board, profiles and races read holdings: started empty, the hero
+    showed no agent until the first pass after a deploy reached each one."""
+    monkeypatch.setattr(leaderboard_service, "time", SimpleNamespace(time=lambda: 1_700_000_000))
+    _user_id, acct = _seed_traded_user("restored@example.com", deployed=None, deposited=0)
+    accounts = _FakeAccounts({acct.address: 42_000_000}, {acct.address: _worth(5.0, 4.0)}, bets={acct.address: [_held_bet()]})
+    db = fresh_test_db()
+    LeaderboardService(db, _FakeChain(), accounts, Settings()).take_snapshot()
+    saved = leaderboard_service._holdings.pop(acct.address)
+
+    replaced = LeaderboardService(db, _FakeChain("replaced"), accounts, Settings()).restore_holdings()
+    restored = LeaderboardService(db, _FakeChain(), accounts, Settings()).restore_holdings()
+
+    assert (replaced, restored, leaderboard_service._holdings[acct.address]) == (0, 1, saved)
+    db.close()
+
+
+def test_a_restore_keeps_a_valuation_taken_since_the_start_and_skips_one_that_no_longer_reads(caplog):
+    fresh = Holdings(9, 1, [], [])
+    leaderboard_service._holdings["0xfresh"] = fresh
+    conn = fresh_test_conn()
+    TableWrite.save_account_holdings(conn, "0xfresh", "test-deployment", 8, Holdings(8, 2, [], []).dump())
+    TableWrite.save_account_holdings(conn, "0xold", "test-deployment", 8, '{"valued_at":8}')
+    conn.close()
+    db = fresh_test_db()
+
+    with caplog.at_level("WARNING", logger=leaderboard_service.log.name):
+        restored = LeaderboardService(db, _FakeChain(), None, Settings()).restore_holdings()
+
+    assert (restored, leaderboard_service._holdings) == (0, {"0xfresh": fresh})
+    assert "0xold" in caplog.text
+    db.close()
 
 
 def test_thin_snapshots_leaves_the_last_48_hours_dense():

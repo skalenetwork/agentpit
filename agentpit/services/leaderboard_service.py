@@ -1,4 +1,5 @@
 """Valuing every trading account on a timer, after its fills and after resolutions, so ranking never reads the chain."""
+import json
 import logging
 import threading
 import time
@@ -58,7 +59,8 @@ def daily_trend(closes: list[DailyClose], today: date) -> tuple[date | None, lis
 
 @dataclass(frozen=True)
 class Holdings:
-    """The latest valuation of one account, kept so a profile never reads the chain."""
+    """The latest valuation of one account, kept so a profile never reads the
+    chain, and saved so a restart does not have to either before it can show one."""
 
     valued_at: int
     cash_raw: int
@@ -73,6 +75,31 @@ class Holdings:
     @property
     def cost_raw(self) -> int:
         return int(round(sum(p.initialValue for p in self.positions) * 10**6))
+
+    def dump(self) -> str:
+        """The valuation as `load` reads it back: each bet with the condition
+        id its wire shape leaves out."""
+        return json.dumps(
+            {
+                "valued_at": self.valued_at,
+                "cash_raw": self.cash_raw,
+                "positions": [p.model_dump(mode="json") for p in self.positions],
+                "closed": [p.model_dump(mode="json") for p in self.closed],
+                "bets": [{**b.model_dump(mode="json"), "conditionId": b.conditionId} for b in self.bets],
+            },
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def load(cls, saved: str) -> "Holdings":
+        raw = json.loads(saved)
+        return cls(
+            valued_at=raw["valued_at"],
+            cash_raw=raw["cash_raw"],
+            positions=[PositionWire.model_validate(p) for p in raw["positions"]],
+            closed=[PositionWire.model_validate(p) for p in raw["closed"]],
+            bets=[Bet.model_validate(b) for b in raw["bets"]],
+        )
 
 
 _holdings: dict[str, Holdings] = {}
@@ -282,16 +309,40 @@ class LeaderboardService:
 
     def holdings(self, address: str) -> Holdings:
         """The latest valuation of the account, or one read of the chain when
-        none has run since the process started."""
+        none has run or been restored since the process started."""
         held = _holdings.get(address)
         return held if held is not None else self.value_account(address)
+
+    def restore_holdings(self) -> int:
+        """Take each account's last saved valuation on this deployment as its
+        holdings until the pass values it again. Without them the board,
+        profiles and races start empty after a restart, and fill one account
+        at a time as the first pass reads the chain -- minutes after a deploy.
+        An account valued since the start keeps that valuation, and a saved
+        one the models no longer read waits for the pass. Returns how many
+        were restored."""
+        with self._db.read() as conn:
+            saved = TableRead.account_holdings(conn, self._onchain.deployment_id)
+        restored = 0
+        unread: list[str] = []
+        for address, raw in saved.items():
+            try:
+                held = Holdings.load(raw)
+            except (KeyError, TypeError, ValueError):
+                unread.append(address)
+                continue
+            if _holdings.setdefault(address, held) is held:
+                restored += 1
+        if unread:
+            log.warning("Saved holdings no longer read, left to the valuation pass: %s", ", ".join(unread))
+        return restored
 
     def take_snapshot(self, only: set[str] | None = None) -> int:
         """Value every trading account, or those of them whose lowercase
         address is in `only`, and write a row for each valuation priced on
-        live books. A full pass values the accounts touched meanwhile between
-        two accounts, so a fill waits seconds, not the pass. Returns the
-        number of rows written.
+        live books, saving that valuation for `restore_holdings`. A full pass
+        values the accounts touched meanwhile between two accounts, so a fill
+        waits seconds, not the pass. Returns the number of rows written.
 
         One account failing must not lose the whole pass -- a single unreadable
         position would otherwise cost every other account its data point.
@@ -328,6 +379,9 @@ class LeaderboardService:
                         deposited,
                         held.cost_raw,
                         held.value_raw - held.cost_raw,
+                    )
+                    TableWrite.save_account_holdings(
+                        conn, account.eth_address, self._onchain.deployment_id, held.valued_at, held.dump()
                     )
             except Exception:
                 # One account must not cost every other account its data

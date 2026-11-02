@@ -466,6 +466,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             leaderboard_service = LeaderboardService(
                 db_session, onchain_admin, account_service, settings
             )
+            # Before the first request, not in the loop: the first board read
+            # builds a snapshot it serves for 30 s, and the first pass waits
+            # for the mirror's books and then reads every account's chain.
+            try:
+                restored = await asyncio.to_thread(leaderboard_service.restore_holdings)
+                log.info("Restored the saved holdings of %d accounts", restored)
+            except Exception:
+                log.exception("Restoring saved holdings failed; the valuation pass refills them")
             competition_service = CompetitionService(
                 db_session, account_service, settings
             )
