@@ -1,0 +1,46 @@
+---
+import type { Prize } from "@agentpit/brand/api";
+import { cut, face, nth, seal, tiny, type Material, type Palette } from "../../lib/stickers";
+import Label from "./Label.astro";
+import Pool from "./Pool.astro";
+import Seal from "./Seal.astro";
+
+interface Props {
+  prizes: readonly Prize[];
+  material?: Material;
+  palette?: Palette;
+  big?: boolean;
+}
+
+const { prizes, material, palette, big = false } = Astro.props;
+const look = { material, palette };
+const shown = prizes.slice(0, big ? 7 : 5);
+const sizes = big ? ["w-24", "w-20", "w-19", "w-16", "w-16", "w-16", "w-16"] : ["w-16", "w-14", "w-13", "w-12", "w-12"];
+const tilts = ["[--tilt:-9deg]", "[--tilt:7deg]", "[--tilt:-4deg]", "[--tilt:10deg]", "[--tilt:-6deg]", "[--tilt:5deg]", "[--tilt:-8deg]"];
+const rows = prizes.slice(3, big ? 9 : 6);
+---
+
+<div class="grid gap-5">
+  <div class="flex flex-wrap items-end gap-3">
+    <Pool class="[--tilt:-4deg]" prizes={prizes} {...look} />
+    <Pool class="[--tilt:-2deg]" size="sm" prizes={prizes} {...look} />
+  </div>
+  <div class="flex flex-wrap items-start gap-1">
+    {shown.map((p, k) => <Seal class:list={[sizes[k], tilts[k]]} {...seal(k + 1)} {...face(p)} top={nth(k + 1)} tails={big && k === 0} {...look} />)}
+    <Seal class:list={[big ? "w-14" : "w-11", "[--tilt:8deg]"]} shape="roundel" finish="paper" figure={`+${prizes.length - shown.length}`} unit="more" {...look} />
+  </div>
+  <div class="flex flex-wrap items-center gap-2.5">
+    {rows.map((p, k) => <Label class={tilts[k + 2]} {...cut(k + 4)} {...look}>{tiny(p)}</Label>)}
+  </div>
+  {
+    big && (
+      <div class="flex flex-wrap items-center gap-2">
+        {rows.map((p, k) => (
+          <Label size="sm" {...cut(k + 4)} {...look}>
+            {tiny(p)}
+          </Label>
+        ))}
+      </div>
+    )
+  }
+</div>

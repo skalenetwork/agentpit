@@ -1,16 +1,21 @@
 ---
 import { Crown } from "@lucide/astro";
 import { type Prize, type Race, type Score, type Standing } from "@agentpit/brand/api";
-import { ago, count, dollars, pct, pool, prize, rankMove, shortDay, span, tone } from "@agentpit/brand/format";
+import { ago, count, dollars, pct, prize, rankMove, shortDay, span, tone } from "@agentpit/brand/format";
 import { isActive } from "@agentpit/brand/standing";
 import sombra from "../../assets/sombra.avif";
 import { app, canonical } from "../../content/site";
 import { hues, noun, profile } from "../../lib/leaderboard";
+import { cut, face, nth, seal, tiny } from "../../lib/stickers";
+import stickers from "../../scripts/stickers.js?raw";
 import AgentAvatar from "../AgentAvatar.astro";
 import Countdown from "../Countdown.astro";
 import Prompt from "../Prompt.astro";
 import RunnerMark from "../RunnerMark.astro";
 import Share from "../Share.astro";
+import Label from "../stickers/Label.astro";
+import Pool from "../stickers/Pool.astro";
+import Seal from "../stickers/Seal.astro";
 import RaceChart from "./RaceChart.astro";
 
 interface Props {
@@ -37,15 +42,14 @@ const sticker = {
   ended: { label: page.final ? "Final" : "Ended", look: "bg-ink/7 text-muted" },
 }[page.phase];
 const steps = [
-  { place: 2, col: "col-start-1", medal: "text-silver", robot: "size-12 sm:size-18", front: "min-h-42 sm:min-h-51", bare: "min-h-34 sm:min-h-43" },
-  { place: 1, col: "col-start-2", medal: "text-gold", robot: "size-14 sm:size-22", front: "min-h-47 sm:min-h-58", bare: "min-h-38 sm:min-h-48" },
-  { place: 3, col: "col-start-3", medal: "text-bronze", robot: "size-12 sm:size-18", front: "min-h-38 sm:min-h-46", bare: "min-h-30 sm:min-h-39" },
+  { place: 2, col: "col-start-1", medal: "text-silver", robot: "size-12 sm:size-18", front: "min-h-47 sm:min-h-60", bare: "min-h-34 sm:min-h-46", big: "w-17 [--tilt:6deg] sm:w-23", small: "w-14 [--tilt:6deg] sm:w-18" },
+  { place: 1, col: "col-start-2", medal: "text-gold", robot: "size-14 sm:size-22", front: "min-h-52 sm:min-h-66", bare: "min-h-38 sm:min-h-54", big: "w-19 [--tilt:-4deg] sm:w-26", small: "w-16 [--tilt:-4deg] sm:w-20" },
+  { place: 3, col: "col-start-3", medal: "text-bronze", robot: "size-12 sm:size-18", front: "min-h-43 sm:min-h-56", bare: "min-h-30 sm:min-h-42", big: "w-15 [--tilt:-7deg] sm:w-20", small: "w-12 [--tilt:-7deg] sm:w-16" },
 ] as const;
-const ordinal = new Intl.PluralRules("en-US", { type: "ordinal" });
-const suffixes: Partial<Record<Intl.LDMLPluralRule, string>> = { one: "st", two: "nd", few: "rd" };
+const tilts = ["[--tilt:-2deg]", "[--tilt:1deg]", "[--tilt:-1deg]", "[--tilt:2deg]"];
 
-const nth = (n: number) => `${n}${suffixes[ordinal.select(n)] ?? "th"}`;
-const amount = ({ usd, skl }: Prize) => (usd > 0 ? { figure: dollars(usd), unit: skl > 0 ? `+ ${count(skl)} SKL` : "" } : { figure: count(skl), unit: "SKL" });
+const link = "font-medium text-ink underline decoration-line underline-offset-2 transition-colors duration-150 hover:decoration-ink";
+
 const day = (at: number) => shortDay(new Date(at * 1000));
 
 const stage = page.final ? "final" : page.phase === "ended" ? "closing" : page.phase === "live" && page.endsAt - now < 86_400 ? "finalDay" : page.phase;
@@ -107,17 +111,18 @@ const versus = (s: Placed) =>
 
 <div class="relative overflow-hidden rounded-panel bg-surface/70">
   <Share class="absolute top-3 right-3 sm:top-4 sm:right-4" title="Share the race" line={page.line} url={url} image={image} />
+  {!practice && <Pool class="absolute top-14 left-10 [--tilt:-7deg] max-xl:hidden" size="lg" prizes={page.prizes} />}
   <div class:list={["flex flex-col items-center px-5 pt-8 text-center sm:px-10 sm:pt-12", !podium.length && "pb-8 sm:pb-12"]}>
     <span class:list={["inline-flex h-6 items-center gap-1.5 rounded-control px-2.5 text-label font-medium whitespace-nowrap", sticker.look]}>
       {page.phase === "live" && <span class="relative size-1.5 rounded-full bg-paper after:absolute after:inset-0 after:rounded-full after:bg-paper motion-safe:after:animate-ping" />}
       {sticker.label}
     </span>
-    <h1 class="mt-4 max-w-text text-heading text-balance wrap-anywhere text-ink">{page.title}</h1>
+    <h1 class:list={["mt-4 max-w-text text-heading text-balance wrap-anywhere text-ink", !practice && "xl:max-w-[calc(100%-30rem)]"]}>{page.title}</h1>
     <p class="mt-2 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-small tabular-nums *:whitespace-nowrap">
       <time class="max-sm:basis-full" datetime={new Date(page.startsAt * 1000).toISOString()} title={span(page.startsAt, page.endsAt)}>{day(page.startsAt)} to {day(page.endsAt)}</time>
       <span class="text-faint max-sm:hidden" aria-hidden="true">·</span>
-      {practice ? <span class="inline-flex h-6 items-center rounded-control bg-ink/7 px-2.5 text-label font-medium text-muted">Practice</span> : <span class="font-medium text-ink">{pool(page.prizes)}</span>}
-      <span class="text-faint" aria-hidden="true">·</span>
+      {practice ? <span class="inline-flex h-6 items-center rounded-control bg-ink/7 px-2.5 text-label font-medium text-muted">Practice</span> : <Pool class="mx-1 [--tilt:-2deg] xl:hidden" size="sm" prizes={page.prizes} />}
+      <span class:list={["text-faint", !practice && "xl:hidden"]} aria-hidden="true">·</span>
       <span>{page.entrants ? `${count(page.entrants)} ${noun(page.entrants, "entrant")}` : page.phase === "ended" ? "No entrants" : "Be the first"}</span>
     </p>
     {
@@ -162,7 +167,15 @@ const versus = (s: Placed) =>
       open && (
         <Fragment>
           <Prompt class="mt-8 max-lg:w-full" text={sentence} />
-          <a class="mt-4 text-small text-muted underline underline-offset-2 transition-colors duration-150 hover:text-ink" href={app}>Or enter your agent in the console</a>
+          <p class="mt-4 flex flex-wrap justify-center gap-x-1.5 gap-y-1 text-small">
+            <a class="underline underline-offset-2 transition-colors duration-150 hover:text-ink" href={app}>Or enter your agent in the console</a>
+            {!practice && (
+              <Fragment>
+                <span class="text-faint max-sm:hidden" aria-hidden="true">·</span>
+                <a class={link} href="/competitions/rules">Official rules</a>
+              </Fragment>
+            )}
+          </p>
         </Fragment>
       )
     }
@@ -172,9 +185,8 @@ const versus = (s: Placed) =>
       <div class="relative isolate mt-10 px-5 sm:mt-14 sm:px-10">
         <img class="absolute inset-x-0 bottom-0 -z-10 h-28 w-full object-cover sm:h-40 sm:[mask-image:linear-gradient(to_right,transparent,black_30%,black_70%,transparent)]" src={sombra.src} alt="" />
         <ol class="mx-auto grid max-w-[680px] grid-cols-[1fr_1.15fr_1fr] items-end gap-1.5 sm:gap-3">
-          {podium.map(({ place, col, medal, robot, front, bare, agent, prize: p }) => {
+          {podium.map(({ place, col, medal, robot, front, bare, big, small, agent, prize: p }) => {
             const Step = agent?.listed ? "a" : "div";
-            const plaque = p && amount(p);
             const cap = agent && caption(agent);
             return (
               <li class:list={["row-start-1 min-w-0", col]}>
@@ -206,10 +218,10 @@ const versus = (s: Placed) =>
                         )}
                       </Fragment>
                     )}
-                    {plaque && (
-                      <span class="mt-auto grid max-w-full justify-items-center pt-3">
-                        <span class="text-body font-medium whitespace-nowrap text-ink sm:text-title">{plaque.figure}</span>
-                        {plaque.unit && <span class="truncate text-caption font-medium text-muted sm:text-label">{plaque.unit}</span>}
+                    {p && (
+                      <span class="mt-auto grid max-w-full justify-items-center pt-3 sm:pt-4">
+                        <Seal class={agent ? small : big} {...seal(place)} tails={place === 1} top={nth(place)} {...face(p)} />
+                        {p.usd > 0 && p.skl > 0 && <span class="mt-1.5 truncate text-caption font-medium text-muted sm:text-label">+ {count(p.skl)} SKL</span>}
                       </span>
                     )}
                   </div>
@@ -286,17 +298,24 @@ const versus = (s: Placed) =>
               </span>
               <span class="flex flex-col items-end md:contents">
                 <span class:list={["text-right font-medium", hues[tone(s.returnPct)]]}>{pct(s.returnPct)}</span>
-                {paidRows && <span class="text-right text-caption font-medium whitespace-nowrap text-ink md:text-small">{p ? prize(p) : ""}</span>}
+                {paidRows && <span class="flex justify-end">{p && <Label size="sm" {...cut(k + 4)}>{tiny(p)}</Label>}</span>}
               </span>
             </li>
           );
         })}
         {vacant.map(({ from, to, prize: p }) => (
-          <li class="flex min-h-12 items-center justify-between gap-3 px-5 sm:px-6">
+          <li class="flex min-h-14 items-center justify-between gap-3 px-5 sm:px-6">
             <span>{from === to ? nth(from) : `${nth(from)} to ${nth(to)}`}</span>
-            <span class="font-medium whitespace-nowrap text-ink tabular-nums">
-              {prize(p)}
-              {from !== to && <span class="font-normal text-muted"> each</span>}
+            <span class="flex items-center gap-2 whitespace-nowrap">
+              <span class="relative flex">
+                {from !== to && (
+                  <span class="absolute top-0 right-0 translate-x-1.5 -translate-y-1 opacity-80" aria-hidden="true">
+                    <Label class="[--tilt:6deg]" {...cut(from)}>{prize(p)}</Label>
+                  </span>
+                )}
+                <Label class={tilts[from % tilts.length]} {...cut(from)}>{prize(p)}</Label>
+              </span>
+              {from !== to && <span>each</span>}
             </span>
           </li>
         ))}
@@ -356,6 +375,8 @@ const versus = (s: Placed) =>
   )
 }
 
+{!practice && <script is:inline set:html={stickers} />}
+
 <p class="text-caption">
-  {!practice && "Prizes need 20 trades in 5 markets during the run. "}{note} <a class="underline underline-offset-2 transition-colors duration-150 hover:text-ink" href="/competitions#how-it-works">How it works</a> · <a class="underline underline-offset-2 transition-colors duration-150 hover:text-ink" href="/competitions/rules">Rules</a>
+  {!practice && "Prizes need 20 trades in 5 markets during the run. "}{note} <a class={link} href="/competitions#how-it-works">How it works</a> · <a class={link} href="/competitions/rules">Official rules</a> · <a class={link} href="/terms">Terms</a>
 </p>

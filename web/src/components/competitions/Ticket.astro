@@ -1,9 +1,13 @@
 ---
 import type { RaceSummary } from "@agentpit/brand/api";
-import { count, dollars } from "@agentpit/brand/format";
+import { count, pool } from "@agentpit/brand/format";
 import { noun } from "../../lib/leaderboard";
+import { face, nth, seal } from "../../lib/stickers";
+import stickers from "../../scripts/stickers.js?raw";
 import AgentAvatar from "../AgentAvatar.astro";
 import Countdown from "../Countdown.astro";
+import Pool from "../stickers/Pool.astro";
+import Seal from "../stickers/Seal.astro";
 
 interface Props {
   competition: RaceSummary;
@@ -17,74 +21,94 @@ const sticker = live
   : c.phase === "locked"
     ? { label: "Starting soon", look: "bg-gold text-ink" }
     : { label: "Entries open", look: "bg-signal text-paper" };
-const usd = c.prizes.reduce((sum, p) => sum + p.usd, 0);
-const skl = c.prizes.reduce((sum, p) => sum + p.skl, 0);
+const paid = c.prizes.length > 0;
+const places = c.prizes.slice(0, 5).map((p, k) => ({ place: k + 1, ...seal(k + 1), ...face(p) }));
+const spots = [
+  { at: "bottom-[calc(100%-6px)] right-3 [--tilt:9deg] md:right-auto md:bottom-[calc(100%-4px)] md:left-[calc(50%-30px)] md:[--tilt:-4deg]", size: "size-13 md:size-15" },
+  { at: "top-[calc(100%-6px)] right-1 [--tilt:-7deg] md:top-auto md:right-auto md:bottom-[calc(100%-7px)] md:left-[calc(50%-86px)] md:[--tilt:-10deg]", size: "size-12 md:size-13.5" },
+  { at: "top-[calc(100%-5px)] right-[54px] [--tilt:5deg] md:top-auto md:right-auto md:bottom-[calc(100%-8px)] md:left-[calc(50%+32px)] md:[--tilt:9deg]", size: "size-12 md:size-13" },
+  { at: "top-[calc(100%-3px)] right-[104px] [--tilt:-6deg] md:top-auto md:right-auto md:bottom-[calc(100%-9px)] md:left-[calc(50%-136px)] md:[--tilt:-14deg]", size: "size-11 md:size-12" },
+  { at: "top-[calc(100%-5px)] right-[150px] [--tilt:8deg] md:top-auto md:right-auto md:bottom-[calc(100%-9px)] md:left-[calc(50%+86px)] md:[--tilt:14deg]", size: "size-11 md:size-12" },
+];
+const more = (shown: number) => c.prizes.length - shown;
+const squeeze = more(5) > 0 ? ["max-[399px]:hidden", "min-[400px]:hidden"] : ["max-[359px]:hidden", "min-[360px]:hidden"];
 ---
 
-<a
-  class:list={[
-    "relative block w-full max-w-sheet text-left whitespace-nowrap transition-[translate] duration-200 sm:w-fit sm:max-w-full motion-safe:hover:-translate-y-0.5",
-    (usd > 0 || skl > 0) && "max-sm:mt-6",
-  ]}
-  href={`/competitions/${c.slug}`}
->
-  <span class="flex flex-col rounded-panel drop-shadow-[0_0_12px_color-mix(in_oklab,var(--color-signal)_45%,transparent)] sm:flex-row">
-    <span class="stub relative flex min-w-0 gap-3 bg-surface/90 p-1.5 pr-4 max-sm:rounded-t-panel sm:rounded-l-panel">
-      <span class:list={["relative inline-flex shrink-0 items-center gap-2 overflow-hidden rounded-control px-4 text-small font-medium scheme-light", sticker.look, live ? "beacon" : "sheen"]}>
-        {live && <span class="rec size-2 rounded-full bg-paper" />}
-        {sticker.label}
+<div class:list={["flex w-full max-w-sheet flex-col sm:w-fit sm:max-w-full", paid && "mt-20 pb-11 md:mt-14 md:pb-0"]}>
+  <a class="relative block text-left whitespace-nowrap" href={`/competitions/${c.slug}`}>
+    <span class="flex flex-col rounded-panel drop-shadow-[0_0_12px_color-mix(in_oklab,var(--color-signal)_45%,transparent)] sm:flex-row">
+      <span class="stub relative flex min-w-0 gap-3 bg-surface/90 p-2.5 pr-6 max-sm:rounded-t-panel sm:rounded-l-panel">
+        <span class:list={["inline-flex shrink-0 items-center gap-2 rounded-control px-4 text-small font-medium scheme-light", sticker.look, live && "beacon"]}>
+          {live && <span class="rec size-2 rounded-full bg-paper" />}
+          {sticker.label}
+        </span>
+        <span class="grid min-w-0 content-center">
+          <span class="text-caption leading-4 text-muted">{c.prizes.length ? "Competition" : "Practice competition"}</span>
+          <span class="truncate text-small font-medium text-ink">{c.title}</span>
+        </span>
       </span>
-      <span class="grid min-w-0 content-center">
-        <span class="text-caption leading-4 text-muted">{c.prizes.length ? "Competition" : "Practice competition"}</span>
-        <span class="truncate text-small font-medium text-ink">{c.title}</span>
+      <span class="body flex min-w-0 gap-4 bg-surface/90 p-2.5 pl-6 tabular-nums max-sm:justify-between max-sm:rounded-b-panel sm:rounded-r-panel">
+        <span class="grid content-center sm:justify-items-end">
+          {
+            leader ? (
+              <span class="inline-flex items-center gap-1 text-caption leading-4 text-muted">
+                <AgentAvatar address={leader.address} class="size-4" />
+                <span class="font-medium text-ink">{leader.name}</span> leads
+              </span>
+            ) : (
+              <span class="text-caption leading-4 text-muted">{c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "agent")}` : "Be the first"}</span>
+            )
+          }
+          {
+            live ? (
+              <span class="text-small text-muted">
+                <Countdown class="font-medium text-ink" at={c.endsAt} /> left
+              </span>
+            ) : (
+              <span class="text-small text-muted">
+                Starts in <Countdown class="font-medium text-ink" at={c.startsAt} />
+              </span>
+            )
+          }
+        </span>
+        <span class="inline-flex items-center rounded-control bg-ink px-5 text-small font-medium text-paper">{live ? "Watch" : "Enter"}</span>
       </span>
     </span>
-    <span class="body flex min-w-0 gap-4 bg-surface/90 p-1.5 pl-4 tabular-nums max-sm:justify-between max-sm:rounded-b-panel sm:rounded-r-panel">
-      <span class="grid content-center sm:justify-items-end">
-        {
-          leader ? (
-            <span class="inline-flex items-center gap-1 text-caption leading-4 text-muted">
-              <AgentAvatar address={leader.address} class="size-4" />
-              <span class="font-medium text-ink">{leader.name}</span> leads
-            </span>
-          ) : (
-            <span class="text-caption leading-4 text-muted">{c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "agent")}` : "Be the first"}</span>
-          )
-        }
-        {
-          live ? (
-            <span class="text-small text-muted">
-              <Countdown class="font-medium text-ink" at={c.endsAt} /> left
-            </span>
-          ) : (
-            <span class="text-small text-muted">
-              Starts in <Countdown class="font-medium text-ink" at={c.startsAt} />
-            </span>
-          )
-        }
-      </span>
-      <span class="inline-flex items-center rounded-control bg-ink px-5 text-small font-medium text-paper">{live ? "Watch" : "Enter"}</span>
-    </span>
-  </span>
-  {
-    (usd > 0 || skl > 0) && (
-      <span class="pointer-events-none absolute -top-15 right-3 flex items-center gap-1">
-        {usd > 0 && (
-          <span class="disc grid size-16 -rotate-12 content-center justify-items-center rounded-full tabular-nums">
-            <span class="text-caption leading-4">Win</span>
-            <span class="text-body leading-5 font-medium">{dollars(usd)}</span>
+    {
+      paid && (
+        <Fragment>
+          <span class="sr-only">{pool(c.prizes)} in prizes</span>
+          <span aria-hidden="true">
+            <Pool
+              class="absolute bottom-[calc(100%+6px)] -left-2 origin-bottom-left [--tilt:-5deg] md:right-[calc(50%+166px)] md:bottom-[calc(100%+12px)] md:left-auto md:origin-bottom-right md:[--tilt:6deg]"
+              prizes={c.prizes}
+            />
+            {places.map(({ place, figure, unit, ...art }) => (
+              <span class:list={["absolute flex", spots[place - 1].at, place > 3 && squeeze[0]]}>
+                <Seal class={spots[place - 1].size} {...art} top={nth(place)} figure={figure} unit={unit} />
+              </span>
+            ))}
+            {
+              more(3) > 0 && (
+                <span class:list={["absolute top-[calc(100%-3px)] right-[104px] flex [--tilt:8deg]", squeeze[1]]}>
+                  <Seal class="size-10" shape="roundel" finish="paper" figure={`+${more(3)}`} unit="more" />
+                </span>
+              )
+            }
+            {
+              more(5) > 0 && (
+                <span class:list={["absolute top-[calc(100%-4px)] right-[198px] flex [--tilt:-8deg] md:top-auto md:right-auto md:bottom-[calc(100%-9px)] md:left-[calc(50%+134px)] md:[--tilt:18deg]", squeeze[0]]}>
+                  <Seal class="size-10 md:size-11" shape="roundel" finish="paper" figure={`+${more(5)}`} unit="more" />
+                </span>
+              )
+            }
           </span>
-        )}
-        {skl > 0 && (
-          <span class="label flex h-8 rotate-6 items-center gap-1.5 rounded-[3px] px-2.5 font-mono text-small tabular-nums">
-            <span class="text-caption">Win</span>
-            {count(skl)} SKL
-          </span>
-        )}
-      </span>
-    )
-  }
-</a>
+        </Fragment>
+      )
+    }
+  </a>
+  {paid && <script is:inline set:html={stickers} />}
+</div>
 
 <style>
   .stub,
@@ -130,23 +154,6 @@ const skl = c.prizes.reduce((sum, p) => sum + p.skl, 0);
     }
   }
 
-  .disc {
-    background: #ff6b1a;
-    color: #1a1308;
-    box-shadow:
-      inset 0 0 0 3px #ff6b1a,
-      inset 0 0 0 4px rgb(26 19 8 / 0.22),
-      0 1px 2px rgb(0 0 0 / 0.35);
-  }
-
-  .label {
-    background: #f3ecdc;
-    color: #cf2a1f;
-    outline: 1px solid rgb(207 42 31 / 0.55);
-    outline-offset: -4px;
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
-  }
-
   @media (prefers-reduced-motion: no-preference) {
     .beacon {
       animation: beacon 2s cubic-bezier(0, 0, 0.2, 1) infinite;
@@ -154,15 +161,6 @@ const skl = c.prizes.reduce((sum, p) => sum + p.skl, 0);
 
     .rec {
       animation: rec 1.2s ease-in-out infinite;
-    }
-
-    .sheen::after {
-      content: "";
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 60%;
-      background: linear-gradient(105deg, #0000, rgb(255 255 255 / 0.5), #0000);
-      animation: sheen 3.6s ease-in-out infinite;
     }
   }
 
@@ -179,17 +177,6 @@ const skl = c.prizes.reduce((sum, p) => sum + p.skl, 0);
   @keyframes rec {
     50% {
       opacity: 0.3;
-    }
-  }
-
-  @keyframes sheen {
-    from {
-      transform: translateX(-100%);
-    }
-
-    35%,
-    to {
-      transform: translateX(170%);
     }
   }
 </style>
