@@ -1,0 +1,196 @@
+---
+import "../../styles/stickers.css";
+import { look, type Cut, type Enamel, type Material, type Metal, type Palette } from "../../lib/stickers";
+
+interface Props {
+  cut: Cut;
+  enamel: Enamel;
+  rim: Metal;
+  size?: "md" | "sm";
+  material?: Material;
+  palette?: Palette;
+  class?: string;
+}
+
+const { cut, enamel, rim, size = "md", material = look.material, palette = look.palette, class: className } = Astro.props;
+---
+
+<span class:list={["sticker sticker-shadow label relative inline-flex shrink-0", cut, `st-${enamel}`, `rim-${rim}`, size, className]} data-material={material} data-palette={palette}>
+  <span class="cut flex">
+    <span class="metal flex">
+      <span class="face relative flex items-center font-medium whitespace-nowrap tabular-nums">
+        <slot />
+      </span>
+    </span>
+  </span>
+</span>
+
+<style>
+  .label {
+    --n: 9px;
+  }
+
+  .sm {
+    --n: 6px;
+  }
+
+  .cut,
+  .metal,
+  .face {
+    clip-path: var(--clip, none);
+    border-radius: var(--r, 5px);
+  }
+
+  .cut {
+    padding: calc(var(--sticker-cut) * 0.32px);
+    background: var(--cut);
+  }
+
+  .sm .cut {
+    padding: calc(var(--sticker-cut) * 0.26px);
+  }
+
+  .face {
+    height: 28px;
+    padding-inline: calc(var(--n) + 5px);
+    font-size: 14px;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    background: var(--base);
+  }
+
+  .sm .face {
+    height: 20px;
+    padding-inline: calc(var(--n) + 3px);
+    font-size: 12px;
+  }
+
+  [data-material="soft"] .face {
+    background:
+      linear-gradient(rgb(255 255 255 / calc(0.6 * var(--sticker-gloss))), rgb(255 255 255 / 0) 52%),
+      linear-gradient(170deg, var(--hi) -40%, var(--base) 65%);
+  }
+
+  [data-material="line"] .metal {
+    padding: 1.5px;
+    background: var(--stroke);
+  }
+
+  [data-material="line"] .face {
+    color: var(--line);
+    background: var(--tint);
+  }
+
+  [data-material="foil"] .metal {
+    padding: 1.5px;
+  }
+
+  [data-material="foil"].rim-gold .metal {
+    background: linear-gradient(135deg, #8a5e05, #f8dc7e 30%, #b98410 55%, #ffeeb0 75%, #a37210);
+  }
+
+  [data-material="foil"].rim-silver .metal {
+    background: linear-gradient(135deg, #6c778a, #eef2f8 30%, #a5b0c2 55%, #fff 75%, #8c97aa);
+  }
+
+  [data-material="foil"] .face {
+    color: #fff;
+    text-shadow: 0 1px 1px rgb(0 0 0 / 0.4);
+    background:
+      linear-gradient(rgb(255 255 255 / calc(0.64 * var(--sticker-gloss))), rgb(255 255 255 / calc(0.12 * var(--sticker-gloss))) 48%, rgb(255 255 255 / 0) 52%),
+      radial-gradient(130% 170% at 25% -30%, var(--hi), var(--lo) 62%);
+    box-shadow: inset 0 1px 1.5px rgb(0 0 0 / 0.35);
+  }
+
+  .sm .metal {
+    padding: 1px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    [data-material="foil"] .face::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(105deg, #0000 35%, rgb(255 255 255 / 0.55) 50%, #0000 65%) no-repeat;
+      background-size: 60% 100%;
+      background-position: -120% 0;
+      animation: label-sweep 8s ease-in-out infinite var(--sticker-play);
+    }
+
+    .st-jade .face::after {
+      animation-delay: 1.3s;
+    }
+
+    .st-rose .face::after {
+      animation-delay: 2.6s;
+    }
+
+    .st-violet .face::after {
+      animation-delay: 3.9s;
+    }
+
+    .st-tangerine .face::after {
+      animation-delay: 5.2s;
+    }
+
+    .st-teal .face::after {
+      animation-delay: 6.5s;
+    }
+  }
+
+  @keyframes label-sweep {
+    20%,
+    100% {
+      background-position: 260% 0;
+    }
+  }
+
+  .capsule {
+    --r: 999px;
+  }
+
+  .banner {
+    --r: 0;
+    --clip: polygon(0 0, 100% 0, calc(100% - var(--n)) 50%, 100% 100%, 0 100%, var(--n) 50%);
+  }
+
+  .pennant {
+    --r: 3px 0 0 3px;
+    --clip: polygon(0 0, calc(100% - var(--n)) 0, 100% 50%, calc(100% - var(--n)) 100%, 0 100%);
+  }
+
+  .pennant .face {
+    padding-inline: 9px calc(var(--n) + 6px);
+  }
+
+  .chamfer {
+    --r: 0;
+    --clip: polygon(var(--n) 0, calc(100% - var(--n)) 0, 100% var(--n), 100% calc(100% - var(--n)), calc(100% - var(--n)) 100%, var(--n) 100%, 0 calc(100% - var(--n)), 0 var(--n));
+  }
+
+  .tag {
+    --r: 0 5px 5px 0;
+    --clip: polygon(var(--n) 0, 100% 0, 100% 100%, var(--n) 100%, 0 50%);
+  }
+
+  .tag .cut {
+    mask: radial-gradient(circle at calc(var(--n) + 2px) 50%, #0000 2.5px, #000 3px);
+  }
+
+  .tag .face {
+    padding-inline: calc(var(--n) + 9px) 9px;
+  }
+
+  .stub .cut,
+  .stub .metal,
+  .stub .face {
+    mask:
+      radial-gradient(circle at 0 50%, #0000 calc(var(--n) * 0.55), #000 calc(var(--n) * 0.55 + 0.5px)),
+      radial-gradient(circle at 100% 50%, #0000 calc(var(--n) * 0.55), #000 calc(var(--n) * 0.55 + 0.5px));
+    mask-composite: intersect;
+  }
+
+  .stub .face {
+    padding-inline: calc(var(--n) + 3px);
+  }
+</style>

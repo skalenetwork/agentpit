@@ -1,0 +1,225 @@
+---
+import type { Prize, RaceSummary } from "@agentpit/brand/api";
+import Detail from "../components/competitions/Detail.astro";
+import Ticket from "../components/competitions/Ticket.astro";
+import Hero from "../components/Hero.astro";
+import Layout from "../components/Layout.astro";
+import Sheet from "../components/stickers/Sheet.astro";
+import { hero } from "../content/home";
+import { competition, competitions } from "../lib/api";
+import { look, materials, palettes } from "../lib/stickers";
+
+export const prerender = false;
+
+if (import.meta.env.PROD) return new Response(null, { status: 404 });
+
+const [list, race] = await Promise.all([competitions(), competition("kickoff-clash-1")]);
+const now = Date.now() / 1000;
+const real = list?.find((c) => c.slug === "kickoff-clash-1") ?? list?.find((c) => c.prizes.length);
+const sheet: readonly Prize[] = [200, 125, 85, 55, 35, 25, 20, 15, 10, 10].map((usd) => ({ usd, skl: 0 }));
+const ten: readonly Prize[] = [
+  { usd: 8000, skl: 50_000 },
+  { usd: 4500, skl: 25_000 },
+  { usd: 2500, skl: 10_000 },
+  { usd: 1500, skl: 5000 },
+  { usd: 1000, skl: 0 },
+  { usd: 700, skl: 0 },
+  { usd: 600, skl: 0 },
+  { usd: 400, skl: 0 },
+  { usd: 400, skl: 0 },
+  { usd: 400, skl: 0 },
+];
+const tickets: readonly RaceSummary[] = real ? [real, { ...real, title: "AgentPit Grand Prix", phase: "upcoming", entrants: 42, prizes: ten }] : [];
+const looks = [{ material: "foil", palette: "medal" }, ...materials.filter((m) => m !== "foil").flatMap((material) => palettes.map((palette) => ({ material, palette })))] as const;
+const knobs = [
+  { name: "cut", label: "Border", min: 0, max: 14, step: 0.5, value: 10 },
+  { name: "shadow", label: "Shadow", min: 0, max: 1.5, step: 0.05, value: 0 },
+  { name: "gloss", label: "Gloss", min: 0, max: 1.5, step: 0.05, value: 1 },
+  { name: "tilt", label: "Tilt", min: 0, max: 2, step: 0.1, value: 1 },
+] as const;
+const segment = "relative inline-flex h-7 cursor-pointer items-center rounded-control px-2.5 text-label font-medium capitalize text-muted transition-colors duration-150 hover:text-ink has-checked:bg-ink has-checked:text-paper has-focus-visible:outline-2 has-focus-visible:outline-signal";
+---
+
+<Layout title="Sticker kit" path="/kit" noindex>
+  <div id="kit" class="pb-24">
+    <form id="knobs" class="top-15 z-5 border-b border-line bg-paper/85 px-4 py-2.5 backdrop-blur-xl sm:px-12 lg:sticky">
+      <div class="mx-auto flex max-w-page flex-wrap items-center gap-x-5 gap-y-2">
+        <fieldset class="flex rounded-control bg-surface p-1">
+          <legend class="sr-only">Material</legend>
+          {
+            materials.map((m) => (
+              <label class={segment}>
+                <input class="sr-only" type="radio" name="material" value={m} checked={m === look.material} />
+                {m}
+              </label>
+            ))
+          }
+        </fieldset>
+        <fieldset class="flex items-center rounded-control bg-surface p-1">
+          <legend class="sr-only">Pool</legend>
+          <span class="px-2 text-label">Pool</span>
+          {
+            materials.map((m) => (
+              <label class={segment}>
+                <input class="sr-only" type="radio" name="pool" value={m} checked={m === look.pool} />
+                {m}
+              </label>
+            ))
+          }
+        </fieldset>
+        <fieldset class="flex rounded-control bg-surface p-1">
+          <legend class="sr-only">Palette</legend>
+          {
+            palettes.map((p) => (
+              <label class={segment}>
+                <input class="sr-only" type="radio" name="palette" value={p} checked={p === look.palette} />
+                {p}
+              </label>
+            ))
+          }
+        </fieldset>
+        {
+          knobs.map((k) => (
+            <label class="flex items-center gap-2 text-label">
+              <span>{k.label}</span>
+              <input class="w-20 accent-signal" type="range" name={k.name} min={k.min} max={k.max} step={k.step} value={k.value} />
+              <output class="w-8 text-caption text-ink tabular-nums" data-for={k.name}>{k.value}</output>
+            </label>
+          ))
+        }
+        <label class="flex items-center gap-2 text-label">
+          <input class="accent-signal" type="checkbox" name="motion" checked />
+          Motion
+        </label>
+        <fieldset class="flex rounded-control bg-surface p-1">
+          <legend class="sr-only">Page</legend>
+          {
+            ["light", "dark"].map((s) => (
+              <label class={segment}>
+                <input class="sr-only" type="radio" name="surface" value={s} checked={s === "light"} />
+                {s}
+              </label>
+            ))
+          }
+        </fieldset>
+        <div class="ml-auto flex items-center gap-2">
+          <button class="h-7 rounded-control px-2.5 text-label font-medium text-muted transition-colors duration-150 hover:text-ink" type="reset">Reset</button>
+          <button id="copy" class="h-7 rounded-control bg-ink px-2.5 text-label font-medium text-paper" type="button">Copy settings</button>
+        </div>
+      </div>
+      <p id="summary" class="mx-auto mt-1.5 max-w-page font-mono text-caption text-muted"></p>
+    </form>
+
+    <section class="px-4 pt-10 sm:px-12">
+      <div class="mx-auto max-w-page">
+        <h1 class="text-title text-ink">Sticker kit</h1>
+        <p class="mt-1 max-w-text text-small text-pretty">Every material and palette side by side with the knobs above. Click a card to try it on the ticket and the competition page below, then copy the settings.</p>
+        <ol class="mt-6 grid gap-4 md:grid-cols-2">
+          {
+            looks.map(({ material, palette }) => (
+              <li>
+                <button class="grid w-full gap-4 rounded-panel bg-surface/70 p-5 text-left ring-signal transition-shadow duration-150 hover:ring-2 data-picked:ring-2" type="button" data-pick={`${material} ${palette}`}>
+                  <span class="text-small font-medium text-ink capitalize">
+                    {material} <span class="text-muted">· {palette}</span>
+                  </span>
+                  <Sheet prizes={sheet} material={material} palette={palette} />
+                </button>
+              </li>
+            ))
+          }
+        </ol>
+      </div>
+    </section>
+
+    <div id="play">
+      <section class="px-4 pt-16 sm:px-12">
+        <h2 class="mx-auto max-w-page text-title text-ink">On the home page</h2>
+      </section>
+      <div class="mt-6 grid gap-px overflow-hidden bg-paper scheme-dark">
+        {
+          tickets.map((c) => (
+            <Hero class="py-24!">
+              <Ticket slot="above" competition={c} />
+              <span class="text-signal">{hero.headline.accent}</span>
+              {hero.headline.rest}
+              <div slot="visual" class="h-16" />
+            </Hero>
+          ))
+        }
+      </div>
+      <section id="surface" class="bg-paper px-4 pt-10 pb-16 sm:px-12">
+        <div class="mx-auto grid max-w-page gap-4">
+          <h2 class="text-title text-ink">On the competition page</h2>
+          {race && <Detail page={race} now={now} image="/og.png" />}
+          {race && <Detail page={{ ...race, prizes: ten }} now={now} image="/og.png" />}
+          <h2 class="mt-10 text-title text-ink">Sheet</h2>
+          <div class="rounded-panel bg-surface/70 p-6 sm:p-8">
+            <Sheet prizes={sheet} big />
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  const kit = document.getElementById("kit")!;
+  const form = document.getElementById("knobs") as HTMLFormElement;
+  const play = document.getElementById("play")!;
+  const surface = document.getElementById("surface")!;
+  const summary = document.getElementById("summary")!;
+  const vars = { cut: "--sticker-cut", shadow: "--sticker-shadow", gloss: "--sticker-gloss", tilt: "--sticker-tilt" } as const;
+
+  const apply = () => {
+    const data = new FormData(form);
+    const value = (name: string) => String(data.get(name) ?? "");
+    for (const [name, prop] of Object.entries(vars)) {
+      kit.style.setProperty(prop, value(name));
+      const out = form.querySelector(`output[data-for="${name}"]`);
+      if (out) out.textContent = value(name);
+    }
+    kit.style.setProperty("--sticker-play", data.get("motion") ? "running" : "paused");
+    for (const el of play.querySelectorAll<HTMLElement>("[data-material]")) {
+      el.dataset.material = value(el.classList.contains("pool") ? "pool" : "material");
+      el.dataset.palette = value("palette");
+    }
+    surface.classList.toggle("scheme-dark", value("surface") === "dark");
+    surface.classList.toggle("scheme-light", value("surface") === "light");
+    for (const card of document.querySelectorAll<HTMLElement>("[data-pick]")) {
+      const [material, palette] = card.dataset.pick!.split(" ");
+      card.toggleAttribute("data-picked", material === value("material") && (material === "foil" || palette === value("palette")));
+    }
+    const settings = new URLSearchParams([...data.entries()].map(([k, v]) => [k, String(v)]));
+    if (!data.get("motion")) settings.set("motion", "off");
+    summary.textContent = [...settings].map(([k, v]) => `${k}=${v}`).join("  ");
+    history.replaceState(null, "", `#${settings}`);
+  };
+
+  const restore = () => {
+    const saved = new URLSearchParams(location.hash.slice(1));
+    for (const [name, v] of saved) {
+      const fields = form.querySelectorAll<HTMLInputElement>(`[name="${name}"]`);
+      for (const field of fields) {
+        if (field.type === "radio") field.checked = field.value === v;
+        else if (field.type === "checkbox") field.checked = v !== "off";
+        else field.value = v;
+      }
+    }
+    if (saved.size && !saved.has("motion")) (form.elements.namedItem("motion") as HTMLInputElement).checked = true;
+  };
+
+  form.addEventListener("input", apply);
+  form.addEventListener("reset", () => setTimeout(apply));
+  for (const card of document.querySelectorAll<HTMLElement>("[data-pick]")) {
+    card.addEventListener("click", () => {
+      const [material, palette] = card.dataset.pick!.split(" ");
+      (form.querySelector(`[name="material"][value="${material}"]`) as HTMLInputElement).checked = true;
+      if (material !== "foil") (form.querySelector(`[name="palette"][value="${palette}"]`) as HTMLInputElement).checked = true;
+      apply();
+      play.scrollIntoView({ behavior: "smooth" });
+    });
+  }
+  document.getElementById("copy")!.addEventListener("click", () => navigator.clipboard.writeText(summary.textContent ?? ""));
+  restore();
+  apply();
+</script>

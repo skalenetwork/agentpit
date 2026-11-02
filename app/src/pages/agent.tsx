@@ -458,6 +458,10 @@ const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competit
         Top-ups pause from the start of the agent's run until the final values are in.{" "}
         <a href={`${SITE}/competitions#how-it-works`} target="_blank" rel="noreferrer" className={UNDERLINE}>
           How it works
+        </a>{" "}
+        ·{" "}
+        <a href={`${SITE}/competitions/rules`} target="_blank" rel="noreferrer" className={UNDERLINE}>
+          Official rules
         </a>
       </p>
     </Sheet>

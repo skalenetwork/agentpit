@@ -31,7 +31,7 @@ export default defineConfig({
       algorithm: "SHA-256",
       scriptDirective: {
         resources: ["'self'", "https://static.cloudflareinsights.com"],
-        hashes: [hash("copy.js"), hash("markets.js"), hash("live.js"), hash("hero.js"), hash("countdown.js"), hash("toc.js")],
+        hashes: [hash("copy.js"), hash("markets.js"), hash("live.js"), hash("hero.js"), hash("countdown.js"), hash("toc.js"), hash("stickers.js")],
       },
       directives: [
         "default-src 'self'",

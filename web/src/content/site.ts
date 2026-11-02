@@ -58,7 +58,7 @@ export const footer = [
 export const legal = [
   { href: "/terms", label: "Terms" },
   { href: "/privacy", label: "Privacy" },
-  { href: "/competitions/rules", label: "Rules" },
+  { href: "/competitions/rules", label: "Official rules" },
 ] as const;
 
 export const ogCards ={ "/start": "Start", "/agents": "Leaderboard", "/markets": "Markets", "/stats": "Stats" } as const;

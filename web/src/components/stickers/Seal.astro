@@ -1,0 +1,308 @@
+---
+import "../../styles/stickers.css";
+import { enamels, facets, fit, look, materials, metals, octagon, ribbon, shapes, type Enamel, type Material, type Metal, type Palette, type Shape } from "../../lib/stickers";
+
+interface Props {
+  shape: Shape;
+  finish: Metal | Enamel | "paper";
+  rim?: Metal;
+  top?: string;
+  figure: string;
+  unit?: string;
+  tails?: boolean;
+  material?: Material;
+  palette?: Palette;
+  class?: string;
+}
+
+const { shape, finish, rim = "gold", top, figure, unit, tails = false, material = look.material, palette = look.palette, class: className } = Astro.props;
+const shown = Astro.url.pathname.startsWith("/kit") ? materials : [material];
+const id = `seal${crypto.randomUUID().slice(0, 8)}`;
+const d = shapes[shape];
+const metal = finish in metals ? (finish as Metal) : undefined;
+const glaze = finish in enamels ? enamels[finish as Enamel] : undefined;
+const stops = metals[metal ?? rim];
+const box = tails ? "0 0 100 122" : "0 0 100 100";
+const pin = "translate(50 50) scale(0.8) translate(-50 -50)";
+const inner = "translate(50 50) scale(0.84) translate(-50 -50)";
+const holo = ["#ff9ad5", "#9ad8ff", "#a6ffcf", "#fff3a1", "#ffb3a7", "#c3a6ff", "#9ad8ff", "#ff9ad5"];
+const rings = [28, 26.5, 25, 23.5, 22, 20.5];
+const lit = (t: number) => (t > 0.35 ? stops[2] : t > -0.1 ? stops[5] : t > -0.6 ? stops[3] : stops[0]);
+const foil = shown.includes("foil");
+---
+
+<span class:list={["sticker seal relative inline-grid shrink-0 @container", `st-${finish}`, tails ? "aspect-[100/122]" : "aspect-square", className]} data-material={material} data-palette={palette}>
+  <svg class="sticker-shadow absolute inset-0 size-full overflow-visible" viewBox={box} aria-hidden="true">
+    {tails && <path class="cut" d={ribbon} />}
+    <path class="cut" d={d} />
+  </svg>
+  <svg class="absolute inset-0 size-full overflow-visible" viewBox={box} aria-hidden="true">
+    <defs>
+      {
+        foil && (
+          <Fragment>
+            <linearGradient id={`${id}m`} x1="0" y1="0" x2="1" y2="1">
+              {stops.map((c, k) => <stop offset={k / (stops.length - 1)} stop-color={c} />)}
+            </linearGradient>
+            <linearGradient id={`${id}n`} x1="1" y1="0.9" x2="0" y2="0.1">
+              {stops.slice(1, 6).map((c, k) => <stop offset={k / 4} stop-color={c} />)}
+            </linearGradient>
+            <linearGradient id={`${id}b`} x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#fff" stop-opacity="0.9" />
+              <stop offset="0.5" stop-color="#fff" stop-opacity="0" />
+              <stop offset="0.5" stop-color="#000" stop-opacity="0" />
+              <stop offset="1" stop-color="#000" stop-opacity="0.45" />
+            </linearGradient>
+            {metal && (
+              <linearGradient id={`${id}g`} x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0" stop-color="#fff" stop-opacity="0" />
+                <stop offset="0.5" stop-color="#fff" stop-opacity="0.85" />
+                <stop offset="1" stop-color="#fff" stop-opacity="0" />
+              </linearGradient>
+            )}
+            {metal === "silver" && (
+              <linearGradient id={`${id}h`} x1="0" y1="0" x2="1" y2="0.35">
+                {holo.map((c, k) => <stop offset={k / (holo.length - 1)} stop-color={c} />)}
+              </linearGradient>
+            )}
+            {glaze && (
+              <radialGradient id={`${id}e`} cx="0.35" cy="0.2" r="0.95">
+                <stop offset="0" stop-color={glaze[0]} />
+                <stop offset="0.75" stop-color={glaze[1]} />
+              </radialGradient>
+            )}
+            <clipPath id={`${id}c`}>
+              <path d={d} transform={glaze ? pin : undefined} />
+            </clipPath>
+          </Fragment>
+        )
+      }
+      {
+        shown.includes("soft") && (
+          <Fragment>
+            <linearGradient id={`${id}s`} x1="0.2" y1="0" x2="0.6" y2="1">
+              <stop class="hi" offset="0" />
+              <stop class="base" offset="0.6" />
+            </linearGradient>
+            <clipPath id={`${id}k`}>
+              <path d={d} />
+            </clipPath>
+          </Fragment>
+        )
+      }
+    </defs>
+    {
+      foil && (
+        <g class="m-foil">
+          {tails && (
+            <Fragment>
+              <path d={ribbon} fill={`url(#${id}n)`} />
+              <path d="M32 66 22 112M68 66 78 112" stroke="#000" stroke-opacity="0.18" stroke-width="1.2" />
+              <path d="M36 68 27 106M64 68 73 106" stroke="#fff" stroke-opacity="0.35" stroke-width="1" />
+            </Fragment>
+          )}
+          <path d={d} fill={finish === "paper" ? "#f6f1e4" : `url(#${id}m)`} />
+          {glaze && (
+            <Fragment>
+              <path d={d} transform={pin} fill={`url(#${id}e)`} />
+              <path d={d} transform={pin} fill="none" stroke="#000" stroke-opacity="0.3" stroke-width="2" />
+            </Fragment>
+          )}
+          {finish === "paper" && <path d={d} transform={inner} fill="none" stroke="#1e293b" stroke-opacity="0.55" stroke-width="1.2" stroke-dasharray="3 2.2" />}
+          <g clip-path={`url(#${id}c)`}>
+            {metal === "silver" && <rect class="holo" x="-100" y="0" width="300" height="100" fill={`url(#${id}h)`} />}
+            {shape === "burst" && metal && (
+              <Fragment>
+                <circle cx="50" cy="50" r="34.5" fill="none" stroke="#000" stroke-opacity="0.28" stroke-width="1" transform="translate(0.5 0.6)" />
+                <circle cx="50" cy="50" r="34.5" fill="none" stroke="#fff" stroke-opacity="0.75" stroke-width="1" transform="translate(-0.4 -0.5)" />
+                <circle cx="50" cy="50" r="31" fill={`url(#${id}n)`} />
+                {rings.map((r, k) => <circle cx="50" cy="50" r={r} fill="none" stroke={k % 2 ? "#000" : "#fff"} stroke-opacity="0.1" stroke-width="0.7" />)}
+                <circle cx="50" cy="50" r="31" fill="none" stroke="#000" stroke-opacity="0.22" stroke-width="0.6" stroke-dasharray="0.6 1.6" />
+              </Fragment>
+            )}
+            {shape === "scallop" && metal && (
+              <Fragment>
+                <circle cx="50" cy="50" r="36" fill="none" stroke="#fff" stroke-opacity="0.9" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="0.1 3.2" />
+                <circle cx="50" cy="50" r="32" fill={`url(#${id}n)`} />
+                {rings.map((r, k) => <circle cx="50" cy="50" r={r} fill="none" stroke={k % 2 ? "#000" : "#fff"} stroke-opacity="0.1" stroke-width="0.7" />)}
+                <circle cx="50" cy="50" r="32" fill="none" stroke="#000" stroke-opacity="0.25" stroke-width="0.8" />
+              </Fragment>
+            )}
+            {shape === "facet" && metal && (
+              <Fragment>
+                {facets(46, 35).map(({ d: f, light }) => (
+                  <path d={f} fill={lit(light)} />
+                ))}
+                <path d={octagon(35)} fill={`url(#${id}n)`} />
+                <path d={octagon(35)} fill="none" stroke="#000" stroke-opacity="0.2" stroke-width="0.6" />
+              </Fragment>
+            )}
+            <path class="gloss" d="M-10 -10H110V30Q60 52 -10 44Z" fill="#fff" />
+            {metal && (
+              <g transform="rotate(24 50 50)">
+                <rect class:list={["glint", metal]} x="-60" y="-40" width="22" height="180" fill={`url(#${id}g)`} />
+              </g>
+            )}
+            {metal && <path d={d} fill="none" stroke={`url(#${id}b)`} stroke-width="3.2" />}
+          </g>
+        </g>
+      )
+    }
+    {
+      shown.includes("soft") && (
+        <g class="m-soft">
+          {tails && <path class="lo" d={ribbon} />}
+          <path d={d} fill={`url(#${id}s)`} />
+          <path class="ring" d={d} transform={inner} fill="none" stroke-width="1.2" />
+          <path class="gloss" clip-path={`url(#${id}k)`} d="M-10 -10H110V30Q60 52 -10 44Z" fill="#fff" />
+        </g>
+      )
+    }
+    {
+      shown.includes("flat") && (
+        <g class="m-flat">
+          {tails && <path class="lo" d={ribbon} />}
+          <path class="base" d={d} />
+          <path class="ring" d={d} transform={inner} fill="none" stroke-width="1.6" />
+        </g>
+      )
+    }
+    {
+      shown.includes("line") && (
+        <g class="m-line">
+          {tails && <path class="tint" d={ribbon} stroke-width="3" stroke-linejoin="round" />}
+          <path class="tint" d={d} stroke-width="3.5" stroke-linejoin="round" />
+          <path class="dash" d={d} transform={inner} fill="none" stroke-width="1" stroke-dasharray="2.5 2" />
+        </g>
+      )
+    }
+  </svg>
+  <span class:list={["text relative grid aspect-square w-full self-start place-content-center justify-items-center text-center leading-none tabular-nums", metal ? `ink-${metal}` : glaze ? "ink-enamel" : "ink-paper"]}>
+    {top && <span class="font-mono text-[max(9px,10.5cqw)] font-medium tracking-[0.06em] uppercase">{top}</span>}
+    <span class:list={["font-medium tracking-[-0.04em]", fit(figure), top && "mt-[3cqw]"]}>{figure}</span>
+    {unit && <span class="mt-[3cqw] font-mono text-[max(9px,9.5cqw)] font-medium tracking-[0.02em]">{unit}</span>}
+  </span>
+</span>
+
+<style>
+  .seal:not([data-material="foil"]) .m-foil,
+  .seal:not([data-material="soft"]) .m-soft,
+  .seal:not([data-material="flat"]) .m-flat,
+  .seal:not([data-material="line"]) .m-line {
+    display: none;
+  }
+
+  .cut {
+    fill: var(--cut);
+    stroke: var(--cut);
+    stroke-width: var(--sticker-cut);
+    stroke-linejoin: round;
+  }
+
+  .hi {
+    stop-color: var(--hi);
+  }
+
+  stop.base {
+    stop-color: var(--base);
+  }
+
+  path.base {
+    fill: var(--base);
+  }
+
+  .lo {
+    fill: var(--lo);
+  }
+
+  .ring {
+    stroke: var(--ring);
+    stroke-opacity: 0.55;
+  }
+
+  .tint {
+    fill: var(--tint);
+    stroke: var(--stroke);
+  }
+
+  .dash {
+    stroke: var(--stroke);
+    stroke-opacity: 0.7;
+  }
+
+  .gloss {
+    opacity: calc(0.32 * var(--sticker-gloss));
+  }
+
+  .text {
+    color: var(--ink);
+  }
+
+  [data-material="line"] .text {
+    color: var(--line);
+  }
+
+  [data-material="foil"] .ink-gold {
+    color: #3b2600;
+    text-shadow: 0 0.5px 0 rgb(255 246 205 / 0.75);
+  }
+
+  [data-material="foil"] .ink-silver {
+    color: #1a2231;
+    text-shadow: 0 0.5px 0 rgb(255 255 255 / 0.85);
+  }
+
+  [data-material="foil"] .ink-bronze {
+    color: #351503;
+    text-shadow: 0 0.5px 0 rgb(255 222 196 / 0.6);
+  }
+
+  [data-material="foil"] .ink-enamel {
+    color: #fffdf3;
+    text-shadow: 0 1px 1px rgb(0 0 0 / 0.45);
+  }
+
+  [data-material="foil"] .ink-paper {
+    color: #0f172a;
+  }
+
+  .holo {
+    mix-blend-mode: color;
+    opacity: 0.32;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .glint {
+      animation: seal-glint 7s cubic-bezier(0.45, 0, 0.25, 1) infinite var(--sticker-play);
+    }
+
+    .glint.silver {
+      animation-delay: 0.6s;
+    }
+
+    .glint.bronze {
+      animation-delay: 1.2s;
+    }
+
+    .holo {
+      animation: seal-holo 9s ease-in-out infinite alternate var(--sticker-play);
+    }
+  }
+
+  @keyframes seal-glint {
+    0% {
+      transform: translateX(0);
+    }
+
+    24%,
+    100% {
+      transform: translateX(200px);
+    }
+  }
+
+  @keyframes seal-holo {
+    to {
+      transform: translateX(100px);
+    }
+  }
+</style>

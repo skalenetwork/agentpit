@@ -1,0 +1,166 @@
+---
+import type { Prize } from "@agentpit/brand/api";
+import { count, dollars } from "@agentpit/brand/format";
+import "../../styles/stickers.css";
+import { look, short, type Material, type Palette } from "../../lib/stickers";
+
+interface Props {
+  prizes: readonly Prize[];
+  size?: "lg" | "md" | "sm";
+  material?: Material;
+  palette?: Palette;
+  class?: string;
+}
+
+const { prizes, size = "md", material = look.pool, palette = look.palette, class: className } = Astro.props;
+const usd = prizes.reduce((sum, p) => sum + p.usd, 0);
+const skl = prizes.reduce((sum, p) => sum + p.skl, 0);
+const figure = usd > 0 ? dollars(usd) : `${count(skl)} SKL`;
+const extra = usd > 0 && skl > 0 ? `+ ${short(skl)} SKL` : "";
+---
+
+<span class:list={["sticker sticker-shadow pool st-paper inline-flex shrink-0", size, className]} data-material={material} data-palette={palette}>
+  <span class="cut relative flex">
+    <span class="face relative grid content-center text-left leading-none whitespace-nowrap tabular-nums">
+      {
+        size === "sm" ? (
+          <span class="flex items-baseline gap-1.5">
+            <span class="text-small font-medium tracking-[-0.02em]">{[figure, extra].filter(Boolean).join(" ")}</span>
+            <span class="kicker font-mono text-[9px] font-medium tracking-[0.12em] uppercase">pool</span>
+          </span>
+        ) : (
+          <Fragment>
+            <span class:list={["kicker font-mono font-medium uppercase", size === "lg" ? "text-[11px] tracking-[0.16em]" : "text-[10px] tracking-[0.14em]"]}>Prize pool</span>
+            <span class:list={["flex gap-1.5", size === "lg" ? "mt-2.5 flex-col items-start" : "mt-1 items-baseline"]}>
+              <span class:list={["font-medium tracking-[-0.04em]", size === "lg" ? "text-[46px]" : "text-[28px]"]}>{figure}</span>
+              {extra && <span class:list={["font-mono font-medium", size === "lg" ? "text-label" : "text-[11px]"]}>{extra}</span>}
+            </span>
+          </Fragment>
+        )
+      }
+    </span>
+    <span class="flap absolute right-0 bottom-0" aria-hidden="true"></span>
+  </span>
+</span>
+
+<style>
+  .pool {
+    --f: 17px;
+  }
+
+  .sm {
+    --f: 9px;
+  }
+
+  .lg {
+    --f: 24px;
+  }
+
+  .cut,
+  .face {
+    clip-path: polygon(0 0, 100% 0, 100% calc(100% - var(--f)), calc(100% - var(--f)) 100%, 0 100%);
+  }
+
+  .cut {
+    padding: calc(var(--sticker-cut) * 0.4px);
+    border-radius: 8px;
+    background: var(--cut);
+  }
+
+  .sm .cut {
+    padding: calc(var(--sticker-cut) * 0.28px);
+    border-radius: 6px;
+  }
+
+  .lg .cut {
+    padding: calc(var(--sticker-cut) * 0.55px);
+    border-radius: 12px;
+  }
+
+  .face {
+    padding: 9px 22px 11px 13px;
+    border-radius: 5px;
+    color: var(--ink);
+    background: var(--base);
+  }
+
+  .sm .face {
+    height: 24px;
+    padding: 0 12px 0 8px;
+  }
+
+  .lg .face {
+    padding: 15px 36px 17px 18px;
+    border-radius: 8px;
+  }
+
+  .kicker {
+    color: var(--accent);
+  }
+
+  .flap {
+    width: var(--f);
+    height: var(--f);
+    clip-path: polygon(0 0, 100% 0, 0 100%);
+    background: linear-gradient(135deg, #fff, #ecebe6 60%, #bdb9ae);
+    border-top-left-radius: 2px;
+  }
+
+  [data-material="flat"] .flap {
+    background: #fff;
+  }
+
+  [data-material="soft"] .face {
+    background:
+      linear-gradient(rgb(255 255 255 / calc(0.6 * var(--sticker-gloss))), rgb(255 255 255 / 0) 55%),
+      linear-gradient(160deg, var(--hi), var(--base));
+  }
+
+  [data-material="line"] .cut {
+    padding: 1.5px;
+    background: var(--stroke);
+  }
+
+  [data-material="line"] .face {
+    color: var(--line);
+    background: var(--tint);
+  }
+
+  [data-material="line"] .flap {
+    display: none;
+  }
+
+  [data-material="foil"] .face {
+    color: #0b1324;
+    background:
+      radial-gradient(circle at 100% 100%, rgb(2 8 23 / 0.28), #0000 calc(var(--f) * 1.6)),
+      linear-gradient(105deg, #0000 38%, rgb(255 255 255 / calc(1.5 * var(--sticker-gloss))) 50%, #0000 62%) -150% 0 / 60% 100% no-repeat,
+      repeating-linear-gradient(62deg, rgb(255 255 255 / 0) 0 2px, rgb(255 255 255 / 0.32) 2px 3px),
+      linear-gradient(115deg, #ffc4ec, #b9e2ff 18%, #c6ffe0 34%, #fff2b3 50%, #ffcdc4 66%, #d5c6ff 82%, #b9e2ff) 0 0 / 300% 100%;
+    box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.7);
+  }
+
+  [data-material="foil"] .kicker {
+    color: inherit;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    [data-material="foil"] .face {
+      animation: pool-holo 10s ease-in-out infinite alternate var(--sticker-play);
+    }
+  }
+
+  @keyframes pool-holo {
+    0% {
+      background-position: 0 0, -150% 0, 0 0, 0 0;
+    }
+
+    18% {
+      background-position: 0 0, 250% 0, 0 0, 30% 0;
+    }
+
+    100% {
+      background-position: 0 0, 250% 0, 0 0, 100% 0;
+    }
+  }
+</style>
