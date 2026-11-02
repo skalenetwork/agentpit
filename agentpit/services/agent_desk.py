@@ -33,12 +33,13 @@ from agentpit.datastructures.agent_desk import (
     TopUp,
     TradeResult,
 )
-from agentpit.datastructures.competition import RECAP
+from agentpit.datastructures.competition import LOCK, RECAP, Competition
 from agentpit.datastructures.market import Market
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.match_leg import MICRO, legs_for_user
 from agentpit.datastructures.orderbook_summary import OrderBookLevel
 from agentpit.datastructures.place_order_request import MAX_ORDER_SIZE, PlaceOrderRequest
+from agentpit.datastructures.position_wire import PositionWire
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import Hit, TableRead
@@ -55,7 +56,13 @@ from agentpit.onchain.admin import OnchainAdmin
 from agentpit.polymarket.format import decimal_str_to_price_int, decimal_str_to_size_micro
 from agentpit.services.account_service import MIN_PRICE_MICRO, SLIPPAGE_CAP_MICRO, AccountService
 from agentpit.services.balance_service import BalanceService
-from agentpit.services.competition_service import CompetitionService
+from agentpit.services.competition_service import (
+    CompetitionService,
+    HoldingsError,
+    how_to_enter,
+    open_positions,
+    positions_line,
+)
 from agentpit.services.leaderboard_service import (
     RANK_FLOOR,
     LeaderboardService,
@@ -129,6 +136,20 @@ def _quote(name: str, top: tuple[int | None, int | None]) -> Quote:
 
 def _levels(levels: list[OrderBookLevel]) -> list[tuple[int, int]]:
     return [(decimal_str_to_price_int(l.price), decimal_str_to_size_micro(l.size)) for l in levels]
+
+
+def _sweep(bids: list[tuple[int, int]], size: int) -> tuple[int, int, int]:
+    """A sell of `size` shares down `bids`, best first: the shares they take,
+    what those pay and the lowest price it reaches."""
+    sold = paid = low = 0
+    for price, available in bids:
+        if sold == size:
+            break
+        take = min(available, size - sold)
+        sold += take
+        paid += price * take // MICRO
+        low = price
+    return sold, paid, low
 
 
 class AgentDesk:
@@ -354,6 +375,14 @@ class AgentDesk:
             for race, entry in races
             if race.phase != "ended" or entry is not None and race.endsAt > now - RECAP
         ]
+        blocking = open_positions(held)
+        taken: dict[str, bool] = {}
+        if any(entry is None for _, entry in entries):
+            with self._db.read() as conn:
+                for race, entry in entries:
+                    if entry is None:
+                        seat = TableRead.seat(conn, race.slug, user.user_id)
+                        taken[race.slug] = seat is not None and seat.taken
         return Portfolio(
             agent=display_name(user.handle, user.eth_address),
             address=user.eth_address,
@@ -407,6 +436,7 @@ class AgentDesk:
                     title=race.title,
                     phase=race.phase,
                     final=race.final,
+                    locks_at=datetime.fromtimestamp(race.startsAt - LOCK, UTC),
                     starts_at=datetime.fromtimestamp(race.startsAt, UTC),
                     ends_at=datetime.fromtimestamp(race.endsAt, UTC),
                     prizes=race.prizes,
@@ -415,6 +445,7 @@ class AgentDesk:
                     rank=None if entry is None else entry.standing.rank,
                     ranked=race.ranked,
                     line=None if entry is None else entry.line,
+                    how_to_enter=None if entry is not None else how_to_enter(race, taken[race.slug], blocking, now),
                     url=f"{self._settings.landing_url}/competitions/{race.slug}"
                     + ("" if entry is None else f"?agent={user.eth_address}"),
                 )
@@ -435,13 +466,56 @@ class AgentDesk:
     def enroll(self, user: User, competition: str) -> Enrolled:
         slug = urlsplit(competition).path.rstrip("/").rsplit("/", 1)[-1]
         now = int(time.time())
-        entry = self._competitions.enroll(user.user_id, slug, now, switch=False)
+        try:
+            entry = self._competitions.enroll(user.user_id, slug, now, switch=False)
+        except HoldingsError as refused:
+            raise BusinessRuleError(self._cash_out(refused.competition, refused.positions)) from None
         return Enrolled(
             competition=entry.slug,
             run_starts_at=datetime.fromtimestamp(entry.run_starts_at, UTC),
             ends_at=datetime.fromtimestamp(entry.ends_at, UTC),
             url=f"{self._settings.landing_url}/competitions/{entry.slug}",
             line=entry.line(display_name(user.handle, user.eth_address), now),
+        )
+
+    def _cash_out(self, competition: Competition, held: list[PositionWire]) -> str:
+        """An entry from the lock refused for `held`, as the sells that would
+        leave the agent holding just cash, each the whole position down the
+        bids to the lowest price it needs, or as why the agent cannot get there
+        while positions worth $1 or more have nothing to sell into."""
+        with self._db.read() as conn:
+            found = TableRead.list_markets_filtered(conn, condition_ids=list({p.conditionId for p in held}), limit=len(held))
+        open_ = {m.condition_id.value for m in found if m.market_state == MarketState.ACTIVE}
+        lock = datetime.fromtimestamp(competition.locks_at, UTC)
+        head = (
+            f"{competition.title} locked on {lock:%b} {lock.day} at {lock:%H:%M} UTC, so it now takes only an agent "
+            f"holding just cash, and you hold {positions_line(len(held))} valued at "
+            f"${sum(p.currentValue for p in held):,.2f}"
+        )
+        sells: list[str] = []
+        stuck: list[PositionWire] = []
+        total = 0
+        for p in held:
+            size = round(p.size * MICRO) // LOT * LOT
+            book = feed.book(p.asset) if p.conditionId in open_ else None
+            sold, paid, low = _sweep(list(book.bids) if book else [], size)
+            if not sold:
+                stuck.append(p)
+                continue
+            total += paid
+            rest = "" if sold == size else f", bids take {_shares(sold)} of them now and the rest waits at that price"
+            sells.append(f"{p.slug} {p.outcome}: {_shares(size)} shares at limit_price {_px(low)} for about ${_usd(paid):,.2f}{rest}")
+        if sum(p.currentValue for p in stuck) >= 1:
+            names = "; ".join(f"{p.slug} {p.outcome}" for p in stuck)
+            return (
+                f"{head}. Nothing buys {names} right now, so you cannot enter until "
+                f"{'it resolves' if len(stuck) == 1 else 'they resolve'}. Tell your human; they can enter another "
+                "of their agents that holds just cash instead."
+            )
+        return (
+            f"{head}. Selling them pays about ${_usd(total):,.2f} now: {'; '.join(sells)}. Ask your human before you "
+            "sell, with these numbers. If they agree, call trade with side sell and each one's market, outcome, "
+            "shares and limit_price, then call enroll again once portfolio lists no open positions."
         )
 
     def leaderboard(self, limit: BoardLimit = 10) -> Leaderboard:

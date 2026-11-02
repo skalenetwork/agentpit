@@ -25,6 +25,7 @@ from agentpit.datastructures.competition import (
     HOUR,
     LEADERS,
     LINES,
+    LOCK,
     PLACE_FLOOR,
     POINT_LAG,
     RECAP,
@@ -167,6 +168,56 @@ def _dollars(raw: int) -> str:
 
 def _agents(n: int) -> str:
     return f"{n} agent" if n == 1 else f"{n} agents"
+
+
+def positions_line(n: int) -> str:
+    return f"{n} open position" if n == 1 else f"{n} open positions"
+
+
+def open_positions(positions: Iterable[PositionWire]) -> list[PositionWire]:
+    """The positions that keep an agent from entering from the lock, those
+    worth a cent or more, most valuable first: none while its unsettled
+    positions together are worth under $1 at their marks."""
+    held = [p for p in positions if not p.settled]
+    if sum(p.currentValue for p in held) < 1:
+        return []
+    return sorted((p for p in held if p.currentValue >= 0.01), key=lambda p: -p.currentValue)
+
+
+def how_to_enter(head: RaceHead, taken: bool, held: list[PositionWire], now: int) -> str:
+    """What entering takes an agent not yet entered: `taken` when the
+    competition has prizes and the agent's owner entered another agent, and
+    `held` the agent's open_positions."""
+    lock = _date(head.startsAt - LOCK)
+    upcoming = head.phase == "upcoming"
+    if not upcoming and now >= head.endsAt - HOUR:
+        return "It takes no new entries in its final hour."
+    if taken:
+        switch = f"your human can switch to you in the console until {lock}" if upcoming else "agents cannot be switched after the lock"
+        return f"Another agent of your human is entered, and it takes one agent per human: {switch}."
+    if upcoming:
+        return f"Until {lock} enroll enters you as you are. From then only an agent holding just cash can enter."
+    if held:
+        return (
+            f"Entries locked on {lock}, so only an agent holding just cash can enter now, and you hold "
+            f"{positions_line(len(held))} valued at ${sum(p.currentValue for p in held):,.2f}. Entering means "
+            "selling them all first; enroll says what that pays."
+        )
+    return "You hold just cash, so enroll enters you now."
+
+
+class HoldingsError(BusinessRuleError):
+    """An entry from the lock refused for the agent's open positions, which a
+    caller that trades for the agent turns into the sells that would leave it
+    holding just cash."""
+
+    def __init__(self, competition: Competition, positions: list[PositionWire]):
+        super().__init__(
+            f"Since the lock only an agent holding just cash can enter {competition.title}. "
+            "Close its open positions first."
+        )
+        self.competition = competition
+        self.positions = positions
 
 
 def _race_line(c: Competition, phase: Phase, final: bool, top: list[Standing], entrants: int, now: int) -> str:
@@ -642,11 +693,8 @@ class CompetitionService:
                 f"{competition.title} pays prizes, so it takes one agent per person, and another of your agents "
                 "is entered. Agents cannot be switched after the lock."
             )
-        elif sum(p.currentValue for p in self._accounts.wallet(seat.eth_address).positions if not p.settled) >= 1:
-            raise BusinessRuleError(
-                f"Since the lock only an agent holding just cash can enter {competition.title}. "
-                "Close its open positions first."
-            )
+        elif held := open_positions(self._accounts.wallet(seat.eth_address).positions):
+            raise HoldingsError(competition, held)
         with self._db.write() as conn:
             TableWrite.ensure_owner(conn, seat.owner)
             TableWrite.lock_owner(conn, seat.owner)

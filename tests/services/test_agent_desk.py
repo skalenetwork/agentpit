@@ -13,6 +13,7 @@ from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
 from agentpit.datastructures.orderbook_summary import OrderBookLevel, OrderBookSummary
+from agentpit.datastructures.position_wire import PositionWire
 from agentpit.datastructures.user import User
 from agentpit.db.table_read import MarketFields, TableRead
 from agentpit.db.table_write import TableWrite
@@ -24,6 +25,7 @@ from agentpit.onchain.contracts import Contracts
 from agentpit.onchain.deployment import Deployment
 from agentpit.onchain.web3_client import Web3Client
 from agentpit.services.agent_desk import ENTER_HINT, AgentDesk, shares_for_usd, snap
+from agentpit.services.competition_service import open_positions
 from agentpit.services.leaderboard_service import RANK_FLOOR, drain, pct
 from tests.db_helpers import fresh_test_db
 from tests.onchain._helpers import create_market, fresh_client, house, register
@@ -537,15 +539,22 @@ def test_portfolio_lists_competitions_not_yet_ended_and_entered_ones_a_week_past
     portfolio = _desk().portfolio(_user(key))
     upcoming, live, recent = portfolio.competitions
 
+    lock = datetime.fromtimestamp(now + DAY, UTC)
     assert portfolio.competitions_hint == ENTER_HINT
     assert (upcoming.competition, upcoming.phase, upcoming.entered, upcoming.trades, upcoming.rank, upcoming.line, upcoming.url) == (
         "next", "upcoming", False, None, None, None, "https://agentpit.dev/competitions/next"
+    )
+    assert (upcoming.locks_at, upcoming.how_to_enter) == (
+        lock,
+        f"Until {lock:%b} {lock.day} at {lock:%H:%M} UTC enroll enters you as you are. From then only an agent "
+        "holding just cash can enter.",
     )
     assert live == CompetitionCard(
         competition="live",
         title="Live",
         phase="live",
         final=False,
+        locks_at=datetime.fromtimestamp(now - 2 * DAY + 1_800, UTC),
         starts_at=datetime.fromtimestamp(now - DAY + 1_800, UTC),
         ends_at=datetime.fromtimestamp(now + DAY + 1_800, UTC),
         prizes=PRIZES,
@@ -554,10 +563,86 @@ def test_portfolio_lists_competitions_not_yet_ended_and_entered_ones_a_week_past
         rank=1,
         ranked=1,
         line=f"{portfolio.agent} leads Live at 0.00%, 1d 0h left",
+        how_to_enter=None,
         url=f"https://agentpit.dev/competitions/live?agent={account.address}",
     )
     assert (recent.competition, recent.phase, recent.final, recent.rank, recent.ranked, recent.line) == (
         "recent", "ended", True, 1, 1, f"{portfolio.agent} finished #1 of 1 in Recent with +10.00%"
+    )
+
+
+def _weather(conn, slug: str, state: MarketState = MarketState.ACTIVE) -> str:
+    market = TableWrite.create_market(
+        conn,
+        CreateMarketRequest(
+            question=f"Will it {slug}?",
+            description="d",
+            erc1155_tokens=[(f"{slug}-y", "Yes"), (f"{slug}-n", "No")],
+            slug=slug,
+            condition_id=ConditionId("0x" + secrets.token_hex(32)),
+            state=state,
+        ),
+        is_polygon_market=False,
+    )
+    return market.condition_id.value
+
+
+def _held(condition_id: str, slug: str, size: float, value: float) -> PositionWire:
+    return PositionWire(asset=f"{slug}-y", conditionId=condition_id, slug=slug, outcome="Yes", size=size, currentValue=value)
+
+
+CLASH = Competition(slug="clash", title="Clash", starts_at=1_800_000_000, ends_at=1_800_000_000 + 7 * DAY, prizes=PRIZES)
+
+
+def test_an_entry_refused_for_positions_lists_each_sell_down_the_bids_and_what_it_pays(house_book):
+    with fresh_test_db().write() as conn:
+        snow, rain = _weather(conn, "snow"), _weather(conn, "rain")
+    house_book("snow-y", bids=(("0.3", "100"), ("0.25", "100")))
+    house_book("rain-y", bids=(("0.6", "10"),))
+
+    refusal = _desk()._cash_out(CLASH, [_held(snow, "snow", 150, 60.0), _held(rain, "rain", 20.004, 12.0)])
+
+    assert refusal == (
+        "Clash locked on Jan 14 at 08:00 UTC, so it now takes only an agent holding just cash, and you hold "
+        "2 open positions valued at $72.00. Selling them pays about $48.50 now: snow Yes: 150.0 shares at "
+        "limit_price 0.25 for about $42.50; rain Yes: 20.0 shares at limit_price 0.6 for about $6.00, bids take "
+        "10.0 of them now and the rest waits at that price. Ask your human before you sell, with these numbers. If "
+        "they agree, call trade with side sell and each one's market, outcome, shares and limit_price, then call "
+        "enroll again once portfolio lists no open positions."
+    )
+
+
+def test_the_sell_an_entry_refusal_lists_leaves_the_agent_holding_just_cash(house_book):
+    client = fresh_client()
+    agent = _user(register(client)["api_key"])
+    market = create_market(client)
+    slug, token = market["slug"], market["erc1155_tokens"][0][0]
+    house_book(token, asks=(("0.4", "150"),), user=house(client))
+    desk = _desk()
+    desk.trade(agent, slug, "Yes", "buy", shares=150)
+    house_book(token, bids=(("0.3", "100"), ("0.25", "100")), user=house(client))
+
+    plan = desk._cash_out(CLASH, open_positions(desk._accounts.wallet(agent.eth_address).positions))
+    sold = desk.trade(agent, slug, "Yes", "sell", shares=150, limit_price=0.25)
+
+    assert f"{slug} YES: 150.0 shares at limit_price 0.25 for about $42.50" in plan
+    assert (sold.status, sold.filled_shares, sold.usd) == ("filled", 150, 42.5)
+    assert open_positions(desk._accounts.wallet(agent.eth_address).positions) == []
+
+
+def test_an_entry_refused_for_positions_nothing_buys_says_the_agent_cannot_enter_until_they_resolve(house_book):
+    with fresh_test_db().write() as conn:
+        snow, game, hail = _weather(conn, "snow"), _weather(conn, "game", MarketState.CLOSED), _weather(conn, "hail")
+    house_book("snow-y", bids=(("0.3", "100"),))
+    house_book("game-y", bids=(("0.5", "100"),))
+    held = [_held(snow, "snow", 100, 40.0), _held(game, "game", 10, 5.0), _held(hail, "hail", 10, 0.5)]
+
+    refusal = _desk()._cash_out(CLASH, held)
+
+    assert refusal == (
+        "Clash locked on Jan 14 at 08:00 UTC, so it now takes only an agent holding just cash, and you hold "
+        "3 open positions valued at $45.50. Nothing buys game Yes; hail Yes right now, so you cannot enter until "
+        "they resolve. Tell your human; they can enter another of their agents that holds just cash instead."
     )
 
 
