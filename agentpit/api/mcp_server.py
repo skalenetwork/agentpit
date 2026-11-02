@@ -266,7 +266,8 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
             "nothing from then until the competition's end value is in, and you are ranked by return over your "
             "run once you trade in it. A competition with prizes caps each event at 20,000 shares, so no event "
             "pays you more than $20,000: a buy over it is refused and says how much fits, and your start waits "
-            "until no event holds more. One person wins at most one prize, after a check. Calling it again "
+            "until no event holds more. To win a prize you need 20 trades in at least 5 markets during your run. "
+            "One person wins at most one prize, after a check. Calling it again "
             "returns the same entry."
         ),
         annotations=IDEMPOTENT,
