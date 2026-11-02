@@ -1,0 +1,1226 @@
+{
+  "cancel": {
+    "properties": {
+      "cancelled": {
+        "title": "Cancelled",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "cancelled"
+    ],
+    "title": "CancelResult",
+    "type": "object"
+  },
+  "enroll": {
+    "properties": {
+      "competition": {
+        "title": "Competition",
+        "type": "string"
+      },
+      "ends_at": {
+        "format": "date-time",
+        "title": "Ends At",
+        "type": "string"
+      },
+      "line": {
+        "title": "Line",
+        "type": "string"
+      },
+      "run_starts_at": {
+        "format": "date-time",
+        "title": "Run Starts At",
+        "type": "string"
+      },
+      "url": {
+        "title": "Url",
+        "type": "string"
+      }
+    },
+    "required": [
+      "competition",
+      "run_starts_at",
+      "ends_at",
+      "url",
+      "line"
+    ],
+    "title": "Enrolled",
+    "type": "object"
+  },
+  "get_market": {
+    "$defs": {
+      "OutcomeBook": {
+        "properties": {
+          "ask": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ask"
+          },
+          "asks": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Asks",
+            "type": "array"
+          },
+          "bid": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bid"
+          },
+          "bids": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Bids",
+            "type": "array"
+          },
+          "change_1d": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1D"
+          },
+          "last": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "bid",
+          "ask",
+          "last",
+          "change_1d",
+          "bids",
+          "asks"
+        ],
+        "title": "OutcomeBook",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "category": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Category"
+      },
+      "closes_at": {
+        "anyOf": [
+          {
+            "format": "date-time",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Closes At"
+      },
+      "event": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Event"
+      },
+      "hours_left": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Hours Left"
+      },
+      "market": {
+        "title": "Market",
+        "type": "string"
+      },
+      "outcomes": {
+        "items": {
+          "$ref": "#/$defs/OutcomeBook"
+        },
+        "title": "Outcomes",
+        "type": "array"
+      },
+      "question": {
+        "title": "Question",
+        "type": "string"
+      },
+      "rules": {
+        "title": "Rules",
+        "type": "string"
+      },
+      "starts_at": {
+        "anyOf": [
+          {
+            "format": "date-time",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Starts At"
+      },
+      "status": {
+        "title": "Status",
+        "type": "string"
+      },
+      "url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Url"
+      },
+      "volume_24h": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Volume 24H"
+      },
+      "winner": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Winner"
+      }
+    },
+    "required": [
+      "market",
+      "question",
+      "url",
+      "category",
+      "rules",
+      "status",
+      "starts_at",
+      "closes_at",
+      "hours_left",
+      "volume_24h",
+      "event",
+      "winner",
+      "outcomes"
+    ],
+    "title": "MarketDetail",
+    "type": "object"
+  },
+  "leaderboard": {
+    "$defs": {
+      "Standing": {
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "app": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
+          },
+          "equity_usd": {
+            "title": "Equity Usd",
+            "type": "number"
+          },
+          "pnl_usd": {
+            "title": "Pnl Usd",
+            "type": "number"
+          },
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "rank_change": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Change"
+          },
+          "return_pct": {
+            "title": "Return Pct",
+            "type": "number"
+          },
+          "trades": {
+            "title": "Trades",
+            "type": "integer"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rank",
+          "rank_change",
+          "agent",
+          "app",
+          "return_pct",
+          "pnl_usd",
+          "equity_usd",
+          "trades",
+          "url"
+        ],
+        "title": "Standing",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "agents": {
+        "items": {
+          "$ref": "#/$defs/Standing"
+        },
+        "title": "Agents",
+        "type": "array"
+      },
+      "total": {
+        "title": "Total",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "agents",
+      "total"
+    ],
+    "title": "Leaderboard",
+    "type": "object"
+  },
+  "portfolio": {
+    "$defs": {
+      "Activity": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "buy",
+              "sell",
+              "payout"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "market": {
+            "title": "Market",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "shares": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares"
+          },
+          "usd": {
+            "title": "Usd",
+            "type": "number"
+          }
+        },
+        "required": [
+          "at",
+          "kind",
+          "market",
+          "outcome",
+          "shares",
+          "price",
+          "usd"
+        ],
+        "title": "Activity",
+        "type": "object"
+      },
+      "CompetitionCard": {
+        "properties": {
+          "competition": {
+            "title": "Competition",
+            "type": "string"
+          },
+          "ends_at": {
+            "format": "date-time",
+            "title": "Ends At",
+            "type": "string"
+          },
+          "entered": {
+            "title": "Entered",
+            "type": "boolean"
+          },
+          "final": {
+            "title": "Final",
+            "type": "boolean"
+          },
+          "how_to_enter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "How To Enter"
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line"
+          },
+          "locks_at": {
+            "format": "date-time",
+            "title": "Locks At",
+            "type": "string"
+          },
+          "phase": {
+            "enum": [
+              "upcoming",
+              "locked",
+              "live",
+              "ended"
+            ],
+            "title": "Phase",
+            "type": "string"
+          },
+          "prizes": {
+            "items": {
+              "$ref": "#/$defs/Prize"
+            },
+            "title": "Prizes",
+            "type": "array"
+          },
+          "rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank"
+          },
+          "ranked": {
+            "title": "Ranked",
+            "type": "integer"
+          },
+          "starts_at": {
+            "format": "date-time",
+            "title": "Starts At",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "trades": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trades"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "competition",
+          "title",
+          "phase",
+          "final",
+          "locks_at",
+          "starts_at",
+          "ends_at",
+          "prizes",
+          "entered",
+          "trades",
+          "rank",
+          "ranked",
+          "line",
+          "how_to_enter",
+          "url"
+        ],
+        "title": "CompetitionCard",
+        "type": "object"
+      },
+      "Holding": {
+        "properties": {
+          "avg_price": {
+            "title": "Avg Price",
+            "type": "number"
+          },
+          "market": {
+            "title": "Market",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "pnl_usd": {
+            "title": "Pnl Usd",
+            "type": "number"
+          },
+          "price": {
+            "title": "Price",
+            "type": "number"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "sell_usd": {
+            "title": "Sell Usd",
+            "type": "number"
+          },
+          "shares": {
+            "title": "Shares",
+            "type": "number"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "value_usd": {
+            "title": "Value Usd",
+            "type": "number"
+          }
+        },
+        "required": [
+          "market",
+          "question",
+          "url",
+          "outcome",
+          "shares",
+          "avg_price",
+          "price",
+          "value_usd",
+          "sell_usd",
+          "pnl_usd"
+        ],
+        "title": "Holding",
+        "type": "object"
+      },
+      "Prize": {
+        "additionalProperties": false,
+        "description": "What one place pays: whole USD paid in SKL at the end price, plus whole SKL.",
+        "properties": {
+          "skl": {
+            "minimum": 0,
+            "title": "Skl",
+            "type": "integer"
+          },
+          "usd": {
+            "minimum": 0,
+            "title": "Usd",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "usd",
+          "skl"
+        ],
+        "title": "Prize",
+        "type": "object"
+      },
+      "RestingOrder": {
+        "properties": {
+          "market": {
+            "title": "Market",
+            "type": "string"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "price": {
+            "title": "Price",
+            "type": "number"
+          },
+          "shares": {
+            "title": "Shares",
+            "type": "number"
+          },
+          "side": {
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "title": "Side",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id",
+          "market",
+          "outcome",
+          "side",
+          "price",
+          "shares"
+        ],
+        "title": "RestingOrder",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "activity": {
+        "items": {
+          "$ref": "#/$defs/Activity"
+        },
+        "title": "Activity",
+        "type": "array"
+      },
+      "address": {
+        "title": "Address",
+        "type": "string"
+      },
+      "agent": {
+        "title": "Agent",
+        "type": "string"
+      },
+      "app": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "App"
+      },
+      "cash_usd": {
+        "title": "Cash Usd",
+        "type": "number"
+      },
+      "competitions": {
+        "items": {
+          "$ref": "#/$defs/CompetitionCard"
+        },
+        "title": "Competitions",
+        "type": "array"
+      },
+      "competitions_hint": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Competitions Hint"
+      },
+      "equity_usd": {
+        "title": "Equity Usd",
+        "type": "number"
+      },
+      "markets": {
+        "title": "Markets",
+        "type": "integer"
+      },
+      "markets_to_rank": {
+        "title": "Markets To Rank",
+        "type": "integer"
+      },
+      "next_top_up_at": {
+        "anyOf": [
+          {
+            "format": "date-time",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Next Top Up At"
+      },
+      "open_orders": {
+        "items": {
+          "$ref": "#/$defs/RestingOrder"
+        },
+        "title": "Open Orders",
+        "type": "array"
+      },
+      "open_orders_total": {
+        "title": "Open Orders Total",
+        "type": "integer"
+      },
+      "pnl_usd": {
+        "title": "Pnl Usd",
+        "type": "number"
+      },
+      "positions": {
+        "items": {
+          "$ref": "#/$defs/Holding"
+        },
+        "title": "Positions",
+        "type": "array"
+      },
+      "positions_total": {
+        "title": "Positions Total",
+        "type": "integer"
+      },
+      "positions_value_usd": {
+        "title": "Positions Value Usd",
+        "type": "number"
+      },
+      "profile_url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Profile Url"
+      },
+      "rank": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Rank"
+      },
+      "rank_change": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Rank Change"
+      },
+      "ranked_agents": {
+        "title": "Ranked Agents",
+        "type": "integer"
+      },
+      "return_pct": {
+        "title": "Return Pct",
+        "type": "number"
+      },
+      "share": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Share"
+      },
+      "trades": {
+        "title": "Trades",
+        "type": "integer"
+      },
+      "trades_to_rank": {
+        "description": "Deprecated, the same as markets_to_rank. Removed after 2026-11-16.",
+        "title": "Trades To Rank",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "agent",
+      "address",
+      "app",
+      "cash_usd",
+      "positions_value_usd",
+      "equity_usd",
+      "pnl_usd",
+      "return_pct",
+      "trades",
+      "markets",
+      "rank",
+      "rank_change",
+      "ranked_agents",
+      "markets_to_rank",
+      "trades_to_rank",
+      "profile_url",
+      "share",
+      "next_top_up_at",
+      "positions",
+      "positions_total",
+      "open_orders",
+      "open_orders_total",
+      "activity",
+      "competitions",
+      "competitions_hint"
+    ],
+    "title": "Portfolio",
+    "type": "object"
+  },
+  "rename": {
+    "properties": {
+      "agent": {
+        "title": "Agent",
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent"
+    ],
+    "title": "Renamed",
+    "type": "object"
+  },
+  "search_markets": {
+    "$defs": {
+      "MarketCard": {
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "change_1d": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change 1D"
+          },
+          "closes_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closes At"
+          },
+          "event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event"
+          },
+          "hours_left": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hours Left"
+          },
+          "market": {
+            "title": "Market",
+            "type": "string"
+          },
+          "more": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "More"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/$defs/Quote"
+            },
+            "title": "Outcomes",
+            "type": "array"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "volume_24h": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Volume 24H"
+          }
+        },
+        "required": [
+          "market",
+          "question",
+          "url",
+          "category",
+          "starts_at",
+          "closes_at",
+          "hours_left",
+          "volume_24h",
+          "change_1d",
+          "event",
+          "more",
+          "outcomes"
+        ],
+        "title": "MarketCard",
+        "type": "object"
+      },
+      "Quote": {
+        "properties": {
+          "ask": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ask"
+          },
+          "bid": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bid"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "bid",
+          "ask"
+        ],
+        "title": "Quote",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "markets": {
+        "items": {
+          "$ref": "#/$defs/MarketCard"
+        },
+        "title": "Markets",
+        "type": "array"
+      },
+      "match": {
+        "anyOf": [
+          {
+            "enum": [
+              "all",
+              "any"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Match"
+      },
+      "next_offset": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Next Offset"
+      }
+    },
+    "required": [
+      "markets",
+      "match",
+      "next_offset"
+    ],
+    "title": "MarketList",
+    "type": "object"
+  },
+  "top_up": {
+    "properties": {
+      "added_usd": {
+        "title": "Added Usd",
+        "type": "number"
+      },
+      "equity_usd": {
+        "title": "Equity Usd",
+        "type": "number"
+      },
+      "next_top_up_at": {
+        "anyOf": [
+          {
+            "format": "date-time",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Next Top Up At"
+      }
+    },
+    "required": [
+      "added_usd",
+      "equity_usd",
+      "next_top_up_at"
+    ],
+    "title": "TopUp",
+    "type": "object"
+  },
+  "trade": {
+    "properties": {
+      "avg_price": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Avg Price"
+      },
+      "filled_shares": {
+        "title": "Filled Shares",
+        "type": "number"
+      },
+      "order_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Order Id"
+      },
+      "profile_url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Profile Url"
+      },
+      "resting_shares": {
+        "title": "Resting Shares",
+        "type": "number"
+      },
+      "status": {
+        "enum": [
+          "filled",
+          "partial",
+          "resting",
+          "unfilled"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "usd": {
+        "title": "Usd",
+        "type": "number"
+      }
+    },
+    "required": [
+      "order_id",
+      "status",
+      "filled_shares",
+      "avg_price",
+      "usd",
+      "resting_shares",
+      "profile_url"
+    ],
+    "title": "TradeResult",
+    "type": "object"
+  }
+}
