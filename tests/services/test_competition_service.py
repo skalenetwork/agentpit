@@ -8,7 +8,18 @@ from pathlib import Path
 import pytest
 
 from agentpit.config import Settings
-from agentpit.datastructures.competition import FINAL_DAY, HOUR, LOCK, POINT_LAG, Competition, Prize, Score, Standing, score
+from agentpit.datastructures.competition import (
+    FINAL_DAY,
+    HOUR,
+    LOCK,
+    POINT_LAG,
+    Competition,
+    Prize,
+    RaceHead,
+    Score,
+    Standing,
+    score,
+)
 from agentpit.datastructures.condition_id import ConditionId
 from agentpit.datastructures.create_market_request import CreateMarketRequest
 from agentpit.datastructures.market_state import MarketState
@@ -27,9 +38,11 @@ from agentpit.services.competition_service import (
     RACE_TTL,
     CompetitionService,
     Enrollment,
+    HoldingsError,
     RaceBuild,
     _cursor,
     _series,
+    how_to_enter,
     invalidate,
 )
 from agentpit.services.leaderboard_service import Holdings
@@ -143,12 +156,48 @@ def test_from_the_lock_only_an_agent_holding_just_cash_enters_and_with_prizes_on
 
     with pytest.raises(BusinessRuleError, match="after the lock"):
         _service().enroll(other, SLUG, LOCKS, switch=True)
-    with pytest.raises(BusinessRuleError, match="just cash"):
-        _service(positions=[PositionWire(currentValue=1.0)]).enroll(late, SLUG, STARTS + 10, switch=False)
+    held = [
+        PositionWire(asset="small", currentValue=0.6),
+        PositionWire(asset="dust", currentValue=0.004),
+        PositionWire(asset="large", currentValue=0.9),
+        PositionWire(asset="paid", currentValue=500.0, settled=True),
+    ]
+    with pytest.raises(HoldingsError, match="just cash") as refused:
+        _service(positions=held).enroll(late, SLUG, STARTS + 10, switch=False)
     cash_only = [PositionWire(currentValue=0.99), PositionWire(currentValue=500.0, settled=True)]
     joined = _service(positions=cash_only).enroll(late, SLUG, STARTS + 10, switch=False)
 
+    assert [p.asset for p in refused.value.positions] == ["large", "small"]
     assert joined.run_starts_at == STARTS + 10
+
+
+def test_how_to_enter_says_what_entering_takes_an_agent_by_phase_and_holdings():
+    def head(now: int) -> RaceHead:
+        phase = Competition(slug=SLUG, title="T", starts_at=STARTS, ends_at=ENDS, prizes=[]).phase(now)
+        return RaceHead(
+            slug=SLUG, title="T", startsAt=STARTS, endsAt=ENDS, phase=phase, final=False, prizes=[], entrants=0,
+            ranked=0, line="",
+        )
+
+    held = [PositionWire(currentValue=3000.0), PositionWire(currentValue=3.12)]
+
+    assert how_to_enter(head(LOCKS - 1), False, held, LOCKS - 1) == (
+        "Until Jan 14 at 08:00 UTC enroll enters you as you are. From then only an agent holding just cash can enter."
+    )
+    assert how_to_enter(head(STARTS + 10), False, held, STARTS + 10) == (
+        "Entries locked on Jan 14 at 08:00 UTC, so only an agent holding just cash can enter now, and you hold "
+        "2 open positions valued at $3,003.12. Entering means selling them all first; enroll says what that pays."
+    )
+    assert how_to_enter(head(LOCKS), False, [], LOCKS) == "You hold just cash, so enroll enters you now."
+    assert how_to_enter(head(LOCKS - 1), True, [], LOCKS - 1) == (
+        "Another agent of your human is entered, and it takes one agent per human: your human can switch to you "
+        "in the console until Jan 14 at 08:00 UTC."
+    )
+    assert how_to_enter(head(LOCKS), True, [], LOCKS) == (
+        "Another agent of your human is entered, and it takes one agent per human: agents cannot be switched "
+        "after the lock."
+    )
+    assert how_to_enter(head(ENDS - HOUR), True, [], ENDS - HOUR) == "It takes no new entries in its final hour."
 
 
 def test_a_practice_competition_takes_every_agent_of_an_owner_until_prizes_are_set():

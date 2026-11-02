@@ -119,6 +119,7 @@ class CompetitionCard(BaseModel):
     title: str
     phase: Phase
     final: bool
+    locks_at: datetime
     starts_at: datetime
     ends_at: datetime
     prizes: list[Prize]
@@ -127,6 +128,7 @@ class CompetitionCard(BaseModel):
     rank: int | None
     ranked: int
     line: str | None
+    how_to_enter: str | None
     url: str
 
 

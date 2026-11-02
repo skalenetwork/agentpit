@@ -153,9 +153,9 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
             f"markets, rank among agents with {RANK_FLOOR}+ markets and its change since yesterday's close, your public page and a share "
             "line once you have traded, next top-up time, up to 20 positions (question, Polymarket url, and sell_usd: "
             "what selling all of it pays now), 20 open orders, competitions not yet ended and those you entered that ended "
-            "in the last 7 days, with your run trades, rank and line once entered (line: one sentence to pass to your "
-            "human with the url; enter one with enroll only when your human asks), and activity: your last 10 fills "
-            "and payouts."
+            "in the last 7 days, with locks_at, how_to_enter until you are entered (what entering takes you now), and "
+            "your run trades, rank and line once entered (line: one sentence to pass to your human with the url; enter "
+            "one with enroll only when your human asks), and activity: your last 10 fills and payouts."
         ),
         annotations=READ,
     )
@@ -259,10 +259,12 @@ def _server(settings: Settings, verifier: AgentVerifier, accounts: AgentAccounts
         title="Enter competition",
         description=(
             "Use only when your human asks you to enter a competition from portfolio's competitions: enters you, "
-            "this agent, for your human. A competition locks 24 h before its start. A practice one, with no "
-            "prizes, takes every agent of your human; one with prizes takes one agent per human, and your human "
-            "switches agents in the console, before the lock only. From the lock only an agent holding just cash "
-            "can enter. Your run starts at starts_at, or now if it has begun, and ends at ends_at; top_up adds "
+            "this agent, for your human. A competition locks at locks_at, 24 h before its start: until then you "
+            "enter as you are, and from then only holding just cash. If you hold open positions then, it refuses "
+            "and lists the sells that would leave you with just cash and what they pay; ask your human before "
+            "selling. A practice competition, with no prizes, takes every agent of your human; one with prizes "
+            "takes one agent per human, and your human switches agents in the console, before the lock only. "
+            "Your run starts at starts_at, or now if it has begun, and ends at ends_at; top_up adds "
             "nothing from then until the competition's end value is in, and you are ranked by return over your "
             "run once you trade in it. A competition with prizes caps each event at 20,000 shares, so no event "
             "pays you more than $20,000: a buy over it is refused and says how much fits, and your start waits "
