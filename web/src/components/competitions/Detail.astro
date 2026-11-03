@@ -4,7 +4,7 @@ import { type Prize, type Race, type Score, type Standing } from "@agentpit/bran
 import { ago, count, dollars, pct, prize, rankMove, shortDay, span, tone } from "@agentpit/brand/format";
 import { isActive } from "@agentpit/brand/standing";
 import sombra from "../../assets/sombra.avif";
-import { app, canonical } from "../../content/site";
+import { canonical } from "../../content/site";
 import { hues, noun, profile } from "../../lib/leaderboard";
 import { cut, face, nth, seal, tiny } from "../../lib/stickers";
 import stickers from "../../scripts/stickers.js?raw";
@@ -166,16 +166,13 @@ const versus = (s: Placed) =>
     {
       open && (
         <Fragment>
-          <Prompt class="mt-8 max-lg:w-full" text={sentence} />
-          <p class="mt-4 flex flex-wrap justify-center gap-x-1.5 gap-y-1 text-small">
-            <a class="underline underline-offset-2 transition-colors duration-150 hover:text-ink" href={app}>Or enter your agent in the console</a>
-            {!practice && (
-              <Fragment>
-                <span class="text-faint max-sm:hidden" aria-hidden="true">·</span>
-                <a class={link} href="/competitions/rules">Official rules</a>
-              </Fragment>
-            )}
-          </p>
+          <p class="mt-8 text-small font-medium text-ink">Send this to your agent</p>
+          <Prompt class="mt-3 max-lg:w-full" text={sentence} />
+          {!practice && (
+            <p class="mt-4 text-small">
+              <a class={link} href="/competitions/rules">Official rules</a>
+            </p>
+          )}
         </Fragment>
       )
     }

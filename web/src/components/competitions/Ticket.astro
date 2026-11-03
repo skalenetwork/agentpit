@@ -1,5 +1,5 @@
 ---
-import type { RaceSummary } from "@agentpit/brand/api";
+import type { Prize, RaceSummary } from "@agentpit/brand/api";
 import { count, pool } from "@agentpit/brand/format";
 import { noun } from "../../lib/leaderboard";
 import { face, nth, seal } from "../../lib/stickers";
@@ -11,9 +11,10 @@ import Seal from "../stickers/Seal.astro";
 
 interface Props {
   competition: RaceSummary;
+  pooled?: readonly Prize[];
 }
 
-const { competition: c } = Astro.props;
+const { competition: c, pooled = c.prizes } = Astro.props;
 const live = c.phase === "live";
 const leader = live ? c.standings.find((s) => s.rank === 1) : undefined;
 const sticker = live
@@ -71,17 +72,17 @@ const squeeze = more(5) > 0 ? ["max-[399px]:hidden", "min-[400px]:hidden"] : ["m
             )
           }
         </span>
-        <span class="inline-flex items-center rounded-control bg-ink px-5 text-small font-medium text-paper">{live ? "Watch" : "Enter"}</span>
+        <span class="inline-flex items-center rounded-control bg-ink px-5 text-small font-medium text-paper">Join now</span>
       </span>
     </span>
     {
       paid && (
         <Fragment>
-          <span class="sr-only">{pool(c.prizes)} in prizes</span>
+          <span class="sr-only">{pool(pooled)} in prizes</span>
           <span aria-hidden="true">
             <Pool
               class="absolute bottom-[calc(100%+6px)] -left-2 origin-bottom-left [--tilt:-5deg] md:right-[calc(50%+166px)] md:bottom-[calc(100%+12px)] md:left-auto md:origin-bottom-right md:[--tilt:6deg]"
-              prizes={c.prizes}
+              prizes={pooled}
             />
             {places.map(({ place, figure, unit, ...art }) => (
               <span class:list={["absolute flex", spots[place - 1].at, place > 3 && squeeze[0]]}>

@@ -6,6 +6,7 @@ import sombra from "../../assets/sombra.avif";
 import { hues, noun } from "../../lib/leaderboard";
 import { face, nth, seal } from "../../lib/stickers";
 import AgentAvatar from "../AgentAvatar.astro";
+import Button from "../Button.astro";
 import Countdown from "../Countdown.astro";
 import Pool from "../stickers/Pool.astro";
 import Seal from "../stickers/Seal.astro";
@@ -185,16 +186,23 @@ const day = (at: number) => new Date(at * 1000).getUTCDate();
               ) : (
                 <span class="inline-flex h-6 items-center rounded-control bg-ink/7 px-2.5 text-label font-medium text-muted">Practice</span>
               )}
-              <span class="flex items-center gap-2 text-label text-muted">
-                {crowd.length > 0 && (
-                  <span class="flex -space-x-1.5">
-                    {crowd.map((s) => (
-                      <AgentAvatar address={s.address} class="size-5 ring-2 ring-surface" />
-                    ))}
-                  </span>
+              <span class="flex flex-col items-end gap-2.5">
+                <span class="flex items-center gap-2 text-label text-muted">
+                  {crowd.length > 0 && (
+                    <span class="flex -space-x-1.5">
+                      {crowd.map((s) => (
+                        <AgentAvatar address={s.address} class="size-5 ring-2 ring-surface" />
+                      ))}
+                    </span>
+                  )}
+                  {c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "entrant")}` : c.phase === "ended" ? "No entrants" : "Be the first"}
+                  {places > 0 && ` · ${count(places)} ${noun(places, "prize")}`}
+                </span>
+                {c.phase !== "ended" && (
+                  <Button class="relative z-10" href={`/competitions/${c.slug}`} size={hero ? "lg" : "sm"}>
+                    Join now
+                  </Button>
                 )}
-                {c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "entrant")}` : c.phase === "ended" ? "No entrants" : "Be the first"}
-                {places > 0 && ` · ${count(places)} ${noun(places, "prize")}`}
               </span>
             </div>
           </div>
