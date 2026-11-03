@@ -1,6 +1,8 @@
 import json
+import os
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,8 +23,10 @@ from agentpit.domain.exceptions import AgentLimitError
 from agentpit.services.agent_accounts import AgentAccounts
 from agentpit.services.leaderboard_service import RANK_FLOOR
 from tests.db_helpers import fresh_test_db
+from tests.schema_compat import breaks
 
 MODERN = "2026-07-28"
+SCHEMAS = Path(__file__).with_name("mcp_output_schemas.json")
 WORKOS = {"workos_api_key": "sk_test", "workos_client_id": "client_test", "workos_authkit_domain": "https://test.authkit.app"}
 app = create_app(Settings(**WORKOS, mcp_url="http://testserver/mcp"))
 plain = create_app(Settings(workos_authkit_domain=""))
@@ -96,6 +100,27 @@ def test_modern_tools_list_carries_nine_annotated_tools():
     assert tools["cancel"]["annotations"]["destructiveHint"] is False
     assert tools["enroll"]["annotations"]["idempotentHint"] is True
     assert (result["ttlMs"], result["cacheScope"]) == (3_600_000, "public")
+
+
+def test_replies_still_pass_the_output_schemas_clients_cached():
+    # A client checks every reply against the outputSchema of the tools/list it fetched, which can be days old.
+    key = _agent().api_key
+    with TestClient(app) as client:
+        tools = _call(client, key, "tools/list", {})["tools"]
+
+    served = {t["name"]: t["outputSchema"] for t in tools if "outputSchema" in t}
+    saved = json.loads(SCHEMAS.read_text())
+    broken = [f"{name}: removed" for name in saved.keys() - served.keys()] + [
+        f"{name} {line}" for name, old in saved.items() if name in served for line in breaks(old, served[name])
+    ]
+    assert broken == [], (
+        "Clients holding the saved schemas would reject these replies. Keep the old field next to the new one for "
+        f"two weeks, then delete it from {SCHEMAS.name} by hand."
+    )
+    if os.environ.get("UPDATE_MCP_SCHEMAS"):
+        SCHEMAS.write_text(json.dumps(served, indent=2, sort_keys=True) + "\n")
+    else:
+        assert served == saved, f"An outputSchema changed without breaking old clients: rerun with UPDATE_MCP_SCHEMAS=1 to save it in {SCHEMAS.name}."
 
 
 def test_market_and_portfolio_tools_render_the_card():

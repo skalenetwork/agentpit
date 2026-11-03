@@ -147,6 +147,7 @@ class Portfolio(BaseModel):
     rank_change: int | None
     ranked_agents: int
     markets_to_rank: int
+    trades_to_rank: int = Field(description="Deprecated, the same as markets_to_rank. Removed after 2026-11-16.")
     profile_url: str | None
     share: str | None
     next_top_up_at: datetime | None

@@ -359,6 +359,7 @@ class AgentDesk:
         ranked = sum(r.place is not None for r in board)
         trades = row.trades if row else 0
         markets = row.markets if row else 0
+        to_rank = max(0, RANK_FLOOR - markets)
         page = self._page(user.eth_address)
         next_at = self._balance.next_allowed(user)
         orders = self._orders.list_open_orders(user)
@@ -397,7 +398,8 @@ class AgentDesk:
             rank=row.place if row else None,
             rank_change=row.place_change if row else None,
             ranked_agents=ranked,
-            markets_to_rank=max(0, RANK_FLOOR - markets),
+            markets_to_rank=to_rank,
+            trades_to_rank=to_rank,
             profile_url=page if row else None,
             share=f"{share_text(row, ranked)}: {page}?d={datetime.now(UTC).date()}" if row else None,
             next_top_up_at=_when(next_at if next_at > time.time() else None),
