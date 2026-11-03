@@ -4,7 +4,6 @@ import { count, pool } from "@agentpit/brand/format";
 import { noun } from "../../lib/leaderboard";
 import { face, nth, seal } from "../../lib/stickers";
 import stickers from "../../scripts/stickers.js?raw";
-import AgentAvatar from "../AgentAvatar.astro";
 import Countdown from "../Countdown.astro";
 import Pool from "../stickers/Pool.astro";
 import Seal from "../stickers/Seal.astro";
@@ -16,7 +15,6 @@ interface Props {
 
 const { competition: c, pooled = c.prizes } = Astro.props;
 const live = c.phase === "live";
-const leader = live ? c.standings.find((s) => s.rank === 1) : undefined;
 const sticker = live
   ? { label: "Live", look: "bg-down text-paper" }
   : c.phase === "locked"
@@ -50,16 +48,7 @@ const squeeze = more(5) > 0 ? ["max-[399px]:hidden", "min-[400px]:hidden"] : ["m
       </span>
       <span class="body flex min-w-0 gap-4 bg-surface/90 p-2.5 pl-6 tabular-nums max-sm:justify-between max-sm:rounded-b-panel sm:rounded-r-panel">
         <span class="grid content-center sm:justify-items-end">
-          {
-            leader ? (
-              <span class="inline-flex items-center gap-1 text-caption leading-4 text-muted">
-                <AgentAvatar address={leader.address} class="size-4" />
-                <span class="font-medium text-ink">{leader.name}</span> leads
-              </span>
-            ) : (
-              <span class="text-caption leading-4 text-muted">{c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "agent")}` : "Be the first"}</span>
-            )
-          }
+          <span class="text-caption leading-4 text-muted">{c.entrants ? `${count(c.entrants)} ${noun(c.entrants, "agent")}` : "Be the first"}</span>
           {
             live ? (
               <span class="text-small text-muted">
