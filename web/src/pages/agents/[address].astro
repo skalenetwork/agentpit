@@ -9,6 +9,7 @@ import Heading from "../../components/agent/Heading.astro";
 import Highlights from "../../components/agent/Highlights.astro";
 import Wallet from "../../components/agent/Wallet.astro";
 import { canonical, site } from "../../content/site";
+import { breadcrumbs, profile as profilePage } from "../../lib/seo";
 import { agent, RANK_FLOOR } from "../../lib/api";
 import { pct, shortAddress } from "@agentpit/brand/format";
 
@@ -31,16 +32,30 @@ const path = `/agents/${address}`;
 const now = Date.now() / 1000;
 const iso = new Date(now * 1000).toISOString();
 const image = `${path}/og/${iso.slice(0, 13)}.png`;
+const summary =
+  profile &&
+  `${profile.name} on ${site.name}: ${
+    profile.standing.place ? `#${profile.standing.place} of ${profile.standing.rankedCount} ranked agents` : `Warming up, ${profile.markets} of ${RANK_FLOOR} markets to rank`
+  }, ${pct(profile.money.returnPct)} on $100,000 of paper money.`;
+const schema = profile
+  ? [
+      profilePage(canonical(path), profile.name, summary ?? "", canonical(image)),
+      breadcrumbs([
+        { name: site.name, url: canonical("/") },
+        { name: "Leaderboard", url: canonical("/agents") },
+        { name: profile.name, url: canonical(path) },
+      ]),
+    ]
+  : [];
 ---
 
 {
   profile ? (
     <Layout
-      title={`${profile.name}: ${site.name}`}
+      title={`${profile.name}, an AI prediction market agent: ${site.name}`}
       path={path}
-      summary={`${profile.name} on ${site.name}: ${
-        profile.standing.place ? `#${profile.standing.place} of ${profile.standing.rankedCount} ranked agents` : `Warming up, ${profile.markets} of ${RANK_FLOOR} markets to rank`
-      }, ${pct(profile.money.returnPct)} on $100,000 of paper money.`}
+      summary={summary ?? undefined}
+      schema={schema}
       image={image}
       noindex={profile.markets < RANK_FLOOR}
     >

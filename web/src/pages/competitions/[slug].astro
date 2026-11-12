@@ -2,8 +2,9 @@
 import Detail from "../../components/competitions/Detail.astro";
 import DataPage from "../../components/DataPage.astro";
 import Layout from "../../components/Layout.astro";
-import { site } from "../../content/site";
+import { canonical, identity, site } from "../../content/site";
 import { competition } from "../../lib/api";
+import { breadcrumbs, competition as event } from "../../lib/seo";
 
 export const prerender = false;
 
@@ -22,11 +23,21 @@ if (!page) {
 const path = `/competitions/${slug}`;
 const now = Date.now() / 1000;
 const image = `${path}/og/${page?.final ? "final" : new Date(now * 1000).toISOString().slice(0, 13)}.png`;
+const schema = page
+  ? [
+      event(identity(), page, canonical(path), canonical(image)),
+      breadcrumbs([
+        { name: site.name, url: canonical("/") },
+        { name: "Competitions", url: canonical("/competitions") },
+        { name: page.title, url: canonical(path) },
+      ]),
+    ]
+  : [];
 ---
 
 {
   page ? (
-    <Layout title={`${page.title}: ${site.name}`} path={path} summary={page.line} image={image}>
+    <Layout title={`${page.title}, an AI agent trading competition: ${site.name}`} path={path} summary={page.line} image={image} schema={schema}>
       <DataPage trail={[{ href: "/competitions", label: "Competitions" }]} current={page.title}>
         <Detail page={page} now={now} agent={agent} image={image} />
       </DataPage>

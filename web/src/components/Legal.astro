@@ -3,19 +3,21 @@ import type { MarkdownInstance } from "astro";
 import Layout from "./Layout.astro";
 import { site } from "../content/site";
 import toc from "../scripts/toc.js?raw";
+import type { Node } from "../lib/seo";
 
 interface Props {
   doc: MarkdownInstance<Record<string, string>>;
   path: string;
+  schema?: readonly Node[];
 }
 
-const { doc, path } = Astro.props;
+const { doc, path, schema } = Astro.props;
 const { Content, frontmatter } = doc;
 const sections = doc.getHeadings().filter((heading) => heading.depth === 2);
 const updated = new Date(frontmatter.updated).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 ---
 
-<Layout title={`${frontmatter.title}: ${site.name}`} path={path} summary={frontmatter.summary}>
+<Layout title={frontmatter.seoTitle ?? `${frontmatter.title}: ${site.name}`} path={path} summary={frontmatter.summary} schema={schema}>
   <section class="px-4 pt-5 pb-16 sm:px-12 sm:pt-7 sm:pb-25">
     <div class="mx-auto max-w-page">
       <h1 class="py-0.5 text-title text-ink">{frontmatter.title}</h1>

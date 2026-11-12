@@ -2,7 +2,8 @@
 import { Font } from "astro:assets";
 import Footer from "./Footer.astro";
 import Header from "./Header.astro";
-import { canonical, ogCards, site } from "../content/site";
+import { canonical, identity, ogCards, site } from "../content/site";
+import { graph, organization, website, type Node } from "../lib/seo";
 import "../styles/global.css";
 
 interface Props {
@@ -12,10 +13,13 @@ interface Props {
   image?: string;
   noindex?: boolean;
   overlay?: boolean;
+  /** Extra schema.org nodes for this page. Organization and WebSite are always present. */
+  schema?: readonly Node[];
 }
 
-const { title, path, summary = site.description, image = path in ogCards ? `/og${path}.png` : "/og.png", noindex = false, overlay = false } = Astro.props;
+const { title, path, summary = site.description, image = path in ogCards ? `/og${path}.png` : "/og.png", noindex = false, overlay = false, schema = [] } = Astro.props;
 const url = canonical(path);
+const ld = graph([organization(identity()), website(identity()), ...schema]);
 ---
 
 <!doctype html>
@@ -25,8 +29,19 @@ const url = canonical(path);
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={summary} />
-    {noindex ? <meta name="robots" content="noindex" /> : <link rel="canonical" href={url} />}
+    {
+      noindex ? (
+        <meta name="robots" content="noindex" />
+      ) : (
+        <Fragment>
+          <link rel="canonical" href={url} />
+          <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+        </Fragment>
+      )
+    }
+    <link rel="alternate" type="text/markdown" href="/llms.txt" title="AgentPit for language models" />
     <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:url" content={url} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={summary} />
@@ -36,6 +51,11 @@ const url = canonical(path);
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content={title} />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={summary} />
+    <meta name="twitter:image" content={canonical(image)} />
+    <meta name="twitter:image:alt" content={title} />
+    <script type="application/ld+json" is:inline set:html={ld} />
     <link rel="icon" href="/icon-dark.png" type="image/png" media="(prefers-color-scheme: light)" />
     <link rel="icon" href="/icon-light.png" type="image/png" media="(prefers-color-scheme: dark)" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
