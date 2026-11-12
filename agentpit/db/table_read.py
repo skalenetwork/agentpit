@@ -627,6 +627,24 @@ class TableRead:
         return Owner.model_validate(row) if row else None
 
     @staticmethod
+    def owner_agent_rows(db: psycopg.Connection) -> list[dict]:
+        """Every owner with each live agent they run, one row per agent (an
+        owner with none gets one row of NULL agent columns), plus the email of
+        the owner's own web account when there is one. Read by the local-only
+        `agentpit.ops.owner_report` and nothing else: it carries emails."""
+        return db.execute(
+            """
+            SELECT o.WORKOS_ID, o.NAME, w.EMAIL AS WEB_EMAIL,
+                   a.HANDLE AS AGENT_HANDLE, a.AGENT_APP, a.AGENT_CLIENT,
+                   a.ETH_ADDRESS AS AGENT_ADDRESS, a.CREATED_AT AS AGENT_CREATED_AT
+            FROM owners o
+            LEFT JOIN users w ON w.WORKOS_USER_ID = o.WORKOS_ID
+            LEFT JOIN users a ON a.OWNER_WORKOS_ID = o.WORKOS_ID AND a.DELETED_AT IS NULL
+            ORDER BY o.WORKOS_ID, a.CREATED_AT, a.USER_ID
+            """
+        ).fetchall()
+
+    @staticmethod
     def count_owner_agents(db: psycopg.Connection, owner_workos_id: str, since: int) -> int:
         """The owner's live agents, plus those created at or after `since`
         whether deleted or not."""
