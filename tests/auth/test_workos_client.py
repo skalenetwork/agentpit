@@ -384,3 +384,14 @@ def test_a_session_without_the_flag_counts_as_unverified():
 
     session = _real(handler).authenticate_with_authorization_code("code")
     assert session.email_verified is False
+
+
+def test_get_user_reads_the_user_by_id():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/user_management/users/user_01"
+        assert request.headers["authorization"] == "Bearer sk_test_123"
+        return httpx.Response(200, json={"id": "user_01", "email": "a@b.com", "email_verified": True})
+
+    user = _real(handler).get_user("user_01")
+    assert user == WorkOsUser(workos_user_id="user_01", email="a@b.com", email_verified=True)

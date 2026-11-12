@@ -5,8 +5,8 @@ this repo runs offline, and a service that reaches out to api.workos.com from
 a unit test is a test that fails on a train. `FakeWorkOsClient` is the double
 every test uses; `RealWorkOsClient` is the only place the SDK is touched.
 
-The surface is deliberately narrow: what sign-in, MCP and account deletion
-need, and nothing more.
+The surface is deliberately narrow: what sign-in, MCP, account deletion and
+the local owner report need, and nothing more.
 """
 import re
 from dataclasses import dataclass
@@ -74,6 +74,9 @@ class WorkOsClient(Protocol):
         ...
 
     def delete_user(self, workos_user_id: str) -> None:
+        ...
+
+    def get_user(self, workos_user_id: str) -> WorkOsUser:
         ...
 
 
@@ -267,6 +270,14 @@ class RealWorkOsClient:
     def delete_user(self, workos_user_id: str) -> None:
         self._request("DELETE", f"/user_management/users/{quote(workos_user_id, safe='')}")
 
+    def get_user(self, workos_user_id: str) -> WorkOsUser:
+        user = self._request("GET", f"/user_management/users/{quote(workos_user_id, safe='')}")
+        return WorkOsUser(
+            workos_user_id=user["id"],
+            email=user["email"],
+            email_verified=bool(user.get("email_verified")),
+        )
+
 
 class FakeWorkOsClient:
     """In-memory double with the same contract, plus test-only helpers."""
@@ -381,6 +392,12 @@ class FakeWorkOsClient:
 
     def delete_user(self, workos_user_id: str) -> None:
         self._by_email = {k: u for k, u in self._by_email.items() if u.workos_user_id != workos_user_id}
+
+    def get_user(self, workos_user_id: str) -> WorkOsUser:
+        for user in self._by_email.values():
+            if user.workos_user_id == workos_user_id:
+                return user
+        raise WorkOsError(f"WorkOS GET /user_management/users/{workos_user_id} returned 404")
 
 
 def build_workos_client(
