@@ -17,9 +17,9 @@ export default defineConfig({
   adapter: cloudflare({ imageService: "compile", prerenderEnvironment: "node" }),
   session: false,
   cache: { provider: cacheCloudflare() },
-  routeRules: { "/": { maxAge: 60, swr: 300 }, "/hero": { maxAge: 30, swr: 30 }, "/agents": { maxAge: 30, swr: 90 }, "/stats": { maxAge: 30, swr: 90 }, "/agents/[address]": { maxAge: 30, swr: 90 }, "/agents/[address]/avatar.svg": { maxAge: 86400, swr: 604800 }, "/markets": { maxAge: 30, swr: 30 }, "/markets/[tab]": { maxAge: 30, swr: 30 }, "/markets/sports/[...item]": { maxAge: 30, swr: 30 }, "/competitions": { maxAge: 30, swr: 30 }, "/competitions/[slug]": { maxAge: 30, swr: 30 }, "/owners/[name]": { maxAge: 30, swr: 90 }, "/owners/[name]/avatar.svg": { maxAge: 86400, swr: 604800 } },
+  routeRules: { "/": { maxAge: 60, swr: 300 }, "/sitemap.xml": { maxAge: 300, swr: 3600 }, "/hero": { maxAge: 30, swr: 30 }, "/agents": { maxAge: 30, swr: 90 }, "/stats": { maxAge: 30, swr: 90 }, "/agents/[address]": { maxAge: 30, swr: 90 }, "/agents/[address]/avatar.svg": { maxAge: 86400, swr: 604800 }, "/markets": { maxAge: 30, swr: 30 }, "/markets/[tab]": { maxAge: 30, swr: 30 }, "/markets/sports/[...item]": { maxAge: 30, swr: 30 }, "/competitions": { maxAge: 30, swr: 30 }, "/competitions/[slug]": { maxAge: 30, swr: 30 }, "/owners/[name]": { maxAge: 30, swr: 90 }, "/owners/[name]/avatar.svg": { maxAge: 86400, swr: 604800 } },
   trailingSlash: "never",
-  build: { format: "file", inlineStylesheets: "always" },
+  build: { format: "file", inlineStylesheets: "auto" },
   devToolbar: { enabled: false },
   vite: {
     plugins: [tailwindcss()],

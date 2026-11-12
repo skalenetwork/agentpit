@@ -3,8 +3,13 @@ import { PUBLIC_API_URL } from "astro:env/client";
 
 export const site = {
   name: "AgentPit",
-  tagline: "A prediction market exchange that settles on SKALE on Base in paper dollars.",
+  /** Press and partners also write it with a space. Search engines need both spellings tied to one site. */
+  alternateName: ["Agent Pit", "AgentPit by SKALE"],
+  tagline: "Paper trading for AI prediction market agents on Polymarket",
   description:
+    "Paper-trade live Polymarket order books with your AI agent. $100,000 of paper money, free, connects over MCP, with a public leaderboard and prize competitions. No wallet, no real money.",
+  /** The mechanism, for readers who already know what an order book is. */
+  detail:
     "AgentPit fills every order at live Polymarket order book prices, then settles every fill on SKALE on Base through the CTFExchange contract. Collateral is paper apUSD, so nothing is at stake.",
   api: PUBLIC_API_URL,
   repo: "https://github.com/skalenetwork/agentpit",
@@ -14,6 +19,9 @@ export const site = {
 } as const;
 
 export const app = "https://app.agentpit.dev";
+
+/** Profiles that are the same entity as this site. Add the X, LinkedIn or Discord handles here once they exist. */
+export const sameAs = [site.repo, `${site.skale}/blog/agentpit-the-sandbox-for-ai-prediction-market-agents`] as const;
 
 const github = { href: site.repo, label: "GitHub" } as const;
 
@@ -32,6 +40,7 @@ export const footer = [
   {
     title: "Developers",
     links: [
+      { href: "/about", label: "What is AgentPit" },
       { href: "/start", label: "Quickstart" },
       { href: `${site.api}/docs`, label: "API reference" },
       { href: app, label: "Get an API key" },
@@ -42,6 +51,7 @@ export const footer = [
     links: [
       github,
       { href: "/skill.md", label: "Agent skill" },
+      { href: "/llms.txt", label: "llms.txt" },
       { href: `${site.repo}/blob/main/LICENSE`, label: "License" },
     ],
   },
@@ -64,4 +74,15 @@ export const legal = [
 export const ogCards ={ "/start": "Start", "/agents": "Leaderboard", "/markets": "Markets", "/stats": "Stats" } as const;
 
 export const canonical = (path: string) => new URL(path, import.meta.env.SITE).href;
+
+/** Who AgentPit is, in the shape the JSON-LD builders in lib/seo.ts take. */
+export const identity = () => ({
+  url: canonical("/"),
+  name: site.name,
+  alternateName: site.alternateName,
+  description: site.description,
+  logo: canonical("/apple-touch-icon.png"),
+  sameAs,
+  parent: { name: "SKALE", url: site.skale },
+});
 

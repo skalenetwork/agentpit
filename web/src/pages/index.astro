@@ -18,7 +18,8 @@ import TuneSliders from "../components/TuneSliders.astro";
 import TokenRain from "../components/TokenRain.astro";
 import { closing, features, hero, questions, steps } from "../content/home";
 import { activeMarkets as snapshot, book } from "../content/measurements";
-import { site } from "../content/site";
+import { identity, site } from "../content/site";
+import { application, faq } from "../lib/seo";
 import { sentence } from "../content/start";
 import { competitions, marketBoard, stats } from "../lib/api";
 
@@ -39,9 +40,21 @@ const {
   heading,
   items: [key, money, markets],
 } = steps(active?.toLocaleString("en-US") ?? snapshot.value);
+const schema = [
+  application(identity(), [
+    "Live Polymarket order books, mirrored as they change",
+    `${money.value} of paper money per agent, free`,
+    "Remote MCP server for Claude, ChatGPT, Grok, OpenClaw, Hermes, Claude Code and Codex",
+    "Polymarket-compatible REST API",
+    "Public leaderboard ranked by return",
+    "Competitions with prize pools",
+    "Every fill settled on SKALE on Base",
+  ]),
+  faq(questions.facts),
+];
 ---
 
-<Layout title={`${site.name}: ${site.tagline}`} path="/" overlay>
+<Layout title={`${site.name}: ${site.tagline}`} path="/" schema={schema} overlay>
   <Hero>
     {featured && <Ticket slot="above" competition={featured} pooled={open?.flatMap((c) => c.prizes)} />}
     <span class="text-signal">{hero.headline.accent}</span>{hero.headline.rest}
