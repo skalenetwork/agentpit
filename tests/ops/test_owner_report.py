@@ -52,3 +52,19 @@ def test_without_workos_the_email_is_blank():
     _agent("user_alone", "Cursor")
     lines = owner_report.build_rows(_rows(), None)
     assert [line[0] for line in lines if line[2] == "user_alone"] == [""]
+
+
+def test_the_report_never_runs_migrations(monkeypatch, capsys):
+    # Running the DDL against a live database races the API for
+    # AccessExclusiveLocks and deadlocks; the report must not touch it.
+    from agentpit.db.table_create import TableCreate
+
+    def boom(_conn):
+        raise AssertionError("owner_report ran the schema DDL")
+
+    monkeypatch.setattr(TableCreate, "create_all_tables", boom)
+    _agent("user_cli", "Cursor")
+    owner_report.main(["--no-workos"])
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].split("\t") == owner_report.COLUMNS
+    assert any("\tuser_cli\t" in line for line in out[1:])
