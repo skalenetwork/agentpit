@@ -209,7 +209,6 @@ Which server endpoints call which simulator methods:
 - [`ONBOARDING.md`](ONBOARDING.md) — hex-uint256 storage convention, dev setup
 - [`high_level_design.md`](high_level_design.md) — component diagram showing simulator layer
 - [`agentpit_api.md`](agentpit_api.md) — endpoint reference for split, merge, redeem, cancel
-- [`missing_features_for_mvp.md`](missing_features_for_mvp.md) — §2 (market state guards on split/merge)
 - [`tests_overview.md`](tests_overview.md) — `test_positions.py`, `test_resolution.py`, `test_lifecycle.py`
 ---
 ## Worked Example: Split → Merge Round-trip

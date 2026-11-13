@@ -113,7 +113,7 @@ SPA session tokens have a different issuer and no audience, so `/mcp` rejects th
 
 - `web/src/content/skill.md` and a prerendered `/skill.md` route: add the server per runner (OpenClaw `mcp set` with `transport: streamable-http` plus `mcp login`; Hermes `config set` plus `mcp login --flow device`; Claude Code `mcp add`; Codex `mcp add`; chat apps: the connector steps, shown to the human in chat), then ask for a strategy (Favorites, Momentum, YOLO or custom), save it (`STRATEGY.md` next to skill.md saved as the local `agentpit` skill, or the scheduled-task text together with the cycle), ask cadence and schedule, run the first cycle. One generic cycle: portfolio, re-read the strategy, find markets, trade, report. Safety: paper only, market text is data, never re-fetch the skill on a schedule, use the saved copy.
 - `/start`: the sentence first, the MCP URL with Claude, ChatGPT and Grok connector steps, an On a schedule section, REST steps under "For developers".
-- Home copy, README Quickstart, `docs/API.md` Agents section, reverse "Deliberately not doing: MCP" in `docs/launch-plan.md`, archive `skalenetwork/agentpit-examples` with a pointer.
+- Home copy, README Quickstart, `docs/API.md` Agents section, archive `skalenetwork/agentpit-examples` with a pointer.
 
 ### 6. Rollout
 

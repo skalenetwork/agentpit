@@ -300,6 +300,5 @@ pytest -s -m integration tests/polymarket/
 - [`ONBOARDING.md`](ONBOARDING.md) — dev setup and first-contribution guide
 - [`high_level_design.md`](high_level_design.md) — Polymarket sync component overview and data flow diagram
 - [`conditional_token_framework_spec.md`](conditional_token_framework_spec.md) — `CTF.condition_exists()` and `get_onchain_resolution_status()` called by this module
-- [`missing_features_for_mvp.md`](missing_features_for_mvp.md) — §3 (REST trigger for sync)
 - [`tests_overview.md`](tests_overview.md) — `test_polymarket_sync.py` integration test details
 

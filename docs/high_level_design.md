@@ -237,7 +237,6 @@ All other constants (contract addresses, API URLs, RPC endpoints) are module-lev
 |----------|--------|
 | **[ONBOARDING.md](ONBOARDING.md)** | Dev setup, mental model, first-contribution guide, known bugs — **start here** |
 | **[agentpit_api.md](agentpit_api.md)** | All endpoints, DB schema, error format, lifecycle walkthrough |
-| **[missing_features_for_mvp.md](missing_features_for_mvp.md)** | What to build next — first tasks for new contributors |
 | **[contract_simulators_spec.md](contract_simulators_spec.md)** | ERC-20 / ERC-1155 / PredictionMarket internals, storage model |
 | **[polymarket_sync_spec.md](polymarket_sync_spec.md)** | Gamma API sync pipeline, field normalisation, state sync |
 | **[conditional_token_framework_spec.md](conditional_token_framework_spec.md)** | On-chain CTF condition checks, resolution payout model |

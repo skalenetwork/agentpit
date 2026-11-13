@@ -37,7 +37,7 @@ The server starts with an in-memory SQLite DB by default. Set `AGENTPIT_DB_PATH=
 
 ## What's Built vs What's Not
 
-This table is the fastest way to understand where to contribute. The roadmap items in `missing_features_for_mvp.md` are your first tasks.
+This table is the fastest way to understand where to contribute.
 
 > The trading agents that use AgentPit are **OpenClaw agents**. The `agents` and `personalities` REST endpoints exist to register and track OpenClaw agent profiles in AgentPit's database.
 
@@ -51,9 +51,9 @@ This table is the fastest way to understand where to contribute. The roadmap ite
 | REST endpoints for order submission (`POST /orders`, `DELETE /orders/{id}`, `GET /markets/{id}/orderbook`) | ✅ Built | `agentpit/api/routes/orders.py` |
 | GTD / FOK / FAK order-type semantics | ✅ Built | `agentpit/services/order_service.py` |
 | Market state guard: `split_position` only on `ACTIVE` markets (`merge_positions` runs in any state on purpose) | ✅ Built | `agentpit/services/position_service.py` |
-| Polymarket sync REST trigger (`/sync`) | ❌ MVP | `missing_features_for_mvp.md` §3 |
-| Trade fills in transaction history | ❌ MVP | `missing_features_for_mvp.md` §4 |
-| Human trading web UI (React) | ❌ MVP | `missing_features_for_mvp.md` §5 |
+| Polymarket sync REST trigger (`/sync`) | ❌ MVP | — |
+| Trade fills in transaction history | ❌ MVP | — |
+| Human trading web UI (React) | ❌ MVP | — |
 
 ---
 
@@ -264,12 +264,11 @@ None are tracked here right now. The old split/merge state gap is closed and del
 | 1 | **`ONBOARDING.md`** (this file) | Entry point |
 | 2 | **`high_level_design.md`** | Architecture overview, component map, data flows |
 | 3 | **`agentpit_api.md`** | Full endpoint reference — bookmark this |
-| 4 | **`missing_features_for_mvp.md`** | What to build next — your first tasks |
-| 5 | **`contract_simulators_spec.md`** | Token mechanics, storage model, call map |
-| 6 | **`tests_overview.md`** | Test patterns, what's covered, how to run |
-| 7 | **`polymarket_sync_spec.md`** | Gamma API sync pipeline, field normalisation |
-| 8 | **`conditional_token_framework_spec.md`** | On-chain CTF reads, resolution logic |
-| 9 | **`agentpit_whitepaper.md`** | Full technical + product writeup |
+| 4 | **`contract_simulators_spec.md`** | Token mechanics, storage model, call map |
+| 5 | **`tests_overview.md`** | Test patterns, what's covered, how to run |
+| 6 | **`polymarket_sync_spec.md`** | Gamma API sync pipeline, field normalisation |
+| 7 | **`conditional_token_framework_spec.md`** | On-chain CTF reads, resolution logic |
+| 8 | **`agentpit_whitepaper.md`** | Full technical + product writeup |
 
 ---
 
@@ -277,6 +276,5 @@ None are tracked here right now. The old split/merge state gap is closed and del
 
 - [`high_level_design.md`](high_level_design.md) — architecture deep-dive
 - [`agentpit_api.md`](agentpit_api.md) — endpoint reference
-- [`missing_features_for_mvp.md`](missing_features_for_mvp.md) — first tasks
 - [`tests_overview.md`](tests_overview.md) — test patterns
 

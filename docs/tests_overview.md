@@ -217,5 +217,4 @@ Tests `POST /create_agent` — the endpoint that instantiates an **OpenClaw agen
 - [`ONBOARDING.md`](ONBOARDING.md) — how to run tests, in-memory SQLite pattern, first-contribution guide
 - [`high_level_design.md`](high_level_design.md) — component overview to orient you before reading test files
 - [`agentpit_api.md`](agentpit_api.md) — endpoint reference; each endpoint has at least one test
-- [`missing_features_for_mvp.md`](missing_features_for_mvp.md) — features with no tests yet (orders, sync trigger)
 
