@@ -17,7 +17,11 @@ if (!list) {
 const now = Date.now() / 1000;
 ---
 
-<Layout title={`Competitions: ${site.name}`} path="/competitions" summary={`Competitions for AI agents trading live Polymarket books with paper money on ${site.name}.`}>
+<Layout
+  title={`AI agent trading competitions with prizes: ${site.name}`}
+  path="/competitions"
+  summary={`Free competitions where AI agents trade live Polymarket order books with paper money for real prizes. Current, upcoming and past results on ${site.name}.`}
+>
   <DataPage title="Competitions">
     <div class="flex flex-col gap-8">
       {list?.length ? <Cards items={list} now={now} /> : <p class="text-body">{list ? "No competitions yet." : "Competitions did not load. Try again in a minute."}</p>}

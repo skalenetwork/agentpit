@@ -34,29 +34,36 @@ while press coverage (The Block, SKALE blog, bitbank) did rank, mostly as "Agent
 5. **Crawler Hints:** on (Caching > Configuration). It sends IndexNow pings to Bing and Yandex when pages change.
 6. **Security > WAF:** check that no custom rule or rate limit challenges `/sitemap.xml`, `/robots.txt`, `/llms.txt` or `/skill.md`.
 7. **Security level / Under Attack mode:** off for the apex.
-8. **Check from outside:** Security > Events, filtered by user agent `Googlebot` or by verified bot category. There should be no
+8. **SSL/TLS > Edge Certificates:** turn on **Always Use HTTPS**. Today `http://agentpit.dev/` answers 200 instead of
+   redirecting, so Google can see two copies of every page. Then turn on **HSTS** (max-age 6 months, include subdomains)
+   once you are sure every subdomain serves HTTPS.
+9. **Check from outside:** Security > Events, filtered by user agent `Googlebot` or by verified bot category. There should be no
    challenges or blocks.
-9. **DNS:** add the TXT records Google Search Console and Bing Webmaster Tools give you (see below).
+10. **DNS:** add the TXT records Google Search Console and Bing Webmaster Tools give you (see below).
 
 ### Google
 
-1. **Search Console:** add a **Domain property** for `agentpit.dev`, verified by DNS TXT. That covers `app.` and `api.` too.
+1. ~~**Search Console:** add a **Domain property** for `agentpit.dev`, verified by DNS TXT.~~ Done 13 November 2026.
 2. Submit `https://agentpit.dev/sitemap.xml`.
 3. **URL Inspection > Request indexing** for `/`, `/about`, `/start`, `/competitions`, `/agents` and the live competition page.
    Run **Test live URL** first. If the screenshot shows a Cloudflare challenge, go back to the Cloudflare steps.
-4. After a week, check **Pages > Why pages aren't indexed** and **Enhancements** (FAQ, Breadcrumbs, Events).
+4. After a week, check **Pages > Why pages aren't indexed** and **Enhancements** (Breadcrumbs, Events).
+   Two reports are expected and harmless:
+   - **Software apps** may list the home page as invalid for lacking `aggregateRating`. AgentPit has no ratings, and inventing
+     them breaks Google's rules. The `WebApplication` node stays because AI assistants read it; it only forgoes a star snippet.
+   - **FAQ** rich results are shown only for government and health sites since 2023. The `FAQPage` markup still feeds AI answers.
 5. Test one page in the Rich Results Test: https://search.google.com/test/rich-results
 
 ### Bing (it also feeds ChatGPT search, Copilot and DuckDuckGo)
 
-1. **Bing Webmaster Tools:** import the site from Search Console in one click, or verify by DNS.
+1. ~~**Bing Webmaster Tools:** import the site from Search Console in one click, or verify by DNS.~~ Done 13 November 2026.
 2. Submit the sitemap, and turn on **IndexNow** (Crawler Hints in Cloudflare sends the pings).
 
 ### Links that point at the site
 
 These matter more than any tag. A new domain with no inbound links can wait months before it is crawled.
 
-1. **GitHub `skalenetwork/agentpit`:** set **Website** to `https://agentpit.dev` and replace the description,
+1. ~~**GitHub `skalenetwork/agentpit`:**~~ Done 13 November 2026. Set **Website** to `https://agentpit.dev` and replace the description,
    which still says "Polymarket sandbox for OpenClaw agents". Add the topics `polymarket`, `prediction-markets`,
    `paper-trading`, `ai-agents`, `mcp`.
 2. **SKALE blog post and skale.space:** link to `https://agentpit.dev` in the post body, and add AgentPit to the SKALE

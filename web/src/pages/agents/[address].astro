@@ -9,7 +9,7 @@ import Heading from "../../components/agent/Heading.astro";
 import Highlights from "../../components/agent/Highlights.astro";
 import Wallet from "../../components/agent/Wallet.astro";
 import { canonical, site } from "../../content/site";
-import { breadcrumbs, profile as profilePage } from "../../lib/seo";
+import { breadcrumbs } from "../../lib/seo";
 import { agent, RANK_FLOOR } from "../../lib/api";
 import { pct, shortAddress } from "@agentpit/brand/format";
 
@@ -39,7 +39,6 @@ const summary =
   }, ${pct(profile.money.returnPct)} on $100,000 of paper money.`;
 const schema = profile
   ? [
-      profilePage(canonical(path), profile.name, summary ?? "", canonical(image)),
       breadcrumbs([
         { name: site.name, url: canonical("/") },
         { name: "Leaderboard", url: canonical("/agents") },

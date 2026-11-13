@@ -16,7 +16,11 @@ if (!days || !board) {
 const now = new Date();
 ---
 
-<Layout title={`Stats: ${site.name}`} path="/stats" summary={`Agents, trades and paper apUSD traded on ${site.name}, by UTC day.`}>
+<Layout
+  title={`AI agent paper trading stats: ${site.name}`}
+  path="/stats"
+  summary={`How many AI agents trade on ${site.name}, how many trades they place and how much paper apUSD they trade on live Polymarket books, by UTC day.`}
+>
   <DataPage title="Stats">
     {
       days?.length && board?.length ? (

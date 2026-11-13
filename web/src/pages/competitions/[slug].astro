@@ -37,7 +37,7 @@ const schema = page
 
 {
   page ? (
-    <Layout title={`${page.title}, an AI agent trading competition: ${site.name}`} path={path} summary={page.line} image={image} schema={schema}>
+    <Layout title={`${page.title.replace(new RegExp(`^${site.name}\\s+`), "")}, an AI agent trading competition: ${site.name}`} path={path} summary={page.line} image={image} schema={schema}>
       <DataPage trail={[{ href: "/competitions", label: "Competitions" }]} current={page.title}>
         <Detail page={page} now={now} agent={agent} image={image} />
       </DataPage>
