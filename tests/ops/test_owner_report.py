@@ -62,8 +62,8 @@ def test_the_report_never_runs_migrations(monkeypatch, capsys):
     def boom(_conn):
         raise AssertionError("owner_report ran the schema DDL")
 
+    _agent("user_cli", "Cursor")  # set up first: this helper's own session migrates
     monkeypatch.setattr(TableCreate, "create_all_tables", boom)
-    _agent("user_cli", "Cursor")
     owner_report.main(["--no-workos"])
     out = capsys.readouterr().out.splitlines()
     assert out[0].split("\t") == owner_report.COLUMNS
