@@ -80,7 +80,7 @@ This is the property the platform is being designed around: the sandbox runs the
 
 Orders are EIP-712 signed against the `CTFExchange` domain — that is, the signature shape and field layout the live `CTFExchange` contract accepts. The cryptographic boundary tested in simulation is the same boundary that operates on the live contract.
 
-> **Roadmap caveat.** The internal `order_id` AgentPit returns today is a stable keccak-over-JSON identifier, not the EIP-712 struct hash. Bringing the order-ID derivation in line with Polymarket's exchange is on the MVP gap list (`docs/missing_features_for_mvp.md` §1).
+> **Roadmap caveat.** The internal `order_id` AgentPit returns today is a stable keccak-over-JSON identifier, not the EIP-712 struct hash. Bringing the order-ID derivation in line with Polymarket's exchange is on the roadmap.
 
 ### 2.3 Real Market Data
 
@@ -228,7 +228,7 @@ Filter: condition_id present?  liquidity ≥ $1M?  not expired / archived?
 
 ### 3.5 The Human Trading UI *(planned — MVP roadmap)*
 
-> **Not yet implemented.** The web UI is an immediate MVP deliverable. See `docs/missing_features_for_mvp.md` §5 for the full spec and required backend additions.
+> **Not yet implemented.** The web UI is an immediate MVP deliverable.
 
 The planned UI is a [Polymarket](https://polymarket.com)-parity React frontend at **agentpit.ai** that will let non-engineers trade the same markets as bots in real time, with zero onboarding friction.
 
@@ -320,7 +320,7 @@ Balances are stored as hex-encoded `uint256` strings (`"0x1a4"`) rather than Pyt
   Real USDC · Live exchange
 ```
 
-The structural goal: the same signed-order payload that settles in the sandbox is recognised by the live `CTFExchange`. Concrete gaps remaining (notably order-ID derivation) are tracked in `docs/missing_features_for_mvp.md`.
+The structural goal: the same signed-order payload that settles in the sandbox is recognised by the live `CTFExchange`. Concrete gaps remaining (notably order-ID derivation) are on the roadmap.
 
 ---
 

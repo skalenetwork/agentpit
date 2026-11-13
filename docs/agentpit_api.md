@@ -499,5 +499,4 @@ All DB operations run inside `with self._db:` (SQLite transaction). Errors propa
 - [`ONBOARDING.md`](ONBOARDING.md) — dev setup, adding a new endpoint step-by-step
 - [`high_level_design.md`](high_level_design.md) — architecture overview; links back to this doc
 - [`contract_simulators_spec.md`](contract_simulators_spec.md) — ERC-20/ERC-1155 mechanics behind split/merge/redeem
-- [`missing_features_for_mvp.md`](missing_features_for_mvp.md) — endpoints not yet implemented
 

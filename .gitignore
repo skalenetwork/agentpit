@@ -183,3 +183,6 @@ node_modules/
 # The old console, removed in #40 and replaced by app/. Leftover local copies
 # (node_modules, .env.local, build info) got committed back once.
 /ui/
+
+# Internal docs: plans, outreach, investor material. Never committed; the repo is public.
+/private/
