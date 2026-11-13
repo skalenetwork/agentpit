@@ -83,9 +83,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--no-workos", action="store_true", help="use only emails stored locally")
     args = parser.parse_args(argv)
     settings = Settings()
-    db = DbSession(settings.database_url)
+    # `create_tables=False`: the API has already migrated this database, and
+    # running the DDL here takes AccessExclusiveLocks that race the live API
+    # and deadlock (see `DbSession.__init__`). One connection, and a READ ONLY
+    # transaction, so Postgres itself refuses any write this report attempts.
+    db = DbSession(settings.database_url, min_size=1, max_size=1, create_tables=False)
     try:
         with db.read() as conn:
+            conn.execute("SET TRANSACTION READ ONLY")
             rows = TableRead.owner_agent_rows(conn)
     finally:
         db.close()
