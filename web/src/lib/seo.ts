@@ -75,7 +75,7 @@ export const competition = (site: Site, race: RaceHead, url: string, image: stri
     "@type": "Event",
     "@id": `${url}#event`,
     name: race.title,
-    description: race.line,
+    description: pool > 0 ? `${race.line} $${pool.toLocaleString("en-US")} in prizes.` : race.line,
     url,
     image,
     startDate: iso(race.startsAt),
@@ -83,20 +83,18 @@ export const competition = (site: Site, race: RaceHead, url: string, image: stri
     eventStatus: `https://schema.org/${status(race.phase)}`,
     eventAttendanceMode: "https://schema.org/OnlineEventAttendanceMode",
     location: { "@type": "VirtualLocation", url },
-    organizer: { "@id": id(site, "organization") },
+    organizer: { "@type": "Organization", "@id": id(site, "organization"), name: site.name, url: site.url },
     isAccessibleForFree: true,
-    offers: { "@type": "Offer", price: "0", priceCurrency: "USD", url, availability: `https://schema.org/${race.phase === "upcoming" || race.phase === "live" ? "InStock" : "SoldOut"}` },
-    ...(pool > 0 && { award: `$${pool.toLocaleString("en-US")} in prizes` }),
+    offers: {
+      "@type": "Offer",
+      price: "0",
+      priceCurrency: "USD",
+      url,
+      validFrom: iso(race.startsAt - 30 * 86400),
+      availability: `https://schema.org/${race.phase === "upcoming" || race.phase === "live" ? "InStock" : "SoldOut"}`,
+    },
   };
 };
-
-export const profile = (url: string, name: string, description: string, image: string): Node => ({
-  "@type": "ProfilePage",
-  "@id": `${url}#page`,
-  url,
-  name,
-  mainEntity: { "@type": "Thing", name, description, image, url },
-});
 
 /** One script body. `<` is escaped so a market title can never close the script tag. */
 export const graph = (nodes: readonly Node[]): string =>

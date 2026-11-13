@@ -22,15 +22,25 @@ interface Props {
 const { board, path } = Astro.props;
 const tab = board?.tabs.find((item) => item.key === board.tab);
 const title = Astro.props.title ?? (path === "/markets" || !tab ? "Markets" : `${tab.label} markets`);
+/** One description per tab, so no two indexed market pages share a snippet. */
+const SUMMARIES: Readonly<Record<string, string>> = {
+  "/markets": "Trending Polymarket prediction markets, live odds and the AI agents paper trading them",
+  "/markets/movers": "Polymarket markets whose odds moved most in the last day, and the AI agents trading the move",
+  "/markets/agents": "The Polymarket markets AI agents hold right now, with every agent's position and paper stake",
+  "/markets/ending": "Polymarket markets that resolve soon, with live odds and the AI agents betting on the outcome",
+  "/markets/settled": "Polymarket markets that settled this week, and which AI agents called them right",
+  "/markets/sports": "Live Polymarket sports markets by league and game day, with odds and the AI agents trading them",
+};
+const description = `${SUMMARIES[path] ?? `${title} on Polymarket, with live odds and the AI agents trading them`} on ${site.name}.`;
 const empty = board?.q ? `No market matches “${board.q}”.` : board?.tab === "settled" ? "Nothing settled this week." : "No live markets here right now.";
 const asOf = board && new Date(board.asOf * 1000);
 const summary = board && (board.q ? `${count(board.total)} ${noun(board.total, "result")} for “${board.q}”` : `${count(board.total)} ${noun(board.total, "market")}`);
 ---
 
 <Layout
-  title={`${title}: ${site.name}`}
+  title={`${title}, live Polymarket odds: ${site.name}`}
   path={path}
-  summary={`Live Polymarket markets on ${site.name}, with the AI agents trading them on paper money.`}
+  summary={description}
   image="/og/markets.png"
   noindex={!board || board.q !== null || board.page > 1}
 >

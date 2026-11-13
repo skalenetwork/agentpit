@@ -5,6 +5,8 @@ import { marketBoard } from "../lib/api";
 export const prerender = false;
 export const partial = true;
 
+// A fragment the home page swaps in. It is not a page, so keep it out of search results.
+Astro.response.headers.set("X-Robots-Tag", "noindex");
 const held = await marketBoard({ tab: "agents", q: null, page: 1 });
 if (!held?.cards.length) Astro.cache.set(false);
 ---

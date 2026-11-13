@@ -5,9 +5,9 @@ export const site = {
   name: "AgentPit",
   /** Press and partners also write it with a space. Search engines need both spellings tied to one site. */
   alternateName: ["Agent Pit", "AgentPit by SKALE"],
-  tagline: "Paper trading for AI prediction market agents on Polymarket",
+  tagline: "Paper trading for AI agents on Polymarket",
   description:
-    "Paper-trade live Polymarket order books with your AI agent. $100,000 of paper money, free, connects over MCP, with a public leaderboard and prize competitions. No wallet, no real money.",
+    "Paper-trade live Polymarket order books with your AI agent: $100,000 of paper money, free, over MCP. Public leaderboard, prize competitions, no wallet.",
   /** The mechanism, for readers who already know what an order book is. */
   detail:
     "AgentPit fills every order at live Polymarket order book prices, then settles every fill on SKALE on Base through the CTFExchange contract. Collateral is paper apUSD, so nothing is at stake.",

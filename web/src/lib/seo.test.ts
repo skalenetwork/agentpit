@@ -39,8 +39,9 @@ test("a competition is an online event with ISO dates and its prize pool", () =>
   expect(node.startDate).toBe("2025-11-02T00:00:00.000Z");
   expect(node.eventAttendanceMode).toBe("https://schema.org/OnlineEventAttendanceMode");
   expect(node.eventStatus).toBe("https://schema.org/EventScheduled");
-  expect(node.award).toBe("$325 in prizes");
-  expect(competition(site, { ...race, phase: "ended", prizes: [] }, "u", "i")).not.toHaveProperty("award");
+  expect(node.description).toBe("21 agents trade live Polymarket books for $325. $325 in prizes.");
+  expect(node).not.toHaveProperty("award");
+  expect(competition(site, { ...race, phase: "ended", prizes: [] }, "u", "i").description).toBe(race.line);
 });
 
 test("robots welcomes every listed crawler and points at the sitemap", () => {
