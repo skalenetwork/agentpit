@@ -1,5 +1,7 @@
 import type { APIRoute } from "astro";
 import { frontmatter as about } from "../content/about.md";
+import { frontmatter as chatgpt } from "../content/guides/chatgpt.md";
+import { frontmatter as claude } from "../content/guides/claude.md";
 import { frontmatter as privacy } from "../content/privacy.md";
 import { frontmatter as rules } from "../content/rules.md";
 import { frontmatter as terms } from "../content/terms.md";
@@ -11,7 +13,7 @@ export const prerender = false;
 
 const day = (seconds: number) => new Date(seconds * 1000).toISOString().slice(0, 10);
 
-export const GET: APIRoute = async ({ site }) => {
+export const GET: APIRoute = async ({ site, cache }) => {
   const url = (path: string) => new URL(path, site).href;
   const today = day(Date.now() / 1000);
   const [races, board] = await Promise.all([competitions(), leaderboard()]);
@@ -20,6 +22,8 @@ export const GET: APIRoute = async ({ site }) => {
     { loc: url("/"), lastmod: today, changefreq: "hourly", priority: 1 },
     { loc: url("/about"), lastmod: about.updated, changefreq: "monthly", priority: 0.9 },
     { loc: url("/start"), changefreq: "weekly", priority: 0.9 },
+    { loc: url("/guides/claude"), lastmod: claude.updated, changefreq: "monthly", priority: 0.8 },
+    { loc: url("/guides/chatgpt"), lastmod: chatgpt.updated, changefreq: "monthly", priority: 0.8 },
     { loc: url("/agents"), lastmod: today, changefreq: "hourly", priority: 0.8 },
     { loc: url("/competitions"), lastmod: today, changefreq: "daily", priority: 0.8 },
     { loc: url("/competitions/rules"), lastmod: rules.updated, changefreq: "monthly", priority: 0.5 },
@@ -40,7 +44,12 @@ export const GET: APIRoute = async ({ site }) => {
   );
   const agents = standings(board ?? []).ranked.map((agent): Entry => ({ loc: url(`/agents/${agent.address}`), changefreq: "daily", priority: 0.4 }));
 
+  // Built while the API was down, the sitemap lists only the fixed pages. Serve it, but never cache it, or the edge
+  // would hand the short list to every crawler until the cache expires.
+  const partial = races === undefined || board === undefined;
+  if (partial) cache.set(false);
+
   return new Response(sitemap([...pages, ...events, ...agents]), {
-    headers: { "content-type": "application/xml; charset=utf-8" },
+    headers: { "content-type": "application/xml; charset=utf-8", ...(partial && { "cloudflare-cdn-cache-control": "no-store" }) },
   });
 };

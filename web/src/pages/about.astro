@@ -2,13 +2,10 @@
 import Legal from "../components/Legal.astro";
 import * as about from "../content/about.md";
 import { canonical, identity, site } from "../content/site";
-import { breadcrumbs, faq } from "../lib/seo";
+import { breadcrumbs, faq, questions } from "../lib/seo";
 
 /** The FAQ section of about.md, as question and answer pairs for FAQPage. Keeps the markdown the one source. */
-const facts = [...about.rawContent().matchAll(/^\*\*(.+?\?)\*\* (.+)$/gm)].map(([, term, def]) => ({
-  term,
-  def: def.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"),
-}));
+const facts = questions(about.rawContent());
 const schema = [
   {
     "@type": "AboutPage",

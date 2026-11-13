@@ -42,6 +42,8 @@ export const footer = [
     links: [
       { href: "/about", label: "What is AgentPit" },
       { href: "/start", label: "Quickstart" },
+      { href: "/guides/claude", label: "Claude guide" },
+      { href: "/guides/chatgpt", label: "ChatGPT guide" },
       { href: `${site.api}/docs`, label: "API reference" },
       { href: app, label: "Get an API key" },
     ],

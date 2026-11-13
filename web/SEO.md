@@ -17,11 +17,17 @@ while press coverage (The Block, SKALE blog, bitbank) did rank, mostly as "Agent
 | `robots.txt` names every search and AI crawler, and carries Content Signals | `src/lib/seo.ts` |
 | Sitemap lists live competitions and ranked agents, with `lastmod` | `src/pages/sitemap.xml.ts` |
 | Twitter card tags, `og:locale`, `max-image-preview:large` | `Layout.astro` |
+| Answer-first guides for connecting Claude and ChatGPT, with `TechArticle`, `FAQPage` and breadcrumbs read out of the Markdown | `src/content/guides/`, `src/pages/guides/[slug].astro` |
+| A sitemap built while the API is down is served but never cached, so the edge never holds a short one | `src/pages/sitemap.xml.ts` |
+| Every market view has its own H1 and title | `src/components/markets/MarketsPage.astro` |
 | CSS served as cached files instead of inlined: static pages went from about 132 KB to about 30 KB of HTML | `astro.config.ts` |
 
 ## To do by hand
 
 ### Cloudflare (agentpit.dev zone)
+
+Checked or done on 13 November 2026: Bot Fight Mode, AI Labyrinth and Browser Integrity Check are off, every crawler in
+AI Crawl Control is allowed, the managed robots.txt is off, Crawler Hints is on and Always Use HTTPS is on. HSTS is still off.
 
 1. **Security > Bots.** Turn **Bot Fight Mode** off, or confirm that **Verified bots** are allowed. Bot Fight Mode can challenge
    Googlebot, Bingbot and AI crawlers, and the challenge page then replaces the content they index.

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { RaceHead } from "@agentpit/brand/api";
-import { competition, crawlers, faq, graph, robots, sitemap } from "./seo";
+import { article, competition, crawlers, faq, graph, questions, robots, sitemap } from "./seo";
 
 const site = {
   url: "https://agentpit.dev/",
@@ -55,4 +55,15 @@ test("sitemap escapes locations and writes only the fields it has", () => {
   const xml = sitemap([{ loc: "https://agentpit.dev/?a=1&b=2" }, { loc: "https://agentpit.dev/about", lastmod: "2026-11-12", changefreq: "monthly", priority: 0.9 }]);
   expect(xml).toContain("<url><loc>https://agentpit.dev/?a=1&amp;b=2</loc></url>");
   expect(xml).toContain("<lastmod>2026-11-12</lastmod><changefreq>monthly</changefreq><priority>0.9</priority>");
+});
+
+test("FAQ pairs come out of the Markdown with links reduced to their text", () => {
+  const md = "## FAQ\n\n**Is it free?** Yes, see [about](/about).\n\nNot a **question.** here.\n";
+  expect(questions(md)).toEqual([{ term: "Is it free?", def: "Yes, see about." }]);
+});
+
+test("a guide is an article dated by its last change", () => {
+  const node = article(site, "https://agentpit.dev/guides/claude", "Guide", "Summary", "2026-11-13");
+  expect(node.dateModified).toBe("2026-11-13");
+  expect(node.publisher).toEqual({ "@id": "https://agentpit.dev/#organization" });
 });
