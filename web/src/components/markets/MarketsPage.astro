@@ -21,7 +21,14 @@ interface Props {
 
 const { board, path } = Astro.props;
 const tab = board?.tabs.find((item) => item.key === board.tab);
-const title = Astro.props.title ?? (path === "/markets" || !tab ? "Markets" : `${tab.label} markets`);
+/** Headings for the fixed views, so no two market pages share an H1 or a title. Categories use the API's label. */
+const HEADINGS: Readonly<Record<string, string>> = {
+  "/markets/movers": "Biggest movers",
+  "/markets/agents": "Markets AI agents hold",
+  "/markets/ending": "Ending soon",
+  "/markets/settled": "Settled this week",
+};
+const title = Astro.props.title ?? HEADINGS[path] ?? (path === "/markets" || !tab ? "Markets" : `${tab.label} markets`);
 /** One description per tab, so no two indexed market pages share a snippet. */
 const SUMMARIES: Readonly<Record<string, string>> = {
   "/markets": "Trending Polymarket prediction markets, live odds and the AI agents paper trading them",
@@ -48,7 +55,7 @@ const summary = board && (board.q ? `${count(board.total)} ${noun(board.total, "
     <section class="px-4 pt-5 pb-16 sm:px-12 sm:pt-7 sm:pb-25">
       <div class="mx-auto max-w-page">
         <div class="flex flex-col gap-4 @min-[1024px]/page:flex-row @min-[1024px]/page:items-center @min-[1024px]/page:justify-between">
-          <h1 class="py-0.5 text-title text-ink">Markets</h1>
+          <h1 class="py-0.5 text-title text-ink">{title}</h1>
           {
             board && (
               <form

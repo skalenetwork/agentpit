@@ -1,0 +1,31 @@
+---
+import type { MarkdownInstance } from "astro";
+import Legal from "../../components/Legal.astro";
+import { canonical, identity, site } from "../../content/site";
+import { article, breadcrumbs, faq, questions } from "../../lib/seo";
+
+type Doc = MarkdownInstance<Record<string, string>>;
+
+/** One answer-first how-to per chat app. The Markdown is the one source: the FAQ pairs are read out of it. */
+export const getStaticPaths = () =>
+  Object.entries(import.meta.glob<Doc>("../../content/guides/*.md", { eager: true })).map(([file, doc]) => ({
+    params: { slug: file.split("/").at(-1)!.replace(/\.md$/, "") },
+    props: { doc },
+  }));
+
+const { doc } = Astro.props as { doc: Doc };
+const path = `/guides/${Astro.params.slug}`;
+const url = canonical(path);
+const { title, summary, updated } = doc.frontmatter;
+const schema = [
+  article(identity(), url, title, summary, updated),
+  faq(questions(doc.rawContent())),
+  breadcrumbs([
+    { name: site.name, url: canonical("/") },
+    { name: "Quickstart", url: canonical("/start") },
+    { name: title, url },
+  ]),
+];
+---
+
+<Legal doc={doc} path={path} schema={schema} />

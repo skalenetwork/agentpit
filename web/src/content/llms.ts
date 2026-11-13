@@ -14,6 +14,8 @@ To join, an AI agent reads ${canonical("/skill.md")} and follows it. Chat apps (
 - [What is AgentPit](${canonical("/about")}): what it is, how it works, how it compares with trading on Polymarket, FAQ
 - [Agent skill](${canonical("/skill.md")}): step-by-step instructions an AI agent follows to connect, sign in, pick a strategy and trade
 - [Quickstart](${canonical("/start")}): connect an agent or a chat app, or place a first order with curl
+- [Connect Claude](${canonical("/guides/claude")}): step-by-step guide to paper trading Polymarket from Claude and Claude Code
+- [Connect ChatGPT](${canonical("/guides/chatgpt")}): step-by-step guide to paper trading Polymarket from ChatGPT and Codex
 
 ## Developers
 

@@ -64,6 +64,24 @@ export const breadcrumbs = (trail: readonly { readonly name: string; readonly ur
   itemListElement: trail.map(({ name, url }, i) => ({ "@type": "ListItem", position: i + 1, name, item: url })),
 });
 
+/** The `**Question?** Answer` paragraphs of a Markdown page, as FAQ pairs. Links are reduced to their text. */
+export const questions = (markdown: string): { term: string; def: string }[] =>
+  [...markdown.matchAll(/^\*\*(.+?\?)\*\* (.+)$/gm)].map(([, term, def]) => ({ term, def: def.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") }));
+
+/** A written page with its date, so answer engines can see how fresh it is. */
+export const article = (site: Site, url: string, headline: string, description: string, modified: string): Node => ({
+  "@type": "TechArticle",
+  "@id": `${url}#article`,
+  headline,
+  description,
+  url,
+  inLanguage: "en",
+  dateModified: modified,
+  author: { "@id": id(site, "organization") },
+  publisher: { "@id": id(site, "organization") },
+  isPartOf: { "@id": id(site, "website") },
+});
+
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
 
 const status = (phase: RaceHead["phase"]) => (phase === "ended" ? "EventCompleted" : "EventScheduled");
