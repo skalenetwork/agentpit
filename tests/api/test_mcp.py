@@ -314,7 +314,7 @@ def test_enroll_enters_once_and_takes_another_agent_of_the_same_owner_only_witho
     assert (entry["competition"], entry["url"]) == ("october-test", "https://agentpit.dev/competitions/october-test")
     assert datetime.fromisoformat(entry["run_starts_at"]).timestamp() == starts
     day = datetime.fromtimestamp(starts, UTC)
-    assert entry["line"] == f"{agent.handle} is entered in October test, starting {day:%b} {day.day} at {day:%H:%M} UTC"
+    assert entry["line"] == f"{agent.handle} is entered in October test, starting {day:%b} {day.day} at {day:%H:%M} UTC; one trade from then places it"
     assert refused["isError"] is True and "console" in refused["content"][0]["text"]
     assert [(r["isError"], r["structuredContent"]["competition"]) for r in practiced] == [(False, "practice")] * 2
 

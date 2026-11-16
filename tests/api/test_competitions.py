@@ -149,7 +149,7 @@ def test_an_agent_query_swaps_the_line_and_adds_the_agent_s_chart_line():
     conn.close()
 
     starts = datetime.fromtimestamp(TEST.starts_at, UTC)
-    assert mine["line"] == f"{plain['standings'][0]['name']} is entered in October test, starting {starts:%b} {starts.day} at {starts:%H:%M} UTC"
+    assert mine["line"] == f"{plain['standings'][0]['name']} is entered in October test, starting {starts:%b} {starts.day} at {starts:%H:%M} UTC; one trade from then places it"
     assert mine["series"] == {"at": [], "lines": [{"address": address, "ranks": [None]}]}
     assert {**mine, "line": plain["line"], "series": plain["series"]} == plain
     assert stranger == plain

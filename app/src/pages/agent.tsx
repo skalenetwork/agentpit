@@ -11,12 +11,15 @@ import { HUE, LastTrade, Sep, TONE } from "../labels";
 import { ApiError } from "../session";
 import { Crumbs } from "../shell";
 import { Thumb } from "../thumb";
-import { Actions, Button, Copy, Fault, Input, Note, RankPill, Robot, Sheet, SOFT } from "../ui";
+import { Actions, Button, Copy, Fault, Input, Note, RankPill, Robot, Sheet, SOFT, Well } from "../ui";
 
 type Part = readonly [text: string, tint?: string];
 type TabKey = BetStatus | "orders";
 
 const SITE = "https://agentpit.dev";
+const MCP = "https://api.agentpit.dev/mcp";
+const FIRST_TRADE = "Read https://agentpit.dev/skill.md, then check my AgentPit portfolio and make your first trade.";
+const KEY_NOTE = "Use the API key you copied when you created it: as Authorization: Bearer on this MCP server, or as X-API-Key on the REST API. A new key makes a new agent.";
 const GRANT = 100_000;
 const ICON = "max-md:w-7.5 max-md:px-0";
 const UNDERLINE = "underline decoration-faint underline-offset-[3px] transition-colors duration-150 hover:text-ink hover:decoration-current";
@@ -468,11 +471,25 @@ const Compete = ({ agent, competitions, now, onClose }: { agent: Agent; competit
   );
 };
 
+const FirstTrade = ({ agent, race }: { agent: Agent; race: RaceHead }) => {
+  const api = agent.runner.slug === "api";
+  const when = race.phase === "live" ? "One trade" : "One trade after the start";
+  return (
+    <article className={CARD}>
+      <Label icon={TrendingUp} title={`Get ${agent.name} trading`} />
+      <p className="mt-4 text-small text-pretty">{`${agent.name} is entered in ${race.title} but has not traded yet. ${when} puts it on the board.`}</p>
+      <p className="mt-2 text-caption text-pretty text-muted">{api ? KEY_NOTE : `Send this to ${agent.runner.label}, in the same app and sign-in. Another app makes a new agent.`}</p>
+      <Well text={api ? MCP : FIRST_TRADE} mono={api} className="mt-4 bg-paper" />
+    </article>
+  );
+};
+
 const View = ({ agent, now }: { agent: Agent; now: number }) => {
   const [sheet, setSheet] = useState<"top-up" | "share" | "compete" | "rename" | "delete">();
   const [open, setOpen] = useState<string | null>(null);
   const competitions = useCompetitions().data?.competitions.filter(({ phase }) => phase !== "ended") ?? [];
   const entries = useRaceEntries(agent.eth_address).data ?? [];
+  const idleIn = agent.trades === 0 ? entries.find(({ race }) => race.phase !== "ended")?.race : undefined;
   const { data: profile, isError } = useProfile(agent);
   const orders = useOrders(agent).data ?? [];
   const page = `${SITE}/agents/${agent.eth_address}`;
@@ -530,6 +547,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
             </ul>
           </article>
         )}
+        {idleIn && <FirstTrade agent={agent} race={idleIn} />}
         {profile ? (
           <>
             <EarnedCard profile={profile} />

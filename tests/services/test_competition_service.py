@@ -929,7 +929,7 @@ def test_one_build_serves_every_caller_until_its_ttl_a_phase_boundary_or_an_entr
     assert reads == [[SLUG, "old"], [SLUG], [SLUG], [SLUG], [SLUG]]
     assert (held.race.phase, locked[SLUG].race.phase) == ("upcoming", "locked")
     assert entered.race.line == "October test starts Jan 15 at 08:00 UTC with 1 agent entered"
-    assert entered.entries[address.lower()].line == f"{_short(address)} is entered in October test, starting Jan 15 at 08:00 UTC"
+    assert entered.entries[address.lower()].line == f"{_short(address)} is entered in October test, starting Jan 15 at 08:00 UTC; one trade from then places it"
 
 
 def test_the_race_line_without_a_place_and_the_enroll_line():
@@ -946,7 +946,7 @@ def test_the_race_line_without_a_place_and_the_enroll_line():
     assert live == "October test is live with 1h 2m left and no agent placed yet"
     assert final == "October test ended with no agent placed"
     assert (entry.line("pokeball", STARTS - 1), entry.line("pokeball", STARTS)) == (
-        "pokeball is entered in October test, starting Jan 15 at 08:00 UTC",
+        "pokeball is entered in October test, starting Jan 15 at 08:00 UTC; one trade from then places it",
         "pokeball joined October test; its run ends Jan 22 at 08:00 UTC",
     )
 
