@@ -1,0 +1,281 @@
+---
+import "../../styles/stickers.css";
+import Short from "../../assets/skale-short.svg";
+import Skale from "../../assets/skale.svg";
+import { look, type Logo, type Paid } from "../../lib/stickers";
+
+interface Props {
+  size?: "lg" | "md" | "sm";
+  variant?: Paid;
+  logo?: Logo;
+  kicker?: string;
+  label?: string;
+  skl?: boolean;
+  class?: string;
+}
+
+const { size = "md", variant = look.paid, logo = look.logo, kicker = "Paid in", label = "Prizes paid in SKL on SKALE", skl = true, class: className } = Astro.props;
+const id = `ring${crypto.randomUUID().slice(0, 8)}`;
+---
+
+<span class:list={["sticker sticker-shadow paid inline-flex shrink-0", size, className]} data-variant={variant} data-logo={logo} role="img" aria-label={label}>
+  <span class="cut relative flex">
+    <span class="face relative grid content-center justify-items-start leading-none whitespace-nowrap">
+      <svg class="ring absolute inset-0 size-full" viewBox="0 0 100 100" aria-hidden="true">
+        <path id={id} d="M50 50m-41 0a41 41 0 1 1 82 0a41 41 0 1 1-82 0" fill="none" />
+        <text><textPath href={`#${id}`} textLength="256">AGENTPIT PRIZES · PAID ON CHAIN · </textPath></text>
+      </svg>
+      <span class="kicker font-mono font-medium uppercase">{kicker}</span>
+      <span class="mark flex">
+        <Skale class="full h-full w-auto" aria-hidden="true" />
+        <Short class="short h-full w-auto" aria-hidden="true" />
+      </span>
+      {skl && <span class="ticker font-medium">SKL</span>}
+    </span>
+  </span>
+</span>
+
+<style>
+  .paid {
+    --k: 10px;
+    --h: 16px;
+    --gap: 8px;
+    --pad: 10px 14px 11px;
+    --r: 12px;
+    --fr: 8px;
+  }
+
+  .lg {
+    --k: 11px;
+    --h: 26px;
+    --gap: 12px;
+    --pad: 15px 20px 17px;
+    --r: 16px;
+    --fr: 11px;
+  }
+
+  .sm {
+    --k: 9px;
+    --h: 10px;
+    --gap: 6px;
+    --pad: 0 10px;
+    --r: 999px;
+    --fr: 999px;
+  }
+
+  .cut {
+    padding: calc(var(--sticker-cut) * 0.4px);
+    border-radius: var(--r);
+    background: var(--cut);
+  }
+
+  .lg .cut {
+    padding: calc(var(--sticker-cut) * 0.55px);
+  }
+
+  .sm .cut {
+    padding: calc(var(--sticker-cut) * 0.28px);
+  }
+
+  .face {
+    gap: var(--gap);
+    padding: var(--pad);
+    border-radius: var(--fr);
+    color: #fff;
+    background:
+      radial-gradient(120% 90% at 0% 0%, rgb(255 255 255 / calc(0.14 * var(--sticker-gloss))), #0000 60%),
+      #0b0b0f;
+  }
+
+  .sm .face {
+    grid-auto-flow: column;
+    align-items: center;
+    height: 24px;
+  }
+
+  .kicker {
+    font-size: var(--k);
+    letter-spacing: 0.14em;
+    color: rgb(255 255 255 / 0.6);
+  }
+
+  .mark {
+    height: var(--h);
+  }
+
+  /* Short logo: the bracket S, taller, beside or under the kicker. */
+  [data-logo="full"] .short,
+  [data-logo]:not([data-logo="full"]) .full,
+  .paid:not([data-logo="line-skl"]) .ticker {
+    display: none;
+  }
+
+  /* One line: kicker, short mark (and SKL) side by side. */
+  .paid {
+    --rk: 11px;
+    --rh: 20px;
+    --rpad: 9px 14px 9px 13px;
+  }
+
+  .lg {
+    --rk: 13px;
+    --rh: 30px;
+    --rpad: 13px 20px 13px 18px;
+  }
+
+  .sm {
+    --rk: 9px;
+    --rh: 12px;
+    --rpad: 0 10px;
+  }
+
+  [data-logo^="line"] .face {
+    grid-auto-flow: column;
+    align-items: center;
+    gap: calc(var(--rh) * 0.45);
+    padding: var(--rpad);
+  }
+
+  [data-logo^="line"] .kicker {
+    font-size: var(--rk);
+  }
+
+  [data-logo^="line"] .mark,
+  .sm[data-logo^="line"] .mark {
+    height: var(--rh);
+  }
+
+  .ticker {
+    margin-left: calc(var(--rh) * -0.15);
+    font-size: calc(var(--rh) * 0.78);
+    letter-spacing: 0.02em;
+  }
+
+  [data-logo="line-sans"] .kicker {
+    font-family: inherit;
+    font-size: calc(var(--rk) * 1.35);
+    letter-spacing: -0.01em;
+    text-transform: none;
+    color: inherit;
+  }
+
+  [data-logo="short"] .mark {
+    height: calc(var(--h) * 1.9);
+  }
+
+  .sm[data-logo="short"] .mark {
+    height: 12px;
+  }
+
+  [data-logo="short"][data-variant="stamp"]:not(.sm) .mark {
+    height: calc(var(--h) * 1.7);
+  }
+
+  [data-logo="short"][data-variant="stamp"]:not(.sm) .face {
+    width: calc(var(--h) * 5.6);
+  }
+
+  .ring {
+    display: none;
+    font: 500 7.4px/1 var(--font-mono, ui-monospace, monospace);
+    letter-spacing: 0.08em;
+    fill: currentColor;
+  }
+
+  /* Split: paper band on top, SKALE slab below. */
+  [data-variant="split"] .face {
+    gap: 0;
+    padding: 0;
+    justify-items: stretch;
+  }
+
+  [data-variant="split"] .kicker {
+    padding: calc(var(--k) * 0.75) calc(var(--k) * 1.4);
+    color: #0b0b0f;
+    background: #f6f1e4;
+  }
+
+  [data-variant="split"] .mark {
+    box-sizing: content-box;
+    padding: calc(var(--h) * 0.55) calc(var(--k) * 1.4) calc(var(--h) * 0.6);
+  }
+
+  .sm[data-variant="split"] .face {
+    align-items: stretch;
+  }
+
+  .sm[data-variant="split"] .kicker {
+    display: flex;
+    align-items: center;
+    padding: 0 8px 0 10px;
+  }
+
+  .sm[data-variant="split"] .mark {
+    align-self: center;
+    padding: 0 10px 0 8px;
+  }
+
+  /* Stamp: round seal with ring text. */
+  [data-variant="stamp"]:not(.sm) .cut {
+    border-radius: 50%;
+  }
+
+  [data-variant="stamp"]:not(.sm) .face {
+    overflow: hidden;
+    justify-items: center;
+    aspect-ratio: 1;
+    width: calc(var(--h) * 6.4);
+    padding: 0;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 calc(var(--h) * 0.06) rgb(255 255 255 / 0.35);
+  }
+
+  [data-variant="stamp"]:not(.sm) .ring {
+    display: block;
+    color: rgb(255 255 255 / 0.55);
+  }
+
+  [data-variant="stamp"]:not(.sm) .mark {
+    height: calc(var(--h) * 0.85);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    [data-variant="stamp"] .ring {
+      animation: paid-spin 40s linear infinite var(--sticker-play);
+    }
+  }
+
+  @keyframes paid-spin {
+    to {
+      rotate: 1turn;
+    }
+  }
+
+  /* Holo: dark face inside a holographic die-cut rim. */
+  [data-variant="holo"] .cut {
+    background: linear-gradient(115deg, #ffc4ec, #b9e2ff 18%, #c6ffe0 34%, #fff2b3 50%, #ffcdc4 66%, #d5c6ff 82%, #b9e2ff) 0 0 / 300% 100%;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    [data-variant="holo"] .cut {
+      animation: paid-holo 8s ease-in-out infinite alternate var(--sticker-play);
+    }
+  }
+
+  @keyframes paid-holo {
+    to {
+      background-position: 100% 0;
+    }
+  }
+
+  /* Print: ink on paper, like a rubber stamp. */
+  [data-variant="print"] .face {
+    color: #0b0b0f;
+    background: #fbfaf6;
+    box-shadow: inset 0 0 0 1.5px #0b0b0f;
+  }
+
+  [data-variant="print"] .kicker {
+    color: #2563eb;
+  }
+</style>

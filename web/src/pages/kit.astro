@@ -4,10 +4,16 @@ import Detail from "../components/competitions/Detail.astro";
 import Ticket from "../components/competitions/Ticket.astro";
 import Hero from "../components/Hero.astro";
 import Layout from "../components/Layout.astro";
+import SkaleMark from "../components/SkaleMark.astro";
+import Footer from "../components/Footer.astro";
+import PaidIn from "../components/stickers/PaidIn.astro";
+import Pool from "../components/stickers/Pool.astro";
 import Sheet from "../components/stickers/Sheet.astro";
+import Logo from "@agentpit/brand/logo.svg";
 import { hero } from "../content/home";
 import { competition, competitions } from "../lib/api";
-import { look, materials, palettes } from "../lib/stickers";
+import { feet, marks, places } from "../lib/skale";
+import { logos, look, materials, paids, palettes } from "../lib/stickers";
 
 export const prerender = false;
 
@@ -37,6 +43,14 @@ const knobs = [
   { name: "gloss", label: "Gloss", min: 0, max: 1.5, step: 0.05, value: 1 },
   { name: "tilt", label: "Tilt", min: 0, max: 2, step: 0.1, value: 1 },
 ] as const;
+const pitch: Record<string, string> = {
+  slab: "Black die-cut slab. Loudest, reads as SKALE's own colours.",
+  split: "Paper band with the kicker over a black SKALE band. Most like a label.",
+  stamp: "Round seal with ring text that slowly turns. Matches the prize medals.",
+  holo: "Black face in a holographic rim, a sibling of the foil prize pool.",
+  print: "Ink on paper, like a rubber stamp. Quietest.",
+};
+const blue = "scheme-dark bg-[radial-gradient(120%_120%_at_50%_0%,#3b6cf0,#1e3a8a_60%,#0b1a4a)]";
 const segment = "relative inline-flex h-7 cursor-pointer items-center rounded-control px-2.5 text-label font-medium capitalize text-muted transition-colors duration-150 hover:text-ink has-checked:bg-ink has-checked:text-paper has-focus-visible:outline-2 has-focus-visible:outline-signal";
 ---
 
@@ -63,6 +77,29 @@ const segment = "relative inline-flex h-7 cursor-pointer items-center rounded-co
               <label class={segment}>
                 <input class="sr-only" type="radio" name="pool" value={m} checked={m === look.pool} />
                 {m}
+              </label>
+            ))
+          }
+        </fieldset>
+        <fieldset class="flex items-center rounded-control bg-surface p-1">
+          <legend class="sr-only">Paid in</legend>
+          <span class="px-2 text-label">Paid in</span>
+          {
+            paids.map((v) => (
+              <label class={segment}>
+                <input class="sr-only" type="radio" name="paid" value={v} checked={v === look.paid} />
+                {v}
+              </label>
+            ))
+          }
+        </fieldset>
+        <fieldset class="flex items-center rounded-control bg-surface p-1">
+          <legend class="sr-only">Paid-in logo</legend>
+          {
+            logos.map((v) => (
+              <label class={segment}>
+                <input class="sr-only" type="radio" name="logo" value={v} checked={v === look.logo} />
+                {v}
               </label>
             ))
           }
@@ -112,6 +149,117 @@ const segment = "relative inline-flex h-7 cursor-pointer items-center rounded-co
 
     <section class="px-4 pt-10 sm:px-12">
       <div class="mx-auto max-w-page">
+        <h2 class="text-title text-ink">SKALE options</h2>
+        <p class="mt-1 max-w-text text-small text-pretty">Five takes on the "Paid in SKALE" sticker, each beside the prize pool on paper and on the hero blue, then three header marks and three footer treatments. Pick a sticker with the Paid in knob above to try it on the home ticket and competition page further down.</p>
+
+        <h2 class="mt-8 text-small font-medium text-ink">Holo, short logo, one line</h2>
+        <ol class="mt-3 grid gap-4">
+          {
+            (["line", "line-sans", "line-skl"] as const).map((v) => (
+              <li class="grid overflow-hidden rounded-panel bg-surface/70 lg:grid-cols-2">
+                <p class="col-span-full px-5 pt-4 text-small font-medium text-ink">
+                  {v} <span class="font-normal text-muted">· {{ line: "Mono kicker, like the prize pool.", "line-sans": "Sentence-case kicker, softer.", "line-skl": "Names the token after the mark." }[v]}</span>
+                </p>
+                {[false, true].map((dark) => (
+                  <div class:list={["flex flex-wrap items-center gap-x-6 gap-y-5 p-5", dark && blue]}>
+                    <span class="flex items-end">
+                      <Pool class="[--tilt:-4deg]" prizes={[{ usd: 500, skl: 0 }]} />
+                      <PaidIn class="-ml-1 mb-1 [--tilt:5deg]" variant="holo" logo={v} />
+                    </span>
+                    {!dark && <PaidIn class="[--tilt:-3deg]" size="lg" variant="holo" logo={v} />}
+                    <span class="flex items-center gap-1.5">
+                      <Pool size="sm" prizes={[{ usd: 500, skl: 0 }]} />
+                      <PaidIn size="sm" variant="holo" logo={v} />
+                    </span>
+                  </div>
+                ))}
+              </li>
+            ))
+          }
+        </ol>
+
+        <h2 class="mt-10 text-small font-medium text-ink">Paid in sticker</h2>
+        <ol class="mt-3 grid gap-4 lg:grid-cols-2">
+          {
+            paids.map((v) => (
+              <li class="overflow-hidden rounded-panel bg-surface/70">
+                <p class="px-5 pt-4 text-small font-medium text-ink capitalize">
+                  {v} <span class="font-normal text-muted normal-case">· {pitch[v]}</span>
+                </p>
+                <div class="flex flex-wrap items-end gap-x-6 gap-y-5 p-5">
+                  <span class="flex items-end">
+                    <Pool class="[--tilt:-4deg]" prizes={[{ usd: 500, skl: 0 }]} />
+                    <PaidIn class="-ml-1 [--tilt:6deg]" variant={v} />
+                  </span>
+                  <PaidIn class="[--tilt:-3deg]" size="lg" variant={v} />
+                  <span class="flex items-center gap-1.5">
+                    <Pool size="sm" prizes={[{ usd: 500, skl: 0 }]} />
+                    <PaidIn size="sm" variant={v} />
+                  </span>
+                </div>
+                <div class="flex flex-wrap items-end gap-x-6 gap-y-5 px-5 pb-5">
+                  <span class="w-full font-mono text-caption text-muted">short logo</span>
+                  <span class="flex items-end">
+                    <Pool class="[--tilt:-4deg]" prizes={[{ usd: 500, skl: 0 }]} />
+                    <PaidIn class="-ml-1 [--tilt:6deg]" variant={v} logo="short" />
+                  </span>
+                  <PaidIn class="[--tilt:-3deg]" size="lg" variant={v} logo="short" />
+                  <span class="flex items-center gap-1.5">
+                    <Pool size="sm" prizes={[{ usd: 500, skl: 0 }]} />
+                    <PaidIn size="sm" variant={v} logo="short" />
+                  </span>
+                </div>
+                <div class:list={["flex flex-wrap items-end gap-x-6 gap-y-5 p-5", blue]}>
+                  <span class="flex items-end">
+                    <Pool class="[--tilt:-4deg]" prizes={[{ usd: 500, skl: 0 }]} />
+                    <PaidIn class="-ml-1 [--tilt:6deg]" variant={v} />
+                  </span>
+                  <span class="flex items-center gap-1.5">
+                    <Pool size="sm" prizes={[{ usd: 500, skl: 0 }]} />
+                    <PaidIn size="sm" variant={v} />
+                  </span>
+                </div>
+              </li>
+            ))
+          }
+        </ol>
+
+        <h2 class="mt-10 text-small font-medium text-ink">Header mark</h2>
+        <ol class="mt-3 grid gap-3">
+          {
+            marks.map((m) => (
+              <li class="grid gap-px overflow-hidden rounded-panel bg-line md:grid-cols-2">
+                {[false, true].map((dark) => (
+                  <div class:list={["flex h-15 items-center gap-3 px-5", dark ? blue : "bg-paper"]}>
+                    <Logo class="h-4 w-auto text-ink" aria-hidden="true" />
+                    <SkaleMark variant={m} />
+                    <span class="ml-auto font-mono text-caption text-muted">{dark ? "on hero" : m}</span>
+                  </div>
+                ))}
+              </li>
+            ))
+          }
+        </ol>
+
+        <h2 class="mt-10 text-small font-medium text-ink">Footer</h2>
+        <p class="mt-1 max-w-text text-small text-pretty">Each option as the whole footer. The holo "Runs on" sticker is the same component as the "Paid in" one.</p>
+      </div>
+    </section>
+    <ol class="mt-4 grid gap-6">
+      {
+        feet.map((v) => (
+          <li>
+            <p class="mx-auto max-w-page px-4 font-mono text-caption text-muted sm:px-12 sm:box-content">{v}{v === "strip" && " · current"}</p>
+            <div class="mt-2 border-y border-dashed border-line">
+              <Footer variant={v} />
+            </div>
+          </li>
+        ))
+      }
+    </ol>
+
+    <section class="px-4 pt-16 sm:px-12">
+      <div class="mx-auto max-w-page">
         <h1 class="text-title text-ink">Sticker kit</h1>
         <p class="mt-1 max-w-text text-small text-pretty">Every material and palette side by side with the knobs above. Click a card to try it on the ticket and the competition page below, then copy the settings.</p>
         <ol class="mt-6 grid gap-4 md:grid-cols-2">
@@ -133,13 +281,32 @@ const segment = "relative inline-flex h-7 cursor-pointer items-center rounded-co
 
     <div id="play">
       <section class="px-4 pt-16 sm:px-12">
+        <h2 class="mx-auto max-w-page text-title text-ink">Sticker placement on the home banner</h2>
+        <p class="mx-auto mt-1 max-w-page text-small text-muted">Prize pool and Paid in, six ways. Narrow your window to see the phone layout.</p>
+      </section>
+      {
+        tickets[0] && (
+          <ol class="mt-6 grid gap-px overflow-hidden bg-paper lg:grid-cols-2">
+            {places.map((p) => (
+              <li class:list={["flex flex-col items-center px-4 py-10", blue]}>
+                <Ticket competition={tickets[0]} place={p} />
+                <span class="mt-6 font-mono text-caption text-muted">{p}{p === "stack" && " · current"}</span>
+              </li>
+            ))}
+          </ol>
+        )
+      }
+      <section class="px-4 pt-16 sm:px-12">
         <h2 class="mx-auto max-w-page text-title text-ink">On the home page</h2>
       </section>
       <div class="mt-6 grid gap-px overflow-hidden bg-paper scheme-dark">
         {
-          tickets.map((c) => (
+          [...(tickets[0] ? (["none", "first", "all"] as const).map((seals) => ({ c: tickets[0], seals })) : []), ...tickets.slice(1).map((c) => ({ c, seals: "none" as const }))].map(({ c, seals }) => (
             <Hero class="py-24!">
-              <Ticket slot="above" competition={c} />
+              <span slot="above" class="flex flex-col items-center gap-3">
+                <Ticket competition={c} seals={seals} />
+                <span class="mt-10 font-mono text-caption text-muted">seals: {seals}</span>
+              </span>
               <span class="text-signal">{hero.headline.accent}</span>
               {hero.headline.rest}
               <div slot="visual" class="h-16" />
@@ -183,6 +350,7 @@ const segment = "relative inline-flex h-7 cursor-pointer items-center rounded-co
       el.dataset.material = value(el.classList.contains("pool") ? "pool" : "material");
       el.dataset.palette = value("palette");
     }
+    for (const el of play.querySelectorAll<HTMLElement>(".paid")) Object.assign(el.dataset, { variant: value("paid"), logo: value("logo") });
     surface.classList.toggle("scheme-dark", value("surface") === "dark");
     surface.classList.toggle("scheme-light", value("surface") === "light");
     for (const card of document.querySelectorAll<HTMLElement>("[data-pick]")) {

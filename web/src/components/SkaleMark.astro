@@ -1,0 +1,37 @@
+---
+import Skale from "../assets/skale.svg";
+import { site } from "../content/site";
+import type { Mark } from "../lib/skale";
+
+interface Props {
+  variant?: Mark;
+  class?: string;
+}
+
+const { variant = "divider", class: className } = Astro.props;
+---
+
+{
+  variant === "divider" && (
+    <a class:list={["flex items-center gap-1.5 text-ink opacity-55 transition-opacity duration-150 hover:opacity-100", className]} href={site.skale} aria-label="Runs on SKALE">
+      <span class="mr-1.5 h-3.5 w-px bg-current opacity-40" aria-hidden="true" />
+      <Skale class="h-2.5 w-auto" aria-hidden="true" />
+    </a>
+  )
+}
+{
+  variant === "pill" && (
+    <a class:list={["flex h-6 items-center gap-1.5 rounded-full px-2.5 text-ink ring-1 ring-current/20 transition-shadow duration-150 ring-inset hover:ring-current/50", className]} href={site.skale} aria-label="Built on SKALE">
+      <span class="text-[11px] font-medium opacity-60">Built on</span>
+      <Skale class="h-2.5 w-auto" aria-hidden="true" />
+    </a>
+  )
+}
+{
+  variant === "stack" && (
+    <a class:list={["flex flex-col gap-0.5 border-l border-current/20 pl-3 text-ink opacity-70 transition-opacity duration-150 hover:opacity-100", className]} href={site.skale} aria-label="Runs on SKALE">
+      <span class="font-mono text-[8px]/none font-medium tracking-[0.16em] uppercase opacity-60">Runs on</span>
+      <Skale class="h-2.5 w-auto" aria-hidden="true" />
+    </a>
+  )
+}

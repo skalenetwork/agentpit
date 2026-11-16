@@ -10,7 +10,11 @@ export const materials = ["foil", "soft", "flat", "line"] as const;
 export const palettes = ["medal", "pastel", "noir"] as const;
 export type Material = (typeof materials)[number];
 export type Palette = (typeof palettes)[number];
-export const look: { readonly material: Material; readonly palette: Palette; readonly pool: Material } = { material: "flat", palette: "pastel", pool: "foil" };
+export const paids = ["slab", "split", "stamp", "holo", "print"] as const;
+export type Paid = (typeof paids)[number];
+export const logos = ["full", "short", "line", "line-sans", "line-skl"] as const;
+export type Logo = (typeof logos)[number];
+export const look: { readonly material: Material; readonly palette: Palette; readonly pool: Material; readonly paid: Paid; readonly logo: Logo } = { material: "flat", palette: "pastel", pool: "foil", paid: "holo", logo: "line-sans" };
 
 export const metals: Record<Metal, readonly string[]> = {
   gold: ["#6b4500", "#b98410", "#ffeeb0", "#e3b440", "#8a5e05", "#f8dc7e", "#a37210"],

@@ -14,6 +14,7 @@ import Prompt from "../Prompt.astro";
 import RunnerMark from "../RunnerMark.astro";
 import Share from "../Share.astro";
 import Label from "../stickers/Label.astro";
+import PaidIn from "../stickers/PaidIn.astro";
 import Pool from "../stickers/Pool.astro";
 import Seal from "../stickers/Seal.astro";
 import RaceChart from "./RaceChart.astro";
@@ -111,7 +112,14 @@ const versus = (s: Placed) =>
 
 <div class="relative overflow-hidden rounded-panel bg-surface/70">
   <Share class="absolute top-3 right-3 sm:top-4 sm:right-4" title="Share the race" line={page.line} url={url} image={image} />
-  {!practice && <Pool class="absolute top-14 left-10 [--tilt:-7deg] max-xl:hidden" size="lg" prizes={page.prizes} />}
+  {
+    !practice && (
+      <span class="absolute top-14 left-10 flex flex-col items-start max-xl:hidden">
+        <Pool class="[--tilt:-7deg]" size="lg" prizes={page.prizes} />
+        <PaidIn class="-mt-3 ml-24 [--tilt:5deg]" size="lg" />
+      </span>
+    )
+  }
   <div class:list={["flex flex-col items-center px-5 pt-8 text-center sm:px-10 sm:pt-12", !podium.length && "pb-8 sm:pb-12"]}>
     <span class:list={["inline-flex h-6 items-center gap-1.5 rounded-control px-2.5 text-label font-medium whitespace-nowrap", sticker.look]}>
       {page.phase === "live" && <span class="relative size-1.5 rounded-full bg-paper after:absolute after:inset-0 after:rounded-full after:bg-paper motion-safe:after:animate-ping" />}
@@ -121,7 +129,7 @@ const versus = (s: Placed) =>
     <p class="mt-2 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-small tabular-nums *:whitespace-nowrap">
       <time class="max-sm:basis-full" datetime={new Date(page.startsAt * 1000).toISOString()} title={span(page.startsAt, page.endsAt)}>{day(page.startsAt)} to {day(page.endsAt)}</time>
       <span class="text-faint max-sm:hidden" aria-hidden="true">·</span>
-      {practice ? <span class="inline-flex h-6 items-center rounded-control bg-ink/7 px-2.5 text-label font-medium text-muted">Practice</span> : <Pool class="mx-1 [--tilt:-2deg] xl:hidden" size="sm" prizes={page.prizes} />}
+      {practice ? <span class="inline-flex h-6 items-center rounded-control bg-ink/7 px-2.5 text-label font-medium text-muted">Practice</span> : <span class="mx-1 inline-flex items-center gap-1.5 xl:hidden"><Pool class="[--tilt:-2deg]" size="sm" prizes={page.prizes} /><PaidIn class="[--tilt:3deg]" size="sm" /></span>}
       <span class:list={["text-faint", !practice && "xl:hidden"]} aria-hidden="true">·</span>
       <span>{page.entrants ? `${count(page.entrants)} ${noun(page.entrants, "entrant")}` : page.phase === "ended" ? "No entrants" : "Be the first"}</span>
     </p>
