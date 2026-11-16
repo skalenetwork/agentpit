@@ -79,6 +79,7 @@ from agentpit.services.event_service import EventService
 from agentpit.services.leaderboard_service import LeaderboardService, drain
 from agentpit.services.market_service import ChainTask, sweep
 from agentpit.services.order_service import OrderService
+from agentpit.services import product_events
 
 log = logging.getLogger(__name__)
 
@@ -187,6 +188,25 @@ def _run_order_cleanup(db: DbSession, settings: Settings) -> None:
             conn, now - settings.idempotency_key_retention_seconds
         )
         TableWrite.purge_mirrored_trades(conn, now - 30 * 86_400, limit=10_000)
+
+
+def _start_product_events(db_session: DbSession, settings: Settings) -> asyncio.Task | None:
+    """Forward product events to PostHog when it is configured. Without both
+    the key and the id secret, events stay in the database only."""
+    if not settings.posthog_api_key:
+        return None
+    if not settings.analytics_id_secret:
+        log.error("POSTHOG_API_KEY is set but ANALYTICS_ID_SECRET is not, so product events are not forwarded")
+        return None
+    forwarder = product_events.Forwarder(
+        db_session,
+        settings.posthog_api_key,
+        settings.posthog_host,
+        settings.analytics_id_secret,
+        settings.analytics_env,
+    )
+    log.info("Forwarding product events to %s", settings.posthog_host)
+    return asyncio.create_task(supervise("product events", forwarder.run))
 
 
 async def _order_cleanup_loop(db: DbSession, settings: Settings) -> None:
@@ -430,6 +450,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for workos_id in TableRead.unnamed_owners(conn):
                 TableWrite.ensure_owner(conn, workos_id)
             CompetitionService.sync(conn, FOLDER, int(time.time()))
+            # Before serving: first-trade detection relies on every agent that
+            # already traded being marked.
+            product_events.backfill(conn)
         try:
             wrapped = EventService(db_session).ensure_singleton_events_for_orphans()
             if wrapped:
@@ -535,6 +558,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             _order_cleanup_loop(db_session, settings)
         )
         live_task = asyncio.create_task(supervise("live", live.run))
+        analytics_task = _start_product_events(db_session, settings)
 
         # Started after house provisioning on purpose: provisioning is a run of
         # sponsored sends, and a first refresh that finds the admin low must
@@ -549,6 +573,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 *leaderboard_tasks,
                 order_cleanup_task,
                 live_task,
+                analytics_task,
                 admin_gas_task,
                 *sync_tasks,
                 *mirror_tasks,

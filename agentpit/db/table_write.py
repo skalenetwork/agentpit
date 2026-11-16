@@ -9,6 +9,7 @@ from eth_account import Account
 from eth_account.signers.local import LocalAccount
 
 from agentpit.common import check_state
+from agentpit.datastructures.attribution import Attribution
 from agentpit.datastructures.board import WireTeam
 from agentpit.datastructures.competition import LOCK, Competition, Holding
 from agentpit.datastructures.create_market_request import CreateMarketRequest
@@ -96,6 +97,9 @@ class TableWrite:
             (deleted_at, workos_id, workos_id),
         )
         db.execute("DELETE FROM owners WHERE WORKOS_ID = %s", (workos_id,))
+        # The person's product events go with the account; the forwarder can
+        # no longer send the ones not yet sent.
+        db.execute("DELETE FROM product_events WHERE OWNER_WORKOS_ID = %s", (workos_id,))
         db.execute(
             "UPDATE competition_entries SET OWNER = 'deleted:' || USER_ID WHERE OWNER = %s", (workos_id,)
         )
@@ -184,10 +188,30 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
-    def ensure_owner(db: psycopg.Connection, workos_id: str) -> None:
-        if TableRead.get_owner(db, workos_id) is None:
-            name = pick_handle(taken=lambda candidate: TableRead.owner_name_taken(db, candidate, workos_id))
-            db.execute("INSERT INTO owners (WORKOS_ID, NAME) VALUES (%s, %s) ON CONFLICT DO NOTHING", (workos_id, name))
+    def ensure_owner(db: psycopg.Connection, workos_id: str, via: str | None = None) -> bool:
+        """Create the owner row when there is none. True when this call created
+        it: the person's sign-up, which `via` says how it came (`console_code`,
+        `console_redirect`, `mcp`...)."""
+        if TableRead.get_owner(db, workos_id) is not None:
+            return False
+        name = pick_handle(taken=lambda candidate: TableRead.owner_name_taken(db, candidate, workos_id))
+        row = db.execute(
+            "INSERT INTO owners (WORKOS_ID, NAME, CREATED_AT, SIGNUP_VIA) VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT DO NOTHING RETURNING WORKOS_ID",
+            (workos_id, name, int(_time.time()), via),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def record_attribution(db: psycopg.Connection, workos_id: str, attribution: Attribution) -> None:
+        """First touch wins: fill each campaign tag only while it is empty, so
+        a later visit by another link never rewrites where the person came
+        from."""
+        db.execute(
+            "UPDATE owners SET FIRST_REF = COALESCE(FIRST_REF, %s), UTM_SOURCE = COALESCE(UTM_SOURCE, %s), "
+            "UTM_MEDIUM = COALESCE(UTM_MEDIUM, %s), UTM_CAMPAIGN = COALESCE(UTM_CAMPAIGN, %s) WHERE WORKOS_ID = %s",
+            (attribution.ref, attribution.utm_source, attribution.utm_medium, attribution.utm_campaign, workos_id),
+        )
 
     @staticmethod
     def lock_owner(db: psycopg.Connection, workos_id: str) -> None:
@@ -612,10 +636,13 @@ class TableWrite:
         return cur.rowcount == 1
 
     @staticmethod
-    def leave_competition(db: psycopg.Connection, slug: str, user_id: str) -> None:
-        db.execute(
-            "DELETE FROM competition_entries WHERE SLUG = %s AND USER_ID = %s", (slug, user_id)
-        )
+    def leave_competition(db: psycopg.Connection, slug: str, user_id: str) -> str | None:
+        """Remove the entry. The owner it was entered under, or None when there
+        was no entry."""
+        row = db.execute(
+            "DELETE FROM competition_entries WHERE SLUG = %s AND USER_ID = %s RETURNING OWNER", (slug, user_id)
+        ).fetchone()
+        return row["OWNER"] if row else None
 
     @staticmethod
     def capture_entry(
