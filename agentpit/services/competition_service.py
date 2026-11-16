@@ -128,7 +128,7 @@ class Enrollment(BaseModel):
     def line(self, name: str, now: int) -> str:
         """The sentence the agent relays about its entry."""
         if now < self.run_starts_at:
-            return f"{name} is entered in {self.title}, starting {_date(self.run_starts_at)}"
+            return f"{name} is entered in {self.title}, starting {_date(self.run_starts_at)}; one trade from then places it"
         return f"{name} joined {self.title}; its run ends {_date(self.ends_at)}"
 
 
@@ -239,7 +239,7 @@ def _agent_line(
     head: RaceHead, s: Standing, below: Standing | None, started: bool, crowded: HeldEvent | None, now: int
 ) -> str:
     if head.phase in ("upcoming", "locked"):
-        return f"{s.name} is entered in {head.title}, starting {_date(head.startsAt)}"
+        return f"{s.name} is entered in {head.title}, starting {_date(head.startsAt)}; one trade from then places it"
     if s.disqualified:
         return f"{s.name} is disqualified from {head.title}"
     if head.phase == "ended" and s.rank is None:
