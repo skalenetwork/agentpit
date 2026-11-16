@@ -47,6 +47,7 @@ from agentpit.onchain.tx_sender import FORGET_DONE_AFTER_S, TxDropped, TxUnknown
 from agentpit.datastructures.open_order import OpenOrder
 from agentpit.polymarket.format import decimal_str_to_size_micro, price_to_decimal_str, price_to_float, size_to_decimal_str
 from agentpit.polymarket.resolve import ResolvedOutcome, resolve_by_token_id
+from agentpit.services import product_events
 from agentpit.services.leaderboard_service import touch
 from agentpit.services.market_service import market_lock
 
@@ -1044,6 +1045,12 @@ class OrderService:
                 taker_row["API_KEY"],          # internal filter key (never serialized)
                 maker_row["API_KEY"],          # internal filter key
             ),
+        )
+        product_events.first_trade(
+            conn,
+            taker_row["API_KEY"],
+            resolved.market.slug if resolved else condition_id,
+            int(datetime.now(timezone.utc).timestamp()),
         )
 
     # --- on-chain settlement -------------------------------------------

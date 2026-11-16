@@ -1,3 +1,4 @@
+import { landing, withAttribution } from "./attribution";
 import { ApiError } from "./session";
 
 const AUTHORIZE = "https://api.workos.com/user_management/authorize";
@@ -27,7 +28,8 @@ export const googleUrl = (client: string, origin: string, state: string) =>
 
 export const startGoogle = clientId
   ? (redirect: string | undefined) => {
-      const state = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const state = withAttribution(nonce, landing);
       sessionStorage.setItem(STATE, state);
       sessionStorage.setItem(REDIRECT, redirect ?? "/");
       location.assign(googleUrl(clientId, location.origin, state));
