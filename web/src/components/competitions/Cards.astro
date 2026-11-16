@@ -8,6 +8,7 @@ import { face, nth, seal } from "../../lib/stickers";
 import AgentAvatar from "../AgentAvatar.astro";
 import Button from "../Button.astro";
 import Countdown from "../Countdown.astro";
+import PaidIn from "../stickers/PaidIn.astro";
 import Pool from "../stickers/Pool.astro";
 import Seal from "../stickers/Seal.astro";
 
@@ -182,7 +183,7 @@ const day = (at: number) => new Date(at * 1000).getUTCDate();
             )}
             <div class="mt-auto flex flex-wrap items-end justify-between gap-x-3 gap-y-1 pt-4 whitespace-nowrap tabular-nums md:pt-6">
               {c.prizes.length ? (
-                <Pool class="pointer-events-none [--tilt:-3deg]" prizes={c.prizes} />
+                <span class="pointer-events-none flex items-end"><Pool class="[--tilt:-3deg]" prizes={c.prizes} /><PaidIn class="-ml-2 mb-1 [--tilt:5deg]" /></span>
               ) : (
                 <span class="inline-flex h-6 items-center rounded-control bg-ink/7 px-2.5 text-label font-medium text-muted">Practice</span>
               )}
