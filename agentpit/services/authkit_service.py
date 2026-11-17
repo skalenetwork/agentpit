@@ -26,7 +26,11 @@ from agentpit.domain.exceptions import (
     InvalidCredentialsError,
 )
 from agentpit.domain.handles import pick_handle
-from agentpit.auth.workos_client import WorkOsClient, WorkOsSession
+from agentpit.auth.workos_client import (
+    WorkOsClient,
+    WorkOsNotFoundError,
+    WorkOsSession,
+)
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +49,21 @@ def _adoptable(user: User, session: WorkOsSession) -> bool:
         and not user.is_bot
         and user.agent_app is None
         and user.workos_user_id is None
+    )
+
+
+def _reclaimable(user: User, session: WorkOsSession) -> bool:
+    """Whether a row another identity holds may pass to this one once WorkOS
+    says that identity is gone: `_adoptable` with the identity present instead
+    of null. A deleted row never matches an address -- `delete_account` clears
+    it -- and is excluded all the same.
+    """
+    return (
+        session.email_verified
+        and not user.is_bot
+        and user.agent_app is None
+        and user.deleted_at is None
+        and user.workos_user_id is not None
     )
 
 
@@ -283,25 +302,19 @@ class AuthKitService:
         was stored as typed.
 
         Raises `InvalidCredentialsError` when the row with this address is not
-        one a sign-in may take (see `_adoptable`).
+        one a sign-in may take (see `_adoptable` and `_reclaim`).
         """
         with self._db.write() as conn:
             existing = TableRead.get_user_by_email_ci(conn, session.email)
             if existing is None:
                 return None
-            if not _adoptable(existing, session):
-                log.warning(
-                    "refused to link workos user %s to user %s by email",
-                    session.workos_user_id,
-                    existing.user_id,
-                )
-                raise InvalidCredentialsError("invalid session")
+            adoptable = _adoptable(existing, session)
             # The password on that row goes with the link -- see
             # `TableWrite.link_workos_identity` for why. Nobody ever verified
             # that whoever set it owns this address; the code we just mailed is
             # the only proof of ownership in play, so it takes the account
             # whole.
-            if not TableWrite.link_workos_identity(
+            if adoptable and not TableWrite.link_workos_identity(
                 conn, existing.user_id, session.workos_user_id
             ):
                 # Between the read above and this write the row went away, or
@@ -309,6 +322,11 @@ class AuthKitService:
                 # credentials for an account that is gone or someone else's.
                 log.warning("workos link found no free row for user %s", existing.user_id)
                 raise InvalidCredentialsError("invalid session")
+        if not adoptable:
+            # Outside the transaction: whether the identity holding the row
+            # still exists is a question for WorkOS, and a round trip must not
+            # hold a write lock.
+            return self._reclaim(existing, session)
         # `existing` was read before the stamp, so reflect it locally rather
         # than re-reading the row. Only the identity changed: the password is
         # deliberately left in place (see `TableWrite.link_workos_identity`),
@@ -321,6 +339,89 @@ class AuthKitService:
         return existing.model_copy(
             update={"workos_user_id": session.workos_user_id}
         )
+
+    def _reclaim(self, existing: User, session: WorkOsSession) -> User:
+        """Take a row whose identity WorkOS no longer has, or refuse.
+
+        `DELETE /me` deletes the WorkOS user before it clears the row, so a
+        failure in between leaves the address on a row held by an identity
+        that is gone -- as does a user deleted in the WorkOS dashboard, or by
+        another deployment on the same WorkOS environment. Every new identity
+        for that address was then refused, for good, by code and by Google
+        alike.
+
+        A WorkOS id is never reused, so a 404 for it is as good as the null
+        `_adoptable` asks for, and the proof of the address is the same one:
+        WorkOS verified it. WorkOS is asked only about a row a sign-in could
+        otherwise take, and anything short of a 404 refuses -- an identity
+        WorkOS still has keeps its row.
+        """
+        gone = existing.workos_user_id
+        if (
+            gone is None
+            or not _reclaimable(existing, session)
+            or not self._identity_gone(gone)
+        ):
+            log.warning(
+                "refused to link workos user %s to user %s by email",
+                session.workos_user_id,
+                existing.user_id,
+            )
+            raise InvalidCredentialsError("invalid session")
+        try:
+            with self._db.write() as conn:
+                moved = TableWrite.relink_workos_identity(
+                    conn, existing.user_id, gone, session.workos_user_id
+                )
+                left = TableRead.agents_owned_by(conn, gone) if moved else []
+        except UniqueViolation:
+            # Something keyed by the new identity -- most likely an agent its
+            # MCP app made just now -- was written between the move's check
+            # and its write. Nothing moved, and the next sign-in sees it.
+            log.warning(
+                "workos relink of user %s to %s collided with a row written meanwhile",
+                existing.user_id,
+                session.workos_user_id,
+            )
+            raise InvalidCredentialsError("invalid session")
+        if not moved:
+            # The window `link_workos_identity` has too: between the read and
+            # this write the row went away, or another sign-in took it first.
+            log.warning(
+                "workos relink found user %s no longer held by %s",
+                existing.user_id,
+                gone,
+            )
+            raise InvalidCredentialsError("invalid session")
+        log.info(
+            "moved user %s from deleted workos user %s to %s",
+            existing.user_id,
+            gone,
+            session.workos_user_id,
+        )
+        if left:
+            # Still live and still trading on their API keys, but no longer on
+            # the person's list: worth an operator's look.
+            log.warning(
+                "left %d live agents with deleted workos user %s: workos user "
+                "%s already has an agent for each of their apps",
+                len(left),
+                gone,
+                session.workos_user_id,
+            )
+        return existing.model_copy(
+            update={"workos_user_id": session.workos_user_id}
+        )
+
+    def _identity_gone(self, workos_user_id: str) -> bool:
+        """Whether WorkOS answers 404 for this user. Every other failure is
+        raised: unreachable is a 503 and a rate limit a 429, the same answers
+        the exchange just before this one would have given."""
+        try:
+            self._workos.get_user(workos_user_id)
+        except WorkOsNotFoundError:
+            return True
+        return False
 
     def _create_account(self, session: WorkOsSession) -> User:
         linked = self._link_existing_account(session)

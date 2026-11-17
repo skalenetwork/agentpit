@@ -7,6 +7,7 @@ from agentpit.auth.workos_client import (
     ConnectApp,
     FakeWorkOsClient,
     WorkOsError,
+    WorkOsNotFoundError,
     WorkOsRateLimitedError,
     WorkOsSession,
     WorkOsUnavailableError,
@@ -395,3 +396,27 @@ def test_get_user_reads_the_user_by_id():
 
     user = _real(handler).get_user("user_01")
     assert user == WorkOsUser(workos_user_id="user_01", email="a@b.com", email_verified=True)
+
+
+def test_a_user_workos_does_not_have_is_not_found_and_still_a_workos_error():
+    # Sign-in hands an account over on this answer alone, so it must be the
+    # 404 and nothing else: a refusal or an outage is not proof the user is gone.
+    client = _real(lambda _r: httpx.Response(404, json={"code": "entity_not_found"}))
+    with pytest.raises(WorkOsNotFoundError) as caught:
+        client.get_user("user_gone")
+    assert isinstance(caught.value, WorkOsError)
+    for status in (400, 401, 403, 500):
+        refusing = _real(lambda _r, s=status: httpx.Response(s, json={}))
+        with pytest.raises(WorkOsError) as refused:
+            refusing.get_user("user_01")
+        assert not isinstance(refused.value, WorkOsNotFoundError)
+
+
+def test_the_fake_answers_a_missing_user_as_the_real_api_does():
+    fake = FakeWorkOsClient()
+    user = fake.create_user(email="a@b.com", password_hash=None)
+    fake.delete_user(user.workos_user_id)
+    with pytest.raises(WorkOsNotFoundError):
+        fake.get_user(user.workos_user_id)
+    with pytest.raises(WorkOsNotFoundError):
+        fake.delete_user(user.workos_user_id)

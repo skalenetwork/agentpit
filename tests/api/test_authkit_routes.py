@@ -152,6 +152,33 @@ def test_signing_in_twice_returns_the_same_account(workos):
     assert first["user"]["eth_address"] == second["user"]["eth_address"]
 
 
+def test_an_address_whose_workos_user_is_gone_signs_in_to_its_account_again(workos):
+    # What a `DELETE /me` that failed after its WorkOS call leaves: the WorkOS
+    # user is gone and the row still holds the address. From then on both doors
+    # answered 401 for that address, the callback page as an expired link.
+    with TestClient(app) as client:
+        client.post("/auth/code", json={"email": "back@example.com"})
+        first = client.post(
+            "/auth/session",
+            json={"email": "back@example.com", "code": _code(workos, "back@example.com")},
+        ).json()
+        workos.delete_user(workos.find_user_by_email("back@example.com").workos_user_id)
+
+        by_google = client.post(
+            "/auth/callback",
+            json={"code": workos.issue_authorization_code("back@example.com")},
+        )
+        client.post("/auth/code", json={"email": "back@example.com"})
+        by_code = client.post(
+            "/auth/session",
+            json={"email": "back@example.com", "code": _code(workos, "back@example.com")},
+        )
+    assert by_google.status_code == 200, by_google.text
+    assert by_code.status_code == 200, by_code.text
+    assert by_google.json()["user"]["user_id"] == first["user"]["user_id"]
+    assert by_code.json()["user"]["user_id"] == first["user"]["user_id"]
+
+
 def test_refresh_returns_a_new_access_token_for_the_same_user(workos):
     with TestClient(app) as client:
         client.post("/auth/code", json={"email": "e@example.com"})
