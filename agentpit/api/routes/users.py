@@ -20,6 +20,7 @@ from agentpit.api.deps import (
     SettingsDep,
     WorkOsClientDep,
 )
+from agentpit.auth.workos_client import WorkOsNotFoundError
 from agentpit.datastructures.agent_summary import AgentSummary, NewAgent, OwnedAgent
 from agentpit.datastructures.auth_response import UserPublic
 from agentpit.datastructures.change_password_request import ChangePasswordRequest
@@ -147,7 +148,13 @@ def delete_me(
     with db.read() as conn:
         agents = TableRead.agents_owned_by(conn, owner)
     if workos is not None:
-        workos.delete_user(owner)
+        try:
+            workos.delete_user(owner)
+        except WorkOsNotFoundError:
+            # Already gone: an earlier attempt deleted the WorkOS user and then
+            # failed before the rows below were cleared. Finishing them is what
+            # this retry is for; refusing it left the account half-deleted.
+            pass
     with db.write() as conn:
         TableWrite.delete_account(conn, owner, user.email, int(time.time()))
     for account in (user, *agents):

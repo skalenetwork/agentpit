@@ -117,6 +117,17 @@ class WorkOsRateLimitedError(WorkOsError):
     """
 
 
+class WorkOsNotFoundError(WorkOsError):
+    """WorkOS answered 404: the object we named does not exist.
+
+    A subclass for the same reason as the two above: every `except WorkOsError`
+    keeps catching it unchanged. It exists for the two callers that must tell
+    "gone" from "refused": sign-in, which hands an account to a new identity
+    only once WorkOS says the identity holding it no longer exists, and
+    `DELETE /me`, which takes a WorkOS user that is already gone as deleted.
+    """
+
+
 API_BASE = "https://api.workos.com"
 
 #: A WorkOS API key: `sk_test_…` / `sk_live_…`. Matched unanchored, because it
@@ -204,6 +215,11 @@ class RealWorkOsClient:
             # redaction as every other error body.
             raise WorkOsRateLimitedError(
                 f"WorkOS {method} {path} returned 429: "
+                f"{_redact(response.text, secrets)[:500]}"
+            )
+        if response.status_code == 404:
+            raise WorkOsNotFoundError(
+                f"WorkOS {method} {path} returned 404: "
                 f"{_redact(response.text, secrets)[:500]}"
             )
         if response.status_code >= 400:
@@ -391,13 +407,16 @@ class FakeWorkOsClient:
         return self.applications[client_id]
 
     def delete_user(self, workos_user_id: str) -> None:
+        # The real API answers 404 for a user that is not there, and
+        # `DELETE /me` depends on telling that apart from a refusal.
+        self.get_user(workos_user_id)
         self._by_email = {k: u for k, u in self._by_email.items() if u.workos_user_id != workos_user_id}
 
     def get_user(self, workos_user_id: str) -> WorkOsUser:
         for user in self._by_email.values():
             if user.workos_user_id == workos_user_id:
                 return user
-        raise WorkOsError(f"WorkOS GET /user_management/users/{workos_user_id} returned 404")
+        raise WorkOsNotFoundError(f"WorkOS GET /user_management/users/{workos_user_id} returned 404")
 
 
 def build_workos_client(

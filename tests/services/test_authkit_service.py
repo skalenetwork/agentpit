@@ -3,7 +3,11 @@ import logging
 import pytest
 
 from agentpit.auth.disposable_email import DisposableEmailChecker
-from agentpit.auth.workos_client import FakeWorkOsClient, WorkOsError
+from agentpit.auth.workos_client import (
+    FakeWorkOsClient,
+    WorkOsError,
+    WorkOsUnavailableError,
+)
 from agentpit.config import Settings
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
@@ -14,6 +18,7 @@ from agentpit.domain.exceptions import (
     InvalidCredentialsError,
     OnboardingError,
 )
+from agentpit.services.agent_accounts import AgentAccounts
 from agentpit.services.authkit_service import AuthKitService
 
 
@@ -494,18 +499,148 @@ def test_a_sign_in_never_adopts_a_bot_row_by_email(address):
 
 
 def test_a_row_another_identity_holds_is_not_handed_to_this_one():
+    # The holder must be one WorkOS still has: a row whose identity is gone is
+    # handed over (see the tests after this one).
     workos = FakeWorkOsClient()
     svc, db = _service(workos)
     user_id = _legacy_password_row(db, "carol@corp.com")
+    holder = workos.create_user(email="carol.old@corp.com", password_hash=None)
     with db.write() as conn:
-        TableWrite.set_workos_user_id(conn, user_id, "user_someone_else")
+        TableWrite.set_workos_user_id(conn, user_id, holder.workos_user_id)
 
     with pytest.raises(InvalidCredentialsError):
         svc.sign_in_with_authorization_code(
             workos.issue_authorization_code("carol@corp.com")
         )
 
-    assert _workos_id_of(db, user_id) == "user_someone_else"
+    assert _workos_id_of(db, user_id) == holder.workos_user_id
+
+
+# --- a row whose identity WorkOS no longer has ------------------------------
+# `DELETE /me` deletes the WorkOS user before it clears the row, so a failure
+# in between leaves the address on a row held by a deleted identity -- as does
+# deleting the user in the WorkOS dashboard. Every new identity for the
+# address used to be refused, for good, on both doors.
+
+
+def test_a_row_whose_identity_workos_deleted_is_handed_to_the_new_one():
+    workos, onboarder = FakeWorkOsClient(), _Onboarder()
+    svc, db = _service(workos, onboarder)
+    svc.send_code("erin@example.com")
+    first = svc.sign_in("erin@example.com", workos.last_code("erin@example.com"))
+    gone = first.user.workos_user_id
+    assert gone is not None
+    workos.delete_user(gone)
+
+    svc.send_code("erin@example.com")
+    second = svc.sign_in("erin@example.com", workos.last_code("erin@example.com"))
+
+    assert second.user.user_id == first.user.user_id
+    assert second.user.eth_address == first.user.eth_address
+    assert second.user.workos_user_id not in (None, gone)
+    assert _workos_id_of(db, first.user.user_id) == second.user.workos_user_id
+    assert onboarder.calls == [first.user.user_id]  # the same wallet, not a second
+
+
+def test_the_agents_owner_name_and_entries_move_with_the_account():
+    workos = FakeWorkOsClient()
+    svc, db = _service(workos)
+    first = svc.sign_in_with_authorization_code(
+        workos.issue_authorization_code("fay@example.com")
+    )
+    gone = first.user.workos_user_id
+    assert gone is not None
+    accounts = AgentAccounts(db, lambda *_: pytest.fail("must not onboard"))
+    agent = accounts.agent_for(gone, "Claude", None, None)
+    assert agent is not None
+    with db.write() as conn:
+        TableWrite.update_owner(conn, gone, "Fay_Owner", None)
+        TableWrite.enter_competition(conn, "monthly", gone, agent.user_id, 1, False)
+    workos.delete_user(gone)
+
+    second = svc.sign_in_with_authorization_code(
+        workos.issue_authorization_code("fay@example.com")
+    )
+
+    new = second.user.workos_user_id
+    assert new is not None and new != gone
+    assert second.user.user_id == first.user.user_id
+    with db.read() as conn:
+        assert [a.user_id for a in TableRead.agents_owned_by(conn, new)] == [agent.user_id]
+        assert TableRead.get_owner(conn, new).name == "Fay_Owner"
+        assert TableRead.get_owner(conn, gone) is None
+        owners = conn.execute(
+            "SELECT OWNER FROM competition_entries WHERE USER_ID = %s", (agent.user_id,)
+        ).fetchall()
+    assert [row["OWNER"] for row in owners] == [new]
+
+
+def test_an_app_the_new_identity_already_has_an_agent_for_keeps_that_agent():
+    # The order an MCP app produces: its token stops refreshing once the WorkOS
+    # user is gone, the person signs it in again, and it makes an agent for the
+    # new identity before the person ever comes back to the web.
+    workos = FakeWorkOsClient()
+    svc, db = _service(workos)
+    first = svc.sign_in_with_authorization_code(
+        workos.issue_authorization_code("gil@example.com")
+    )
+    gone = first.user.workos_user_id
+    assert gone is not None
+    accounts = AgentAccounts(db, lambda *_: pytest.fail("must not onboard"))
+    old_claude = accounts.agent_for(gone, "Claude", None, None)
+    old_codex = accounts.agent_for(gone, "Codex", None, None)
+    workos.delete_user(gone)
+    code = workos.issue_authorization_code("gil@example.com")
+    new = workos.find_user_by_email("gil@example.com").workos_user_id
+    new_claude = accounts.agent_for(new, "Claude", None, None)
+    assert old_claude and old_codex and new_claude
+
+    second = svc.sign_in_with_authorization_code(code)
+
+    assert second.user.user_id == first.user.user_id
+    with db.read() as conn:
+        mine = {a.user_id for a in TableRead.agents_owned_by(conn, new)}
+        left = [a.user_id for a in TableRead.agents_owned_by(conn, gone)]
+    assert mine == {new_claude.user_id, old_codex.user_id}
+    assert left == [old_claude.user_id]
+
+
+def test_an_unverified_address_does_not_take_a_row_from_a_deleted_identity():
+    workos = FakeWorkOsClient()
+    svc, db = _service(workos)
+    user_id = _legacy_password_row(db, "hal@corp.com")
+    with db.write() as conn:
+        TableWrite.set_workos_user_id(conn, user_id, "user_gone")
+    workos.create_user(email="hal@corp.com", password_hash=None, email_verified=False)
+
+    with pytest.raises(InvalidCredentialsError):
+        svc.sign_in_with_authorization_code(
+            workos.issue_authorization_code("hal@corp.com")
+        )
+
+    assert _workos_id_of(db, user_id) == "user_gone"
+
+
+def test_a_row_whose_identity_workos_cannot_be_asked_about_stays_put(monkeypatch):
+    workos = FakeWorkOsClient()
+    svc, db = _service(workos)
+    user_id = _legacy_password_row(db, "ivy@corp.com")
+    with db.write() as conn:
+        TableWrite.set_workos_user_id(conn, user_id, "user_gone")
+
+    def _unreachable(workos_user_id):
+        raise WorkOsUnavailableError(
+            f"WorkOS request failed: GET /user_management/users/{workos_user_id}"
+        )
+
+    monkeypatch.setattr(workos, "get_user", _unreachable)
+
+    with pytest.raises(WorkOsUnavailableError):
+        svc.sign_in_with_authorization_code(
+            workos.issue_authorization_code("ivy@corp.com")
+        )
+
+    assert _workos_id_of(db, user_id) == "user_gone"
 
 
 def test_an_unverified_address_does_not_adopt_a_row():
