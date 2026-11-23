@@ -39,7 +39,7 @@ def send_auth_code(
 def sign_in_with_code(
     payload: CodeSignInRequest, service: AuthKitServiceDep
 ) -> AuthResponse:
-    session = service.sign_in(payload.email, payload.code)
+    session = service.sign_in(payload.email, payload.code, payload.attribution)
     return AuthResponse(
         access_token=session.access_token,
         refresh_token=session.refresh_token,
@@ -62,7 +62,7 @@ def complete_callback(
     why the redirect lands on a page and the code arrives here by POST: the
     browser may carry the code, never the secret.
     """
-    session = service.sign_in_with_authorization_code(payload.code)
+    session = service.sign_in_with_authorization_code(payload.code, payload.attribution)
     return AuthResponse(
         access_token=session.access_token,
         refresh_token=session.refresh_token,

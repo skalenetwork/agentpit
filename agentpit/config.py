@@ -363,3 +363,9 @@ class Settings(BaseSettings):
     mirror_target_refresh_seconds: float = Field(
         default=15.0, validation_alias="AGENTPIT_MIRROR_TARGET_REFRESH_SECONDS"
     )
+    # Product analytics: PostHog receives events only when all four are set,
+    # so nothing is sent that could not be erased later.
+    posthog_project_token: str = Field(default="", validation_alias="POSTHOG_PROJECT_TOKEN")
+    posthog_personal_api_key: str = Field(default="", validation_alias="POSTHOG_PERSONAL_API_KEY")
+    posthog_project_id: str = Field(default="", validation_alias="POSTHOG_PROJECT_ID")
+    analytics_id_secret: str = Field(default="", validation_alias="ANALYTICS_ID_SECRET")

@@ -1,6 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useEffect, useState } from "react";
+import { landing } from "../attribution";
 import { CODE_LENGTH, normaliseCode, sendCodeError, signInError, startGoogle } from "../auth";
 import { open, type Session, start } from "../session";
 import { Button, Fault, Input, Logo } from "../ui";
@@ -27,7 +28,7 @@ export const SignIn = () => {
   const [resendable, setResendable] = useState(false);
   const send = useMutation({ mutationFn: () => open("/auth/code", "POST", { email }), onSuccess: () => setSentAt(Date.now()) });
   const signIn = useMutation({
-    mutationFn: () => open<Session>("/auth/session", "POST", { email, code }),
+    mutationFn: () => open<Session>("/auth/session", "POST", { email, code, attribution: landing }),
     onSuccess: (session) => {
       start(session);
       return navigate({ href: redirect ?? "/" });

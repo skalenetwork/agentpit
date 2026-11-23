@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { attributionOf } from "../attribution";
 import { callbackCode, callbackError, takeRedirect, takeState } from "../auth";
 import { open, type Session, start } from "../session";
 import { Button, Logo } from "../ui";
@@ -7,8 +8,9 @@ import { Button, Logo } from "../ui";
 let exchange: Promise<Session> | undefined;
 
 const complete = () => {
-  const code = callbackCode(location.search, takeState());
-  exchange ??= code ? open<Session>("/auth/callback", "POST", { code }) : Promise.reject();
+  const state = takeState();
+  const code = callbackCode(location.search, state);
+  exchange ??= code ? open<Session>("/auth/callback", "POST", { code, attribution: attributionOf(state) }) : Promise.reject();
   return exchange;
 };
 

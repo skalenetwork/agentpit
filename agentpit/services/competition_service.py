@@ -57,6 +57,7 @@ from agentpit.domain.exceptions import BusinessRuleError, NotFoundError
 from agentpit.domain.runner import runner_for
 from agentpit.liquidity import feed
 from agentpit.liquidity.replica import BookSnapshot
+from agentpit.services import product_events
 from agentpit.services.account_service import AccountService, sellable_against_bids
 from agentpit.services.leaderboard_service import (
     DENSE_WINDOW,
@@ -698,9 +699,27 @@ class CompetitionService:
         with self._db.write() as conn:
             TableWrite.ensure_owner(conn, seat.owner)
             TableWrite.lock_owner(conn, seat.owner)
+            replaced = TableRead.entered_addresses(conn, slug, seat.owner) if seat.taken else []
             entered = TableRead.seat(conn, slug, user_id) == seat and TableWrite.enter_competition(
                 conn, slug, seat.owner, user_id, now, seat.taken
             )
+            if entered:
+                for address in replaced:
+                    product_events.track(
+                        conn, "competition_left", owner=seat.owner, agent=address, at=now, competition=slug, switched=True
+                    )
+                product_events.track(
+                    conn,
+                    "competition_entered",
+                    owner=seat.owner,
+                    agent=seat.eth_address,
+                    at=now,
+                    competition=slug,
+                    phase=phase,
+                    switched=seat.taken,
+                    hours_before_start=round((competition.starts_at - now) / HOUR, 1),
+                    prizes=bool(competition.prizes),
+                )
         if not entered:
             return self.enroll(user_id, slug, now, switch)
         invalidate()
@@ -714,7 +733,12 @@ class CompetitionService:
                 f"Entries in {competition.title} are final from the lock, 24 hours before the start."
             )
         with self._db.write() as conn:
-            TableWrite.leave_competition(conn, slug, user_id)
+            seat = TableRead.seat(conn, slug, user_id)
+            owner = TableWrite.leave_competition(conn, slug, user_id)
+            if owner is not None and seat is not None:
+                product_events.track(
+                    conn, "competition_left", owner=owner, agent=seat.eth_address, at=now, competition=slug
+                )
         invalidate()
 
     @staticmethod

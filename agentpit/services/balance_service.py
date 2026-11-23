@@ -1,4 +1,5 @@
 """Restoring a user's paper balance to the target, at most once a day."""
+import logging
 import time
 
 from pydantic import BaseModel
@@ -9,8 +10,11 @@ from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.onchain.admin import OnchainAdmin
+from agentpit.services import product_events
 from agentpit.services.account_service import AccountService
 from agentpit.services.deployment_reset import reconcile_deployment
+
+log = logging.getLogger(__name__)
 
 
 class TopUpResult(BaseModel):
@@ -149,6 +153,12 @@ class BalanceService:
                 TableWrite.release_topup(conn, user.user_id, last, minted)
             raise
 
+        # The mint has landed: nothing past this point may turn it into an error.
+        try:
+            with self._db.write() as conn:
+                product_events.top_up(conn, user.user_id, now, minted // 10**6)
+        except Exception:
+            log.exception("could not record a top-up event")
         return TopUpResult(
             balance_raw=balance + minted,
             minted_raw=minted,

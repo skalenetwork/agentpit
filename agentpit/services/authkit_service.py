@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from psycopg.errors import UniqueViolation
 
 from agentpit.auth.disposable_email import DisposableEmailChecker, email_domain
+from agentpit.datastructures.attribution import Attribution
 from agentpit.datastructures.user import User
 from agentpit.db.session import DbSession
 from agentpit.db.table_read import TableRead
@@ -167,15 +168,15 @@ class AuthKitService:
 
         self._workos.send_magic_auth_code(email)
 
-    def sign_in(self, email: str, code: str) -> AuthKitSession:
+    def sign_in(self, email: str, code: str, attribution: Attribution | None = None) -> AuthKitSession:
         session = self._workos.authenticate_with_code(email, code)
         return AuthKitSession(
-            user=self._resolve_account(session, create=True, repair=True),
+            user=self._resolve_account(session, create=True, repair=True, via="console_code", attribution=attribution),
             access_token=session.access_token,
             refresh_token=session.refresh_token,
         )
 
-    def sign_in_with_authorization_code(self, code: str) -> AuthKitSession:
+    def sign_in_with_authorization_code(self, code: str, attribution: Attribution | None = None) -> AuthKitSession:
         """A provider redirect (today: Google) landing back on our callback.
 
         Deliberately identical to `sign_in` past the exchange: whichever door
@@ -185,7 +186,9 @@ class AuthKitService:
         """
         session = self._workos.authenticate_with_authorization_code(code)
         return AuthKitSession(
-            user=self._resolve_account(session, create=True, repair=True),
+            user=self._resolve_account(
+                session, create=True, repair=True, via="console_redirect", attribution=attribution
+            ),
             access_token=session.access_token,
             refresh_token=session.refresh_token,
         )
@@ -214,7 +217,13 @@ class AuthKitService:
         )
 
     def _resolve_account(
-        self, session: WorkOsSession, *, create: bool, repair: bool
+        self,
+        session: WorkOsSession,
+        *,
+        create: bool,
+        repair: bool,
+        via: str = "console",
+        attribution: Attribution | None = None,
     ) -> User:
         # First, before `ensure_owner` or any read: a refused address leaves no
         # trace. `send_code` already refuses these, so this is the second line,
@@ -252,7 +261,7 @@ class AuthKitService:
             raise InvalidCredentialsError("invalid session")
         if create:
             with self._db.write() as conn:
-                TableWrite.ensure_owner(conn, session.workos_user_id)
+                TableWrite.ensure_owner(conn, session.workos_user_id, via)
         with self._db.read() as conn:
             user = TableRead.get_user_by_workos_id(conn, session.workos_user_id)
         if user is not None:
@@ -263,6 +272,9 @@ class AuthKitService:
             return self._repair(user) if repair else user
         if not create:
             raise InvalidCredentialsError("invalid session")
+        if attribution is not None:
+            with self._db.write() as conn:
+                TableWrite.record_attribution(conn, session.workos_user_id, attribution)
         return self._create_account(session)
 
     def _repair(self, user: User) -> User:

@@ -79,6 +79,7 @@ from agentpit.services.event_service import EventService
 from agentpit.services.leaderboard_service import LeaderboardService, drain
 from agentpit.services.market_service import ChainTask, sweep
 from agentpit.services.order_service import OrderService
+from agentpit.services import product_events
 
 log = logging.getLogger(__name__)
 
@@ -187,6 +188,33 @@ def _run_order_cleanup(db: DbSession, settings: Settings) -> None:
             conn, now - settings.idempotency_key_retention_seconds
         )
         TableWrite.purge_mirrored_trades(conn, now - 30 * 86_400, limit=10_000)
+
+
+def _start_product_events(db_session: DbSession, settings: Settings) -> asyncio.Task | None:
+    """Derive and forward product events once PostHog is fully configured."""
+    required = (
+        settings.posthog_project_token,
+        settings.posthog_personal_api_key,
+        settings.posthog_project_id,
+        settings.analytics_id_secret,
+    )
+    if not any(required):
+        return None
+    if not all(required):
+        log.error(
+            "Product events are not forwarded: set POSTHOG_PROJECT_TOKEN, POSTHOG_PERSONAL_API_KEY, "
+            "POSTHOG_PROJECT_ID and ANALYTICS_ID_SECRET together"
+        )
+        return None
+    forwarder = product_events.Forwarder(
+        db_session,
+        project_token=settings.posthog_project_token,
+        personal_api_key=settings.posthog_personal_api_key,
+        project_id=settings.posthog_project_id,
+        id_secret=settings.analytics_id_secret,
+    )
+    log.info("Forwarding product events to PostHog")
+    return asyncio.create_task(supervise("product events", forwarder.run))
 
 
 async def _order_cleanup_loop(db: DbSession, settings: Settings) -> None:
@@ -535,6 +563,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             _order_cleanup_loop(db_session, settings)
         )
         live_task = asyncio.create_task(supervise("live", live.run))
+        analytics_task = _start_product_events(db_session, settings)
 
         # Started after house provisioning on purpose: provisioning is a run of
         # sponsored sends, and a first refresh that finds the admin low must
@@ -549,6 +578,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 *leaderboard_tasks,
                 order_cleanup_task,
                 live_task,
+                analytics_task,
                 admin_gas_task,
                 *sync_tasks,
                 *mirror_tasks,

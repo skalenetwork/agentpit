@@ -109,7 +109,7 @@ class AgentAccounts:
         # with no room comes back on every request, and must not queue behind
         # the owner's other traffic each time.
         AgentAccounts._refuse_at_cap(conn, owner_workos_id, since)
-        TableWrite.ensure_owner(conn, owner_workos_id)
+        TableWrite.ensure_owner(conn, owner_workos_id, "mcp" if app else "console")
         # Held until this transaction commits, so two creations for one owner
         # cannot both pass the second count.
         TableWrite.lock_owner(conn, owner_workos_id)
