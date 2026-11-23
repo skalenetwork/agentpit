@@ -385,6 +385,54 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
+    def relink_workos_identity(
+        db: psycopg.Connection, user_id: str, gone: str, workos_user_id: str
+    ) -> bool:
+        """Hand a person's account from an identity WorkOS has deleted to a new
+        one, with everything that identity owns. False when the row is no
+        longer a live person's row held by `gone`.
+
+        The agents, the owner row and the competition entries are keyed by the
+        WorkOS id too, so they move with the person. The owner row
+        `ensure_owner` has just made for the new identity gives way to the old
+        one, which carries the name the person chose. A live agent for an app
+        the new identity already has one for stays with `gone`: the unique
+        index allows one per app, and the new identity's is the one its app is
+        using now.
+        """
+        # Compare-and-swap on the old identity, like `link_workos_identity`'s
+        # null check: of two sign-ins taking one row at once, only the first
+        # gets it.
+        cur = db.execute(
+            "UPDATE users SET WORKOS_USER_ID = %s WHERE USER_ID = %s "
+            "AND WORKOS_USER_ID = %s AND IS_BOT = 0 AND AGENT_APP IS NULL "
+            "AND DELETED_AT IS NULL",
+            (workos_user_id, user_id, gone),
+        )
+        if cur.rowcount == 0:
+            return False
+        db.execute(
+            "UPDATE users a SET OWNER_WORKOS_ID = %(new)s WHERE a.OWNER_WORKOS_ID = %(gone)s "
+            "AND NOT (a.AGENT_APP IS NOT NULL AND a.DELETED_AT IS NULL AND EXISTS ("
+            "SELECT 1 FROM users b WHERE b.OWNER_WORKOS_ID = %(new)s AND b.DELETED_AT IS NULL "
+            "AND b.AGENT_APP = a.AGENT_APP AND b.AGENT_CLIENT IS NOT DISTINCT FROM a.AGENT_CLIENT))",
+            {"new": workos_user_id, "gone": gone},
+        )
+        db.execute(
+            "DELETE FROM owners WHERE WORKOS_ID = %s "
+            "AND EXISTS (SELECT 1 FROM owners WHERE WORKOS_ID = %s)",
+            (workos_user_id, gone),
+        )
+        db.execute(
+            "UPDATE owners SET WORKOS_ID = %s WHERE WORKOS_ID = %s", (workos_user_id, gone)
+        )
+        db.execute(
+            "UPDATE competition_entries SET OWNER = %s WHERE OWNER = %s",
+            (workos_user_id, gone),
+        )
+        return True
+
+    @staticmethod
     def set_last_topup_at(db: psycopg.Connection, user_id: str, at: int | None) -> None:
         """Unconditional write. Used to release a claim after a failed mint —
         `at` may be the prior (possibly None) value being restored."""

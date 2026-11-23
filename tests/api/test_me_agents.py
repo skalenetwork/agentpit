@@ -366,6 +366,21 @@ def test_a_deleted_account_loses_its_email_owner_agents_and_sign_in(sign_in, wor
     assert conn.execute("SELECT OWNER FROM competition_entries").fetchone()["OWNER"] == f"deleted:{agent.user_id}"
 
 
+def test_a_delete_that_got_as_far_as_workos_is_finished_by_the_retry(sign_in, workos):
+    # The first attempt deleted the WorkOS user and then failed before the rows
+    # were cleared. WorkOS answers the retry's delete with a 404, which used to
+    # end it as a 401 and leave the account half-deleted for good.
+    with TestClient(app) as client:
+        headers, owner = _owner(client, sign_in, "owner@example.com")
+        workos.delete_user(owner)
+
+        deleted = client.delete("/me", headers=headers)
+
+    conn = fresh_test_conn()
+    assert deleted.status_code == 204
+    assert conn.execute("SELECT 1 FROM users WHERE EMAIL = 'owner@example.com'").fetchone() is None
+
+
 def test_me_names_the_owner_its_agents_show_and_the_switch_hides_it(sign_in):
     accounts = _accounts()
     with TestClient(app) as client:

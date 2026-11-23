@@ -645,6 +645,39 @@ class TableRead:
         ).fetchall()
 
     @staticmethod
+    def workos_people(db: psycopg.Connection) -> list[dict]:
+        """Every live person's row that holds a WorkOS identity, with its owner
+        name and the number of live agents that identity owns. Read by the
+        local-only `agentpit.ops.stuck_accounts` and nothing else: it carries
+        emails."""
+        return db.execute(
+            """
+            SELECT u.USER_ID, u.EMAIL, u.WORKOS_USER_ID, u.CREATED_AT,
+                   o.NAME AS OWNER_NAME,
+                   (SELECT COUNT(*) FROM users a
+                    WHERE a.OWNER_WORKOS_ID = u.WORKOS_USER_ID
+                      AND a.DELETED_AT IS NULL) AS LIVE_AGENTS
+            FROM users u
+            LEFT JOIN owners o ON o.WORKOS_ID = u.WORKOS_USER_ID
+            WHERE u.WORKOS_USER_ID IS NOT NULL AND u.IS_BOT = 0
+              AND u.AGENT_APP IS NULL AND u.DELETED_AT IS NULL
+            ORDER BY u.CREATED_AT, u.USER_ID
+            """
+        ).fetchall()
+
+    @staticmethod
+    def unheld_owners(db: psycopg.Connection) -> list[str]:
+        """The WorkOS ids of owner rows that no account holds. Sign-in makes
+        the owner row before it decides, so each one is an identity that
+        signed in and was refused."""
+        rows = db.execute(
+            "SELECT o.WORKOS_ID AS ID FROM owners o WHERE NOT EXISTS ("
+            "SELECT 1 FROM users u WHERE u.WORKOS_USER_ID = o.WORKOS_ID "
+            "OR u.OWNER_WORKOS_ID = o.WORKOS_ID) ORDER BY o.WORKOS_ID"
+        ).fetchall()
+        return [r["ID"] for r in rows]
+
+    @staticmethod
     def count_owner_agents(db: psycopg.Connection, owner_workos_id: str, since: int) -> int:
         """The owner's live agents, plus those created at or after `since`
         whether deleted or not."""
