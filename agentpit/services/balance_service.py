@@ -156,11 +156,7 @@ class BalanceService:
         # The mint has landed: nothing past this point may turn it into an error.
         try:
             with self._db.write() as conn:
-                row = conn.execute("SELECT OWNER_WORKOS_ID FROM users WHERE USER_ID = %s", (user.user_id,)).fetchone()
-                if row is not None and row["OWNER_WORKOS_ID"] is not None:
-                    product_events.track(
-                        conn, "top_up", owner=row["OWNER_WORKOS_ID"], agent=user.eth_address, at=now, usd=minted // 10**6
-                    )
+                product_events.top_up(conn, user.user_id, now, minted // 10**6)
         except Exception:
             log.exception("could not record a top-up event")
         return TopUpResult(

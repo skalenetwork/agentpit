@@ -191,21 +191,29 @@ def _run_order_cleanup(db: DbSession, settings: Settings) -> None:
 
 
 def _start_product_events(db_session: DbSession, settings: Settings) -> asyncio.Task | None:
-    """Forward product events to PostHog when it is configured. Without both
-    the key and the id secret, events stay in the database only."""
-    if not settings.posthog_api_key:
+    """Derive and forward product events once PostHog is fully configured."""
+    required = (
+        settings.posthog_project_token,
+        settings.posthog_personal_api_key,
+        settings.posthog_project_id,
+        settings.analytics_id_secret,
+    )
+    if not any(required):
         return None
-    if not settings.analytics_id_secret:
-        log.error("POSTHOG_API_KEY is set but ANALYTICS_ID_SECRET is not, so product events are not forwarded")
+    if not all(required):
+        log.error(
+            "Product events are not forwarded: set POSTHOG_PROJECT_TOKEN, POSTHOG_PERSONAL_API_KEY, "
+            "POSTHOG_PROJECT_ID and ANALYTICS_ID_SECRET together"
+        )
         return None
     forwarder = product_events.Forwarder(
         db_session,
-        settings.posthog_api_key,
-        settings.posthog_host,
-        settings.analytics_id_secret,
-        settings.analytics_env,
+        project_token=settings.posthog_project_token,
+        personal_api_key=settings.posthog_personal_api_key,
+        project_id=settings.posthog_project_id,
+        id_secret=settings.analytics_id_secret,
     )
-    log.info("Forwarding product events to %s", settings.posthog_host)
+    log.info("Forwarding product events to PostHog")
     return asyncio.create_task(supervise("product events", forwarder.run))
 
 
@@ -450,9 +458,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for workos_id in TableRead.unnamed_owners(conn):
                 TableWrite.ensure_owner(conn, workos_id)
             CompetitionService.sync(conn, FOLDER, int(time.time()))
-            # Before serving: first-trade detection relies on every agent that
-            # already traded being marked.
-            product_events.backfill(conn)
         try:
             wrapped = EventService(db_session).ensure_singleton_events_for_orphans()
             if wrapped:

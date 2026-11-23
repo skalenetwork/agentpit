@@ -304,17 +304,17 @@ class TableCreate:
 
     @staticmethod
     def create_product_events_table(conn: psycopg.Connection) -> None:
-        """Milestones in a person's and an agent's life (signed up, agent
-        created, first trade, competition entered...), written in the same
-        transaction as the action, then forwarded to the analytics vendor.
-        Not `events`: that is Polymarket's table."""
+        """Milestones in a person's and an agent's life, queued for the
+        analytics vendor, and the people whose data must be erased there. The
+        unique indexes make a repeated milestone a no-op. Not `events`: that
+        is Polymarket's table."""
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS product_events (
                 ID              BIGSERIAL PRIMARY KEY,
                 AT              BIGINT NOT NULL,
                 NAME            TEXT   NOT NULL,
-                OWNER_WORKOS_ID TEXT,
+                OWNER_WORKOS_ID TEXT   NOT NULL,
                 AGENT_ADDRESS   TEXT,
                 PROPS           JSONB  NOT NULL DEFAULT '{}'::jsonb,
                 SENT_AT         BIGINT
@@ -325,8 +325,6 @@ class TableCreate:
             "CREATE INDEX IF NOT EXISTS idx_product_events_unsent ON product_events(ID) WHERE SENT_AT IS NULL"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_product_events_owner ON product_events(OWNER_WORKOS_ID)")
-        # Once-in-a-lifetime milestones: a repeat insert (a retry, a race, the
-        # startup backfill) is a no-op instead of a second event.
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_product_events_owner_once "
             "ON product_events(NAME, OWNER_WORKOS_ID) WHERE NAME = 'owner_signed_up'"
@@ -334,6 +332,18 @@ class TableCreate:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_product_events_agent_once "
             "ON product_events(NAME, AGENT_ADDRESS) WHERE NAME IN ('agent_created', 'first_trade')"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_product_events_active_day "
+            "ON product_events(AGENT_ADDRESS, (AT / 86400)) WHERE NAME = 'active_day'"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS product_event_erasures (
+                OWNER_WORKOS_ID TEXT PRIMARY KEY,
+                AT              BIGINT NOT NULL
+            )
+            """
         )
 
     @staticmethod

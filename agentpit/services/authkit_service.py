@@ -27,7 +27,6 @@ from agentpit.domain.exceptions import (
     InvalidCredentialsError,
 )
 from agentpit.domain.handles import pick_handle
-from agentpit.services import product_events
 from agentpit.auth.workos_client import (
     WorkOsClient,
     WorkOsNotFoundError,
@@ -262,11 +261,7 @@ class AuthKitService:
             raise InvalidCredentialsError("invalid session")
         if create:
             with self._db.write() as conn:
-                # Campaign tags describe how a person first arrived, so they are
-                # saved at sign-up only, never on a later sign-in.
-                created = product_events.owner_created(conn, session.workos_user_id, via)
-                if created and attribution is not None and not attribution.empty():
-                    TableWrite.record_attribution(conn, session.workos_user_id, attribution)
+                TableWrite.ensure_owner(conn, session.workos_user_id, via)
         with self._db.read() as conn:
             user = TableRead.get_user_by_workos_id(conn, session.workos_user_id)
         if user is not None:
@@ -277,6 +272,9 @@ class AuthKitService:
             return self._repair(user) if repair else user
         if not create:
             raise InvalidCredentialsError("invalid session")
+        if attribution is not None:
+            with self._db.write() as conn:
+                TableWrite.record_attribution(conn, session.workos_user_id, attribution)
         return self._create_account(session)
 
     def _repair(self, user: User) -> User:

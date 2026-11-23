@@ -363,13 +363,9 @@ class Settings(BaseSettings):
     mirror_target_refresh_seconds: float = Field(
         default=15.0, validation_alias="AGENTPIT_MIRROR_TARGET_REFRESH_SECONDS"
     )
-    # Product analytics. Events are always recorded in `product_events`; they
-    # are forwarded to PostHog only when POSTHOG_API_KEY and
-    # ANALYTICS_ID_SECRET are both set. The secret salts the hash PostHog sees
-    # in place of an owner's WorkOS id; without it nothing is sent.
-    posthog_api_key: str = Field(default="", validation_alias="POSTHOG_API_KEY")
-    posthog_host: str = Field(
-        default="https://eu.i.posthog.com", validation_alias="POSTHOG_HOST"
-    )
+    # Product analytics: PostHog receives events only when all four are set,
+    # so nothing is sent that could not be erased later.
+    posthog_project_token: str = Field(default="", validation_alias="POSTHOG_PROJECT_TOKEN")
+    posthog_personal_api_key: str = Field(default="", validation_alias="POSTHOG_PERSONAL_API_KEY")
+    posthog_project_id: str = Field(default="", validation_alias="POSTHOG_PROJECT_ID")
     analytics_id_secret: str = Field(default="", validation_alias="ANALYTICS_ID_SECRET")
-    analytics_env: str = Field(default="prod", validation_alias="ANALYTICS_ENV")

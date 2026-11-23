@@ -12,8 +12,7 @@ from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.domain.exceptions import AgentLimitError, HandleAlreadyExistsError, UserNotFoundError
 from agentpit.domain.handles import pick_handle
-from agentpit.domain.runner import is_clawbits, runner_for
-from agentpit.services import product_events
+from agentpit.domain.runner import is_clawbits
 
 Onboard = Callable[[str, LocalAccount], User]
 
@@ -110,13 +109,13 @@ class AgentAccounts:
         # with no room comes back on every request, and must not queue behind
         # the owner's other traffic each time.
         AgentAccounts._refuse_at_cap(conn, owner_workos_id, since)
-        product_events.owner_created(conn, owner_workos_id, "mcp" if app else "console")
+        TableWrite.ensure_owner(conn, owner_workos_id, "mcp" if app else "console")
         # Held until this transaction commits, so two creations for one owner
         # cannot both pass the second count.
         TableWrite.lock_owner(conn, owner_workos_id)
         AgentAccounts._refuse_at_cap(conn, owner_workos_id, since)
         handle = pick_handle(taken=lambda name: TableRead.handle_taken(conn, name))
-        user_id, account, _ = TableWrite.create_user(
+        user_id, _, _ = TableWrite.create_user(
             conn,
             email=None,
             password_hash=None,
@@ -125,15 +124,6 @@ class AgentAccounts:
             agent_app=app,
             agent_host=host,
             agent_client=client,
-        )
-        product_events.track(
-            conn,
-            "agent_created",
-            owner=owner_workos_id,
-            agent=account.address,
-            runner=runner_for(app, host).slug,
-            source="mcp" if app else "api_key",
-            agents_before=TableRead.count_owner_agents(conn, owner_workos_id, 0) - 1,
         )
         return user_id
 

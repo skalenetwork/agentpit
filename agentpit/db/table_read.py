@@ -1132,6 +1132,18 @@ class TableRead:
         return Seat.model_validate(row) if row else None
 
     @staticmethod
+    def entered_addresses(db: psycopg.Connection, slug: str, owner: str) -> list[str]:
+        """The wallets of the owner's agents entered in this competition."""
+        return [
+            row["ETH_ADDRESS"]
+            for row in db.execute(
+                "SELECT u.ETH_ADDRESS FROM competition_entries e JOIN users u ON u.USER_ID = e.USER_ID "
+                "WHERE e.SLUG = %s AND e.OWNER = %s",
+                (slug, owner),
+            )
+        ]
+
+    @staticmethod
     def entered_by_owner(db: psycopg.Connection, owner: str, since: int) -> "dict[str, list[str]]":
         """user_id -> the competitions ending after `since` its owner entered it in."""
         entered: dict[str, list[str]] = {}

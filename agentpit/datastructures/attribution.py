@@ -15,6 +15,3 @@ class Attribution(BaseModel):
     utm_source: str | None = Field(default=None, pattern=TAG)
     utm_medium: str | None = Field(default=None, pattern=TAG)
     utm_campaign: str | None = Field(default=None, pattern=TAG)
-
-    def empty(self) -> bool:
-        return not any((self.ref, self.utm_source, self.utm_medium, self.utm_campaign))

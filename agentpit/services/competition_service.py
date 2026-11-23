@@ -699,10 +699,15 @@ class CompetitionService:
         with self._db.write() as conn:
             TableWrite.ensure_owner(conn, seat.owner)
             TableWrite.lock_owner(conn, seat.owner)
+            replaced = TableRead.entered_addresses(conn, slug, seat.owner) if seat.taken else []
             entered = TableRead.seat(conn, slug, user_id) == seat and TableWrite.enter_competition(
                 conn, slug, seat.owner, user_id, now, seat.taken
             )
             if entered:
+                for address in replaced:
+                    product_events.track(
+                        conn, "competition_left", owner=seat.owner, agent=address, at=now, competition=slug, switched=True
+                    )
                 product_events.track(
                     conn,
                     "competition_entered",

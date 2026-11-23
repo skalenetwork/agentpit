@@ -97,9 +97,12 @@ class TableWrite:
             (deleted_at, workos_id, workos_id),
         )
         db.execute("DELETE FROM owners WHERE WORKOS_ID = %s", (workos_id,))
-        # The person's product events go with the account; the forwarder can
-        # no longer send the ones not yet sent.
-        db.execute("DELETE FROM product_events WHERE OWNER_WORKOS_ID = %s", (workos_id,))
+        db.execute(
+            "WITH gone AS (DELETE FROM product_events WHERE OWNER_WORKOS_ID = %(owner)s RETURNING 1) "
+            "INSERT INTO product_event_erasures (OWNER_WORKOS_ID, AT) "
+            "SELECT %(owner)s, %(at)s WHERE EXISTS (SELECT 1 FROM gone) ON CONFLICT DO NOTHING",
+            {"owner": workos_id, "at": deleted_at},
+        )
         db.execute(
             "UPDATE competition_entries SET OWNER = 'deleted:' || USER_ID WHERE OWNER = %s", (workos_id,)
         )
@@ -188,19 +191,17 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
-    def ensure_owner(db: psycopg.Connection, workos_id: str, via: str | None = None) -> bool:
-        """Create the owner row when there is none. True when this call created
-        it: the person's sign-up, which `via` says how it came (`console_code`,
-        `console_redirect`, `mcp`...)."""
-        if TableRead.get_owner(db, workos_id) is not None:
-            return False
-        name = pick_handle(taken=lambda candidate: TableRead.owner_name_taken(db, candidate, workos_id))
-        row = db.execute(
-            "INSERT INTO owners (WORKOS_ID, NAME, CREATED_AT, SIGNUP_VIA) VALUES (%s, %s, %s, %s) "
-            "ON CONFLICT DO NOTHING RETURNING WORKOS_ID",
-            (workos_id, name, int(_time.time()), via),
-        ).fetchone()
-        return row is not None
+    def ensure_owner(db: psycopg.Connection, workos_id: str, via: str | None = None) -> None:
+        """Create the owner row when there is none. `via` is the door the
+        person first came through (`console_code`, `console_redirect`, `mcp`,
+        `console`)."""
+        if TableRead.get_owner(db, workos_id) is None:
+            name = pick_handle(taken=lambda candidate: TableRead.owner_name_taken(db, candidate, workos_id))
+            db.execute(
+                "INSERT INTO owners (WORKOS_ID, NAME, CREATED_AT, SIGNUP_VIA) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT DO NOTHING",
+                (workos_id, name, int(_time.time()), via),
+            )
 
     @staticmethod
     def record_attribution(db: psycopg.Connection, workos_id: str, attribution: Attribution) -> None:
@@ -392,8 +393,10 @@ class TableWrite:
         one, with everything that identity owns. False when the row is no
         longer a live person's row held by `gone`.
 
-        The agents, the owner row and the competition entries are keyed by the
-        WorkOS id too, so they move with the person. The owner row
+        The agents, the owner row, the competition entries and the product
+        events are keyed by the WorkOS id too, so they move with the person.
+        Moved events are sent again under the new id and the old id is queued
+        for erasure at the analytics vendor. The owner row
         `ensure_owner` has just made for the new identity gives way to the old
         one, which carries the name the person chose. A live agent for an app
         the new identity already has one for stays with `gone`: the unique
@@ -429,6 +432,19 @@ class TableWrite:
         db.execute(
             "UPDATE competition_entries SET OWNER = %s WHERE OWNER = %s",
             (workos_user_id, gone),
+        )
+        db.execute(
+            "DELETE FROM product_events WHERE NAME = 'owner_signed_up' AND OWNER_WORKOS_ID = %(new)s "
+            "AND EXISTS (SELECT 1 FROM product_events e "
+            "WHERE e.NAME = 'owner_signed_up' AND e.OWNER_WORKOS_ID = %(gone)s)",
+            {"new": workos_user_id, "gone": gone},
+        )
+        db.execute(
+            "WITH moved AS (UPDATE product_events SET OWNER_WORKOS_ID = %(new)s, SENT_AT = NULL "
+            "WHERE OWNER_WORKOS_ID = %(gone)s RETURNING 1) "
+            "INSERT INTO product_event_erasures (OWNER_WORKOS_ID, AT) "
+            "SELECT %(gone)s, %(at)s WHERE EXISTS (SELECT 1 FROM moved) ON CONFLICT DO NOTHING",
+            {"new": workos_user_id, "gone": gone, "at": int(_time.time())},
         )
         return True
 
