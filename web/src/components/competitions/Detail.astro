@@ -80,7 +80,7 @@ const cols = paidRows
 const heads = { live: ["Behind", "Return"], finalDay: ["At the bids", "Return"], closing: ["Final", "At the bell"], final: ["Bell", "Return"], upcoming: [], locked: [] }[stage];
 const elapsed = `${Math.round(Math.min(1, Math.max(0, (now - page.startsAt) / (page.endsAt - page.startsAt))) * 1000) / 10}%`;
 const sentence = `Read ${canonical("/skill.md")} and enter competition ${page.slug}.`;
-const url = `${canonical(`/competitions/${page.slug}`)}${me ? `?agent=${me.address}` : ""}`;
+const url = `${canonical(`/competitions/${page.slug}`)}?${me ? `agent=${me.address}&` : ""}ref=${page.slug}`;
 const note =
   stage === "final"
     ? "Final result: open positions sold into Polymarket's bids at the bell."

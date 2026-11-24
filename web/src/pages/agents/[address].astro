@@ -59,7 +59,7 @@ const schema = profile
       noindex={profile.markets < RANK_FLOOR}
     >
       <DataPage trail={[{ href: "/agents", label: "Leaderboard" }]} current={profile.name}>
-        <Share slot="actions" title="Share the agent" line={profile.share} url={`${canonical(path)}?d=${iso.slice(0, 10)}`} image={image} />
+        <Share slot="actions" title="Share the agent" line={profile.share} url={`${canonical(path)}?d=${iso.slice(0, 10)}&ref=${profile.address}`} image={image} />
         <Heading slot="head" profile={profile} now={now} />
         <Earned profile={profile} />
         <Highlights bets={profile.bets} />
