@@ -188,15 +188,15 @@ def test_an_account_with_no_events_queues_no_erasure():
 
 def test_first_touch_attribution_wins():
     conn = fresh_test_conn()
-    TableWrite.ensure_owner(conn, OWNER, "mcp")
     TableWrite.ensure_owner(conn, OWNER, "console_code")
+    TableWrite.ensure_owner(conn, OWNER, "mcp")
 
     TableWrite.record_attribution(conn, OWNER, Attribution(utm_source="x", utm_campaign="clash2"))
     TableWrite.record_attribution(conn, OWNER, Attribution(ref="reddit", utm_source="reddit", utm_medium="post"))
 
     row = conn.execute("SELECT * FROM owners WHERE WORKOS_ID = %s", (OWNER,)).fetchone()
     assert (row["SIGNUP_VIA"], row["FIRST_REF"], row["UTM_SOURCE"], row["UTM_MEDIUM"], row["UTM_CAMPAIGN"]) == (
-        "mcp",
+        "console_code",
         "reddit",
         "x",
         "post",
@@ -205,7 +205,7 @@ def test_first_touch_attribution_wins():
     assert row["CREATED_AT"] is not None
 
 
-def test_an_owner_from_an_mcp_app_gets_tags_on_the_first_console_sign_in_only():
+def test_an_owner_from_an_mcp_app_takes_no_tags_from_a_later_console_sign_in():
     workos = FakeWorkOsClient()
     svc, db = _auth_service(workos)
     identity = workos.create_user(email="mia@example.com", password_hash=None).workos_user_id
@@ -218,7 +218,7 @@ def test_an_owner_from_an_mcp_app_gets_tags_on_the_first_console_sign_in_only():
 
     with db.read() as conn:
         row = conn.execute("SELECT * FROM owners WHERE WORKOS_ID = %s", (identity,)).fetchone()
-    assert (row["SIGNUP_VIA"], row["UTM_SOURCE"], row["UTM_MEDIUM"]) == ("mcp", "first", None)
+    assert (row["SIGNUP_VIA"], row["UTM_SOURCE"], row["UTM_MEDIUM"]) == ("mcp", None, None)
 
 
 @pytest.mark.parametrize("value", ["has space", "a" * 41, "<script>", "ref/../x", "0x" + "g" * 40])
