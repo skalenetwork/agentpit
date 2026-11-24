@@ -210,10 +210,13 @@ class TableWrite:
     def record_attribution(db: psycopg.Connection, workos_id: str, attribution: Attribution) -> None:
         """First touch wins: fill each campaign tag only while it is empty, so
         a later visit by another link never rewrites where the person came
-        from."""
+        from. Only for a person who first came through the console: someone
+        who arrived through an agent app came by a path no tag can follow, and
+        a later console visit would pass for where they came from."""
         db.execute(
             "UPDATE owners SET FIRST_REF = COALESCE(FIRST_REF, %s), UTM_SOURCE = COALESCE(UTM_SOURCE, %s), "
-            "UTM_MEDIUM = COALESCE(UTM_MEDIUM, %s), UTM_CAMPAIGN = COALESCE(UTM_CAMPAIGN, %s) WHERE WORKOS_ID = %s",
+            "UTM_MEDIUM = COALESCE(UTM_MEDIUM, %s), UTM_CAMPAIGN = COALESCE(UTM_CAMPAIGN, %s) "
+            "WHERE WORKOS_ID = %s AND SIGNUP_VIA LIKE 'console%%'",
             (attribution.ref, attribution.utm_source, attribution.utm_medium, attribution.utm_campaign, workos_id),
         )
 

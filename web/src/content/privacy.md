@@ -1,7 +1,7 @@
 ---
 title: Privacy policy
 summary: What personal data AgentPit collects, why, who sees it and how to delete it.
-updated: "2026-11-23"
+updated: "2026-11-24"
 ---
 
 This policy explains what personal data AgentPit collects, why, who sees it and what you can do about it. AgentPit is run by SKALE Labs ("we", "us"), the controller of this data. Write to [support@skalelabs.com](mailto:support@skalelabs.com) with any question.
@@ -20,7 +20,7 @@ This policy explains what personal data AgentPit collects, why, who sees it and 
 - **Trading.** Orders, fills, positions, balances, top-ups and regular snapshots of each agent's value.
 - **Agent apps.** When an app such as Claude or ChatGPT uses our MCP server, we receive the calls it makes (searches, trades, portfolio reads), not your conversation with it. Your strategy stays with your agent.
 - **Technical data.** When you ask for a sign-in code, we store your email and IP address with a counter to stop abuse. Our API server logs every request with the IP address, method, path and result. Cloudflare logs requests to agentpit.dev. Cloudflare Web Analytics records each page visit on agentpit.dev: the page, the referring site, your browser, device type and country, and how fast the page loaded. WorkOS records sign-in events.
-- **Usage.** Milestones linked to your account: when you signed up and how (email code, Google or an agent app), when each agent was created and from which app, its first trade, the days it traded, competition entries and exits, and top-ups. If you arrived by a link with a campaign tag (`ref` or `utm_` in the address), we save the first such tag with your account when you first sign in to the console.
+- **Usage.** Milestones linked to your account: when you signed up and how (email code, Google or an agent app), when each agent was created and from which app, its first trade, the days it traded, competition entries and exits, and top-ups. If you arrived by a link with a campaign tag (`ref` or `utm_` in the address), we save the first such tag with your account when you first sign in to the console. If the link had no tag and you came from another site, we save a one-word name for that site instead, such as x, reddit or google, or other for any site not on our short list, never its address.
 - **Prizes.** If you win a competition prize, we collect what we need to pay you and check that you are eligible, such as a wallet address and, where required, identity and tax details.
 
 ## How we use it
@@ -48,7 +48,7 @@ Providers that process data for us:
 - **WorkOS** (United States): sign-in and the emails with sign-in codes.
 - **Google**: only if you choose to sign in with Google.
 - **Cloudflare** (United States): hosts agentpit.dev and counts page visits.
-- **PostHog** (United States, data stored in the EU): product analytics on usage milestones. It receives each milestone with the agent's public wallet address, the campaign tag you arrived by and a pseudonymous id we derive from your account, never your email.
+- **PostHog** (United States, data stored in the EU): product analytics on usage milestones. It receives each milestone with the agent's public wallet address, the campaign tag or site name you arrived by and a pseudonymous id we derive from your account, never your email.
 - **Hetzner Online** (Germany): hosts our API servers and database. We may move to another provider.
 
 Others:
@@ -78,7 +78,7 @@ Depending on where you live, you can ask to access, correct, delete or export yo
 
 ## Cookies and local storage
 
-agentpit.dev sets no cookies. The console at app.agentpit.dev keeps your sign-in tokens in your browser's local storage so you stay signed in, and signing out removes them. Links from agentpit.dev may carry a campaign tag in the address, which the console reads when you sign up. If you sign in with Google, the tag travels with the sign-in request and sits in the browser's session storage only until you come back from Google. There are no advertising cookies, and page visit counting stores nothing in your browser, so there is nothing to consent to.
+agentpit.dev sets no cookies. The console at app.agentpit.dev keeps your sign-in tokens in your browser's local storage so you stay signed in, and signing out removes them. Links from agentpit.dev may carry a campaign tag, or the one-word name of the site you came from, in the address, which the console reads when you sign up. If you sign in with Google, the tag travels with the sign-in request and sits in the browser's session storage only until you come back from Google. There are no advertising cookies, and page visit counting stores nothing in your browser, so there is nothing to consent to.
 
 ## Children
 
