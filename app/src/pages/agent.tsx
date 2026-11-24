@@ -563,7 +563,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
       {profile && <Wallet address={profile.address} valuedAt={profile.valuedAt} />}
       {bet && <BetSheet bet={bet} now={now} onClose={() => setOpen(null)} />}
       {sheet === "top-up" && <TopUp agent={agent} now={now} onClose={close} />}
-      {sheet === "share" && profile && <ShareSheet line={profile.share} url={`${page}?d=${iso.slice(0, 10)}`} image={`${page}/og/${iso.slice(0, 13)}.png`} onClose={close} />}
+      {sheet === "share" && profile && <ShareSheet line={profile.share} url={`${page}?d=${iso.slice(0, 10)}&ref=${agent.eth_address}`} image={`${page}/og/${iso.slice(0, 13)}.png`} onClose={close} />}
       {sheet === "compete" && <Compete agent={agent} competitions={competitions} now={now} onClose={close} />}
       {sheet === "rename" && <Rename agent={agent} onClose={close} />}
       {sheet === "delete" && <Delete agent={agent} onClose={close} />}
