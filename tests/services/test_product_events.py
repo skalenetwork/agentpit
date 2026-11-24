@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from agentpit.auth.workos_client import FakeWorkOsClient
 from agentpit.datastructures.attribution import Attribution
+from agentpit.db.table_read import TableRead
 from agentpit.db.table_write import TableWrite
 from agentpit.services import product_events
 from agentpit.services.agent_accounts import AgentAccounts
@@ -163,15 +164,17 @@ def test_active_day_is_one_event_per_agent_per_utc_day():
 
 def test_derive_never_brings_back_a_deleted_accounts_events():
     conn = fresh_test_conn()
-    TableWrite.ensure_owner(conn, OWNER, "console_code")
+    _person(conn)
     _, _, key = _agent(conn, owner=OWNER)
     _trade(conn, key, 700)
     product_events.derive(conn)
     assert len(_events(conn)) == 4
 
     TableWrite.delete_account(conn, OWNER, None, int(time.time()))
+    TableWrite.ensure_owner(conn, OWNER, "console_code")
     product_events.derive(conn)
 
+    assert TableRead.get_owner(conn, OWNER) is None
     assert _events(conn) == []
     assert _erasures(conn) == [OWNER]
 

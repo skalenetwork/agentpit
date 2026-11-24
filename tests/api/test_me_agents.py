@@ -353,6 +353,8 @@ def test_a_deleted_account_loses_its_email_owner_agents_and_sign_in(sign_in, wor
         deleted = client.delete("/me", headers=headers)
         me = client.get("/me", headers=headers)
         key = client.get("/me", headers={"X-API-Key": agent.api_key})
+    with TestClient(app):
+        pass
 
     conn = fresh_test_conn()
     assert deleted.status_code == 204

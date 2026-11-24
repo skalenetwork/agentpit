@@ -192,15 +192,18 @@ class TableWrite:
 
     @staticmethod
     def ensure_owner(db: psycopg.Connection, workos_id: str, via: str | None = None) -> None:
-        """Create the owner row when there is none. `via` is the door the
-        person first came through (`console_code`, `console_redirect`, `mcp`,
-        `console`)."""
+        """Create the owner row when there is none, except for an identity
+        whose account was deleted: its rows keep the id, and an owner row
+        would bring their history back. `via` is the door the person first
+        came through (`console_code`, `console_redirect`, `mcp`, `console`)."""
         if TableRead.get_owner(db, workos_id) is None:
             name = pick_handle(taken=lambda candidate: TableRead.owner_name_taken(db, candidate, workos_id))
             db.execute(
-                "INSERT INTO owners (WORKOS_ID, NAME, CREATED_AT, SIGNUP_VIA) VALUES (%s, %s, %s, %s) "
+                "INSERT INTO owners (WORKOS_ID, NAME, CREATED_AT, SIGNUP_VIA) "
+                "SELECT %(id)s, %(name)s, %(at)s, %(via)s WHERE NOT EXISTS ("
+                "SELECT 1 FROM users WHERE WORKOS_USER_ID = %(id)s AND DELETED_AT IS NOT NULL) "
                 "ON CONFLICT DO NOTHING",
-                (workos_id, name, int(_time.time()), via),
+                {"id": workos_id, "name": name, "at": int(_time.time()), "via": via},
             )
 
     @staticmethod
