@@ -20,6 +20,7 @@ from agentpit.api.deps import (
     SettingsDep,
     WorkOsClientDep,
 )
+from agentpit.auth.api_keys import key_hash, new_api_key
 from agentpit.auth.workos_client import WorkOsNotFoundError
 from agentpit.datastructures.agent_summary import AgentSummary, NewAgent, OwnedAgent
 from agentpit.datastructures.auth_response import UserPublic
@@ -59,6 +60,10 @@ class TopUpWire(BaseModel):
     balance: str
     minted: str
     nextAllowedAt: int
+
+
+class ApiKeyWire(BaseModel):
+    api_key: str
 
 
 class CreditsWire(BaseModel):
@@ -160,6 +165,18 @@ def delete_me(
     for account in (user, *agents):
         orders.cancel_all(account)
     return Response(status_code=204)
+
+
+@router.post("/me/agents/{address}/api-key", response_model=ApiKeyWire)
+def regenerate_my_agent_key(address: str, owner: OwnerDep, db: SessionDep) -> ApiKeyWire:
+    """A new API key for the agent, shown this once. The old key stops
+    working at once; the agent keeps its wallet, orders, positions and
+    competition entries, which hang off its ledger id, not the key."""
+    agent = _owned_agent(db, owner, address)
+    key = new_api_key()
+    with db.write() as conn:
+        TableWrite.set_api_key_hash(conn, agent.user_id, key_hash(key))
+    return ApiKeyWire(api_key=key)
 
 
 @router.delete("/me/agents/{address}", status_code=204)

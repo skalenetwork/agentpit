@@ -55,7 +55,7 @@ class AgentVerifier:
 
     def _key_user(self, key: str) -> User | None:
         with self._db.read() as conn:
-            user = TableRead.get_user_by_api_key(conn, key)
+            user = TableRead.get_user_by_credential(conn, key)
         return user if user is not None and user.deleted_at is None else None
 
     def _oauth_user(self, token: str) -> User | None:

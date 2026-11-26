@@ -10,6 +10,7 @@ from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from pydantic import BaseModel
 
+from agentpit.auth.api_keys import key_hash
 from agentpit.utils.parse import parse_32b_hex_private_key
 from agentpit.datastructures.agent_desk import Sort
 from agentpit.datastructures.board import WireTeam
@@ -513,6 +514,20 @@ class TableRead:
         row = db.execute(
             f"SELECT {TableRead._USER_COLS} FROM users WHERE API_KEY = %s LIMIT 1",
             (api_key,),
+        ).fetchone()
+        return TableRead._row_to_user(row) if row else None
+
+    @staticmethod
+    def get_user_by_credential(db: psycopg.Connection, key: str) -> "User | None":
+        """The account a caller's key signs in as. A regenerated key matches
+        by its hash; the original key only while none has been regenerated.
+
+        Not `get_user_by_api_key`: that one resolves the internal ledger id,
+        which outlives the key it started as."""
+        row = db.execute(
+            f"SELECT {TableRead._USER_COLS} FROM users "
+            "WHERE API_KEY_HASH = %(hash)s OR (API_KEY_HASH IS NULL AND API_KEY = %(key)s) LIMIT 1",
+            {"hash": key_hash(key), "key": key},
         ).fetchone()
         return TableRead._row_to_user(row) if row else None
 

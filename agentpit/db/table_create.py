@@ -240,6 +240,11 @@ class TableCreate:
             ("DELETED_AT", "BIGINT"),
             ("ONBOARDING_STARTED_AT", "BIGINT"),
             ("PEER_TRANSFER_BLOCK", "BIGINT"),
+            # sha256 of the key the owner regenerated in the dashboard. Set,
+            # it is the only key that signs in: API_KEY stays the agent's
+            # ledger id across orders, trades and transactions, never a
+            # credential again.
+            ("API_KEY_HASH", "TEXT"),
         ]
         for col, col_type in additions:
             conn.execute(
@@ -270,6 +275,10 @@ class TableCreate:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_workos_user_id "
             "ON users(WORKOS_USER_ID)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_api_key_hash "
+            "ON users(API_KEY_HASH)"
         )
         conn.execute("ALTER TABLE users ALTER COLUMN EMAIL DROP NOT NULL")
         conn.execute("DROP INDEX IF EXISTS idx_users_owner_app")
