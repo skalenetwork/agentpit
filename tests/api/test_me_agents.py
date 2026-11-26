@@ -199,6 +199,51 @@ def test_the_settings_key_cannot_manage_agents(sign_in):
     assert resp.status_code == 403
 
 
+def test_a_regenerated_key_replaces_the_old_one_and_the_agent_keeps_everything(sign_in):
+    with TestClient(app) as client:
+        headers, owner = _owner(client, sign_in, "owner@example.com")
+        created = client.post("/me/agents", headers=headers).json()
+        old = created["api_key"]
+        with fresh_test_db().read() as conn:
+            before = TableRead.get_owned_agent(conn, owner, created["eth_address"])
+
+        first = client.post(f"/me/agents/{created['eth_address'].lower()}/api-key", headers=headers)
+        second = client.post(f"/me/agents/{created['eth_address']}/api-key", headers=headers)
+        by_old = client.get("/me", headers={"X-API-Key": old})
+        by_first = client.get("/me", headers={"X-API-Key": first.json()["api_key"]})
+        by_second = client.get("/me", headers={"X-API-Key": second.json()["api_key"]})
+
+    assert first.status_code == second.status_code == 200
+    assert len({old, first.json()["api_key"], second.json()["api_key"]}) == 3
+    assert by_old.status_code == by_first.status_code == 401
+    assert before is not None
+    assert by_second.status_code == 200 and by_second.json()["user_id"] == before.user_id
+    with fresh_test_db().read() as conn:
+        after = TableRead.get_owned_agent(conn, owner, created["eth_address"])
+    assert after == before
+
+
+def test_only_the_owner_s_dashboard_session_regenerates_a_key(sign_in):
+    accounts = _accounts()
+    with TestClient(app) as client:
+        headers, owner = _owner(client, sign_in, "owner@example.com")
+        mine = accounts.create_api_agent(owner)
+        other = accounts.create_api_agent("user_someone_else")
+        gone = accounts.create_api_agent(owner)
+        with fresh_test_db().write() as conn:
+            TableWrite.delete_agent(conn, gone.user_id, NOW)
+
+        foreign = client.post(f"/me/agents/{other.eth_address}/api-key", headers=headers)
+        deleted = client.post(f"/me/agents/{gone.eth_address}/api-key", headers=headers)
+        by_key = client.post(f"/me/agents/{mine.eth_address}/api-key", headers={"X-API-Key": mine.api_key})
+        still = client.get("/me", headers={"X-API-Key": mine.api_key})
+        theirs = client.get("/me", headers={"X-API-Key": other.api_key})
+
+    assert foreign.status_code == deleted.status_code == 404
+    assert by_key.status_code == 403
+    assert still.status_code == theirs.status_code == 200
+
+
 def test_an_owner_renames_only_their_own_agents(sign_in):
     accounts = _accounts()
     with TestClient(app) as client:

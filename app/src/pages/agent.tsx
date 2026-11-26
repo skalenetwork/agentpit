@@ -2,9 +2,9 @@ import { type Bet, type BetStatus, explorerAddress, type Profile, type RaceEntry
 import { betTabs, earnedChart, highlights, moneyTone, quiet, rowCaption, SHOWN, stakeLine, today, visible } from "@agentpit/brand/bets";
 import { chance, clock, count, dollars, pct, pool, shortAddress, shortDay, signedDollars, span, tone, until, utcTime } from "@agentpit/brand/format";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, BanknoteArrowUp, ChartLine, LogOut, type LucideIcon, Pencil, Share, Trash2, TrendingDown, TrendingUp, Trophy } from "lucide-react";
+import { ArrowUpRight, BanknoteArrowUp, ChartLine, KeyRound, LogOut, type LucideIcon, Pencil, Share, Trash2, TrendingDown, TrendingUp, Trophy } from "lucide-react";
 import { type FormEvent, Fragment, type ReactNode, useState } from "react";
-import { type Agent, type Order, useAgents, useCompetitions, useDeleteAgent, useEntry, useOrders, useProfile, useRaceEntries, useRenameAgent, useTopUp } from "../api";
+import { type Agent, type Order, useAgents, useCompetitions, useDeleteAgent, useEntry, useNewKey, useOrders, useProfile, useRaceEntries, useRenameAgent, useTopUp } from "../api";
 import { BetSheet, Outcome } from "../bet";
 import { EarnedLine } from "../chart";
 import { HUE, LastTrade, Sep, TONE } from "../labels";
@@ -19,7 +19,7 @@ type TabKey = BetStatus | "orders";
 const SITE = "https://agentpit.dev";
 const MCP = "https://api.agentpit.dev/mcp";
 const FIRST_TRADE = "Read https://agentpit.dev/skill.md, then check my AgentPit portfolio and make your first trade.";
-const KEY_NOTE = "Use the API key you copied when you created it: as Authorization: Bearer on this MCP server, or as X-API-Key on the REST API. A new key makes a new agent.";
+const KEY_NOTE = "Use the agent's API key: as Authorization: Bearer on this MCP server, or as X-API-Key on the REST API. Lost it? Get a new one with New key above.";
 const GRANT = 100_000;
 const ICON = "max-md:w-7.5 max-md:px-0";
 const UNDERLINE = "underline decoration-faint underline-offset-[3px] transition-colors duration-150 hover:text-ink hover:decoration-current";
@@ -376,6 +376,29 @@ const Delete = ({ agent, onClose }: { agent: Agent; onClose: () => void }) => {
   );
 };
 
+const NewKey = ({ agent, onClose }: { agent: Agent; onClose: () => void }) => {
+  const renew = useNewKey(agent.eth_address);
+  return renew.data ? (
+    <Sheet title="New API key" onClose={onClose} locked>
+      <Well text={renew.data} mono className="mt-4 bg-surface" />
+      <p className="mt-2 pl-4 text-caption text-muted">Shown only once. Paste it into your app now.</p>
+      <Button variant="primary" size="lg" className="mt-6" onClick={onClose}>
+        Done
+      </Button>
+    </Sheet>
+  ) : (
+    <Sheet title={`New key for ${agent.name}?`} onClose={onClose}>
+      <p className="mt-3 text-muted">The current key stops working right away. {agent.name} keeps its wallet, positions and competitions.</p>
+      {renew.isError && <Fault>Could not make a new key. Try again in a moment.</Fault>}
+      <Actions onClose={onClose}>
+        <Button variant="primary" size="lg" disabled={renew.isPending} onClick={() => renew.mutate()}>
+          Get new key
+        </Button>
+      </Actions>
+    </Sheet>
+  );
+};
+
 const TopUp = ({ agent, now, onClose }: { agent: Agent; now: number; onClose: () => void }) => {
   const top = useTopUp(agent.eth_address);
   const wait = agent.next_top_up_at - now;
@@ -485,7 +508,7 @@ const FirstTrade = ({ agent, race }: { agent: Agent; race: RaceHead }) => {
 };
 
 const View = ({ agent, now }: { agent: Agent; now: number }) => {
-  const [sheet, setSheet] = useState<"top-up" | "share" | "compete" | "rename" | "delete">();
+  const [sheet, setSheet] = useState<"top-up" | "share" | "compete" | "rename" | "key" | "delete">();
   const [open, setOpen] = useState<string | null>(null);
   const competitions = useCompetitions().data?.competitions.filter(({ phase }) => phase !== "ended") ?? [];
   const entries = useRaceEntries(agent.eth_address).data ?? [];
@@ -529,6 +552,12 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
             <Pencil size={14} strokeWidth={1.75} />
             <span className="max-md:sr-only">Rename</span>
           </Button>
+          {agent.runner.slug === "api" && (
+            <Button className={ICON} onClick={() => setSheet("key")}>
+              <KeyRound size={14} strokeWidth={1.75} />
+              <span className="max-md:sr-only">New key</span>
+            </Button>
+          )}
           <Button variant="warn" className={ICON} onClick={() => setSheet("delete")}>
             <Trash2 size={14} strokeWidth={1.75} />
             <span className="max-md:sr-only">Delete</span>
@@ -566,6 +595,7 @@ const View = ({ agent, now }: { agent: Agent; now: number }) => {
       {sheet === "share" && profile && <ShareSheet line={profile.share} url={`${page}?d=${iso.slice(0, 10)}&ref=${agent.eth_address}`} image={`${page}/og/${iso.slice(0, 13)}.png`} onClose={close} />}
       {sheet === "compete" && <Compete agent={agent} competitions={competitions} now={now} onClose={close} />}
       {sheet === "rename" && <Rename agent={agent} onClose={close} />}
+      {sheet === "key" && <NewKey agent={agent} onClose={close} />}
       {sheet === "delete" && <Delete agent={agent} onClose={close} />}
     </>
   );

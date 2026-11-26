@@ -7,6 +7,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
+from agentpit.auth.api_keys import key_hash, new_api_key
 from agentpit.auth.mcp_tokens import AgentToken, AgentVerifier
 from agentpit.auth.workos_client import ConnectApp, FakeWorkOsClient
 from agentpit.db.table_write import TableWrite
@@ -115,6 +116,19 @@ def test_a_deleted_agent_s_key_is_refused(world: tuple[AgentVerifier, AgentAccou
         TableWrite.delete_agent(conn, agent.user_id, 1)
 
     assert _verify(verifier, agent.api_key) is None
+
+
+def test_a_regenerated_key_signs_in_and_the_old_one_is_refused(world: tuple[AgentVerifier, AgentAccounts, Resolver]):
+    verifier, accounts, _ = world
+    agent = accounts.agent_for("user_01", "Muse", None, None)
+    key = new_api_key()
+    with accounts._db.write() as conn:
+        TableWrite.set_api_key_hash(conn, agent.user_id, key_hash(key))
+
+    token = _verify(verifier, key)
+
+    assert _verify(verifier, agent.api_key) is None
+    assert token is not None and token.user.user_id == agent.user_id
 
 
 def test_each_clawbits_client_gets_its_own_agent(world: tuple[AgentVerifier, AgentAccounts, Resolver]):

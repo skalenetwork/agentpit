@@ -95,6 +95,7 @@ export const useCreateAgent = () => {
 
 export const useRenameAgent = (address: string) => useAgentMutation((handle: string) => request(`/me/agents/${address}`, "PATCH", { handle }));
 export const useDeleteAgent = (address: string) => useAgentMutation(() => request(`/me/agents/${address}`, "DELETE"));
+export const useNewKey = (address: string) => useMutation({ mutationFn: async () => (await request<{ readonly api_key: string }>(`/me/agents/${address}/api-key`, "POST")).api_key, gcTime: 0 });
 export const useTopUp = (address: string) =>
   useAgentMutation(async () => usd((await request<{ readonly minted: string }>(`/me/agents/${address}/top-up`, "POST")).minted), [AGENTS, ["profile", address]]);
 export const useEntry = (address: string) =>

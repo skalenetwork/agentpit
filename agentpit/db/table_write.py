@@ -86,6 +86,10 @@ class TableWrite:
         return cur.rowcount > 0
 
     @staticmethod
+    def set_api_key_hash(db: psycopg.Connection, user_id: str, hashed: str) -> None:
+        db.execute("UPDATE users SET API_KEY_HASH = %s WHERE USER_ID = %s", (hashed, user_id))
+
+    @staticmethod
     def delete_agent(db: psycopg.Connection, user_id: str, deleted_at: int) -> None:
         db.execute("UPDATE users SET DELETED_AT = %s WHERE USER_ID = %s", (deleted_at, user_id))
 
